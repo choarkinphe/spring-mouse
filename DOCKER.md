@@ -1,6 +1,6 @@
 # Spring Mouse Docker 快速参考
 
-完整部署、安全、反向代理、Jenkins 和故障排查请阅读 [DEPLOY.md](DEPLOY.md)。本页只保留常用 Docker 命令。
+完整的 Docker Hub 发布、首次部署、版本固定、升级和回滚请阅读 [docs/DOCKERHUB.md](docs/DOCKERHUB.md)。完整的部署、安全、反向代理、Jenkins 和故障排查请阅读 [DEPLOY.md](DEPLOY.md)。本页只保留常用 Docker 命令。
 
 ## 本地构建与运行
 
@@ -50,7 +50,7 @@ docker rm -f spring-mouse
 
 ## Docker Compose
 
-仓库的 `docker-compose.yml` 面向 Docker Hub 发布镜像 `choarkinphe/spring-mouse:latest`，并默认启动一个 Headroom sidecar。
+仓库的 `docker-compose.yml` 默认使用 Docker Hub 发布镜像 `choarkinphe/spring-mouse:latest`，并默认启动一个 Headroom sidecar。可在 `.env` 中用 `SPRING_MOUSE_IMAGE` 固定到具体版本标签。
 
 ```bash
 cp .env.example .env

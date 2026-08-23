@@ -200,6 +200,9 @@ flowchart LR
 
 ---
 
+
+> 想查看当前实现的完整功能地图、Dashboard 模块、协议、运行与安全能力，请阅读 [功能全景](docs/FEATURES.md)。
+
 ## 控制台模块
 
 Dashboard 默认运行在：
@@ -222,6 +225,23 @@ Dashboard 默认运行在：
 | **基础对话** | 在控制台直接测试已配置的模型或策略。 |
 
 ---
+
+
+## 控制台截图
+
+截图来自本地演示环境；请求明细已脱敏。
+
+### 运营概览
+
+![Spring Mouse Dashboard overview](public/screenshots/dashboard-overview.png)
+
+### 模型路由策略
+
+![Spring Mouse routing policies](public/screenshots/routing-policies.png)
+
+### 媒体服务中心
+
+![Spring Mouse media services](public/screenshots/media-services.png)
 
 ## 接口兼容性
 
@@ -342,19 +362,22 @@ Model:    coding-primary
 
 ---
 
-### Docker Hub 部署
+### Docker Hub 与 Compose 部署
 
-发布镜像：`choarkinphe/spring-mouse:latest`。复制环境变量模板并启动：
+发布镜像为 `choarkinphe/spring-mouse`。首次部署、Docker Hub 发布配置、版本固定、升级与回滚的完整步骤见 [Docker Hub 发布与 Docker Compose 部署](docs/DOCKERHUB.md)。
+
+使用者的最短部署路径：
 
 ```bash
 git clone https://github.com/choarkinphe/spring-mouse.git
 cd spring-mouse
 cp .env.example .env
 # 编辑 .env，替换所有 change-me 值
+docker compose pull
 docker compose up -d
 ```
 
-首次部署后可用 `http://localhost:8008/dashboard` 访问管理界面。
+默认拉取 `choarkinphe/spring-mouse:latest`；生产环境可在 `.env` 中使用 `SPRING_MOUSE_IMAGE` 固定到已验证的版本标签。
 
 ### Google OAuth Provider 配置
 
@@ -405,6 +428,8 @@ spring-mouse/
 - [部署文档](DEPLOY.md)
 - [架构文档](docs/ARCHITECTURE.md)
 - [Docker 快速参考](DOCKER.md)
+- [Docker Hub 发布与 Compose 部署](docs/DOCKERHUB.md)
+- [功能全景](docs/FEATURES.md)
 
 Spring Mouse 的产品形态受到 [9Router](https://github.com/decolua/9router) 的启发。感谢其在 AI 路由、Token 节省和多 Provider 接入方面提供的思路；Spring Mouse 以自身的通道治理、路由策略、调用方配额和运营分析需求继续演进。
 

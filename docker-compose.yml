@@ -4,7 +4,7 @@
 
 services:
   spring-mouse:
-    image: choarkinphe/spring-mouse:latest
+    image: ${SPRING_MOUSE_IMAGE:-choarkinphe/spring-mouse:latest}
     container_name: spring-mouse
     restart: always
     ports:

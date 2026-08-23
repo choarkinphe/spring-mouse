@@ -239,6 +239,14 @@ Dashboard 默认运行在：
 
 ![Spring Mouse routing policies](public/screenshots/routing-policies.png)
 
+### 使用看板：趋势与成本分析
+
+![Spring Mouse usage analytics](public/screenshots/usage-analytics.png)
+
+### 使用看板：调用明细钻取
+
+![Spring Mouse usage drill-down](public/screenshots/usage-details.png)
+
 ### 媒体服务中心
 
 ![Spring Mouse media services](public/screenshots/media-services.png)

@@ -124,6 +124,18 @@ Dashboard 提供实时运营视图：
 
 ![Dashboard overview](../public/screenshots/dashboard-overview.png)
 
+### 使用看板：趋势与成本
+
+![Usage analytics](../public/screenshots/usage-analytics.png)
+
+### 使用看板：调用明细钻取
+
+![Usage drill-down](../public/screenshots/usage-details.png)
+
+### 路由策略
+
 ![Routing policies](../public/screenshots/routing-policies.png)
+
+### 媒体服务
 
 ![Media services](../public/screenshots/media-services.png)

@@ -1,0 +1,42 @@
+# Public Compose deployment template.
+# - Pull the released image from Docker Hub.
+# - Create .env from .env.example and replace every change-me value before use.
+
+services:
+  spring-mouse:
+    image: choarkinphe/spring-mouse:latest
+    container_name: spring-mouse
+    restart: always
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./data:/app/data
+      - /www/geoip:/app/data/geoip
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /app/data
+      PORT: "8008"
+      HOSTNAME: "0.0.0.0"
+      NODE_ENV: production
+      HEADROOM_URL: http://headroom:8787
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8008/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      - headroom
+
+  headroom:
+    image: ghcr.io/chopratejas/headroom:latest
+    container_name: headroom
+    restart: always
+    ports:
+      - "8787:8787"
+
+# volumes:
+#   spring-mouse-data:
+#     name: spring-mouse-data

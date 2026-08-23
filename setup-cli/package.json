@@ -1,0 +1,20 @@
+{
+  "name": "spring-mouse-setup",
+  "version": "1.0.0",
+  "description": "Spring Mouse setup CLI — configure local AI coding tools (Claude Code, Codex, Cline, Copilot, Kilo, OpenCode, …) to route through a Spring Mouse endpoint",
+  "type": "module",
+  "bin": {
+    "spring-mouse-setup": "./cli.js"
+  },
+  "files": [
+    "cli.js",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "confbox": "^0.2.4"
+  }
+}

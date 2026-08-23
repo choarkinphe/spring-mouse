@@ -1,0 +1,200 @@
+const http = require("http");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const { pathToFileURL } = require("url");
+
+const origCreate = http.createServer.bind(http);
+
+// Per-process secret proving x-9r-real-ip was stamped below rather than sent by the client.
+// A bare `next start` / `next dev` never loads this file, so it cannot produce a matching
+// header even though the env var is inherited by child processes. Named like x-9r-cli-token
+// so the request-detail header sanitizer redacts it too.
+const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
+// Keep the legacy name while all request consumers migrate. Both values are
+// process-local and therefore prove the internal header stamp equally.
+process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+process.env.SPRING_MOUSE_PEER_TOKEN = PEER_TOKEN;
+
+// Comma-separated allowlist of reverse-proxy peer IPs or IPv4 CIDRs. Loopback
+// is always trusted so a same-host Nginx installation remains zero-config.
+// Never trust X-Forwarded-For from an arbitrary public or private peer.
+const TRUSTED_PROXY_IPS = (process.env.TRUSTED_PROXY_IPS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+let backgroundRefreshStarted = false;
+
+function normalizeIp(ip) {
+  const value = String(ip || "").trim().replace(/^\[|\]$/g, "");
+  return value.startsWith("::ffff:") ? value.slice(7) : value;
+}
+
+function ipv4ToInt(ip) {
+  const parts = normalizeIp(ip).split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    value = (value * 256) + octet;
+  }
+  return value >>> 0;
+}
+
+function matchesTrustedProxy(ip, rule) {
+  const peer = normalizeIp(ip);
+  const configured = normalizeIp(rule);
+  if (peer === configured) return true;
+
+  const [network, prefixText] = configured.split("/");
+  if (!prefixText || configured.split("/").length !== 2) return false;
+  const prefix = Number(prefixText);
+  const peerValue = ipv4ToInt(peer);
+  const networkValue = ipv4ToInt(network);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32 || peerValue === null || networkValue === null) return false;
+  const mask = prefix === 0 ? 0 : ((0xFFFFFFFF << (32 - prefix)) >>> 0);
+  return (peerValue & mask) === (networkValue & mask);
+}
+
+function isTrustedProxy(ip) {
+  const peer = normalizeIp(ip);
+  if (peer === "127.0.0.1" || peer === "::1") return true;
+  return TRUSTED_PROXY_IPS.some((rule) => matchesTrustedProxy(peer, rule));
+}
+
+function startBackgroundTokenRefreshFromCustomServer() {
+  if (backgroundRefreshStarted) return;
+  backgroundRefreshStarted = true;
+  // Prefer source path (repo / standalone that still has src). Fail-open if missing
+  // — initializeApp also starts the same scheduler when the Next app boots.
+  const modPath = path.join(__dirname, "src", "sse", "services", "backgroundTokenRefresh.js");
+  import(pathToFileURL(modPath).href)
+    .then((m) => {
+      try {
+        m.startBackgroundTokenRefresh();
+      } catch (e) {
+        console.error("[BackgroundTokenRefresh] start failed:", e && e.message ? e.message : e);
+      }
+      const stop = () => {
+        try {
+          m.stopBackgroundTokenRefresh();
+        } catch {
+          /* ignore */
+        }
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    })
+    .catch((e) => {
+      // Expected in published CLI standalone (src/ not on disk). App bootstrap covers it.
+      if (process.env.DEBUG_BACKGROUND_TOKEN_REFRESH) {
+        console.error("[BackgroundTokenRefresh] import failed:", e && e.message ? e.message : e);
+      }
+    });
+}
+
+// Wrap Next standalone HTTP server: derive client IP from the TCP socket
+// (unspoofable) and strip client-supplied forwarding headers so downstream
+// rate-limiting keys on the real peer address instead of attacker-controlled XFF.
+http.createServer = (...args) => {
+  const handler = args.find((a) => typeof a === "function");
+  const rest = args.filter((a) => typeof a !== "function");
+  if (!handler) return origCreate(...args);
+  const wrapped = (req, res) => {
+    const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const xff = req.headers["x-forwarded-for"];
+    const xRealIp = req.headers["x-real-ip"];
+    const viaProxy = !!(xff || xRealIp);
+    const trustedProxy = isTrustedProxy(socketIp);
+    // Trust forwarding headers only when the TCP peer is loopback or explicitly
+    // allowlisted. Direct/public sockets remain keyed by the peer address.
+    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
+    const ip = trustedProxy && proxyIp ? proxyIp : socketIp;
+    // Remove externally supplied peer markers before stamping trusted values.
+    // Keep the x-9r aliases for older local clients while x-sm remains canonical.
+    delete req.headers["x-sm-real-ip"];
+    delete req.headers["x-sm-peer-token"];
+    delete req.headers["x-sm-via-proxy"];
+    delete req.headers["x-9r-real-ip"];
+    delete req.headers["x-9r-peer-token"];
+    delete req.headers["x-9r-via-proxy"];
+    delete req.headers["x-forwarded-for"];
+
+    req.headers["x-sm-real-ip"] = ip;
+    req.headers["x-sm-peer-token"] = PEER_TOKEN;
+    req.headers["x-9r-real-ip"] = ip;
+    req.headers["x-9r-peer-token"] = PEER_TOKEN;
+    if (viaProxy) {
+      req.headers["x-sm-via-proxy"] = "1";
+      req.headers["x-9r-via-proxy"] = "1";
+    }
+    return handler(req, res);
+  };
+  const server = origCreate(...rest, wrapped);
+  server.once("listening", () => {
+    startBackgroundTokenRefreshFromCustomServer();
+  });
+  const origEmit = server.emit;
+  // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
+  server.emit = function (event, ...eventArgs) {
+    const [req, socket, head] = eventArgs;
+    if (event !== "upgrade" || String(req.headers.upgrade || "").toLowerCase() !== "h2c") {
+      return origEmit.call(this, event, ...eventArgs);
+    }
+
+    const contentLength = Number(req.headers["content-length"] || 0);
+    if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+      socket.destroy();
+      return true;
+    }
+    const chunks = [head];
+    let received = head.length;
+    const serve = () => {
+      // Replay the upgraded request through the existing HTTP/1.1 handler.
+      const replay = new http.IncomingMessage(socket);
+      Object.assign(replay, { method: req.method, url: req.url, headers: req.headers, complete: true });
+      if (received) replay.push(Buffer.concat(chunks, received).subarray(0, contentLength));
+      replay.push(null);
+      const res = new http.ServerResponse(replay);
+      res.shouldKeepAlive = false;
+      res.assignSocket(socket);
+      res.once("finish", () => socket.end());
+      Promise.resolve().then(() => wrapped(replay, res)).catch((error) => {
+        console.error("Failed to downgrade h2c request", error);
+        socket.destroy();
+      });
+    };
+    if (received >= contentLength) serve();
+    else {
+      socket.on("data", function readBody(chunk) {
+        chunks.push(chunk);
+        received += chunk.length;
+        if (received < contentLength) return;
+        socket.off("data", readBody);
+        serve();
+      });
+      socket.resume();
+    }
+    delete req.headers.upgrade;
+    delete req.headers["http2-settings"];
+    req.headers.connection = "close";
+    return true;
+  };
+  return server;
+};
+
+if (require.main === module) {
+  const standalone = path.join(__dirname, "server.js");
+  if (fs.existsSync(standalone)) {
+    require(standalone);
+  } else {
+    // Repo checkout has no standalone build next to us. `next start` builds its HTTP
+    // server in-process, so the wrapper above still sanitizes every request.
+    const nextBin = require.resolve("next/dist/bin/next");
+    process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
+    require(nextBin);
+  }
+}

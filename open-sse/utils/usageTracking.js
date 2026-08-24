@@ -17,45 +17,6 @@ export const COLORS = {
   cyan: "\x1b[36m"
 };
 
-// Buffer tokens to prevent context errors
-const BUFFER_TOKENS = 2000;
-
-// Get HH:MM:SS timestamp
-function getTimeString() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-/**
- * Add buffer tokens to usage to prevent context errors
- * @param {object} usage - Usage object (any format)
- * @returns {object} Usage with buffer added
- */
-export function addBufferToUsage(usage) {
-  if (!usage || typeof usage !== "object") return usage;
-
-  const result = { ...usage };
-
-  // Claude format
-  if (result.input_tokens !== undefined) {
-    result.input_tokens += BUFFER_TOKENS;
-  }
-
-  // OpenAI format
-  if (result.prompt_tokens !== undefined) {
-    result.prompt_tokens += BUFFER_TOKENS;
-  }
-
-  // Calculate or update total_tokens
-  if (result.total_tokens !== undefined) {
-    result.total_tokens += BUFFER_TOKENS;
-  } else if (result.prompt_tokens !== undefined && result.completion_tokens !== undefined) {
-    // Calculate total_tokens if not exists
-    result.total_tokens = result.prompt_tokens + result.completion_tokens;
-  }
-
-  return result;
-}
-
 export function filterUsageForFormat(usage, targetFormat) {
   if (!usage || typeof usage !== "object") return usage;
 
@@ -139,6 +100,7 @@ export function normalizeUsage(usage) {
   if (usage?.completion_tokens_details && typeof usage.completion_tokens_details === "object") {
     normalized.completion_tokens_details = usage.completion_tokens_details;
   }
+  if (usage.estimated === true) normalized.estimated = true;
 
   if (Object.keys(normalized).length === 0) return null;
   return normalized;
@@ -203,6 +165,7 @@ export function canonicalizeUsage(usage) {
     cache_creation_input_tokens: cacheCreation,
   };
   if (reasoning > 0) result.reasoning_tokens = reasoning;
+  if (usage.estimated === true) result.estimated = true;
   return result;
 }
 
@@ -245,7 +208,8 @@ export function extractUsage(chunk) {
       prompt_tokens: u.input_tokens || 0,
       completion_tokens: u.output_tokens || 0,
       cache_read_input_tokens: u.cache_read_input_tokens,
-      cache_creation_input_tokens: u.cache_creation_input_tokens
+      cache_creation_input_tokens: u.cache_creation_input_tokens,
+      estimated: u.estimated,
     });
   }
 
@@ -255,7 +219,8 @@ export function extractUsage(chunk) {
       prompt_tokens: chunk.usage.input_tokens || 0,
       completion_tokens: chunk.usage.output_tokens || 0,
       cache_read_input_tokens: chunk.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens
+      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens,
+      estimated: chunk.usage.estimated,
     });
   }
 
@@ -268,7 +233,8 @@ export function extractUsage(chunk) {
       completion_tokens: usage.output_tokens || usage.completion_tokens || 0,
       cached_tokens: cachedTokens,
       reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
-      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined
+      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined,
+      estimated: usage.estimated,
     });
   }
 
@@ -281,10 +247,12 @@ export function extractUsage(chunk) {
     return normalizeUsage({
       prompt_tokens: openAIUsage.prompt_tokens,
       completion_tokens: openAIUsage.completion_tokens || 0,
+      total_tokens: openAIUsage.total_tokens,
       cached_tokens: openAIUsage.prompt_tokens_details?.cached_tokens || openAIUsage.prompt_cache_hit_tokens,
       reasoning_tokens: openAIUsage.completion_tokens_details?.reasoning_tokens,
       prompt_tokens_details: openAIUsage.prompt_tokens_details,
-      completion_tokens_details: openAIUsage.completion_tokens_details
+      completion_tokens_details: openAIUsage.completion_tokens_details,
+      estimated: openAIUsage.estimated,
     });
   }
 
@@ -310,7 +278,8 @@ export function extractUsage(chunk) {
       completion_tokens: candidateTokens + reasoningTokens,
       total_tokens: totalTokens,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: reasoningTokens
+      reasoning_tokens: reasoningTokens,
+      estimated: usageMeta.estimated,
     });
   }
 
@@ -320,7 +289,8 @@ export function extractUsage(chunk) {
     return normalizeUsage({
       prompt_tokens: chunk.prompt_eval_count || 0,
       completion_tokens: chunk.eval_count || 0,
-      total_tokens: (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0)
+      total_tokens: (chunk.prompt_eval_count || 0) + (chunk.eval_count || 0),
+      estimated: chunk.estimated,
     });
   }
 
@@ -335,6 +305,10 @@ export function extractUsage(chunk) {
 export function mergeUsage(prev, next) {
   if (!prev) return next || null;
   if (!next) return prev;
+  // Provider-authoritative usage must replace an earlier fallback estimate.
+  // Field-wise max would otherwise retain the estimate's inflated prompt count.
+  if (prev.estimated === true && next.estimated !== true) return next;
+  if (prev.estimated !== true && next.estimated === true) return prev;
   const merged = { ...prev };
   for (const [k, v] of Object.entries(next)) {
     // typeof NaN === "number" — guard with Number.isFinite so one malformed
@@ -383,22 +357,24 @@ export function estimateOutputTokens(contentLength) {
  * @param {string} targetFormat - Target format from FORMATS
  */
 export function formatUsage(inputTokens, outputTokens, targetFormat) {
-  // Claude format uses input_tokens/output_tokens
+  // Estimates are persisted and shown in the dashboard, so do not add the old
+  // fixed 2,000-token context-safety headroom. That headroom is not consumed
+  // usage and made short requests look dramatically larger than they were.
   if (targetFormat === FORMATS.CLAUDE) {
-    return addBufferToUsage({ 
-      input_tokens: inputTokens, 
-      output_tokens: outputTokens, 
-      estimated: true 
-    });
+    return {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      estimated: true,
+    };
   }
 
   // Default: OpenAI format (works for openai, gemini, responses, etc.)
-  return addBufferToUsage({
+  return {
     prompt_tokens: inputTokens,
     completion_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
-    estimated: true
-  });
+    estimated: true,
+  };
 }
 
 /**

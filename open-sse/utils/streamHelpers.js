@@ -35,14 +35,25 @@ export function parseSSELine(line, format = null) {
 
 // Check if chunk has valuable content (not empty)
 export function hasValuableContent(chunk, format) {
-  // OpenAI format
-  if (format === FORMATS.OPENAI && chunk.choices?.[0]?.delta) {
-    const delta = chunk.choices[0].delta;
-    return delta.content && delta.content !== "" ||
-           delta.reasoning_content && delta.reasoning_content !== "" ||
-           delta.tool_calls && delta.tool_calls.length > 0 ||
-           chunk.choices[0].finish_reason ||
-           delta.role;
+  // OpenAI usage may arrive in a final chunk with choices: []. It is valuable
+  // even though it has no text delta; dropping it forces usage tracking to fall
+  // back to an estimate and can substantially inflate the recorded total.
+  if (format === FORMATS.OPENAI) {
+    const hasUsage = chunk?.usage && typeof chunk.usage === "object"
+      || chunk?.choices?.some((choice) => choice?.usage && typeof choice.usage === "object");
+    if (hasUsage) return true;
+
+    if (chunk.choices?.[0]?.delta) {
+      const delta = chunk.choices[0].delta;
+      return delta.content && delta.content !== "" ||
+             delta.reasoning_content && delta.reasoning_content !== "" ||
+             delta.tool_calls && delta.tool_calls.length > 0 ||
+             chunk.choices[0].finish_reason ||
+             delta.role;
+    }
+    // The passthrough stream also carries same-format Claude/Gemini events.
+    // Only reject empty OpenAI-shaped chunks; preserve other provider shapes.
+    return chunk.choices === undefined;
   }
 
   // Claude format

@@ -1,7 +1,7 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
-import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
+import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
@@ -147,6 +147,11 @@ export function createSSEStream(options = {}) {
                 }
               }
 
+              // Extract before the valuable-content filter: OpenAI sends exact
+              // stream usage in a terminal choices: [] chunk with no text delta.
+              const extracted = extractUsage(parsed);
+              if (extracted) usage = mergeUsage(usage, extracted);
+
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
                 continue;
               }
@@ -163,21 +168,17 @@ export function createSSEStream(options = {}) {
                 accumulatedThinking += reasoning;
               }
 
-              const extracted = extractUsage(parsed);
-              if (extracted) {
-                usage = mergeUsage(usage, extracted);
-              }
-
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
-              if (isFinishChunk && !hasValidUsage(parsed.usage)) {
+              if (isFinishChunk && hasValidUsage(usage)) {
+                parsed.usage = filterUsageForFormat(usage, FORMATS.OPENAI);
+                output = `data: ${JSON.stringify(parsed)}\n`;
+                injectedUsage = true;
+              } else if (isFinishChunk && totalContentLength > 0) {
+                // Give the client a provisional estimate, but do not store it in
+                // the accumulator yet. An authoritative include_usage chunk may
+                // follow the finish chunk and must win without max-merging.
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
-                usage = estimated;
-                injectedUsage = true;
-              } else if (isFinishChunk && usage) {
-                const buffered = addBufferToUsage(usage);
-                parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               } else if (idFixed || fieldsInjected) {
@@ -318,14 +319,13 @@ export function createSSEStream(options = {}) {
 
             // Inject estimated usage if finish chunk has no valid usage
             const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
+            if (state.finishReason && isFinishChunk && hasValidUsage(state.usage)) {
+              item.usage = filterUsageForFormat(state.usage, sourceFormat);
+            } else if (state.finishReason && isFinishChunk && totalContentLength > 0) {
+              // Do not promote a provisional estimate into state.usage here;
+              // the provider may still send an exact terminal usage event.
               const estimated = estimateUsage(body, totalContentLength, sourceFormat);
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
-            } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
-              const buffered = addBufferToUsage(state.usage);
-              item.usage = filterUsageForFormat(buffered, sourceFormat);
+              item.usage = filterUsageForFormat(estimated, sourceFormat);
             }
 
             const output = formatSSE(item, sourceFormat);

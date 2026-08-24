@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canonicalizeUsage, extractUsage, mergeUsage } from "../../open-sse/utils/usageTracking.js";
+import { canonicalizeUsage, estimateUsage, extractUsage, mergeUsage } from "../../open-sse/utils/usageTracking.js";
 import { extractUsageFromResponse } from "../../open-sse/handlers/chatCore/requestDetail.js";
 import { calculateCostFromTokens } from "../../open-sse/providers/pricing.js";
 import { toOpenAIUsage } from "../../open-sse/translator/concerns/usage.js";
@@ -173,6 +173,31 @@ describe("Anthropic streaming usage (message_start carries cache, message_delta 
     expect(merged.prompt_tokens).toBe(100);
     expect(merged.cache_read_input_tokens).toBe(200);
     expect(merged.completion_tokens).toBe(50);
+  });
+});
+
+describe("estimated usage accuracy", () => {
+  it("does not add fixed context headroom to consumed token estimates", () => {
+    const usage = estimateUsage({ messages: [{ role: "user", content: "hello" }] }, 20);
+    expect(usage.estimated).toBe(true);
+    expect(usage.prompt_tokens).toBeLessThan(100);
+    expect(usage.completion_tokens).toBe(5);
+    expect(usage.total_tokens).toBe(usage.prompt_tokens + usage.completion_tokens);
+  });
+
+  it("lets authoritative provider usage replace an earlier estimate", () => {
+    const estimated = { prompt_tokens: 2500, completion_tokens: 50, total_tokens: 2550, estimated: true };
+    const exact = { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 };
+    expect(mergeUsage(estimated, exact)).toEqual(exact);
+    expect(mergeUsage(exact, estimated)).toEqual(exact);
+  });
+
+  it("preserves the estimated marker through extraction and canonicalization", () => {
+    const extracted = extractUsage({
+      usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15, estimated: true },
+    });
+    expect(extracted.estimated).toBe(true);
+    expect(canonicalizeUsage(extracted).estimated).toBe(true);
   });
 });
 

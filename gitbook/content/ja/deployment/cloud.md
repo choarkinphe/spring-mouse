@@ -51,7 +51,7 @@ export NODE_ENV="production"
 | `INITIAL_PASSWORD` | `123456` | ダッシュボードログインパスワード |
 | `DATA_DIR` | `~/.spring-mouse` | データベースとデータの保存パス |
 | `NODE_ENV` | `development` | デプロイ時は `production` に設定 |
-| `ENABLE_REQUEST_LOGS` | `false` | デバッグリクエスト/レスポンスログを有効化 |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | デバッグリクエスト/レスポンスログを有効化 |
 
 ### ステップ5: データディレクトリを作成
 

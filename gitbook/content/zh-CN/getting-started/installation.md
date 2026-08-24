@@ -200,7 +200,7 @@ export PORT="8008"
 export NODE_ENV="production"
 
 # Logging
-export ENABLE_REQUEST_LOGS="false"
+export ENABLE_REQUEST_LOG_FILE_DUMPS="false"
 ```
 
 ### 数据目录

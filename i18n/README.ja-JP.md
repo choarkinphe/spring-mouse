@@ -1028,7 +1028,7 @@ docker stop spring-mouse && docker rm spring-mouse
 | `NEXT_PUBLIC_CLOUD_URL` | `https://spring-mouse.com` | 後方互換/公開クラウドURL（サーバーランタイムには`CLOUD_URL`を推奨） |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | 生成されたAPIキーのHMACシークレット |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | 安定したマシンIDハッシュのソルト |
-| `ENABLE_REQUEST_LOGS` | `false` | `logs/` 配下のリクエスト/レスポンスログを有効化 |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | `logs/` 配下のリクエスト/レスポンスログを有効化 |
 | `AUTH_COOKIE_SECURE` | `false` | 認証クッキーに`Secure`を強制（HTTPSリバースプロキシの背後では`true`に設定） |
 | `REQUIRE_API_KEY` | `false` | `/v1/*` ルートでBearer APIキーを必須にする（インターネット公開デプロイで推奨） |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | 空 | アップストリームプロバイダー呼び出し用のオプショナルアウトバウンドプロキシ |
@@ -1043,7 +1043,7 @@ docker stop spring-mouse && docker rm spring-mouse
 
 - メインアプリ状態: `${DATA_DIR}/db.json`（プロバイダー、コンボ、エイリアス、キー、設定）、`src/lib/localDb.js` で管理。
 - 使用履歴とログ: `~/.spring-mouse/usage.json` と `~/.spring-mouse/log.txt`、`src/lib/usageDb.js` で管理。
-- オプションのリクエスト/トランスレーターログ: `ENABLE_REQUEST_LOGS=true` 時に `<repo>/logs/...`。
+- オプションのリクエスト/トランスレーターログ: `ENABLE_REQUEST_LOG_FILE_DUMPS=true` 時に `<repo>/logs/...`。
 - 使用状況ストレージは現在 `~/.spring-mouse` パスロジックに従い、`DATA_DIR` とは独立しています。
 
 </details>
@@ -1122,7 +1122,7 @@ docker stop spring-mouse && docker rm spring-mouse
 - 未設定の場合、デフォルトパスワードは `123456`
 
 **`logs/` にリクエストログがない**
-- `ENABLE_REQUEST_LOGS=true` に設定
+- `ENABLE_REQUEST_LOG_FILE_DUMPS=true` に設定
 
 ---
 

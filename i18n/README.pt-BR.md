@@ -1297,7 +1297,7 @@ docker pull decolua/spring-mouse:latest   # atualizar para a versão mais recent
 | `NEXT_PUBLIC_CLOUD_URL` | `https://spring-mouse.com` | URL de nuvem pública/compatível com versões anteriores (prefira `CLOUD_URL` para tempo de execução do servidor) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | Segredo HMAC para chaves de API geradas |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt para hashing estável de ID de máquina |
-| `ENABLE_REQUEST_LOGS` | `false` | Habilita logs de solicitação/resposta em `logs/` |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | Habilita logs de solicitação/resposta em `logs/` |
 | `AUTH_COOKIE_SECURE` | `false` | Forçar cookie de autenticação `Secure` (definir `true` atrás do proxy reverso HTTPS) |
 | `REQUIRE_API_KEY` | `false` | Aplicar chave de API Bearer em rotas `/v1/*` (recomendado para implantações expostas à Internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | vazio | Proxy de saída opcional para chamadas de provedor upstream |
@@ -1314,7 +1314,7 @@ Notas:
 
 - Estado principal do aplicativo: `${DATA_DIR}/db/data.sqlite` (SQLite — provedores, combos, aliases, chaves, configurações, histórico de uso)
 - Backups automáticos: `${DATA_DIR}/db/backups/`
-- Logs opcionais de solicitação/tradutor: `<repo>/logs/...` quando `ENABLE_REQUEST_LOGS=true`
+- Logs opcionais de solicitação/tradutor: `<repo>/logs/...` quando `ENABLE_REQUEST_LOG_FILE_DUMPS=true`
 - `${DATA_DIR}` e `~/.spring-mouse` resolvem para o mesmo local em um contêiner Docker — o link simbólico `/root/.spring-mouse -> /app/data` é criado no momento da construção.
 
 </details>
@@ -1433,7 +1433,7 @@ Notas:
 
 **Nenhum registro de solicitação em `logs/`**
 
-- Definir `ENABLE_REQUEST_LOGS=true`
+- Definir `ENABLE_REQUEST_LOG_FILE_DUMPS=true`
 
 ---
 

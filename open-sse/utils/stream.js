@@ -462,6 +462,8 @@ export function createSSEStream(options = {}) {
         }
       } catch (error) {
         console.log("Error in flush:", error);
+      } finally {
+        reqLogger?.close?.();
       }
     }
   });

@@ -1028,7 +1028,7 @@ docker stop spring-mouse && docker rm spring-mouse
 | `NEXT_PUBLIC_CLOUD_URL` | `https://spring-mouse.com` | URL đám mây tương thích ngược/công khai (ưu tiên `CLOUD_URL` cho runtime máy chủ) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | B mật HMAC cho các API key được tạo |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Salt cho việc băm ID máy ổn định |
-| `ENABLE_REQUEST_LOGS` | `false` | Bật log request/response dưới `logs/` |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | Bật log request/response dưới `logs/` |
 | `AUTH_COOKIE_SECURE` | `false` | Buộc cookie xác thực `Secure` (đặt `true` phía reverse proxy HTTPS) |
 | `REQUIRE_API_KEY` | `false` | Thực thi Bearer API key trên các route `/v1/*` (khuyên dùng cho triển khai xúc internet) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Proxy gửi đi tùy chọn cho các lệnh gọi nhà cung cấp upstream |
@@ -1043,7 +1043,7 @@ Ghi chú:
 
 - Trạng thái ứng dụng chính: `${DATA_DIR}/db.json` (nhà cung cấp, combo, alias, key, cài đặt), được quản lý bởi `src/lib/localDb.js`.
 - Lịch sử sử dụng và log: `~/.spring-mouse/usage.json` và `~/.spring-mouse/log.txt`, được quản lý bởi `src/lib/usageDb.js`.
-- request/translator tùy chọn: `<repo>/logs/...` khi `ENABLE_REQUEST_LOGS=true`.
+- request/translator tùy chọn: `<repo>/logs/...` khi `ENABLE_REQUEST_LOG_FILE_DUMPS=true`.
 - Lưu trữ sử dụng hiện tại tuân theo logic đường dẫn `~/.spring-mouse` và độc lập với `DATA_DIR`.
 
 </details>
@@ -1137,7 +1137,7 @@ Ghi chú:
 - Nếu chưa đặt, mật khẩu dự phòng là `123456`
 
 **Không có log request dưới `logs/`**
-- Đặt `ENABLE_REQUEST_LOGS=true`
+- Đặt `ENABLE_REQUEST_LOG_FILE_DUMPS=true`
 
 ---
 

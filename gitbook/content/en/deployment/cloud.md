@@ -51,7 +51,7 @@ export NODE_ENV="production"
 | `INITIAL_PASSWORD` | `123456` | Dashboard login password |
 | `DATA_DIR` | `~/.spring-mouse` | Database and data storage path |
 | `NODE_ENV` | `development` | Set to `production` for deployment |
-| `ENABLE_REQUEST_LOGS` | `false` | Enable debug request/response logs |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | Enable debug request/response logs |
 
 ### Step 5: Create Data Directory
 

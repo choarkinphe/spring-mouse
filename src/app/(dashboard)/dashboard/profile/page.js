@@ -709,7 +709,7 @@ export default function ProfilePage() {
         <SettingsZone
           index="02"
           title="网络与可观测性"
-          description="管理上游网络代理，并控制请求日志与诊断数据采集。"
+          description="管理上游网络代理，并控制用量与诊断数据采集。"
         >
           <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
         {/* Network */}
@@ -797,7 +797,7 @@ export default function ProfilePage() {
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm sm:text-base">Enable Observability</p>
               <p className="text-xs sm:text-sm text-text-muted">
-                Record request details for inspection in the logs view
+                Record request metadata for the usage dashboard; full request/response files are controlled separately
               </p>
             </div>
             <Toggle

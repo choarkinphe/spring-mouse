@@ -29,10 +29,11 @@ function getPageMeta(pathname) {
 export default function DashboardPageFrame({ children }) {
   const pathname = usePathname();
   const meta = getPageMeta(pathname || "");
+  const isConsoleLog = pathname?.startsWith("/dashboard/console-log");
   const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname === "/dashboard/endpoint";
 
   return (
-    <div className={`mx-auto w-full pb-8 ${isWideWorkspace ? "max-w-[108rem]" : "max-w-6xl"}`}>
+    <div className={`mx-auto w-full pb-8 ${isConsoleLog ? "max-w-none" : isWideWorkspace ? "max-w-[108rem]" : "max-w-6xl"}`}>
       {children}
     </div>
   );

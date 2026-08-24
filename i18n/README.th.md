@@ -652,7 +652,7 @@ Spring Mouse แค่เลือกเส้นทางคำขอของ�
 - ถ้ายังไม่ตั้งค่า รหัสผ่านสำรองคือ `123456`
 
 **ไม่มี request log ใต้ `logs/`**
-- ตั้ง `ENABLE_REQUEST_LOGS=true`
+- ตั้ง `ENABLE_REQUEST_LOG_FILE_DUMPS=true`
 
 ---
 

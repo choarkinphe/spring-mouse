@@ -1031,7 +1031,7 @@ docker stop spring-mouse && docker rm spring-mouse
 | `NEXT_PUBLIC_CLOUD_URL` | `https://spring-mouse.com` | Обратно совместимый/публичный облачный URL (приоритет `CLOUD_URL` для серверного рантайма) |
 | `API_KEY_SECRET` | `endpoint-proxy-api-key-secret` | HMAC-секрет для генерируемых API-ключей |
 | `MACHINE_ID_SALT` | `endpoint-proxy-salt` | Соль для стабильного хеширования ID машины |
-| `ENABLE_REQUEST_LOGS` | `false` | Включить лог запросов/ответов в `logs/` |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | Включить лог запросов/ответов в `logs/` |
 | `AUTH_COOKIE_SECURE` | `false` | Принудительный `Secure` cookie аутентификации (задайте `true` за HTTPS reverse proxy) |
 | `REQUIRE_API_KEY` | `false` | Требовать Bearer API key на маршрутах `/v1/*` (рекомендуется для развёртываний с выходом в интернет) |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | empty | Опциональный исходящий прокси для вызовов к провайдерам |
@@ -1046,7 +1046,7 @@ docker stop spring-mouse && docker rm spring-mouse
 
 - Основное состояние приложения: `${DATA_DIR}/db.json` (провайдеры, комбо, alias, ключи, настройки), управляется `src/lib/localDb.js`.
 - История использования и логи: `~/.spring-mouse/usage.json` и `~/.spring-mouse/log.txt`, управляется `src/lib/usageDb.js`.
-- Опциональные логи запросов/транслятора: `<repo>/logs/...` при `ENABLE_REQUEST_LOGS=true`.
+- Опциональные логи запросов/транслятора: `<repo>/logs/...` при `ENABLE_REQUEST_LOG_FILE_DUMPS=true`.
 - Хранилище использования следует логике пути `~/.spring-mouse` и независимо от `DATA_DIR`.
 
 </details>
@@ -1140,7 +1140,7 @@ docker stop spring-mouse && docker rm spring-mouse
 - Если не задан, резервный пароль — `123456`
 
 **Нет логов запросов в `logs/`**
-- Установите `ENABLE_REQUEST_LOGS=true`
+- Установите `ENABLE_REQUEST_LOG_FILE_DUMPS=true`
 
 ---
 

@@ -51,7 +51,7 @@ export NODE_ENV="production"
 | `INITIAL_PASSWORD` | `123456` | Mật khẩu đăng nhập Dashboard |
 | `DATA_DIR` | `~/.spring-mouse` | Đường dẫn lưu database và data |
 | `NODE_ENV` | `development` | Đặt `production` cho deployment |
-| `ENABLE_REQUEST_LOGS` | `false` | Bật debug request/response logs |
+| `ENABLE_REQUEST_LOG_FILE_DUMPS` | `false` | Bật debug request/response logs |
 
 ### Bước 5: Tạo Data Directory
 

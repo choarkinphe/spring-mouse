@@ -155,7 +155,7 @@ AI 工具发送 tool_result ──→ RTK 压缩工具输出
 - **多维度分析**：按 Provider、模型、用户、来源、时间窗口聚合。
 - **配额窗口**：支持 5 小时窗口与周窗口独立重置。
 - **API Key 配额**：为 key 设置 token 配额与定时重置计划。
-- **请求日志**：可选开启 `ENABLE_REQUEST_LOGS=true`，包含来源 IP、UA、模型、token 数等。
+- **请求日志**：可选开启 `ENABLE_REQUEST_LOG_FILE_DUMPS=true`，包含来源 IP、UA、模型、token 数等。
 
 ### 5. Provider 连接管理
 
@@ -342,7 +342,7 @@ Authorization: Bearer your-api-key
 
 **看不到请求日志**
 
-- 设置 `ENABLE_REQUEST_LOGS=true` 并重启
+- 设置 `ENABLE_REQUEST_LOG_FILE_DUMPS=true` 并重启
 
 ---
 

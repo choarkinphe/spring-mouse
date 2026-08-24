@@ -2,7 +2,12 @@
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
 // Check if logging is enabled via environment variable (default: false)
-const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOGS === 'true';
+const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOG_FILE_DUMPS === 'true';
+const ACTIVE_MARKER_FILE = ".active.json";
+const MARKER_TOUCH_INTERVAL_MS = 30_000;
+const PROCESS_STARTED_AT = typeof process !== "undefined" && process.uptime
+  ? Math.round(Date.now() - process.uptime() * 1000)
+  : Date.now();
 
 let fs = null;
 let path = null;
@@ -49,7 +54,12 @@ async function createLogSession(sourceFormat, targetFormat, model) {
     const sessionPath = path.join(LOGS_DIR, folderName);
     
     fs.mkdirSync(sessionPath, { recursive: true });
-    
+    fs.writeFileSync(path.join(sessionPath, ACTIVE_MARKER_FILE), JSON.stringify({
+      pid: process.pid,
+      processStartedAt: PROCESS_STARTED_AT,
+      createdAt: new Date().toISOString(),
+    }));
+
     return sessionPath;
   } catch (err) {
     console.log("[LOG] Failed to create log session:", err.message);
@@ -59,35 +69,30 @@ async function createLogSession(sourceFormat, targetFormat, model) {
 
 // Write JSON file
 function writeJsonFile(sessionPath, filename, data) {
-  if (!fs || !sessionPath) return;
-  
+  if (!fs || !sessionPath) return false;
+
   try {
     const filePath = path.join(sessionPath, filename);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.log(`[LOG] Failed to write ${filename}:`, err.message);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-// Mask sensitive data in headers (DISABLED - keep full token for testing)
+// Keep request logs useful without persisting credentials in plaintext.
 function maskSensitiveHeaders(headers) {
   if (!headers) return {};
-  return { ...headers };
-  
-  // Old masking code (disabled):
-  // const masked = { ...headers };
-  // const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token"];
-  // 
-  // for (const key of Object.keys(masked)) {
-  //   const lowerKey = key.toLowerCase();
-  //   if (sensitiveKeys.some(sk => lowerKey.includes(sk))) {
-  //     const value = masked[key];
-  //     if (value && value.length > 20) {
-  //       masked[key] = value.slice(0, 10) + "..." + value.slice(-5);
-  //     }
-  //   }
-  // }
-  // return masked;
+  const masked = { ...headers };
+  const sensitiveKeys = ["authorization", "x-api-key", "cookie", "token", "api-key"];
+
+  for (const key of Object.keys(masked)) {
+    if (sensitiveKeys.some((sensitiveKey) => key.toLowerCase().includes(sensitiveKey))) {
+      const value = String(masked[key] ?? "");
+      masked[key] = value.length > 20 ? `${value.slice(0, 10)}...${value.slice(-5)}` : "***";
+    }
+  }
+  return masked;
 }
 
 // No-op logger when logging is disabled
@@ -103,7 +108,8 @@ function createNoOpLogger() {
     appendOpenAIChunk() {},
     logConvertedResponse() {},
     appendConvertedChunk() {},
-    logError() {}
+    logError() {},
+    close() {}
   };
 }
 
@@ -115,116 +121,123 @@ function createNoOpLogger() {
  * @returns {Promise<object>} Promise that resolves to logger object with methods to log each stage
  */
 export async function createRequestLogger(sourceFormat, targetFormat, model) {
-  // Return no-op logger if logging is disabled
-  if (!LOGGING_ENABLED) {
-    return createNoOpLogger();
-  }
-  
-  // Wait for session to be created before returning logger
+  if (!LOGGING_ENABLED) return createNoOpLogger();
+
   const sessionPath = await createLogSession(sourceFormat, targetFormat, model);
-  
+  if (!sessionPath) return createNoOpLogger();
+
+  let writable = true;
+  let lastMarkerTouch = Date.now();
+  const markerPath = path.join(sessionPath, ACTIVE_MARKER_FILE);
+
+  const close = () => {
+    if (!writable) return;
+    writable = false;
+    try { fs.unlinkSync(markerPath); } catch {}
+  };
+
+  const markActivity = () => {
+    if (!writable || Date.now() - lastMarkerTouch < MARKER_TOUCH_INTERVAL_MS) return;
+    lastMarkerTouch = Date.now();
+    try {
+      const now = new Date();
+      fs.utimesSync(markerPath, now, now);
+    } catch {
+      close();
+    }
+  };
+
+  const writeJson = (filename, data) => {
+    if (!writable) return;
+    markActivity();
+    if (!writable) return;
+    if (!writeJsonFile(sessionPath, filename, data)) close();
+  };
+
+  const append = (filename, chunk) => {
+    if (!writable) return;
+    markActivity();
+    if (!writable) return;
+    try {
+      fs.appendFileSync(path.join(sessionPath, filename), chunk);
+    } catch {
+      // The directory may have been removed externally. Disable this logger
+      // after the first failure so every streaming chunk does not throw again.
+      close();
+    }
+  };
+
   return {
     get sessionPath() { return sessionPath; },
-    
-    // 1. Log client raw request (before any conversion)
+
     logClientRawRequest(endpoint, body, headers = {}) {
-      writeJsonFile(sessionPath, "1_req_client.json", {
+      writeJson("1_req_client.json", {
         timestamp: new Date().toISOString(),
         endpoint,
         headers: maskSensitiveHeaders(headers),
-        body
+        body,
       });
     },
-    
-    // 2. Log raw request from client (after initial conversion like responsesApi)
+
     logRawRequest(body, headers = {}) {
-      writeJsonFile(sessionPath, "2_req_source.json", {
+      writeJson("2_req_source.json", {
         timestamp: new Date().toISOString(),
         headers: maskSensitiveHeaders(headers),
-        body
+        body,
       });
     },
-    
-    // 3. Log OpenAI intermediate format (source → openai)
+
     logOpenAIRequest(body) {
-      writeJsonFile(sessionPath, "3_req_openai.json", {
-        timestamp: new Date().toISOString(),
-        body
-      });
+      writeJson("3_req_openai.json", { timestamp: new Date().toISOString(), body });
     },
-    
-    // 4. Log target format request (openai → target)
+
     logTargetRequest(url, headers, body) {
-      writeJsonFile(sessionPath, "4_req_target.json", {
+      writeJson("4_req_target.json", {
         timestamp: new Date().toISOString(),
         url,
         headers: maskSensitiveHeaders(headers),
-        body
+        body,
       });
     },
-    
-    // 5. Log provider response (for non-streaming or error)
+
     logProviderResponse(status, statusText, headers, body) {
-      const filename = "5_res_provider.json";
-      writeJsonFile(sessionPath, filename, {
+      writeJson("5_res_provider.json", {
         timestamp: new Date().toISOString(),
         status,
         statusText,
         headers: headers ? (typeof headers.entries === "function" ? Object.fromEntries(headers.entries()) : headers) : {},
-        body
+        body,
       });
     },
-    
-    // 5. Append streaming chunk to provider response
+
     appendProviderChunk(chunk) {
-      if (!fs || !sessionPath) return;
-      try {
-        const filePath = path.join(sessionPath, "5_res_provider.txt");
-        fs.appendFileSync(filePath, chunk);
-      } catch (err) {
-        // Ignore append errors
-      }
+      append("5_res_provider.txt", chunk);
     },
-    
-    // 6. Append OpenAI intermediate chunks (target → openai)
+
     appendOpenAIChunk(chunk) {
-      if (!fs || !sessionPath) return;
-      try {
-        const filePath = path.join(sessionPath, "6_res_openai.txt");
-        fs.appendFileSync(filePath, chunk);
-      } catch (err) {
-        // Ignore append errors
-      }
+      append("6_res_openai.txt", chunk);
     },
-    
-    // 7. Log converted response to client (for non-streaming)
+
     logConvertedResponse(body) {
-      writeJsonFile(sessionPath, "7_res_client.json", {
-        timestamp: new Date().toISOString(),
-        body
-      });
+      writeJson("7_res_client.json", { timestamp: new Date().toISOString(), body });
+      close();
     },
-    
-    // 7. Append streaming chunk to converted response
+
     appendConvertedChunk(chunk) {
-      if (!fs || !sessionPath) return;
-      try {
-        const filePath = path.join(sessionPath, "7_res_client.txt");
-        fs.appendFileSync(filePath, chunk);
-      } catch (err) {
-        // Ignore append errors
-      }
+      append("7_res_client.txt", chunk);
     },
-    
-    // 6. Log error
+
     logError(error, requestBody = null) {
-      writeJsonFile(sessionPath, "6_error.json", {
+      writeJson("6_error.json", {
         timestamp: new Date().toISOString(),
         error: error?.message || String(error),
         stack: error?.stack,
-        requestBody
+        requestBody,
       });
-    }
+      close();
+    },
+
+    close,
   };
 }
 

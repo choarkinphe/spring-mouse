@@ -90,9 +90,10 @@ AUTH_COOKIE_SECURE=true
 
 # 推荐生产环境开启
 REQUIRE_API_KEY=true
-ENABLE_REQUEST_LOGS=true
+# 请求/响应副本会写入 logs/；仅在排障时临时开启。
+ENABLE_REQUEST_LOG_FILE_DUMPS=false
 OBSERVABILITY_ENABLED=true
-LOG_LEVEL=INFO
+LOG_LEVEL=WARN
 ```
 
 ### 反向代理可信来源

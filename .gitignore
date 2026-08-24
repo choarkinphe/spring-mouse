@@ -101,3 +101,6 @@ graphify-out/*
 # Ad-hoc smoke scripts under tests/ (not picked up by vitest's *.test.js glob)
 /tests/*-smoke.mjs
 /tests/*.smoke.mjs
+
+# red_note
+marketing/

@@ -72,12 +72,10 @@ export async function GET() {
     const settings = await getSettings();
     const safeSettings = toSafeSettings(settings);
 
-    const enableRequestLogFileDumps = process.env.ENABLE_REQUEST_LOG_FILE_DUMPS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
-    
-    return NextResponse.json({ 
-      ...safeSettings, 
-      enableRequestLogFileDumps,
+
+    return NextResponse.json({
+      ...safeSettings,
       enableTranslator,
       hasPassword: !!settings.password
     }, { headers: SETTINGS_RESPONSE_HEADERS });

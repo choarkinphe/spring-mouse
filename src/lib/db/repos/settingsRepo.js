@@ -33,6 +33,7 @@ const DEFAULT_SETTINGS = {
   apiKeyQuotaRules: { fiveHourTokenLimitM: null, weeklyTokenLimitM: null },
   tunnelDashboardAccess: true,
   enableObservability: false,
+  enableRequestLogFileDumps: process.env.ENABLE_REQUEST_LOG_FILE_DUMPS === "true",
   observabilityMaxRecords: 1000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,

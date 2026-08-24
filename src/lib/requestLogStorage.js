@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getSettings } from "@/lib/localDb";
 
 const REQUEST_LOGS_DIR = path.resolve(process.cwd(), "logs");
 const ACTIVE_MARKER_FILE = ".active.json";
@@ -87,8 +88,9 @@ async function removeSessionIfIdle(sessionPath, sessionName) {
   return { removed: true, active: false, session: sessionName };
 }
 
-export function isRequestFileLoggingEnabled() {
-  return String(process.env.ENABLE_REQUEST_LOG_FILE_DUMPS || "").toLowerCase() === "true";
+export async function isRequestFileLoggingEnabled() {
+  const settings = await getSettings();
+  return settings.enableRequestLogFileDumps === true;
 }
 
 export async function listRequestLogSessions() {
@@ -125,7 +127,7 @@ export async function listRequestLogSessions() {
   });
 
   return {
-    enabled: isRequestFileLoggingEnabled(),
+    enabled: await isRequestFileLoggingEnabled(),
     storage: {
       bytes: storage.totalBytes,
       files: storage.totalFiles,

@@ -2,7 +2,8 @@
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
 // Check if logging is enabled via environment variable (default: false)
-const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOG_FILE_DUMPS === 'true';
+const ENV_LOGGING_DEFAULT = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOG_FILE_DUMPS === "true";
+const LOGGING_SETTING_CACHE_MS = 1000;
 const ACTIVE_MARKER_FILE = ".active.json";
 const MARKER_TOUCH_INTERVAL_MS = 30_000;
 const PROCESS_STARTED_AT = typeof process !== "undefined" && process.uptime
@@ -12,10 +13,11 @@ const PROCESS_STARTED_AT = typeof process !== "undefined" && process.uptime
 let fs = null;
 let path = null;
 let LOGS_DIR = null;
+let loggingSettingCache = { value: null, expiresAt: 0 };
 
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
-  if (!isNode || !LOGGING_ENABLED || fs) return;
+  if (!isNode || fs) return;
   try {
     fs = await import("fs");
     path = await import("path");
@@ -23,6 +25,25 @@ async function ensureNodeModules() {
   } catch {
     // Running in non-Node environment (Worker, Browser, etc.)
   }
+}
+
+async function isLoggingEnabled() {
+  if (!isNode) return false;
+  if (loggingSettingCache.expiresAt > Date.now()) return loggingSettingCache.value;
+
+  let enabled = ENV_LOGGING_DEFAULT;
+  try {
+    const { getSettings } = await import("@/lib/localDb");
+    const settings = await getSettings();
+    if (typeof settings?.enableRequestLogFileDumps === "boolean") {
+      enabled = settings.enableRequestLogFileDumps;
+    }
+  } catch {
+    // Standalone open-sse consumers may not provide Spring Mouse's settings DB.
+  }
+
+  loggingSettingCache = { value: enabled, expiresAt: Date.now() + LOGGING_SETTING_CACHE_MS };
+  return enabled;
 }
 
 // Format timestamp for folder name: 20251228_143045_123
@@ -121,7 +142,7 @@ function createNoOpLogger() {
  * @returns {Promise<object>} Promise that resolves to logger object with methods to log each stage
  */
 export async function createRequestLogger(sourceFormat, targetFormat, model) {
-  if (!LOGGING_ENABLED) return createNoOpLogger();
+  if (!(await isLoggingEnabled())) return createNoOpLogger();
 
   const sessionPath = await createLogSession(sourceFormat, targetFormat, model);
   if (!sessionPath) return createNoOpLogger();

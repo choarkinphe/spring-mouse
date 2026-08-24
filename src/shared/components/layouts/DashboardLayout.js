@@ -96,7 +96,7 @@ export default function DashboardLayout({ children }) {
         {/* Faint grid background */}
         <div className="landing-grid absolute inset-0 pointer-events-none -z-10" aria-hidden="true" />
         <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
-        <div className={`flex-1 overflow-y-auto custom-scrollbar ${pathname === "/dashboard/basic-chat" ? "p-4 lg:p-6" : "p-4 lg:p-6"}`}>
+        <div className={`flex-1 min-h-0 custom-scrollbar ${pathname?.startsWith("/dashboard/console-log") ? "overflow-hidden p-4 lg:p-6" : "overflow-y-auto p-4 lg:p-6"}`}>
           {pathname === "/dashboard" ? (
             <div className="mx-auto w-full max-w-[108rem]">{children}</div>
           ) : pathname === "/dashboard/profile" ? (

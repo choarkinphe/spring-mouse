@@ -498,6 +498,21 @@ export default function ProfilePage() {
     }
   };
 
+  const updateRequestLogFileDumpsEnabled = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enableRequestLogFileDumps: enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "更新文件日志设置失败");
+      setSettings((prev) => ({ ...prev, enableRequestLogFileDumps: enabled }));
+    } catch (err) {
+      console.error("Failed to update enableRequestLogFileDumps:", err);
+    }
+  };
+
   const updateObservabilityEnabled = async (enabled) => {
     try {
       const res = await fetch("/api/settings", {
@@ -604,6 +619,7 @@ export default function ProfilePage() {
   };
 
   const observabilityEnabled = settings.enableObservability === true;
+  const requestLogFileDumpsEnabled = settings.enableRequestLogFileDumps === true;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pb-8 pt-1 sm:px-0 sm:pt-2">
@@ -791,20 +807,43 @@ export default function ProfilePage() {
             <div className="p-2 rounded-lg bg-orange-500/10 text-orange-500 shrink-0">
               <span className="material-symbols-outlined text-[20px]">monitoring</span>
             </div>
-            <h3 className="text-base sm:text-lg font-semibold">Observability</h3>
+            <h3 className="text-base sm:text-lg font-semibold">可观测性</h3>
           </div>
-          <div className="flex items-start sm:items-center justify-between gap-4">
-            <div className="flex-1 min-w-0">
-              <p className="font-medium text-sm sm:text-base">Enable Observability</p>
-              <p className="text-xs sm:text-sm text-text-muted">
-                Record request metadata for the usage dashboard; full request/response files are controlled separately
-              </p>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-start sm:items-center justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-sm sm:text-base">请求诊断明细</p>
+                  <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-500">数据库</span>
+                </div>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  保存每次请求的诊断快照，用于请求明细查询和故障排查；关闭后不影响请求量、Token、费用等汇总统计。
+                </p>
+              </div>
+              <Toggle
+                checked={observabilityEnabled}
+                onChange={updateObservabilityEnabled}
+                disabled={loading}
+              />
             </div>
-            <Toggle
-              checked={observabilityEnabled}
-              onChange={updateObservabilityEnabled}
-              disabled={loading}
-            />
+            <div className="border-t border-border/50 pt-4">
+              <div className="flex items-start sm:items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-medium text-sm sm:text-base">完整请求/响应文件</p>
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-500">写入 logs/</span>
+                  </div>
+                  <p className="text-xs sm:text-sm text-text-muted">
+                    保存完整请求和响应副本供深度排障，可能包含敏感内容并快速占用磁盘，仅建议临时开启。
+                  </p>
+                </div>
+                <Toggle
+                  checked={requestLogFileDumpsEnabled}
+                  onChange={updateRequestLogFileDumpsEnabled}
+                  disabled={loading}
+                />
+              </div>
+            </div>
           </div>
         </Card>
 

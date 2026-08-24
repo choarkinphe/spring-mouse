@@ -181,8 +181,8 @@ export default function ConsoleLogClient() {
   const activeFileKey = activeView.type === "file" ? fileKey(activeView.session, activeView.name) : null;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="px-1">
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+      <div className="shrink-0 px-1">
         <h2 className="font-semibold">日志中心</h2>
         <p className="mt-0.5 text-sm text-text-muted">默认查看当前控制台；从左侧文件列表选择日志即可预览内容。</p>
       </div>
@@ -190,15 +190,15 @@ export default function ConsoleLogClient() {
       {storageError && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">{storageError}</p>}
       {storageNotice && <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-500">{storageNotice}</p>}
 
-      <Card className="min-h-[calc(100vh-220px)] overflow-hidden p-0">
-        <div className="grid min-h-[calc(100vh-220px)] lg:grid-cols-[19rem_minmax(0,1fr)]">
-          <aside className="border-b border-border bg-surface-1/70 lg:border-b-0 lg:border-r">
-            <div className="border-b border-border px-4 py-3">
+      <Card className="min-h-0 flex-1 overflow-hidden p-0">
+        <div className="grid h-full min-h-0 lg:grid-cols-[19rem_minmax(0,1fr)]">
+          <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border bg-surface-1/70 lg:border-b-0 lg:border-r">
+            <div className="shrink-0 border-b border-border px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div><h3 className="text-sm font-semibold">日志来源</h3><p className="mt-1 text-xs text-text-muted">{storage?.sessions || 0} 个会话 · {storage?.files || 0} 个文件 · {formatBytes(storage?.bytes)}</p></div>
               </div>
             </div>
-            <div className="max-h-[34vh] overflow-y-auto p-2 lg:max-h-[calc(100vh-305px)]">
+            <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
               <div className={`flex items-center rounded-lg transition-colors ${activeView.type === "console" ? "bg-brand-500/15 text-brand-500" : "text-text-main hover:bg-surface-2"}`}>
                 <button type="button" onClick={() => { setActiveView({ type: "console" }); setFilePreview(null); }} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left text-sm">
                   <span className={`h-2 w-2 rounded-full ${connected ? "bg-green-500" : "bg-text-muted"}`} />
@@ -217,7 +217,7 @@ export default function ConsoleLogClient() {
                 </div>
               </div>
               {!requestLogData && loadingStorage ? <p className="px-3 py-4 text-xs text-text-muted">正在读取…</p> : null}
-              {sessions.length === 0 && rootFiles.length === 0 && !loadingStorage ? <p className="px-3 py-4 text-xs leading-5 text-text-muted">暂无请求调试文件。完整请求/响应副本默认关闭。</p> : null}
+              {sessions.length === 0 && rootFiles.length === 0 && !loadingStorage ? <p className="px-3 py-4 text-xs leading-5 text-text-muted">暂无请求调试文件。可在“设置 → 网络与可观测性”中临时开启完整请求/响应文件日志。</p> : null}
               {sessions.map((session) => {
                 const files = expandedSessions[session.name];
                 return (
@@ -240,24 +240,24 @@ export default function ConsoleLogClient() {
             </div>
           </aside>
 
-          <section className="flex min-w-0 flex-col bg-black/[0.02] dark:bg-black/20">
+          <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-black/[0.02] dark:bg-black/20">
             {activeView.type === "console" ? (
               <>
-                <div className="border-b border-border px-4 py-3"><h3 className="font-semibold">当前控制台</h3><p className="text-xs text-text-muted">{connected ? "已连接，正在接收实时输出" : "正在连接实时输出…"}</p></div>
-                <div ref={logRef} className="min-h-0 flex-1 overflow-auto bg-black p-4 font-mono text-xs leading-5">{logs.length === 0 ? <span className="text-text-muted">暂无控制台日志。</span> : <div>{logs.map((line, index) => <div key={index}>{colorLine(line)}</div>)}</div>}</div>
-                <p className="border-t border-border px-4 py-2 text-xs text-text-muted">清空显示仅清理当前服务进程的内存缓冲，不会删除请求调试文件。</p>
+                <div className="shrink-0 border-b border-border px-4 py-3"><h3 className="font-semibold">当前控制台</h3><p className="text-xs text-text-muted">{connected ? "已连接，正在接收实时输出" : "正在连接实时输出…"}</p></div>
+                <div ref={logRef} className="custom-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-black p-4 font-mono text-xs leading-5">{logs.length === 0 ? <span className="text-text-muted">暂无控制台日志。</span> : <div>{logs.map((line, index) => <div key={index}>{colorLine(line)}</div>)}</div>}</div>
+                <p className="shrink-0 border-t border-border px-4 py-2 text-xs text-text-muted">清空显示仅清理当前服务进程的内存缓冲，不会删除请求调试文件。</p>
               </>
             ) : (
               <>
-                <div className="border-b border-border px-4 py-3"><h3 className="truncate font-mono text-sm font-semibold">{activeView.name}</h3><p className="mt-1 text-xs text-text-muted">{activeView.session} {filePreview ? `· ${formatBytes(filePreview.bytes)}` : ""}</p></div>
-                {loadingPreview ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取文件内容…</div> : filePreview ? <><div className="min-h-0 flex-1 overflow-auto bg-black p-4"><pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-200">{filePreview.content}</pre></div>{filePreview.truncated && <p className="border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-500">文件较大，页面仅显示前 {formatBytes(256 * 1024)}。</p>}</> : <div className="flex flex-1 items-center justify-center text-sm text-text-muted">无法显示文件内容。</div>}
+                <div className="shrink-0 border-b border-border px-4 py-3"><h3 className="truncate font-mono text-sm font-semibold">{activeView.name}</h3><p className="mt-1 text-xs text-text-muted">{activeView.session} {filePreview ? `· ${formatBytes(filePreview.bytes)}` : ""}</p></div>
+                {loadingPreview ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取文件内容…</div> : filePreview ? <><div className="custom-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-black p-4"><pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-200">{filePreview.content}</pre></div>{filePreview.truncated && <p className="shrink-0 border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-500">文件较大，页面仅显示前 {formatBytes(256 * 1024)}。</p>}</> : <div className="flex flex-1 items-center justify-center text-sm text-text-muted">无法显示文件内容。</div>}
               </>
             )}
           </section>
         </div>
       </Card>
 
-      <p className="px-1 text-xs text-text-muted">完整请求/响应副本可能含敏感内容。仅在需要排障时设置 <code>ENABLE_REQUEST_LOG_FILE_DUMPS=true</code> 并重启服务，完成后及时关闭和清理。</p>
+      <p className="shrink-0 px-1 text-xs text-text-muted">完整请求/响应副本可能含敏感内容并快速占用磁盘。仅在排障时临时开启，完成后及时关闭和清理。</p>
 
       <ConfirmModal
         isOpen={clearTarget !== null}

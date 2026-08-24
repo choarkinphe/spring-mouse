@@ -33,7 +33,7 @@ export default function DashboardPageFrame({ children }) {
   const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname === "/dashboard/endpoint";
 
   return (
-    <div className={`mx-auto w-full pb-8 ${isConsoleLog ? "max-w-none" : isWideWorkspace ? "max-w-[108rem]" : "max-w-6xl"}`}>
+    <div className={`mx-auto w-full ${isConsoleLog ? "h-full min-h-0 max-w-none pb-0" : isWideWorkspace ? "max-w-[108rem] pb-8" : "max-w-6xl pb-8"}`}>
       {children}
     </div>
   );

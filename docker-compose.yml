@@ -29,6 +29,11 @@ services:
       start_period: 60s
     depends_on:
       - headroom
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+        max-file: "${DOCKER_LOG_MAX_FILES:-3}"
 
   headroom:
     image: ghcr.io/chopratejas/headroom:latest
@@ -36,6 +41,11 @@ services:
     restart: always
     ports:
       - "8787:8787"
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+        max-file: "${DOCKER_LOG_MAX_FILES:-3}"
 
 # volumes:
 #   spring-mouse-data:

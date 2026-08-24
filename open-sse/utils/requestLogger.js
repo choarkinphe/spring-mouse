@@ -3,7 +3,6 @@ const isNode = typeof process !== "undefined" && process.versions?.node && typeo
 
 // Check if logging is enabled via environment variable (default: false)
 const ENV_LOGGING_DEFAULT = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOG_FILE_DUMPS === "true";
-const LOGGING_SETTING_CACHE_MS = 1000;
 const ACTIVE_MARKER_FILE = ".active.json";
 const MARKER_TOUCH_INTERVAL_MS = 30_000;
 const PROCESS_STARTED_AT = typeof process !== "undefined" && process.uptime
@@ -13,7 +12,6 @@ const PROCESS_STARTED_AT = typeof process !== "undefined" && process.uptime
 let fs = null;
 let path = null;
 let LOGS_DIR = null;
-let loggingSettingCache = { value: null, expiresAt: 0 };
 
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
@@ -21,29 +19,9 @@ async function ensureNodeModules() {
   try {
     fs = await import("fs");
     path = await import("path");
-    LOGS_DIR = path.join(typeof process !== "undefined" && process.cwd ? process.cwd() : ".", "logs");
   } catch {
     // Running in non-Node environment (Worker, Browser, etc.)
   }
-}
-
-async function isLoggingEnabled() {
-  if (!isNode) return false;
-  if (loggingSettingCache.expiresAt > Date.now()) return loggingSettingCache.value;
-
-  let enabled = ENV_LOGGING_DEFAULT;
-  try {
-    const { getSettings } = await import("@/lib/localDb");
-    const settings = await getSettings();
-    if (typeof settings?.enableRequestLogFileDumps === "boolean") {
-      enabled = settings.enableRequestLogFileDumps;
-    }
-  } catch {
-    // Standalone open-sse consumers may not provide Spring Mouse's settings DB.
-  }
-
-  loggingSettingCache = { value: enabled, expiresAt: Date.now() + LOGGING_SETTING_CACHE_MS };
-  return enabled;
 }
 
 // Format timestamp for folder name: 20251228_143045_123
@@ -60,11 +38,12 @@ function formatTimestamp(date = new Date()) {
 }
 
 // Create log session folder: {sourceFormat}_{targetFormat}_{model}_{timestamp}
-async function createLogSession(sourceFormat, targetFormat, model) {
+async function createLogSession(sourceFormat, targetFormat, model, logsDir) {
   await ensureNodeModules();
-  if (!fs || !LOGS_DIR) return null;
-  
+  if (!fs || !path) return null;
+
   try {
+    LOGS_DIR = logsDir || process.env.REQUEST_LOGS_DIR || path.join(process.cwd(), "logs");
     if (!fs.existsSync(LOGS_DIR)) {
       fs.mkdirSync(LOGS_DIR, { recursive: true });
     }
@@ -141,10 +120,11 @@ function createNoOpLogger() {
  * @param {string} model - Model name
  * @returns {Promise<object>} Promise that resolves to logger object with methods to log each stage
  */
-export async function createRequestLogger(sourceFormat, targetFormat, model) {
-  if (!(await isLoggingEnabled())) return createNoOpLogger();
+export async function createRequestLogger(sourceFormat, targetFormat, model, options = {}) {
+  const enabled = typeof options.enabled === "boolean" ? options.enabled : ENV_LOGGING_DEFAULT;
+  if (!enabled) return createNoOpLogger();
 
-  const sessionPath = await createLogSession(sourceFormat, targetFormat, model);
+  const sessionPath = await createLogSession(sourceFormat, targetFormat, model, options.logsDir);
   if (!sessionPath) return createNoOpLogger();
 
   let writable = true;

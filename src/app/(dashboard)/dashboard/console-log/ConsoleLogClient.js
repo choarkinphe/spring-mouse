@@ -195,7 +195,7 @@ export default function ConsoleLogClient() {
           <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border bg-surface-1/70 lg:border-b-0 lg:border-r">
             <div className="shrink-0 border-b border-border px-4 py-3">
               <div className="flex items-center justify-between gap-3">
-                <div><h3 className="text-sm font-semibold">日志来源</h3><p className="mt-1 text-xs text-text-muted">{storage?.sessions || 0} 个会话 · {storage?.files || 0} 个文件 · {formatBytes(storage?.bytes)}</p></div>
+                <div className="min-w-0"><h3 className="text-sm font-semibold">日志来源</h3><p className="mt-1 text-xs text-text-muted">{storage?.sessions || 0} 个会话 · {storage?.files || 0} 个文件 · {formatBytes(storage?.bytes)}</p><p className="mt-1 truncate font-mono text-[10px] text-text-muted/70" title={storage?.path || ""}>{storage?.path || "正在读取日志目录…"}</p></div>
               </div>
             </div>
             <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getSettings } from "@/lib/localDb";
+import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 
-const REQUEST_LOGS_DIR = path.resolve(process.cwd(), "logs");
 const ACTIVE_MARKER_FILE = ".active.json";
 const ACTIVE_MARKER_MAX_AGE_MS = 5 * 60 * 1000;
 const MAX_PREVIEW_BYTES = 256 * 1024;
@@ -129,6 +129,7 @@ export async function listRequestLogSessions() {
   return {
     enabled: await isRequestFileLoggingEnabled(),
     storage: {
+      path: REQUEST_LOGS_DIR,
       bytes: storage.totalBytes,
       files: storage.totalFiles,
       sessions: sessions.length,

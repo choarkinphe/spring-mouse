@@ -831,7 +831,7 @@ export default function ProfilePage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-medium text-sm sm:text-base">完整请求/响应文件</p>
-                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-500">写入 logs/</span>
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-500">写入数据目录</span>
                   </div>
                   <p className="text-xs sm:text-sm text-text-muted">
                     保存完整请求和响应副本供深度排障，可能包含敏感内容并快速占用磁盘，仅建议临时开启。

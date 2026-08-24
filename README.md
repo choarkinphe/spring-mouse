@@ -365,7 +365,7 @@ Model:    coding-primary
 2. **默认启用 API Key 管控更安全。** 将 `REQUIRE_API_KEY` 设为 `true`，并为不同系统或人员发放不同 Key。
 3. **反向代理必须显式配置 `TRUSTED_PROXY_IPS`。** Spring Mouse 只有在 TCP 对端被信任时才接受 `X-Real-IP` / `X-Forwarded-For`。
 4. **使用 HTTPS 时设置 Cookie 安全标记。** 反向代理终止 TLS 后，应设置 `AUTH_COOKIE_SECURE=true`，同时把 `BASE_URL` 与 `NEXT_PUBLIC_BASE_URL` 改为公开 HTTPS 地址。
-5. **请求明细属于敏感数据。** `ENABLE_REQUEST_LOG_FILE_DUMPS=true` 时会保存完整请求/响应副本；请按组织数据规范配置留存和访问权限。
+5. **请求明细属于敏感数据。** `ENABLE_REQUEST_LOG_FILE_DUMPS=true` 时会在 `DATA_DIR/request-logs` 保存完整请求/响应副本；请按组织数据规范配置留存和访问权限。
 6. **MITM 与公网 Tunnel 需最小权限。** 仅在明确场景启用，管理员应了解根证书、DNS 重定向和公网暴露的安全影响。
 
 ---

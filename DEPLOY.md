@@ -92,8 +92,13 @@ AUTH_COOKIE_SECURE=true
 REQUIRE_API_KEY=true
 # 完整请求/响应文件日志的首次启动默认值；部署后可在 Dashboard 设置页开关。
 ENABLE_REQUEST_LOG_FILE_DUMPS=false
+# 可选；默认使用 DATA_DIR/request-logs
+REQUEST_LOGS_DIR=/app/data/request-logs
 OBSERVABILITY_ENABLED=true
 LOG_LEVEL=WARN
+# Docker stdout/stderr 日志轮转；修改后需重新创建容器。
+DOCKER_LOG_MAX_SIZE=20m
+DOCKER_LOG_MAX_FILES=3
 ```
 
 ### 反向代理可信来源
@@ -288,6 +293,8 @@ curl -fsS http://127.0.0.1:8008/api/version
 
 ### 数据目录
 
+Docker Compose 还会把 `spring-mouse` 和 `headroom` 的 stdout/stderr 日志按文件轮转，默认每个文件最多 `20 MB`、最多保留 `3` 个文件。若服务器已有旧 `.env`，请手动确认 `LOG_LEVEL=WARN`，并在修改 `DOCKER_LOG_MAX_SIZE` / `DOCKER_LOG_MAX_FILES` 后重新创建容器；仅重启旧容器不会更新日志驱动配置。
+
 生产容器把应用数据写入 `DATA_DIR`；推荐始终挂载 `/app/data`。其中通常包括：
 
 ```text
@@ -297,7 +304,8 @@ curl -fsS http://127.0.0.1:8008/api/version
 ├── mitm/                    # 根证书、MITM 运行状态和 DNS 配置
 ├── tunnel/                  # Cloudflare Tunnel 运行状态
 ├── geoip/                   # 可选 MaxMind 数据
-└── ...                      # 日志、导出和运行时文件
+├── request-logs/            # 可选：完整请求/响应文件日志
+└── ...                      # 导出和其他运行时文件
 ```
 
 ### 备份 SQLite

@@ -4,6 +4,11 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:8008";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
 
+// Settings cache with TTL to reduce frequent DB reads
+let settingsCache = null;
+let settingsCacheExpire = 0;
+const SETTINGS_TTL_MS = 5000; // 5秒缓存，可按需调整
+
 const DEFAULT_SETTINGS = {
   cloudEnabled: false,
   tunnelEnabled: false,
@@ -91,8 +96,17 @@ export function mergeWithDefaults(raw) {
 }
 
 export async function getSettings() {
+  const now = Date.now();
+  // 如果缓存存在且未过期，直接返回缓存
+  if (settingsCache && now < settingsCacheExpire) {
+    return settingsCache;
+  }
+
+  // 缓存过期或不存在，从数据库读取
   const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  settingsCache = mergeWithDefaults(raw);
+  settingsCacheExpire = now + SETTINGS_TTL_MS;
+  return settingsCache;
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
@@ -108,6 +122,11 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
+
+  // 主动失效缓存，确保下次读取获取最新数据
+  settingsCache = null;
+  settingsCacheExpire = 0;
+
   return mergeWithDefaults(next);
 }
 

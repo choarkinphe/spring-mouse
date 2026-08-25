@@ -2,6 +2,31 @@ import { getAdapter } from "@/lib/db/driver.js";
 import { getSettings } from "@/lib/db/repos/settingsRepo.js";
 import { getApiKeys } from "@/lib/db/repos/apiKeysRepo.js";
 
+// 配额缓存，减少频繁的数据库聚合查询
+const quotaCache = new Map();
+const QUOTA_TTL_MS = 10000; // 10秒TTL，平衡实时性和性能
+const QUOTA_CACHE_MAX_SIZE = 1000; // 最大缓存条目数
+
+function trimQuotaCache() {
+  if (quotaCache.size > QUOTA_CACHE_MAX_SIZE) {
+    // 删除最旧的条目（简单实现：清空重建，实际可优化为LRU）
+    const entries = Array.from(quotaCache.entries());
+    quotaCache.clear();
+    // 保留最新的条目
+    entries.slice(-Math.floor(QUOTA_CACHE_MAX_SIZE / 2)).forEach(([key, value]) => {
+      quotaCache.set(key, value);
+    });
+  }
+}
+
+function invalidateQuotaCache(apiKey = null) {
+  if (apiKey) {
+    quotaCache.delete(apiKey);
+  } else {
+    quotaCache.clear();
+  }
+}
+
 export const API_KEY_QUOTA_WINDOWS = [
   { id: "fiveHour", label: "5 小时", durationMs: 5 * 60 * 60 * 1000, limitField: "fiveHourTokenLimitM" },
   { id: "weekly", label: "近 7 天", durationMs: 7 * 24 * 60 * 60 * 1000, limitField: "weeklyTokenLimitM" },
@@ -111,6 +136,17 @@ export async function getApiKeyQuotaStatuses(keys = null) {
 
 export async function checkApiKeyQuota(apiKey) {
   if (!apiKey) return { applies: false, allowed: true };
+
+  // 检查缓存
+  const cacheKey = apiKey;
+  const now = Date.now();
+  const cached = quotaCache.get(cacheKey);
+
+  if (cached && now - cached.timestamp < QUOTA_TTL_MS) {
+    return cached.result;
+  }
+
+  // 缓存未命中，执行完整查询
   const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
   const key = db.get(`SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [apiKey]);
   if (!key || normalizeApiKeyQuotaMode(key.quotaMode) !== "limited") return { applies: false, allowed: true };
@@ -118,7 +154,12 @@ export async function checkApiKeyQuota(apiKey) {
   const rules = normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules);
   if (!rulesHaveLimit(rules)) return { applies: false, allowed: true };
   const status = buildApiKeyQuotaStatus(key, rules, await readUsages(db, key.id, key));
-  return { applies: true, allowed: !status.exceededWindow, status };
+  const result = { applies: true, allowed: !status.exceededWindow, status };
+
+  // 存入缓存
+  quotaCache.set(cacheKey, { result, timestamp: now });
+
+  return result;
 }
 
 export async function getApiKeyQuotaStatus(apiKey) {

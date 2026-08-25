@@ -8,8 +8,16 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
-// Mutex to prevent race conditions during account selection
-let selectionMutex = Promise.resolve();
+// Per-provider mutexes to prevent race conditions during account selection
+// 替代全局锁，让不同provider的请求可以并行处理
+const providerMutexes = new Map();
+
+function getProviderMutex(providerId) {
+  if (!providerMutexes.has(providerId)) {
+    providerMutexes.set(providerId, Promise.resolve());
+  }
+  return providerMutexes.get(providerId);
+}
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -33,16 +41,17 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
-  // Acquire mutex to prevent race conditions
-  const currentMutex = selectionMutex;
+
+  // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
+  const providerId = resolveProviderId(provider);
+
+  // Acquire per-provider mutex to prevent race conditions
+  const currentMutex = getProviderMutex(providerId);
   let resolveMutex;
-  selectionMutex = new Promise(resolve => { resolveMutex = resolve; });
+  providerMutexes.set(providerId, new Promise(resolve => { resolveMutex = resolve; }));
 
   try {
     await currentMutex;
-
-    // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
-    const providerId = resolveProviderId(provider);
 
     // Inject a virtual connection for no-auth free providers. Proxy pools and
     // provider relay acceleration were retired; this connection is direct.

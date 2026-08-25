@@ -43,20 +43,32 @@ export async function getModelInfo(modelStr) {
     // Provider-node prefixes are user-defined. They must not override built-in
     // provider ids/aliases such as `cf`, `cloudflare-ai`, `openai`, or `hf`.
     if (!RESERVED_PROVIDER_PREFIXES.has(parsed.providerAlias)) {
-      const openaiNodes = await getProviderNodes({ type: "openai-compatible" });
-      const matchedOpenAI = openaiNodes.find((node) => node.prefix === parsed.providerAlias);
+      // Performance optimization: Fetch all nodes in a single query instead of 3 separate type-filtered queries
+      // Build in-memory index for O(1) prefix lookups instead of repeated array searches
+      const allNodes = await getProviderNodes();
+
+      // Build type-based index for faster lookups
+      const nodesByType = { "openai-compatible": [], "anthropic-compatible": [], "custom-embedding": [] };
+      for (const node of allNodes) {
+        if (nodesByType[node.type]) {
+          nodesByType[node.type].push(node);
+        }
+      }
+
+      // Check OpenAI-compatible nodes
+      const matchedOpenAI = nodesByType["openai-compatible"].find((node) => node.prefix === parsed.providerAlias);
       if (matchedOpenAI) {
         return { provider: matchedOpenAI.id, model: parsed.model };
       }
 
-      const anthropicNodes = await getProviderNodes({ type: "anthropic-compatible" });
-      const matchedAnthropic = anthropicNodes.find((node) => node.prefix === parsed.providerAlias);
+      // Check Anthropic-compatible nodes
+      const matchedAnthropic = nodesByType["anthropic-compatible"].find((node) => node.prefix === parsed.providerAlias);
       if (matchedAnthropic) {
         return { provider: matchedAnthropic.id, model: parsed.model };
       }
 
-      const embeddingNodes = await getProviderNodes({ type: "custom-embedding" });
-      const matchedEmbedding = embeddingNodes.find((node) => node.prefix === parsed.providerAlias);
+      // Check custom-embedding nodes
+      const matchedEmbedding = nodesByType["custom-embedding"].find((node) => node.prefix === parsed.providerAlias);
       if (matchedEmbedding) {
         return { provider: matchedEmbedding.id, model: parsed.model };
       }

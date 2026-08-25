@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
+const fsPromises = require("fs").promises;
 const path = require("path");
 const { execSync } = require("child_process");
 
@@ -35,17 +36,42 @@ function shouldExclude(name) {
   });
 }
 
-function copyRecursive(src, dest) {
+async function copyRecursive(src, dest) {
   if (!fs.existsSync(src)) {
     console.warn(`Warning: Source ${src} does not exist`);
     return;
   }
-  
-  if (!fs.existsSync(dest)) {
-    fs.mkdirSync(dest, { recursive: true });
+
+  // Performance optimization: Use modern fs.cp for recursive copying (Node.js 16.6+)
+  // This is significantly faster than manual recursive copying and handles large directories efficiently
+  try {
+    await fsPromises.mkdir(path.dirname(dest), { recursive: true });
+
+    // Use fs.cp with recursive flag for efficient bulk copying
+    await fsPromises.cp(src, dest, {
+      recursive: true,
+      filter: (srcPath) => {
+        const name = path.basename(srcPath);
+        return !shouldExclude(name);
+      }
+    });
+  } catch (error) {
+    // Fallback to manual recursive copy if fs.cp fails (e.g., permission issues)
+    console.warn(`Warning: fs.cp failed for ${src} → ${dest}, falling back to manual copy`);
+    await manualCopyRecursive(src, dest);
+  }
+}
+
+// Fallback manual recursive copy for compatibility
+async function manualCopyRecursive(src, dest) {
+  if (!fs.existsSync(src)) {
+    console.warn(`Warning: Source ${src} does not exist`);
+    return;
   }
 
-  const entries = fs.readdirSync(src, { withFileTypes: true });
+  await fsPromises.mkdir(dest, { recursive: true });
+
+  const entries = await fsPromises.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     if (shouldExclude(entry.name)) {
       continue;
@@ -56,26 +82,27 @@ function copyRecursive(src, dest) {
 
     // Skip broken symlinks (common in workspace setups)
     try {
-      fs.accessSync(srcPath);
+      await fsPromises.access(srcPath);
     } catch {
       continue;
     }
 
     if (entry.isDirectory()) {
-      copyRecursive(srcPath, destPath);
+      await manualCopyRecursive(srcPath, destPath);
     } else if (entry.isSymbolicLink()) {
       // Resolve and copy target (avoid linking outside bundle)
       try {
-        const real = fs.realpathSync(srcPath);
-        if (fs.statSync(real).isDirectory()) {
-          copyRecursive(real, destPath);
+        const real = await fsPromises.realpath(srcPath);
+        const realStat = await fsPromises.stat(real);
+        if (realStat.isDirectory()) {
+          await manualCopyRecursive(real, destPath);
         } else {
-          fs.copyFileSync(real, destPath);
+          await fsPromises.copyFile(real, destPath);
         }
       } catch {}
     } else {
       try {
-        fs.copyFileSync(srcPath, destPath);
+        await fsPromises.copyFile(srcPath, destPath);
       } catch {}
     }
   }
@@ -110,24 +137,24 @@ function resolveStandaloneBuild(appDir, buildDistDir) {
   return { standaloneApp, standaloneRoot };
 }
 
-function copyStandaloneBuild(appDir, buildDistDir, cliAppDir) {
+async function copyStandaloneBuild(appDir, buildDistDir, cliAppDir) {
   const { standaloneApp, standaloneRoot } = resolveStandaloneBuild(appDir, buildDistDir);
-  copyRecursive(standaloneApp, cliAppDir);
+  await copyRecursive(standaloneApp, cliAppDir);
 
   // Older nested-app layout stores traced node_modules at standalone root.
   const standaloneNodeModules = path.join(standaloneRoot, "node_modules");
   if (standaloneApp !== standaloneRoot && fs.existsSync(standaloneNodeModules)) {
-    copyRecursive(standaloneNodeModules, path.join(cliAppDir, "node_modules"));
+    await copyRecursive(standaloneNodeModules, path.join(cliAppDir, "node_modules"));
   }
 }
 
-function mergeServerArtifacts(buildDistDir, cliAppDir) {
+async function mergeServerArtifacts(buildDistDir, cliAppDir) {
   const serverSrc = path.join(buildDistDir, "server");
   const serverDest = path.join(cliAppDir, buildDistDirName, "server");
   if (!fs.existsSync(serverSrc)) {
     throw new Error(`Complete Next.js server build not found: ${serverSrc}`);
   }
-  copyRecursive(serverSrc, serverDest);
+  await copyRecursive(serverSrc, serverDest);
 }
 
 function assertRequiredApiArtifacts(cliAppDir) {
@@ -148,7 +175,7 @@ function assertRequiredApiArtifacts(cliAppDir) {
   }
 }
 
-function buildCliPackage() {
+async function buildCliPackage() {
   console.log("📦 Building Spring Mouse CLI package with Next.js...\n");
 
   fs.mkdirSync(buildHomeDir, { recursive: true });
@@ -202,7 +229,7 @@ function buildCliPackage() {
   // node_modules/ directly under .next/standalone. Older builds may still use a nested app/.
   console.log("3️⃣  Copying Next.js standalone build to app/cli/app...");
   try {
-    copyStandaloneBuild(appDir, buildDistDir, cliAppDir);
+    await copyStandaloneBuild(appDir, buildDistDir, cliAppDir);
   } catch (error) {
     console.error("❌ Next.js standalone build not found under .next/standalone");
     console.error("Expected either .next/standalone/server.js or .next/standalone/app/");
@@ -226,7 +253,7 @@ function buildCliPackage() {
   // Windows EBUSY during global CLI updates. node:sqlite (Node ≥22.5) is also
   // available as a no-install middle tier.
   console.log("3️⃣ b Configuring SQLite drivers...");
-  function ensureModuleInBundle(pkg) {
+  async function ensureModuleInBundle(pkg) {
     const dest = path.join(cliAppDir, "node_modules", pkg);
     if (fs.existsSync(dest)) {
       console.log(`✅ ${pkg} already bundled`);
@@ -242,14 +269,14 @@ function buildCliPackage() {
       return;
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    copyRecursive(src, dest);
+    await copyRecursive(src, dest);
     console.log(`✅ Bundled ${pkg}`);
   }
-  ensureModuleInBundle("sql.js");
+  await ensureModuleInBundle("sql.js");
   // `open` is external (see serverExternalPackages in next.config.mjs), so it must exist in
   // the bundle's node_modules or every importer throws MODULE_NOT_FOUND at runtime. Output
   // tracing normally copies it; this is the same belt-and-braces guard used for sql.js.
-  ensureModuleInBundle("open");
+  await ensureModuleInBundle("open");
   const betterDir = path.join(cliAppDir, "node_modules", "better-sqlite3");
   if (fs.existsSync(betterDir)) {
     fs.rmSync(betterDir, { recursive: true, force: true });
@@ -263,7 +290,7 @@ function buildCliPackage() {
   const staticSrcResolved = path.join(buildDistDir, "static");
   const staticDest = path.join(cliAppDir, buildDistDirName, "static");
   if (fs.existsSync(staticSrcResolved) || fs.existsSync(staticSrc)) {
-    copyRecursive(fs.existsSync(staticSrcResolved) ? staticSrcResolved : staticSrc, staticDest);
+    await copyRecursive(fs.existsSync(staticSrcResolved) ? staticSrcResolved : staticSrc, staticDest);
     console.log("✅ Copied static files\n");
   } else {
     console.log("⏭️  No static files found\n");
@@ -274,7 +301,7 @@ function buildCliPackage() {
   const publicSrc = path.join(appDir, "public");
   const publicDest = path.join(cliAppDir, "public");
   if (fs.existsSync(publicSrc)) {
-    copyRecursive(publicSrc, publicDest);
+    await copyRecursive(publicSrc, publicDest);
     console.log("✅ Copied public folder\n");
   } else {
     console.log("⏭️  No public folder found\n");
@@ -286,7 +313,7 @@ function buildCliPackage() {
   const vendorChunksSrcResolved = path.join(buildDistDir, "server", "vendor-chunks");
   const vendorChunksDest = path.join(cliAppDir, buildDistDirName, "server", "vendor-chunks");
   if (fs.existsSync(vendorChunksSrcResolved) || fs.existsSync(vendorChunksSrc)) {
-    copyRecursive(fs.existsSync(vendorChunksSrcResolved) ? vendorChunksSrcResolved : vendorChunksSrc, vendorChunksDest);
+    await copyRecursive(fs.existsSync(vendorChunksSrcResolved) ? vendorChunksSrcResolved : vendorChunksSrc, vendorChunksDest);
     console.log("✅ Copied vendor-chunks\n");
   } else {
     console.log("⏭️  No vendor-chunks found\n");
@@ -295,7 +322,7 @@ function buildCliPackage() {
   // Step 6b: Merge the complete generated server tree. Next.js standalone output
   // is trace-pruned and can omit route modules or chunks loaded dynamically.
   console.log("6️⃣ b Copying complete server artifacts...");
-  mergeServerArtifacts(buildDistDir, cliAppDir);
+  await mergeServerArtifacts(buildDistDir, cliAppDir);
   assertRequiredApiArtifacts(cliAppDir);
   console.log("✅ Copied complete server artifacts\n");
 
@@ -304,7 +331,7 @@ function buildCliPackage() {
   const mitmSrc = path.join(appDir, "src", "mitm");
   const mitmDest = path.join(cliAppDir, "src", "mitm");
   if (fs.existsSync(mitmSrc)) {
-    copyRecursive(mitmSrc, mitmDest);
+    await copyRecursive(mitmSrc, mitmDest);
     console.log("✅ Copied MITM files\n");
   } else {
     console.log("⏭️  No MITM files found\n");
@@ -315,7 +342,7 @@ function buildCliPackage() {
   const updaterSrc = path.join(appDir, "src", "lib", "updater");
   const updaterDest = path.join(cliAppDir, "src", "lib", "updater");
   if (fs.existsSync(updaterSrc)) {
-    copyRecursive(updaterSrc, updaterDest);
+    await copyRecursive(updaterSrc, updaterDest);
     console.log("✅ Copied updater files\n");
   } else {
     console.log("⏭️  No updater files found\n");
@@ -347,8 +374,12 @@ module.exports = {
   assertRequiredApiArtifacts,
   copyStandaloneBuild,
   mergeServerArtifacts,
+  copyRecursive,
 };
 
 if (require.main === module) {
-  buildCliPackage();
+  buildCliPackage().catch(error => {
+    console.error("❌ CLI build failed:", error);
+    process.exit(1);
+  });
 }

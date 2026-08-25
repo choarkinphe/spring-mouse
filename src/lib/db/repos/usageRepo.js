@@ -553,13 +553,24 @@ export async function saveRequestUsage(entry) {
       }
 
       const dateKey = getLocalDateKey(record.startedAt);
-      const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
-      const day = row ? parseJson(row.data, {}) : {
-        requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0,
-        byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {}, bySourceIp: {}, byApp: {}, byUser: {},
-      };
-      aggregateEntryToDay(day, record);
-      db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`, [dateKey, stringifyJson(day)]);
+      const promptTokens = record.tokens?.prompt_tokens || record.tokens?.input_tokens || 0;
+      const completionTokens = record.tokens?.completion_tokens || record.tokens?.output_tokens || 0;
+      const cachedTokens = record.tokens?.cached_tokens || record.tokens?.cache_read_input_tokens || 0;
+      const cost = record.cost || 0;
+
+      // 使用增量UPSERT替代JSON blob读写，性能提升显著
+      db.run(`
+        INSERT INTO usageDaily (dateKey, provider, model, apiKeyId, requests, promptTokens, completionTokens, cachedTokens, cost)
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+        ON CONFLICT (dateKey, provider, model, apiKeyId) DO UPDATE SET
+          requests = requests + 1,
+          promptTokens = promptTokens + ?,
+          completionTokens = completionTokens + ?,
+          cachedTokens = cachedTokens + ?,
+          cost = cost + ?
+      `, [dateKey, record.provider, record.model, record.apiKeyId || '',
+          promptTokens, completionTokens, cachedTokens, cost,
+          promptTokens, completionTokens, cachedTokens, cost]);
 
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
@@ -617,10 +628,20 @@ export async function getUsageDetails(filter = {}) {
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
 
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+  const page = Math.max(1, Number(filter.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(filter.pageSize) || 20));
+  const offset = (page - 1) * pageSize;
+
+  // 先获取总数（用于分页信息）
+  const countResult = db.get(`SELECT COUNT(*) as total FROM usageHistory ${where}`, params);
+  const totalItems = countResult?.total || 0;
+  const totalPages = Math.ceil(totalItems / pageSize);
+
+  // 使用 SQL 分页而非内存分页，大幅提升大数据集性能
   const rows = db.all(
     `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta
-       FROM usageHistory ${where} ORDER BY id DESC`,
-    params,
+       FROM usageHistory ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset],
   );
   const apiKeyMaps = await getApiKeyMapCached();
 
@@ -651,29 +672,65 @@ export async function getUsageDetails(filter = {}) {
         durationMs: getRequestDurationMs(row.startedAt || row.timestamp, row.completedAt || row.timestamp),
       };
     })
+    // JS层过滤保留（用于appName/sourceIp等复杂条件）
     .filter((detail) => !filter.appName || detail.appName === filter.appName)
     .filter((detail) => !filter.sourceIp || detail.sourceIp === filter.sourceIp);
 
-  const page = Math.max(1, Number(filter.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(filter.pageSize) || 20));
-  const totalItems = details.length;
-  const totalPages = Math.ceil(totalItems / pageSize);
-  const offset = (page - 1) * pageSize;
+  // 计算过滤后的实际分页信息
+  const filteredTotalItems = details.length;
+  const filteredTotalPages = Math.ceil(filteredTotalItems / pageSize);
+  const filteredOffset = (page - 1) * pageSize;
 
   return {
-    details: details.slice(offset, offset + pageSize),
-    pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    details: details.slice(filteredOffset, filteredOffset + pageSize),
+    pagination: {
+      page,
+      pageSize,
+      totalItems: filteredTotalItems,
+      totalPages: filteredTotalPages,
+      hasNext: page < filteredTotalPages,
+      hasPrev: page > 1
+    },
+    // 同时返回原始总数信息（未经JS过滤）
+    unfilteredPagination: {
+      totalItems,
+      totalPages,
+    }
   };
 }
 
 function loadDaysInRange(adapter, maxDays) {
+  let query, params;
   if (maxDays == null) {
-    return adapter.all(`SELECT dateKey, data FROM usageDaily`);
+    query = `SELECT dateKey, provider, model, apiKeyId, requests, promptTokens, completionTokens, cachedTokens, cost FROM usageDaily`;
+    params = [];
+  } else {
+    const today = new Date();
+    const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
+    const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
+    query = `SELECT dateKey, provider, model, apiKeyId, requests, promptTokens, completionTokens, cachedTokens, cost FROM usageDaily WHERE dateKey >= ?`;
+    params = [cutoffKey];
   }
-  const today = new Date();
-  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - maxDays + 1);
-  const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, "0")}-${String(cutoff.getDate()).padStart(2, "0")}`;
-  return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
+  const rows = adapter.all(query, params);
+
+  // 将新的数值列结构转换为兼容原有格式的对象
+  const result = {};
+  for (const row of rows) {
+    if (!result[row.dateKey]) {
+      result[row.dateKey] = {
+        dateKey: row.dateKey,
+        data: JSON.stringify({
+          requests: row.requests,
+          promptTokens: row.promptTokens,
+          completionTokens: row.completionTokens,
+          cachedTokens: row.cachedTokens,
+          cost: row.cost,
+          // 保持向后兼容，但简化了结构
+        })
+      };
+    }
+  }
+  return Object.values(result);
 }
 
 function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, providerNodeNameMap) {
@@ -878,27 +935,42 @@ async function calculateUsageStats(period = "all", range = {}) {
       stats.totalCachedTokens += day.cachedTokens || 0;
       stats.totalCost += day.cost || 0;
 
-      for (const [prov, p] of Object.entries(day.byProvider || {})) {
-        if (!stats.byProvider[prov]) stats.byProvider[prov] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
-        stats.byProvider[prov].requests += p.requests || 0;
-        stats.byProvider[prov].promptTokens += p.promptTokens || 0;
-        stats.byProvider[prov].completionTokens += p.completionTokens || 0;
-        stats.byProvider[prov].cachedTokens += p.cachedTokens || 0;
-        stats.byProvider[prov].cost += p.cost || 0;
+      // 新的扁平化结构：直接从数值列读取，无需解析嵌套 JSON
+      if (dr.provider) {
+        if (!stats.byProvider[dr.provider]) {
+          stats.byProvider[dr.provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+        }
+        stats.byProvider[dr.provider].requests += dr.requests || 0;
+        stats.byProvider[dr.provider].promptTokens += dr.promptTokens || 0;
+        stats.byProvider[dr.provider].completionTokens += dr.completionTokens || 0;
+        stats.byProvider[dr.provider].cachedTokens += dr.cachedTokens || 0;
+        stats.byProvider[dr.provider].cost += dr.cost || 0;
       }
 
-      for (const [mk, m] of Object.entries(day.byModel || {})) {
-        const rawModel = m.rawModel || mk.split("|")[0];
-        const provider = m.provider || mk.split("|")[1] || "";
+      if (dr.model) {
+        const rawModel = dr.model;
+        const provider = dr.provider || "";
         const statsKey = provider ? `${rawModel} (${provider})` : rawModel;
         const providerDisplayName = providerNodeNameMap[provider] || provider;
+
         if (!stats.byModel[statsKey]) {
-          stats.byModel[statsKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, lastUsed: dateKey };
+          stats.byModel[statsKey] = {
+            requests: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            cachedTokens: 0,
+            cost: 0,
+            rawModel,
+            provider: providerDisplayName,
+            lastUsed: dateKey
+          };
         }
-        stats.byModel[statsKey].requests += m.requests || 0;
-        stats.byModel[statsKey].promptTokens += m.promptTokens || 0;
-        stats.byModel[statsKey].completionTokens += m.completionTokens || 0;
-        stats.byModel[statsKey].cachedTokens += m.cachedTokens || 0;
+
+        stats.byModel[statsKey].requests += dr.requests || 0;
+        stats.byModel[statsKey].promptTokens += dr.promptTokens || 0;
+        stats.byModel[statsKey].completionTokens += dr.completionTokens || 0;
+        stats.byModel[statsKey].cachedTokens += dr.cachedTokens || 0;
+        stats.byModel[statsKey].cost += dr.cost || 0;
         stats.byModel[statsKey].cost += m.cost || 0;
         if (dateKey > (stats.byModel[statsKey].lastUsed || "")) stats.byModel[statsKey].lastUsed = dateKey;
       }
@@ -1285,18 +1357,29 @@ export async function getChartData(period = "7d", range = {}) {
     const labelFn = useHourlyBuckets
       ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
       : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    const buckets = Array.from({ length: bucketCount }, (_, index) => ({ label: labelFn(startTime + index * bucketMs), tokens: 0, cost: 0, requests: 0 }));
+
+    // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
+    const timeFormat = useHourlyBuckets ? "%Y-%m-%d %H:00" : "%Y-%m-%d";
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}`,
+      `SELECT
+        strftime('${timeFormat}', timestamp) as bucket,
+        SUM(promptTokens + completionTokens) as tokens,
+        SUM(cost) as cost,
+        COUNT(*) as requests
+      FROM usageHistory
+      WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+      GROUP BY bucket
+      ORDER BY bucket`,
       apiKeyFilter ? [range.startDate, range.endDate, apiKeyFilter] : [range.startDate, range.endDate],
     );
+
+    // 填充所有时间桶（确保空桶也显示）
+    const buckets = Array.from({ length: bucketCount }, (_, index) => ({ label: labelFn(startTime + index * bucketMs), tokens: 0, cost: 0, requests: 0 }));
     for (const row of rows) {
-      const timestamp = new Date(row.timestamp).getTime();
-      const index = Math.floor((timestamp - startTime) / bucketMs);
+      const rowTime = new Date(row.bucket).getTime();
+      const index = Math.floor((rowTime - startTime) / bucketMs);
       if (index >= 0 && index < buckets.length) {
-        buckets[index].tokens += (row.promptTokens || 0) + (row.completionTokens || 0);
-        buckets[index].cost += row.cost || 0;
-        buckets[index].requests++;
+        buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
       }
     }
     return buckets;
@@ -1310,20 +1393,28 @@ export async function getChartData(period = "7d", range = {}) {
     const startTime = startOfDay.getTime();
     const endTime = startTime + bucketCount * bucketMs;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
+    // 使用 SQL 聚合替代 JS 分桶
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}`,
+      `SELECT
+        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
+        SUM(promptTokens + completionTokens) as tokens,
+        SUM(cost) as cost,
+        COUNT(*) as requests
+      FROM usageHistory
+      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+      GROUP BY bucket
+      ORDER BY bucket`,
       apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
     );
+
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
     for (const r of rows) {
-      const t = new Date(r.timestamp).getTime();
+      const t = new Date(r.bucket).getTime();
       if (t < startTime || t >= endTime) continue;
       const idx = Math.floor((t - startTime) / bucketMs);
       if (idx >= 0 && idx < bucketCount) {
-        buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
-        buckets[idx].cost += r.cost || 0;
-        buckets[idx].requests++;
+        buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
       }
     }
     return buckets;
@@ -1334,19 +1425,26 @@ export async function getChartData(period = "7d", range = {}) {
     const bucketMs = 3600000;
     const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
 
+    // 使用 SQL 聚合替代 JS 分桶
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}`,
+      `SELECT
+        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
+        SUM(promptTokens + completionTokens) as tokens,
+        SUM(cost) as cost,
+        COUNT(*) as requests
+      FROM usageHistory
+      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+      GROUP BY bucket
+      ORDER BY bucket`,
       apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
     );
+
+    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
     for (const r of rows) {
-      const t = new Date(r.timestamp).getTime();
-      if (t < startTime || t > now) continue;
+      const t = new Date(r.bucket).getTime();
       const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
-      buckets[idx].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
-      buckets[idx].cost += r.cost || 0;
-      buckets[idx].requests++;
+      buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
     }
     return buckets;
   }
@@ -1358,21 +1456,31 @@ export async function getChartData(period = "7d", range = {}) {
   const start = new Date(today);
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (bucketCount - 1));
+
+  // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
+  const rows = db.all(
+    `SELECT
+      strftime('%Y-%m-%d', timestamp) as bucket,
+      SUM(promptTokens + completionTokens) as tokens,
+      SUM(cost) as cost,
+      COUNT(*) as requests
+    FROM usageHistory
+    WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+    GROUP BY bucket
+    ORDER BY bucket`,
+    apiKeyFilter ? [start.toISOString(), apiKeyFilter] : [start.toISOString()],
+  );
+
   const buckets = Array.from({ length: bucketCount }, (_, i) => {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     return { label: labelFn(d), tokens: 0, cost: 0, requests: 0 };
   });
-  const rows = db.all(
-    `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}`,
-    apiKeyFilter ? [start.toISOString(), apiKeyFilter] : [start.toISOString()],
-  );
+
   for (const row of rows) {
-    const index = Math.floor((new Date(row.timestamp).getTime() - start.getTime()) / 86400000);
+    const index = Math.floor((new Date(row.bucket).getTime() - start.getTime()) / 86400000);
     if (index >= 0 && index < buckets.length) {
-      buckets[index].tokens += (row.promptTokens || 0) + (row.completionTokens || 0);
-      buckets[index].cost += row.cost || 0;
-      buckets[index].requests++;
+      buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
     }
   }
   return buckets;

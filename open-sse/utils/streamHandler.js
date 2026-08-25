@@ -198,14 +198,28 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   const clearStall = () => {
     if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
   };
-  const armStall = () => {
-    clearStall();
-    stallTimer = setTimeout(() => {
-      stallTimer = null;
-      dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
+  // 优化：使用单一定时器进行低频检查，而非每 chunk 重置定时器
+  let stallCheckTimer = null;
+  const checkStall = () => {
+    const now = Date.now();
+    const gap = now - lastChunkAt;
+    if (gap > stallTimeoutMs) {
+      dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms`);
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
-    }, stallTimeoutMs);
+      stallCheckTimer = null;
+    } else if (chunkCount > 0) {
+      // 如果还有活跃 chunk，继续检查
+      stallCheckTimer = setTimeout(checkStall, 1000); // 每秒检查一次
+    }
+  };
+
+  const armStall = () => {
+    clearStall();
+    // 启动低频检查（每秒）而非每 chunk 重置
+    if (!stallCheckTimer) {
+      stallCheckTimer = setTimeout(checkStall, 1000);
+    }
   };
 
   // Wrap controller so every termination path clears the stall timer.

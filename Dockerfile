@@ -25,11 +25,15 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories \
   && apk --no-cache upgrade
 
-COPY package.json package-lock.json ./
-# Do NOT use --omit=optional here: lightningcss / @next/swc ship their native
-# platform binaries as optionalDependencies, and Tailwind 4's CSS build
-# fails without them. Using npm ci for reproducible builds.
-RUN npm ci --registry=${NPM_REGISTRY}
+# Copy package files - prefer package-lock.json for reproducible builds
+COPY package.json package-lock.json* ./
+# Use npm ci if package-lock.json exists, otherwise fallback to npm install
+RUN if [ -f package-lock.json ]; then \
+      npm ci --registry=${NPM_REGISTRY}; \
+    else \
+      echo "Warning: package-lock.json not found, using npm install instead"; \
+      npm install --registry=${NPM_REGISTRY}; \
+    fi
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1

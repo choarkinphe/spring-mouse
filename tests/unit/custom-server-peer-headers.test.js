@@ -8,10 +8,19 @@ import { __test__ as requestDetails } from "@/lib/db/repos/requestDetailsRepo.js
 const require = createRequire(import.meta.url);
 
 let server;
+let readinessServer;
+let readinessStatus = 200;
 let baseUrl;
 let seenHeaders;
 
 beforeAll(async () => {
+  readinessServer = http.createServer((req, res) => {
+    res.statusCode = req.url === "/ready" ? readinessStatus : 404;
+    res.end();
+  });
+  await new Promise((resolve) => readinessServer.listen(0, "127.0.0.1", resolve));
+  process.env.CLOUDFLARED_METRICS_PORT = String(readinessServer.address().port);
+  process.env.CLOUDFLARED_READINESS_CACHE_MS = "0";
   require("../../custom-server.js");
   server = http.createServer((req, res) => {
     seenHeaders = req.headers;
@@ -23,6 +32,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => readinessServer.close(resolve));
+  delete process.env.CLOUDFLARED_METRICS_PORT;
+  delete process.env.CLOUDFLARED_READINESS_CACHE_MS;
 });
 
 async function get(headers = {}) {
@@ -66,6 +78,48 @@ describe("custom-server peer header sanitizing", () => {
     expect(headers["x-sm-via-proxy"]).toBe("1");
     expect(headers["x-sm-real-ip"]).toBe("203.0.113.9");
     expect(headers["x-forwarded-for"]).toBeUndefined();
+  });
+
+  it("uses Cloudflare's visitor IP only while the tunnel is connected", async () => {
+    readinessStatus = 200;
+    const headers = await get({
+      "cf-connecting-ip": "198.51.100.24",
+      "x-forwarded-for": "198.51.100.24",
+    });
+
+    expect(headers["x-sm-via-proxy"]).toBe("1");
+    expect(headers["x-sm-real-ip"]).toBe("198.51.100.24");
+  });
+
+  it("ignores every forwarded IP header while the tunnel is disconnected", async () => {
+    readinessStatus = 503;
+    const headers = await get({
+      "cf-connecting-ip": "198.51.100.24",
+      "x-forwarded-for": "198.51.100.24",
+      "x-real-ip": "198.51.100.24",
+    });
+
+    expect(headers["x-sm-via-proxy"]).toBeUndefined();
+    expect(headers["x-sm-real-ip"]).toMatch(/^(::ffff:)?127\.0\.0\.1$/);
+  });
+
+  it("uses Cloudflare's preserved IPv6 after the tunnel reconnects", async () => {
+    readinessStatus = 200;
+    const headers = await get({
+      "cf-connecting-ip": "240.0.0.1",
+      "cf-connecting-ipv6": "2001:db8::24",
+    });
+
+    expect(headers["x-sm-real-ip"]).toBe("2001:db8::24");
+  });
+
+  it("preserves X-Real-IP precedence for non-Cloudflare proxies", async () => {
+    const headers = await get({
+      "x-forwarded-for": "198.51.100.25, 192.0.2.10",
+      "x-real-ip": "198.51.100.25",
+    });
+
+    expect(headers["x-sm-real-ip"]).toBe("198.51.100.25");
   });
 
   // chat.js snapshots every client header into the request detail. Anything that grants

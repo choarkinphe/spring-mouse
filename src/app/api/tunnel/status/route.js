@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getSettings } from "@/lib/localDb";
-import { getCloudflareTunnelStatus } from "@/lib/tunnel/cloudflare/cloudflared";
+import {
+  getCloudflareTunnelStatus,
+  refreshCloudflareTunnelConnection,
+} from "@/lib/tunnel/cloudflare/cloudflared";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +11,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const settings = await getSettings();
+    await refreshCloudflareTunnelConnection();
     return NextResponse.json(getCloudflareTunnelStatus(settings), {
       headers: { "Cache-Control": "no-store" },
     });

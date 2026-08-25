@@ -14,6 +14,7 @@ function makeSupervisor(overrides = {}) {
   const supervisor = createCloudflareTunnelSupervisor({
     loadSettings: vi.fn().mockResolvedValue({ cloudflareTunnelEnabled: true }),
     getStatus: vi.fn().mockReturnValue({ running: false }),
+    refreshConnection: vi.fn().mockResolvedValue(true),
     startTunnel: vi.fn().mockResolvedValue({ running: true, publicUrl: "https://mouse.example.com" }),
     schedule,
     log: { info: vi.fn(), warn: vi.fn() },
@@ -39,16 +40,19 @@ describe("Cloudflare Tunnel startup supervisor", () => {
     expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([INITIAL_RETRY_DELAY_MS, HEALTH_CHECK_DELAY_MS]);
   });
 
-  it("does not spawn cloudflared when the existing tunnel process is healthy", async () => {
+  it("refreshes the real Edge connection state without respawning a live process", async () => {
     const startTunnel = vi.fn();
+    const refreshConnection = vi.fn().mockResolvedValue(false);
     const { supervisor, schedule } = makeSupervisor({
-      getStatus: vi.fn().mockReturnValue({ running: true }),
+      getStatus: vi.fn().mockReturnValue({ running: true, connected: false }),
+      refreshConnection,
       startTunnel,
     });
 
     await supervisor.start();
 
     expect(startTunnel).not.toHaveBeenCalled();
+    expect(refreshConnection).toHaveBeenCalledTimes(1);
     expect(schedule).toHaveBeenLastCalledWith(expect.any(Function), HEALTH_CHECK_DELAY_MS);
   });
 });

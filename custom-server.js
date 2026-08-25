@@ -16,14 +16,26 @@ const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 process.env.SPRING_MOUSE_PEER_TOKEN = PEER_TOKEN;
 
-// Comma-separated allowlist of reverse-proxy peer IPs or IPv4 CIDRs. Loopback
-// is always trusted so a same-host Nginx installation remains zero-config.
-// Never trust X-Forwarded-For from an arbitrary public or private peer.
+// Comma-separated allowlist of proxy peer IPs or IPv4 CIDRs. Loopback is
+// always trusted so same-host proxies and cloudflared tunnels remain zero-config.
+// Never trust forwarded client IP headers from an arbitrary public or private peer.
 const TRUSTED_PROXY_IPS = (process.env.TRUSTED_PROXY_IPS || "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
 
+const configuredCloudflaredMetricsPort = Number.parseInt(process.env.CLOUDFLARED_METRICS_PORT || "20241", 10);
+const CLOUDFLARED_METRICS_PORT = Number.isInteger(configuredCloudflaredMetricsPort)
+  && configuredCloudflaredMetricsPort >= 1
+  && configuredCloudflaredMetricsPort <= 65535
+  ? configuredCloudflaredMetricsPort
+  : 20241;
+const CLOUDFLARED_READINESS_TIMEOUT_MS = 500;
+const CLOUDFLARED_READINESS_CACHE_MS = Number.parseInt(
+  process.env.CLOUDFLARED_READINESS_CACHE_MS || "1000",
+  10,
+);
+let cloudflareReadiness = { connected: false, checkedAt: 0, promise: null };
 let backgroundRefreshStarted = false;
 
 function normalizeIp(ip) {
@@ -65,6 +77,42 @@ function isTrustedProxy(ip) {
   return TRUSTED_PROXY_IPS.some((rule) => matchesTrustedProxy(peer, rule));
 }
 
+function isCloudflareTunnelConnected() {
+  const now = Date.now();
+  const cacheMs = Number.isFinite(CLOUDFLARED_READINESS_CACHE_MS)
+    ? Math.max(0, CLOUDFLARED_READINESS_CACHE_MS)
+    : 1000;
+  if (cacheMs > 0 && now - cloudflareReadiness.checkedAt < cacheMs) {
+    return Promise.resolve(cloudflareReadiness.connected);
+  }
+  if (cloudflareReadiness.promise) return cloudflareReadiness.promise;
+
+  cloudflareReadiness.promise = new Promise((resolve) => {
+    let settled = false;
+    const finish = (connected) => {
+      if (settled) return;
+      settled = true;
+      cloudflareReadiness.connected = connected;
+      cloudflareReadiness.checkedAt = Date.now();
+      cloudflareReadiness.promise = null;
+      resolve(connected);
+    };
+    const readinessRequest = http.get({
+      host: "127.0.0.1",
+      port: CLOUDFLARED_METRICS_PORT,
+      path: "/ready",
+      timeout: CLOUDFLARED_READINESS_TIMEOUT_MS,
+    }, (readinessResponse) => {
+      const connected = readinessResponse.statusCode === 200;
+      readinessResponse.resume();
+      finish(connected);
+    });
+    readinessRequest.once("timeout", () => readinessRequest.destroy());
+    readinessRequest.once("error", () => finish(false));
+  });
+  return cloudflareReadiness.promise;
+}
+
 function startBackgroundTokenRefreshFromCustomServer() {
   if (backgroundRefreshStarted) return;
   backgroundRefreshStarted = true;
@@ -103,15 +151,23 @@ http.createServer = (...args) => {
   const handler = args.find((a) => typeof a === "function");
   const rest = args.filter((a) => typeof a !== "function");
   if (!handler) return origCreate(...args);
-  const wrapped = (req, res) => {
+  const wrapped = async (req, res) => {
     const socketIp = req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : "";
+    const rawCfConnectingIpv6 = req.headers["cf-connecting-ipv6"];
+    const rawCfConnectingIp = req.headers["cf-connecting-ip"];
+    const hasCloudflareHeaders = !!(rawCfConnectingIpv6 || rawCfConnectingIp);
+    const cloudflareConnected = hasCloudflareHeaders && await isCloudflareTunnelConnected();
+    const cfConnectingIpv6 = cloudflareConnected ? rawCfConnectingIpv6 : "";
+    const cfConnectingIp = cloudflareConnected ? rawCfConnectingIp : "";
     const xff = req.headers["x-forwarded-for"];
     const xRealIp = req.headers["x-real-ip"];
-    const viaProxy = !!(xff || xRealIp);
+    const viaProxy = cloudflareConnected || (!hasCloudflareHeaders && !!(xff || xRealIp));
     const trustedProxy = isTrustedProxy(socketIp);
-    // Trust forwarding headers only when the TCP peer is loopback or explicitly
-    // allowlisted. Direct/public sockets remain keyed by the peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
+    // Cloudflare-shaped requests are all-or-nothing: when /ready is not healthy,
+    // ignore every forwarded IP header and key the request by its TCP peer.
+    const proxyIp = hasCloudflareHeaders
+      ? (cfConnectingIpv6 || cfConnectingIp)
+      : (xRealIp || (xff ? String(xff).split(",")[0].trim() : ""));
     const ip = trustedProxy && proxyIp ? proxyIp : socketIp;
     // Remove externally supplied peer markers before stamping trusted values.
     // Keep the x-9r aliases for older local clients while x-sm remains canonical.

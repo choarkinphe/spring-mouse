@@ -1,6 +1,7 @@
 import { getSettings } from "@/lib/localDb";
 import {
   getCloudflareTunnelStatus,
+  refreshCloudflareTunnelConnection,
   startCloudflareTunnel,
 } from "@/lib/tunnel/cloudflare/cloudflared";
 
@@ -24,6 +25,7 @@ function scheduleUnref(fn, delayMs) {
 export function createCloudflareTunnelSupervisor({
   loadSettings = getSettings,
   getStatus = getCloudflareTunnelStatus,
+  refreshConnection = refreshCloudflareTunnelConnection,
   startTunnel = startCloudflareTunnel,
   schedule = scheduleUnref,
   log = console,
@@ -57,6 +59,7 @@ export function createCloudflareTunnelSupervisor({
         }
 
         if (getStatus(settings).running) {
+          await refreshConnection();
           retryDelayMs = INITIAL_RETRY_DELAY_MS;
           attempt = 0;
           scheduleNext(HEALTH_CHECK_DELAY_MS);
@@ -66,6 +69,7 @@ export function createCloudflareTunnelSupervisor({
         attempt += 1;
         const status = await startTunnel(settings);
         if (!status?.running) throw new Error("cloudflared did not report a running tunnel");
+        await refreshConnection();
 
         retryDelayMs = INITIAL_RETRY_DELAY_MS;
         attempt = 0;

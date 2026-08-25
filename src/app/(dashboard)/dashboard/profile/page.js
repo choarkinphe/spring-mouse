@@ -270,9 +270,9 @@ export default function ProfilePage() {
         setCloudflareTunnelToken("");
         setCloudflareTunnelMessage({
           type: "success",
-          message: data.tunnel?.publicUrl
-            ? `Cloudflare 通道已启动：${data.tunnel.publicUrl}`
-            : "Cloudflare 通道已启动",
+          message: data.tunnel?.connected
+            ? `Cloudflare 通道已连接：${data.tunnel.publicUrl}`
+            : "cloudflared 已启动，正在连接 Cloudflare Edge",
         });
       } else {
         const res = await fetch("/api/tunnel/disable", { method: "POST" });
@@ -632,7 +632,13 @@ export default function ProfilePage() {
         >
           <Badge variant={settings.requireLogin ? "success" : "warning"} size="md" icon="shield">{settings.requireLogin ? "登录保护已开启" : "登录保护未开启"}</Badge>
           <Badge variant={settings.totpEnabled ? "success" : "default"} size="md" icon="verified_user">{settings.totpEnabled ? "二次认证已开启" : "二次认证未开启"}</Badge>
-          <Badge variant={cloudflareTunnelStatus?.running ? "success" : "default"} size="md" icon="public">{cloudflareTunnelStatus?.running ? "外部通道运行中" : "外部通道未运行"}</Badge>
+          <Badge
+            variant={cloudflareTunnelStatus?.connected ? "success" : cloudflareTunnelStatus?.running ? "warning" : "default"}
+            size="md"
+            icon="public"
+          >
+            {cloudflareTunnelStatus?.connected ? "外部通道已连接" : cloudflareTunnelStatus?.running ? "外部通道连接中" : "外部通道未运行"}
+          </Badge>
           <Badge variant={proxyForm.outboundProxyEnabled ? "info" : "default"} size="md" icon="lan">{proxyForm.outboundProxyEnabled ? "出站代理已启用" : "直连模式"}</Badge>
         </DashboardHero>
 
@@ -897,7 +903,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {cloudflareTunnelStatus?.running && cloudflareTunnelStatus?.publicUrl && (
+            {cloudflareTunnelStatus?.connected && cloudflareTunnelStatus?.publicUrl && (
               <div className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-sm break-all">
                 <span className="text-text-muted">外部 API 地址：</span>
                 <code className="text-primary">{cloudflareTunnelStatus.publicUrl}/v1</code>

@@ -415,6 +415,14 @@ PxPipe 由 Dashboard 管理，可进行安装、启动、停止、重启、状�
 2. 启动或停止 Tunnel；
 3. 查看当前公开地址与运行状态。
 
+Spring Mouse 会让 `cloudflared` 在本机 `127.0.0.1:20241` 暴露 readiness/metrics 端点，并通过 `/ready` 确认至少存在一条 Cloudflare Edge 连接。只有当前 Tunnel 确认已连接时，入口才信任 `CF-Connecting-IP`；断线、未启动或 readiness 检查失败时，会忽略 Cloudflare 及其伴随的转发 IP 头并回退到 TCP 对端地址。
+
+如果 Cloudflare 使用 Pseudo IPv4 覆盖模式，则优先采用 `CF-Connecting-IPv6` 中保留的原始 IPv6。此链路由 `cloudflared` 直接回源，与 Nginx 无关，也不要求配置 `TRUSTED_PROXY_IPS`（除非 Tunnel 回源地址不是本机 loopback）。metrics 端口冲突时可修改：
+
+```dotenv
+CLOUDFLARED_METRICS_PORT=20241
+```
+
 服务进程启动时会立即按已保存的启用状态拉起 Tunnel；如果 Docker 刚重启、网络或 Cloudflare Edge 尚未就绪导致 `cloudflared` 未启动，服务会以 **3 秒、6 秒、12 秒、24 秒、之后每 30 秒** 的退避节奏持续重试。Tunnel 已运行时每 15 秒检查一次；停止 Tunnel 会同时停止该自动恢复机制。
 
 建议：
@@ -502,7 +510,8 @@ curl -fsS http://127.0.0.1:8008/api/version
 | 容器反复重启 | `docker compose logs --tail=200 spring-mouse`；检查 `.env`、挂载目录权限和端口占用。 |
 | Dashboard 打不开 | `curl http://127.0.0.1:8008/api/health`；检查 Nginx upstream、容器端口映射。 |
 | 登录 Cookie 无效 | 检查 `BASE_URL`、`NEXT_PUBLIC_BASE_URL` 和 `AUTH_COOKIE_SECURE` 是否与 HTTPS 状态一致。 |
-| 真实客户端 IP 不对 | 检查 Nginx 是否传递真实 IP 头，以及 `TRUSTED_PROXY_IPS` 是否匹配代理 TCP 对端。 |
+| Cloudflare Tunnel 客户端 IP 不对 | 刷新 Tunnel 状态并确认 `connected=true`；检查 `CF-Connecting-IP`、`CLOUDFLARED_METRICS_PORT` 和本机 `/ready`。 |
+| 其他反向代理客户端 IP 不对 | 检查代理是否传递真实 IP 头，以及 `TRUSTED_PROXY_IPS` 是否匹配代理 TCP 对端。 |
 | 上游请求失败 | Dashboard 检查通道认证、账号状态、模型可用性、配额和上游代理。 |
 | 某策略未按预期选模型 | 检查候选模型时段、能力要求、策略模式、通道账号可用性和请求日志。 |
 | Headroom 不可用 | 检查 `HEADROOM_URL` 在 Spring Mouse 容器网络中的可达性，再在 Token Saver 页面测试。 |

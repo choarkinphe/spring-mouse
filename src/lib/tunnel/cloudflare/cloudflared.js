@@ -6,9 +6,17 @@ import { clearPid, loadPid, savePid } from "./pid.js";
 
 const TUNNEL_DIR = path.join(DATA_DIR, "tunnel");
 const STATE_FILE = path.join(TUNNEL_DIR, "cloudflare.json");
+const configuredMetricsPort = Number.parseInt(process.env.CLOUDFLARED_METRICS_PORT || "20241", 10);
+const METRICS_PORT = Number.isInteger(configuredMetricsPort)
+  && configuredMetricsPort >= 1
+  && configuredMetricsPort <= 65535
+  ? configuredMetricsPort
+  : 20241;
+const METRICS_ADDRESS = `127.0.0.1:${METRICS_PORT}`;
+const READINESS_URL = `http://${METRICS_ADDRESS}/ready`;
 
 if (!globalThis.__springMouseCloudflareTunnel) {
-  globalThis.__springMouseCloudflareTunnel = { child: null, startPromise: null };
+  globalThis.__springMouseCloudflareTunnel = { child: null, startPromise: null, connected: false };
 }
 const runtime = globalThis.__springMouseCloudflareTunnel;
 
@@ -79,6 +87,7 @@ function buildStatus(settings = {}) {
   return {
     enabled: running,
     running,
+    connected: running && runtime.connected === true,
     provider: "cloudflare",
     publicUrl,
     tunnelUrl: publicUrl,
@@ -98,8 +107,30 @@ function normalizeStoredPublicUrl(value) {
 
 export function getCloudflareTunnelStatus(settings = {}) {
   const status = buildStatus(settings);
-  if (!status.running && loadPid()) clearPid();
+  if (!status.running) {
+    runtime.connected = false;
+    if (loadPid()) clearPid();
+  }
   return { ...status, enabled: status.running };
+}
+
+export async function refreshCloudflareTunnelConnection({ fetchImpl = fetch } = {}) {
+  const status = buildStatus();
+  if (!status.running) {
+    runtime.connected = false;
+    return false;
+  }
+
+  try {
+    const response = await fetchImpl(READINESS_URL, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(500),
+    });
+    runtime.connected = response.status === 200;
+  } catch {
+    runtime.connected = false;
+  }
+  return runtime.connected;
 }
 
 export async function startCloudflareTunnel(settings = {}) {
@@ -120,7 +151,7 @@ export async function startCloudflareTunnel(settings = {}) {
       return;
     }
 
-    const args = ["--no-autoupdate", "tunnel", "run", "--token", token];
+    const args = ["--no-autoupdate", "tunnel", "--metrics", METRICS_ADDRESS, "run", "--token", token];
     let settled = false;
     let output = "";
     let cloudflaredProcess;
@@ -153,6 +184,7 @@ export async function startCloudflareTunnel(settings = {}) {
     }
 
     runtime.child = cloudflaredProcess;
+    runtime.connected = false;
     if (cloudflaredProcess.pid) savePid(cloudflaredProcess.pid);
 
     const consumeOutput = (chunk) => {
@@ -170,6 +202,7 @@ export async function startCloudflareTunnel(settings = {}) {
     cloudflaredProcess.once("exit", (code, signal) => {
       clearPid(cloudflaredProcess.pid);
       if (runtime.child === cloudflaredProcess) runtime.child = null;
+      runtime.connected = false;
       if (!settled) {
         const suffix = output.trim() ? `: ${output.trim().split("\n").slice(-4).join(" ")}` : "";
         fail(new Error(`cloudflared exited (${signal || code || "unknown"})${suffix}`));
@@ -178,8 +211,9 @@ export async function startCloudflareTunnel(settings = {}) {
 
     // A named tunnel has no generated URL to wait for. A short grace period
     // catches immediate token/binary failures before reporting success.
-    timeout = setTimeout(() => {
+    timeout = setTimeout(async () => {
       if (currentChildIsRunning()) {
+        await refreshCloudflareTunnelConnection();
         writeState({ publicUrl, pid: cloudflaredProcess.pid, startedAt: new Date().toISOString() });
         finish(resolve, getCloudflareTunnelStatus(settings));
         return;
@@ -209,6 +243,7 @@ export async function stopCloudflareTunnel() {
   else clearPid();
   runtime.child = null;
   runtime.startPromise = null;
+  runtime.connected = false;
   removeState();
-  return { enabled: false, running: false, provider: "cloudflare", publicUrl: "", tunnelUrl: "", shortId: "" };
+  return { enabled: false, running: false, connected: false, provider: "cloudflare", publicUrl: "", tunnelUrl: "", shortId: "" };
 }

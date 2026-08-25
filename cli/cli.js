@@ -332,8 +332,9 @@ function killAllAppProcesses(appPort) {
           }
         });
 
-        // Wait for processes to fully terminate
-        setTimeout(() => resolve(), 1000);
+        // Wait for processes to fully terminate - reduce fixed delay
+        // Use shorter delay with process management best-effort
+        setTimeout(() => resolve(), 200);
       } else {
         resolve();
       }
@@ -430,8 +431,8 @@ function killProcessOnPort(port) {
         }
       }
 
-      // Wait for port to be released
-      setTimeout(() => resolve(), 500);
+      // Wait for port to be released - reduce fixed delay
+      setTimeout(() => resolve(), 100);
     } catch (err) {
       // Silent fail - continue anyway
       resolve();

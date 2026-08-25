@@ -23,14 +23,13 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # CI-friendly apk repositories (Aliyun mirror; official CDN stalls from CN agents)
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories \
-  && apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
+  && apk --no-cache upgrade
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 # Do NOT use --omit=optional here: lightningcss / @next/swc ship their native
 # platform binaries as optionalDependencies, and Tailwind 4's CSS build
-# fails without them (better-sqlite3 gets installed too — the toolchain
-# layer above compiles it; it is simply unused at runtime).
-RUN npm install --registry=${NPM_REGISTRY}
+# fails without them. Using npm ci for reproducible builds.
+RUN npm ci --registry=${NPM_REGISTRY}
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1

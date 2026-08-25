@@ -229,8 +229,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Covers both passthrough (source shape) and translated (target shape) flows
   const finalFormat = passthrough ? sourceFormat : targetFormat;
 
-  // Request line: one correlated summary (fmt + thinking + counts + account)
-  if (log?.line) {
+  // Request line: one correlated summary (fmt + thinking + counts + account).
+  // routeLine bypasses the normal INFO threshold so routing remains observable
+  // with the production default LOG_LEVEL=WARN. Fall back for open-sse consumers.
+  const writeRouteLine = log?.routeLine || log?.line;
+  if (writeRouteLine) {
     const clientModel = clientRawRequest?.body?.model || `${provider}/${model}`;
     const msgN = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || body.messages?.length || body.input?.length || 0;
     const toolN = translatedBody.tools?.length || body.tools?.length || 0;
@@ -247,7 +250,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (toolN) parts.push(`${toolN} TOOL`);
     if (think) parts.push(`THINK:${think}`);
     parts.push(`ACC:${acc}`);
-    log.line(reqTag, "▶", parts.join(" · "));
+    writeRouteLine(reqTag, "▶", parts.join(" · "));
   }
 
   // TTS models don't support tool messages/function calling

@@ -39,6 +39,12 @@ export function line(tag, symbol, message) {
   console.log(`[${formatTime()}] ${tag} ${symbol} ${message}`);
 }
 
+// Model routing is essential operational context, so keep the request summary
+// visible even when normal INFO traffic is suppressed by the default WARN level.
+export function routeLine(tag, symbol, message) {
+  console.log(`[${formatTime()}] ${tag} ${symbol} ${message}`);
+}
+
 // Like line() but always printed regardless of LOG_LEVEL (errors must never be hidden)
 export function errorLine(tag, symbol, message) {
   console.error(`[${formatTime()}] ${tag} ${symbol} ${message}`);

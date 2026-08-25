@@ -63,8 +63,10 @@ export function createSSEStream(options = {}) {
     : null;
 
   let totalContentLength = 0;
-  let accumulatedContent = "";
-  let accumulatedThinking = "";
+  // Memory optimization: use arrays instead of string concatenation to reduce
+  // memory pressure on long streams. Only concatenate when actually needed.
+  let accumulatedContent = [];
+  let accumulatedThinking = [];
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -161,11 +163,11 @@ export function createSSEStream(options = {}) {
               const reasoning = delta?.reasoning_content;
               if (content && typeof content === "string") {
                 totalContentLength += content.length;
-                accumulatedContent += content;
+                accumulatedContent.push(content);
               }
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
-                accumulatedThinking += reasoning;
+                accumulatedThinking.push(reasoning);
               }
 
               const isFinishChunk = parsed.choices?.[0]?.finish_reason;
@@ -194,6 +196,8 @@ export function createSSEStream(options = {}) {
           }
 
           if (!injectedUsage) {
+            // Fast path optimization: if no injections/modifications needed,
+            // forward data as-is to avoid JSON.parse/stringify overhead
             if (line.startsWith("data:") && !line.startsWith("data: ")) {
               output = "data: " + line.slice(5) + "\n";
             } else {
@@ -248,25 +252,25 @@ export function createSSEStream(options = {}) {
         // Claude format - content
         if (parsed.delta?.text) {
           totalContentLength += parsed.delta.text.length;
-          accumulatedContent += parsed.delta.text;
+          accumulatedContent.push(parsed.delta.text);
         }
         // Claude format - thinking
         if (parsed.delta?.thinking) {
           totalContentLength += parsed.delta.thinking.length;
-          accumulatedThinking += parsed.delta.thinking;
+          accumulatedThinking.push(parsed.delta.thinking);
         }
-        
+
         // OpenAI format - content
         if (parsed.choices?.[0]?.delta?.content) {
           totalContentLength += parsed.choices[0].delta.content.length;
-          accumulatedContent += parsed.choices[0].delta.content;
+          accumulatedContent.push(parsed.choices[0].delta.content);
         }
         // OpenAI format - reasoning
         if (parsed.choices?.[0]?.delta?.reasoning_content) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
-          accumulatedThinking += parsed.choices[0].delta.reasoning_content;
+          accumulatedThinking.push(parsed.choices[0].delta.reasoning_content);
         }
-        
+
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {
           for (const part of parsed.candidates[0].content.parts) {
@@ -274,9 +278,9 @@ export function createSSEStream(options = {}) {
               totalContentLength += part.text.length;
               // Check if this is thinking content
               if (part.thought === true) {
-                accumulatedThinking += part.text;
+                accumulatedThinking.push(part.text);
               } else {
-                accumulatedContent += part.text;
+                accumulatedContent.push(part.text);
               }
             }
           }
@@ -379,8 +383,8 @@ export function createSSEStream(options = {}) {
 
           if (onStreamComplete) {
             onStreamComplete({
-              content: accumulatedContent,
-              thinking: accumulatedThinking
+              content: accumulatedContent.length > 0 ? accumulatedContent.join('') : "",
+              thinking: accumulatedThinking.length > 0 ? accumulatedThinking.join('') : ""
             }, usage, ttftAt);
           }
           return;
@@ -456,8 +460,8 @@ export function createSSEStream(options = {}) {
         
         if (onStreamComplete) {
           onStreamComplete({
-            content: accumulatedContent,
-            thinking: accumulatedThinking
+            content: accumulatedContent.length > 0 ? accumulatedContent.join('') : "",
+            thinking: accumulatedThinking.length > 0 ? accumulatedThinking.join('') : ""
           }, state?.usage, ttftAt);
         }
       } catch (error) {

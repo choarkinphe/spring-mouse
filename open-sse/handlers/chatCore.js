@@ -267,9 +267,66 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const rtkLine = formatRtkLog(rtkStats);
   if (rtkLine) console.log(rtkLine);
 
-  // Headroom: optional external proxy compression; fail open if proxy is absent.
+  // Parallel execution of token-savers: Headroom and PXPIPE run concurrently
+  // to avoid worst-case 18s TTFT penalty (9s + 9s sequential timeouts). Combined
+  // timeout budget instead of sequential: both complete within ~3-5s total.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
+  let headroomStats = null;
+  let pxpipeResult = null;
+
+  // Track parallel operations for unified error handling
+  const parallelOps = [];
+
+  // Headroom: optional external proxy compression; fail open if proxy is absent.
+  if (tokenSaverEnabled && headroomEnabled && headroomUrl) {
+    parallelOps.push(
+      compressWithHeadroom(translatedBody, {
+        enabled: true, url: headroomUrl, model: upstreamModel, format: finalFormat,
+        compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics
+      }).catch(err => {
+        // Fail-open: log error but don't break the request
+        if (headroomDiagnostics && !headroomDiagnostics.reason) {
+          headroomDiagnostics.reason = `headroom failed: ${err?.message || String(err)}`;
+        }
+        return null;
+      })
+    );
+  }
+
+  // PXPIPE: image bulky context (Claude-format bodies only)
+  if (pxpipeEnabled) {
+    parallelOps.push(
+      compressWithPxpipe(translatedBody, {
+        enabled: true, format: finalFormat, model: upstreamModel,
+        minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
+      }).catch(err => {
+        // Fail-open: return null result but preserve error info
+        return { body: null, summary: { applied: false, reason: `pxpipe failed: ${err?.message || String(err)}` } };
+      })
+    );
+  }
+
+  // Execute all token-savers in parallel with combined timeout budget
+  if (parallelOps.length > 0) {
+    const COMBINED_TIMEOUT_MS = 5000; // Combined budget instead of sequential 9s+15s
+    const results = await Promise.race([
+      Promise.all(parallelOps),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Token-saver combined timeout')), COMBINED_TIMEOUT_MS)
+      )
+    ]).catch(err => {
+      // Timeout or other errors: log but continue with partial/failed results
+      log?.warn?.("TOKEN-SAVER", `parallel execution timeout/error: ${err?.message || String(err)}`);
+      return parallelOps.map(() => null); // Return nulls for all operations
+    });
+
+    if (results) {
+      headroomStats = results[0] || null;
+      pxpipeResult = results[1] || null;
+    }
+  }
+
+  // Process Headroom results (now completed in parallel)
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
@@ -294,13 +351,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     xf.push(`PONYTAIL:${ponytailLevel}`);
   }
 
-  // PXPIPE: image bulky context (Claude-format bodies only), last saver before dispatch
+  // Process PXPIPE results (now completed in parallel)
   let pxpipeSummary = null;
-  if (pxpipeEnabled) {
-    const pxpipeResult = await compressWithPxpipe(translatedBody, {
-      enabled: true, format: finalFormat, model: upstreamModel,
-      minChars: pxpipeMinChars, timeoutMs: pxpipeTimeoutMs, transform: pxpipeTransform,
-    });
+  if (pxpipeResult) {
     pxpipeSummary = pxpipeResult.summary;
     if (pxpipeResult.body) translatedBody = pxpipeResult.body;
     if (pxpipeSummary?.applied) xf.push(`PXPIPE:${pxpipeSummary.imageCount}img`);

@@ -1,6 +1,21 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 
+// lastUsedAt写节流缓存，避免每请求写数据库
+const lastUsedAtCache = new Map();
+const LASTUSEDAT_THROTTLE_MS = 60000; // 60秒节流
+const LASTUSEDAT_CACHE_MAX_SIZE = 1000; // 最大缓存条目数
+
+function trimLastUsedAtCache() {
+  if (lastUsedAtCache.size > LASTUSEDAT_CACHE_MAX_SIZE) {
+    const entries = Array.from(lastUsedAtCache.entries());
+    lastUsedAtCache.clear();
+    entries.slice(-Math.floor(LASTUSEDAT_CACHE_MAX_SIZE / 2)).forEach(([key, value]) => {
+      lastUsedAtCache.set(key, value);
+    });
+  }
+}
+
 function normalizeQuotaMode(mode) {
   return ["off", "limited", "unlimited"].includes(mode) ? mode : "unlimited";
 }
@@ -97,6 +112,17 @@ export async function validateApiKey(key) {
   // `validateApiKey` is the common successful-auth path, so it doubles as the
   // lightweight audit point for the credentials page. Keep the value in UTC
   // ISO format so the UI can render an absolute or relative timestamp safely.
-  db.run(`UPDATE apiKeys SET lastUsedAt = ? WHERE id = ?`, [new Date().toISOString(), row.id]);
+
+  // 节流逻辑：同一 Key 60秒内不重复写数据库，减少高频调用的写入量
+  const now = Date.now();
+  const lastUpdate = lastUsedAtCache.get(key) || 0;
+
+  if (now - lastUpdate > LASTUSEDAT_THROTTLE_MS) {
+    // 超过节流时间，更新数据库
+    db.run(`UPDATE apiKeys SET lastUsedAt = ? WHERE id = ?`, [new Date().toISOString(), row.id]);
+    lastUsedAtCache.set(key, now);
+    trimLastUsedAtCache();
+  }
+
   return true;
 }

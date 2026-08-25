@@ -2,8 +2,6 @@
 // Loaded only when process.versions.bun is present.
 import { PRAGMA_SQL } from "../schema.js";
 
-const CHECKPOINT_INTERVAL_MS = 60 * 1000;
-
 export async function createBunSqliteAdapter(filePath) {
   // Dynamic import — only resolves under Bun runtime
   const { Database } = await import("bun:sqlite");
@@ -20,10 +18,8 @@ export async function createBunSqliteAdapter(filePath) {
     return stmt;
   }
 
-  const checkpointTimer = setInterval(() => {
-    try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {}
-  }, CHECKPOINT_INTERVAL_MS);
-  if (typeof checkpointTimer.unref === "function") checkpointTimer.unref();
+  // `wal_autocheckpoint` from PRAGMA_SQL handles routine maintenance.
+  // Reserve TRUNCATE for shutdown, when it cannot interrupt live requests.
 
   function gracefulClose() {
     try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {}
@@ -55,7 +51,6 @@ export async function createBunSqliteAdapter(filePath) {
     },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {
-      clearInterval(checkpointTimer);
       gracefulClose();
     },
     raw: db,

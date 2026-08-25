@@ -5,12 +5,17 @@
 // to bump only skips that backup — it does NOT break the additive auto-sync.
 export const SCHEMA_VERSION = 12;
 
+// Keep the shared page cache bounded. The former 64 MiB cap was excessive for
+// this single-process control plane and could inflate RSS on small containers.
+// Let SQLite checkpoint incrementally as WAL grows. A forced TRUNCATE from a
+// timer can block active readers/writers and causes needless periodic CPU/IO.
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
+PRAGMA cache_size = -16000;
+PRAGMA wal_autocheckpoint = 1000;
 PRAGMA temp_store = MEMORY;
 PRAGMA mmap_size = 30000000;
-PRAGMA cache_size = -64000;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 `;

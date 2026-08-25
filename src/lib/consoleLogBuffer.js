@@ -26,6 +26,8 @@ if (!state.flushTimer) state.flushTimer = null;
 
 const FLUSH_INTERVAL_MS = 100;
 const MAX_BATCH_LINES = 50;
+const MAX_LINE_CHARS = 32 * 1024;
+const TRUNCATION_SUFFIX = "… [console line truncated]";
 
 function flushPendingLines() {
   state.flushTimer = null;
@@ -42,7 +44,9 @@ function scheduleFlush() {
 }
 
 function toLogLine(level, args) {
-  return args.map(formatArg).join(" ");
+  const line = args.map(formatArg).join(" ");
+  if (line.length <= MAX_LINE_CHARS) return line;
+  return `${line.slice(0, MAX_LINE_CHARS - TRUNCATION_SUFFIX.length)}${TRUNCATION_SUFFIX}`;
 }
 
 // Strip ANSI escape codes so terminal colors don't bleed into UI
@@ -66,7 +70,7 @@ function appendLine(line) {
   state.logs.push(line);
   const maxLines = CONSOLE_LOG_CONFIG.maxLines;
   if (state.logs.length > maxLines) {
-    state.logs = state.logs.slice(-maxLines);
+    state.logs.splice(0, state.logs.length - maxLines);
   }
   state.pendingLines.push(line);
   if (state.pendingLines.length >= MAX_BATCH_LINES) {

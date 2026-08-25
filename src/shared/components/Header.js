@@ -151,6 +151,13 @@ const getPageInfo = (pathname) => {
       icon: "monitor",
       breadcrumbs: [],
     };
+  if (pathname.includes("/chat-debug"))
+    return {
+      title: "对话调试",
+      description: "实测生产链路响应速度",
+      icon: "forum",
+      breadcrumbs: [],
+    };
   return { title: "", description: "", breadcrumbs: [] };
 };
 

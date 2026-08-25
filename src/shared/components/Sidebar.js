@@ -28,6 +28,7 @@ const systemItems = [
 
 const debugItems = [
   { href: "/dashboard/console-log", label: "控制台日志", icon: "terminal" },
+  { href: "/dashboard/chat-debug", label: "对话调试", icon: "forum" },
   { href: "/dashboard/translator", label: "翻译器", icon: "translate" },
 ];
 

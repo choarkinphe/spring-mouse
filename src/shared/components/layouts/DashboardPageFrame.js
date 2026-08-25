@@ -13,6 +13,7 @@ const PAGE_META = [
   { match: (path) => path.startsWith("/dashboard/usage"), index: "05", title: "使用情况", description: "查看请求流量、令牌消耗和运行分布。", module: "OBSERVABILITY" },
   { match: (path) => path.startsWith("/dashboard/translator"), index: "08", title: "翻译器", description: "检查不同协议格式之间的请求转换过程。", module: "TRANSLATION" },
   { match: (path) => path.startsWith("/dashboard/console-log"), index: "09", title: "控制台日志", description: "实时查看服务日志与运行状态输出。", module: "SYSTEM LOG" },
+  { match: (path) => path.startsWith("/dashboard/chat-debug"), index: "13", title: "对话调试", description: "选择路由策略中的模型，实测生产链路的 TTFT 与吞吐。", module: "CHAT DEBUG" },
   { match: (path) => path.startsWith("/dashboard/basic-chat"), index: "10", title: "基础对话", description: "使用当前路由配置直接验证模型响应。", module: "CHAT" },
   { match: (path) => path.startsWith("/dashboard/pxpipe"), index: "11", title: "PXPIPE", description: "管理本地提示词压缩服务与运行状态。", module: "PROCESSING" },
 ];
@@ -29,11 +30,11 @@ function getPageMeta(pathname) {
 export default function DashboardPageFrame({ children }) {
   const pathname = usePathname();
   const meta = getPageMeta(pathname || "");
-  const isConsoleLog = pathname?.startsWith("/dashboard/console-log");
+  const isFullHeight = pathname?.startsWith("/dashboard/console-log") || pathname?.startsWith("/dashboard/chat-debug");
   const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname === "/dashboard/endpoint";
 
   return (
-    <div className={`mx-auto w-full ${isConsoleLog ? "h-full min-h-0 max-w-none pb-0" : isWideWorkspace ? "max-w-[108rem] pb-8" : "max-w-6xl pb-8"}`}>
+    <div className={`mx-auto w-full ${isFullHeight ? "h-full min-h-0 max-w-none pb-0" : isWideWorkspace ? "max-w-[108rem] pb-8" : "max-w-6xl pb-8"}`}>
       {children}
     </div>
   );

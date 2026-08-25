@@ -920,7 +920,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 
   const hasDateRange = Boolean(range.startDate && range.endDate);
   stats.recentCallDetails = getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, providerNodeNameMap);
-  const useDailySummary = true;
+  const useDailySummary = false; // Revert to false until usageDaily schema is migrated to flat structure
 
   if (useDailySummary) {
     const periodDays = { "7d": 7, "30d": 30, "60d": 60 };
@@ -935,16 +935,18 @@ async function calculateUsageStats(period = "all", range = {}) {
       stats.totalCachedTokens += day.cachedTokens || 0;
       stats.totalCost += day.cost || 0;
 
-      // 新的扁平化结构：直接从数值列读取，无需解析嵌套 JSON
-      if (dr.provider) {
-        if (!stats.byProvider[dr.provider]) {
-          stats.byProvider[dr.provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+      // 兼容旧 JSON blob 结构：从 data 列解析数据
+      if (day.provider && day.stats) {
+        for (const [provider, providerStats] of Object.entries(day.stats)) {
+          if (!stats.byProvider[provider]) {
+            stats.byProvider[provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+          }
+          stats.byProvider[provider].requests += providerStats.requests || 0;
+          stats.byProvider[provider].promptTokens += providerStats.promptTokens || 0;
+          stats.byProvider[provider].completionTokens += providerStats.completionTokens || 0;
+          stats.byProvider[provider].cachedTokens += providerStats.cachedTokens || 0;
+          stats.byProvider[provider].cost += providerStats.cost || 0;
         }
-        stats.byProvider[dr.provider].requests += dr.requests || 0;
-        stats.byProvider[dr.provider].promptTokens += dr.promptTokens || 0;
-        stats.byProvider[dr.provider].completionTokens += dr.completionTokens || 0;
-        stats.byProvider[dr.provider].cachedTokens += dr.cachedTokens || 0;
-        stats.byProvider[dr.provider].cost += dr.cost || 0;
       }
 
       if (dr.model) {

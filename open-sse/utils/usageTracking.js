@@ -325,9 +325,16 @@ export function mergeUsage(prev, next) {
 /**
  * Estimate input tokens from request body
  * Calculate total body size for more accurate estimation
+ * @param {object} body - Request body to estimate
+ * @param {object} cachedInputEstimate - Optional cached estimate object to reuse
  */
-export function estimateInputTokens(body) {
+export function estimateInputTokens(body, cachedInputEstimate = null) {
   if (!body || typeof body !== "object") return 0;
+
+  // 如果提供了缓存的结果，直接复用（避免重复的 JSON.stringify）
+  if (cachedInputEstimate !== null && typeof cachedInputEstimate === 'number') {
+    return cachedInputEstimate;
+  }
 
   try {
     // Calculate total body size (includes messages, tools, system, thinking config, etc.)

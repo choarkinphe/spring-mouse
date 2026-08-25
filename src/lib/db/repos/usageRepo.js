@@ -863,7 +863,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 
   const hasDateRange = Boolean(range.startDate && range.endDate);
   stats.recentCallDetails = getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, providerNodeNameMap);
-  const useDailySummary = false;
+  const useDailySummary = true;
 
   if (useDailySummary) {
     const periodDays = { "7d": 7, "30d": 30, "60d": 60 };

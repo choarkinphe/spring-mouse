@@ -32,7 +32,7 @@ const CLOUDFLARED_METRICS_PORT = Number.isInteger(configuredCloudflaredMetricsPo
   : 20241;
 const CLOUDFLARED_READINESS_TIMEOUT_MS = 500;
 const CLOUDFLARED_READINESS_CACHE_MS = Number.parseInt(
-  process.env.CLOUDFLARED_READINESS_CACHE_MS || "1000",
+  process.env.CLOUDFLARED_READINESS_CACHE_MS || "5000",
   10,
 );
 let cloudflareReadiness = { connected: false, checkedAt: 0, promise: null };

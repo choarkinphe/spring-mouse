@@ -50,8 +50,9 @@ export async function getPricing() {
 
 export async function getPricingForModel(provider, model) {
   if (!model) return null;
-  const userPricing = await getUserPricing();
-  if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+  // 复用缓存的 getPricing() 而非直接读 KV，避免每请求全量扫描 pricing scope
+  const allPricing = await getPricing();
+  if (provider && allPricing[provider]?.[model]) return allPricing[provider][model];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }

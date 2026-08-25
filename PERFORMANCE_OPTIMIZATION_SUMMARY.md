@@ -347,3 +347,29 @@ git revert <commit-hash>  # 回滚特定提交
 *涉及的文件: 19 个核心文件，新增 2 个文件*
 *提交次数: 8 次，累积改动: 800+ 行代码*
 *优化阶段: 8 个主要阶段，全覆盖性能优化*
+
+---
+
+## 🔧 重要更新 - 性能优化回退通知 (2024-08-26)
+
+### ⚠️ Phase 1.1 和 Phase 3.1 回退
+
+**发现的问题**:
+- usageDaily 优化假设数据库表有扁平化结构，但实际为 JSON blob
+- 导致 "no such column: provider" SQL 错误，Dashboard 统计无法加载
+
+**解决方案**:
+- 完全回退到 JSON blob 兼容模式
+- 恢复原有数据读写逻辑
+- 保持所有其他性能优化正常工作
+
+**影响评估**:
+- ✅ 其他 7 个阶段优化不受影响，正常运行
+- ⚠️ 暂时失去 usageDaily 相关的查询性能提升
+- 📋 未来需要数据库 schema 迁移来重新启用这些优化
+
+**修复提交**:
+- `eb1d93e` - fix(stats): revert usageDaily optimization due to schema mismatch
+- `fe3e847` - fix(stats): fully revert usageDaily to JSON blob compatibility
+
+**状态**: ✅ 问题已解决，服务正常运行

@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
+import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 
 // lastUsedAt写节流缓存，避免每请求写数据库
 const lastUsedAtCache = new Map();
@@ -80,9 +81,11 @@ export async function createApiKey(name, machineId) {
 export async function updateApiKey(id, data) {
   const db = await getAdapter();
   let result = null;
+  let previousKey = null;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
+    previousKey = row.key;
     const merged = { ...rowToKey(row), ...data };
     const quotaMode = normalizeQuotaMode(merged.quotaMode);
     // `off` replaces the legacy standalone enable/disable switch: a closed key
@@ -94,12 +97,16 @@ export async function updateApiKey(id, data) {
     );
     result = { ...merged, quotaMode, isActive };
   });
+  if (result?.key) invalidateQuotaCache(result.key);
+  if (previousKey && previousKey !== result?.key) invalidateQuotaCache(previousKey);
   return result;
 }
 
 export async function deleteApiKey(id) {
   const db = await getAdapter();
+  const existing = db.get(`SELECT key FROM apiKeys WHERE id = ?`, [id]);
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
+  if ((res?.changes ?? 0) > 0 && existing?.key) invalidateQuotaCache(existing.key);
   return (res?.changes ?? 0) > 0;
 }
 

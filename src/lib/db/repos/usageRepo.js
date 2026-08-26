@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
@@ -491,9 +492,9 @@ export async function saveRequestUsage(entry) {
     const requestId = entry.requestId || randomUUID();
     const rawApiKey = typeof entry.apiKey === "string" ? entry.apiKey : null;
     const knownKey = entry.apiKeyId
-      ? { id: entry.apiKeyId }
+      ? db.get(`SELECT id, key FROM apiKeys WHERE id = ?`, [entry.apiKeyId]) || { id: entry.apiKeyId }
       : rawApiKey
-        ? db.get(`SELECT id FROM apiKeys WHERE key = ?`, [rawApiKey])
+        ? db.get(`SELECT id, key FROM apiKeys WHERE key = ?`, [rawApiKey])
         : null;
     const apiKeyId = knownKey?.id
       || (rawApiKey ? externalApiKeyId(db, rawApiKey) : "local-no-key");
@@ -552,25 +553,9 @@ export async function saveRequestUsage(entry) {
         );
       }
 
-      const dateKey = getLocalDateKey(record.startedAt);
-      const promptTokens = record.tokens?.prompt_tokens || record.tokens?.input_tokens || 0;
-      const completionTokens = record.tokens?.completion_tokens || record.tokens?.output_tokens || 0;
-      const cachedTokens = record.tokens?.cached_tokens || record.tokens?.cache_read_input_tokens || 0;
-      const cost = record.cost || 0;
-
-      // 使用增量UPSERT替代JSON blob读写，性能提升显著
-      db.run(`
-        INSERT INTO usageDaily (dateKey, provider, model, apiKeyId, requests, promptTokens, completionTokens, cachedTokens, cost)
-        VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
-        ON CONFLICT (dateKey, provider, model, apiKeyId) DO UPDATE SET
-          requests = requests + 1,
-          promptTokens = promptTokens + ?,
-          completionTokens = completionTokens + ?,
-          cachedTokens = cachedTokens + ?,
-          cost = cost + ?
-      `, [dateKey, record.provider, record.model, record.apiKeyId || '',
-          promptTokens, completionTokens, cachedTokens, cost,
-          promptTokens, completionTokens, cachedTokens, cost]);
+      // usageDaily still uses the legacy JSON-blob schema. Exact dashboard
+      // stats already read usageHistory, so do not write the incompatible flat
+      // columns here; that statement rolled back the entire usage transaction.
 
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
@@ -579,6 +564,13 @@ export async function saveRequestUsage(entry) {
     });
 
     if (inserted) {
+      // New successful usage changes the rolling quota aggregate. Invalidate
+      // through the dependency-free cache module so writes never import the
+      // quota service and create a circular dependency.
+      const quotaCacheKey = rawApiKey || knownKey?.key;
+      const usageAffectsQuota = ["success", "ok"].includes(record.status || "success")
+        && promptTokens + completionTokens > 0;
+      if (quotaCacheKey && usageAffectsQuota) invalidateQuotaCache(quotaCacheKey);
       clearUsageStatsCache();
       pushToRing(record);
       scheduleStatsEvent("update", 250);
@@ -1344,6 +1336,44 @@ export async function getUsageStats(period = "all", range = {}) {
   return promise;
 }
 
+function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn }) {
+  const startIso = new Date(startTime).toISOString();
+  const endIso = new Date(endTime).toISOString();
+  const rows = db.all(
+    `SELECT
+      CAST(((julianday(timestamp) - julianday(?)) * 86400000.0) / ? AS INTEGER) AS bucketIndex,
+      SUM(promptTokens + completionTokens) AS tokens,
+      SUM(cost) AS cost,
+      COUNT(*) AS requests
+    FROM usageHistory
+    WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+    GROUP BY bucketIndex
+    ORDER BY bucketIndex`,
+    apiKeyFilter
+      ? [startIso, bucketMs, startIso, endIso, apiKeyFilter]
+      : [startIso, bucketMs, startIso, endIso],
+  );
+
+  const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+    label: labelFn(startTime + index * bucketMs),
+    tokens: 0,
+    cost: 0,
+    requests: 0,
+  }));
+  for (const row of rows) {
+    const index = Number(row.bucketIndex);
+    if (index >= 0 && index < bucketCount) {
+      buckets[index] = {
+        label: labelFn(startTime + index * bucketMs),
+        tokens: Number(row.tokens) || 0,
+        cost: Number(row.cost) || 0,
+        requests: Number(row.requests) || 0,
+      };
+    }
+  }
+  return buckets;
+}
+
 export async function getChartData(period = "7d", range = {}) {
   const db = await getAdapter();
   const now = Date.now();
@@ -1360,31 +1390,7 @@ export async function getChartData(period = "7d", range = {}) {
       ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
       : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
-    const timeFormat = useHourlyBuckets ? "%Y-%m-%d %H:00" : "%Y-%m-%d";
-    const rows = db.all(
-      `SELECT
-        strftime('${timeFormat}', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [range.startDate, range.endDate, apiKeyFilter] : [range.startDate, range.endDate],
-    );
-
-    // 填充所有时间桶（确保空桶也显示）
-    const buckets = Array.from({ length: bucketCount }, (_, index) => ({ label: labelFn(startTime + index * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const row of rows) {
-      const rowTime = new Date(row.bucket).getTime();
-      const index = Math.floor((rowTime - startTime) / bucketMs);
-      if (index >= 0 && index < buckets.length) {
-        buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
-      }
-    }
-    return buckets;
+    return getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn });
   }
 
   if (period === "today") {
@@ -1393,99 +1399,43 @@ export async function getChartData(period = "7d", range = {}) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const startTime = startOfDay.getTime();
-    const endTime = startTime + bucketCount * bucketMs;
-    const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    // 使用 SQL 聚合替代 JS 分桶
-    const rows = db.all(
-      `SELECT
-        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
-    );
-
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const r of rows) {
-      const t = new Date(r.bucket).getTime();
-      if (t < startTime || t >= endTime) continue;
-      const idx = Math.floor((t - startTime) / bucketMs);
-      if (idx >= 0 && idx < bucketCount) {
-        buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
-      }
-    }
-    return buckets;
+    return getChartBuckets(db, {
+      startTime,
+      endTime: startTime + bucketCount * bucketMs - 1,
+      bucketMs,
+      bucketCount,
+      apiKeyFilter,
+      labelFn,
+    });
   }
 
   if (period === "24h") {
     const bucketCount = 24;
     const bucketMs = 3600000;
-    const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
+    const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    // 使用 SQL 聚合替代 JS 分桶
-    const rows = db.all(
-      `SELECT
-        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
-    );
-
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const r of rows) {
-      const t = new Date(r.bucket).getTime();
-      const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
-      buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
-    }
-    return buckets;
+    return getChartBuckets(db, { startTime, endTime: now, bucketMs, bucketCount, apiKeyFilter, labelFn });
   }
 
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
-  const today = new Date();
-  const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-
-  const start = new Date(today);
+  const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (bucketCount - 1));
+  const startTime = start.getTime();
+  const bucketMs = 86400000;
+  const labelFn = (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-  // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
-  const rows = db.all(
-    `SELECT
-      strftime('%Y-%m-%d', timestamp) as bucket,
-      SUM(promptTokens + completionTokens) as tokens,
-      SUM(cost) as cost,
-      COUNT(*) as requests
-    FROM usageHistory
-    WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-    GROUP BY bucket
-    ORDER BY bucket`,
-    apiKeyFilter ? [start.toISOString(), apiKeyFilter] : [start.toISOString()],
-  );
-
-  const buckets = Array.from({ length: bucketCount }, (_, i) => {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    return { label: labelFn(d), tokens: 0, cost: 0, requests: 0 };
+  return getChartBuckets(db, {
+    startTime,
+    endTime: startTime + bucketCount * bucketMs - 1,
+    bucketMs,
+    bucketCount,
+    apiKeyFilter,
+    labelFn,
   });
-
-  for (const row of rows) {
-    const index = Math.floor((new Date(row.bucket).getTime() - start.getTime()) / 86400000);
-    if (index >= 0 && index < buckets.length) {
-      buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
-    }
-  }
-  return buckets;
 }
 
 function formatLogDate(date = new Date()) {

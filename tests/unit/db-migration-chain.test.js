@@ -37,6 +37,8 @@ describe("Schema migrations", () => {
       "_meta", "settings", "providerConnections", "providerNodes",
 "apiKeys", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
     ]));
+    const usageIndexes = db.all(`PRAGMA index_list(usageHistory)`).map(i => i.name);
+    expect(usageIndexes).toContain("idx_uh_key_completed_status_tokens");
   });
 
   it("existing DB at older schemaVersion → re-applies pending migrations on restart", async () => {
@@ -77,8 +79,12 @@ describe("Schema migrations", () => {
     const db2 = await getAdapter2();
     const key = db2.get(`SELECT * FROM apiKeys WHERE id = 'legacy-reset'`);
 
-    expect(key.fiveHourQuotaResetAt).toBe(legacyResetAt);
-    expect(key.weeklyQuotaResetAt).toBe(legacyResetAt);
+    expect(key.fiveHourQuotaResetAt).toBe(
+      new Date(new Date(legacyResetAt).getTime() + 5 * 60 * 60 * 1000).toISOString(),
+    );
+    expect(key.weeklyQuotaResetAt).toBe(
+      new Date(new Date(legacyResetAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    );
     expect(key.isActive).toBe(0);
   });
 

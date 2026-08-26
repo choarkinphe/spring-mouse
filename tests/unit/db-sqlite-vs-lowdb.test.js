@@ -68,7 +68,7 @@ describe("DB SQLite layer — public API parity", () => {
     expect(await sqliteDb.validateApiKey(k.key)).toBeTruthy();
     expect(await sqliteDb.validateApiKey("invalid")).toBeFalsy();
 
-    const usedAt = "2026-08-19T12:34:56.000Z";
+    const usedAt = new Date(Date.now() + 1000).toISOString();
     await sqliteDb.saveRequestUsage({
       requestId: "api-key-last-used-test",
       startedAt: usedAt,

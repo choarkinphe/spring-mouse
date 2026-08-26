@@ -13,6 +13,7 @@ let getApiKeyQuotaStatuses;
 let checkApiKeyQuota;
 let getApiKeyQuotaStatus;
 let invalidateQuotaCache;
+let saveRequestUsage;
 let updateSettings;
 let codexUsageRoute;
 let keysRoute;
@@ -24,6 +25,7 @@ beforeAll(async () => {
   ({ createApiKey, validateApiKey } = await import("@/lib/db/repos/apiKeysRepo.js"));
   ({ updateSettings } = await import("@/lib/db/repos/settingsRepo.js"));
   ({ getApiKeyQuotaStatuses, getApiKeyQuotaStatus, checkApiKeyQuota, invalidateQuotaCache } = await import("@/lib/apiKeyQuota.js"));
+  ({ saveRequestUsage } = await import("@/lib/usageDb.js"));
   codexUsageRoute = await import("@/app/api/codex/usage/route.js");
   keysRoute = await import("@/app/api/keys/[id]/route.js");
   await initDb();
@@ -35,7 +37,7 @@ describe("API key quota persistence", () => {
     const key = await createApiKey("quota-test", "machine");
     db.run(`UPDATE apiKeys SET quotaMode = 'limited' WHERE id = ?`, [key.id]);
     await updateSettings({ apiKeyQuotaRules: { fiveHourTokenLimitM: 2, weeklyTokenLimitM: 10 } });
-    const completedAt = new Date().toISOString();
+    const completedAt = new Date(new Date(key.createdAt).getTime() + 1).toISOString();
     db.run(
       `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta)
        VALUES(?, ?, ?, NULL, NULL, ?, NULL, ?, ?, NULL, 900000, 600000, 1.5, 'success', '{}', '{}')`,
@@ -57,6 +59,7 @@ describe("API key quota persistence", () => {
     expect(decision).toMatchObject({ applies: true, allowed: false });
     expect(decision.status.exceededWindow.id).toBe("fiveHour");
 
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await keysRoute.PUT(
       new Request(`http://localhost/api/keys/${key.id}`, {
         method: "PUT",
@@ -78,6 +81,7 @@ describe("API key quota persistence", () => {
         secondary: { used_percent: 0, window_minutes: 10080 },
       },
     });
+    await expect(checkApiKeyQuota(overflowKey)).resolves.toMatchObject({ applies: true, allowed: true });
   });
 });
 
@@ -85,10 +89,14 @@ describe("API key quota window resets", () => {
   it("resets the five-hour and weekly windows independently", async () => {
     const key = await createApiKey("independent-reset", "machine");
     await updateSettings({ apiKeyQuotaRules: { fiveHourTokenLimitM: 3, weeklyTokenLimitM: 2.2 } });
-    db.run(`UPDATE apiKeys SET quotaMode = 'limited' WHERE id = ?`, [key.id]);
+    const now = Date.now();
+    db.run(
+      `UPDATE apiKeys SET quotaMode = 'limited', fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ? WHERE id = ?`,
+      [new Date(now + 60 * 60 * 1000).toISOString(), new Date(now + 24 * 60 * 60 * 1000).toISOString(), key.id],
+    );
 
-    const oneHourAgo = new Date().toISOString();
-    const sixHoursAgo = oneHourAgo;
+    const oneHourAgo = new Date(now - 60 * 60 * 1000).toISOString();
+    const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000).toISOString();
     const insertUsage = (requestId, completedAt, tokens) => db.run(
       `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta)
        VALUES(?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, 0, 0, 'success', '{}', '{}')`,
@@ -152,7 +160,7 @@ describe("API key quota window resets", () => {
     db.run(`UPDATE apiKeys SET quotaMode = 'limited' WHERE id = ?`, [key.id]);
 
     const before = await getApiKeyQuotaStatus(key.key);
-    const completedAt = new Date().toISOString();
+    const completedAt = new Date(new Date(key.createdAt).getTime() + 1).toISOString();
     db.run(
       `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta)
        VALUES(?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, 500000, 0, 0, 'success', '{}', '{}')`,
@@ -166,6 +174,53 @@ describe("API key quota window resets", () => {
     invalidateQuotaCache(key.key);
     const refreshed = await getApiKeyQuotaStatus(key.key);
     expect(refreshed.windows.find((window) => window.id === "fiveHour").usedTokens).toBe(500_000);
+  });
+
+  it("keeps usage writes working while invalidating the cached status", async () => {
+    const key = await createApiKey("write-invalidation", "machine");
+    await updateSettings({ apiKeyQuotaRules: { fiveHourTokenLimitM: 2, weeklyTokenLimitM: 20 } });
+    db.run(`UPDATE apiKeys SET quotaMode = 'limited' WHERE id = ?`, [key.id]);
+
+    expect((await getApiKeyQuotaStatus(key.key)).windows[0].usedTokens).toBe(0);
+    const completedAt = new Date(new Date(key.createdAt).getTime() + 1).toISOString();
+    await saveRequestUsage({
+      requestId: "write-invalidation-usage",
+      apiKey: key.key,
+      provider: "test",
+      model: "test:model",
+      startedAt: completedAt,
+      completedAt,
+      status: "success",
+      tokens: { prompt_tokens: 250_000, completion_tokens: 50_000 },
+    });
+
+    expect(db.get(`SELECT COUNT(*) AS count FROM usageHistory WHERE requestId = ?`, ["write-invalidation-usage"]).count).toBe(1);
+    expect((await getApiKeyQuotaStatus(key.key)).windows[0].usedTokens).toBe(300_000);
+
+    await saveRequestUsage({
+      requestId: "write-invalidation-error",
+      apiKey: key.key,
+      provider: "test",
+      model: "test:model",
+      startedAt: completedAt,
+      completedAt,
+      status: "error",
+      tokens: { prompt_tokens: 500_000, completion_tokens: 500_000 },
+    });
+    await saveRequestUsage({
+      requestId: "write-invalidation-zero",
+      apiKey: key.key,
+      provider: "test",
+      model: "test:model",
+      startedAt: completedAt,
+      completedAt,
+      status: "success",
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+
+    // Non-metered/error rows do not change the rolling quota and must not
+    // turn every high-volume request into another synchronous aggregate.
+    expect((await getApiKeyQuotaStatus(key.key)).windows[0].usedTokens).toBe(300_000);
   });
 
   it("treats the off mode as disabled authentication", async () => {

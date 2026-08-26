@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:8008";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -126,6 +127,9 @@ export async function updateSettings(updates) {
   // 主动失效缓存，确保下次读取获取最新数据
   settingsCache = null;
   settingsCacheExpire = 0;
+  if (Object.prototype.hasOwnProperty.call(updates || {}, "apiKeyQuotaRules")) {
+    invalidateQuotaCache();
+  }
 
   return mergeWithDefaults(next);
 }

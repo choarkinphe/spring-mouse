@@ -1,31 +1,16 @@
 import { getAdapter } from "@/lib/db/driver.js";
 import { getSettings } from "@/lib/db/repos/settingsRepo.js";
 import { getApiKeys } from "@/lib/db/repos/apiKeysRepo.js";
+import {
+  cacheQuotaStatus,
+  clearQuotaStatusLoad,
+  getCachedQuotaStatus,
+  getQuotaCacheGeneration,
+  getQuotaStatusLoad,
+  setQuotaStatusLoad,
+} from "@/lib/apiKeyQuotaCache.js";
 
-// 配额缓存，减少频繁的数据库聚合查询
-const quotaCache = new Map();
-const QUOTA_TTL_MS = 10000; // 10秒TTL，平衡实时性和性能
-const QUOTA_CACHE_MAX_SIZE = 1000; // 最大缓存条目数
-
-function trimQuotaCache() {
-  if (quotaCache.size > QUOTA_CACHE_MAX_SIZE) {
-    // 删除最旧的条目（简单实现：清空重建，实际可优化为LRU）
-    const entries = Array.from(quotaCache.entries());
-    quotaCache.clear();
-    // 保留最新的条目
-    entries.slice(-Math.floor(QUOTA_CACHE_MAX_SIZE / 2)).forEach(([key, value]) => {
-      quotaCache.set(key, value);
-    });
-  }
-}
-
-function invalidateQuotaCache(apiKey = null) {
-  if (apiKey) {
-    quotaCache.delete(apiKey);
-  } else {
-    quotaCache.clear();
-  }
-}
+export { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 
 export const API_KEY_QUOTA_WINDOWS = [
   { id: "fiveHour", label: "5 小时", durationMs: 5 * 60 * 60 * 1000, limitField: "fiveHourTokenLimitM" },
@@ -111,7 +96,7 @@ async function readWindowUsage(db, apiKeyId, window, nextResetAt) {
   const nextMs = new Date(nextResetAt).getTime();
   const cutoff = new Date(nextMs - window.durationMs).toISOString();
   const usage = db.get(
-    `SELECT COALESCE(SUM(promptTokens + completionTokens), 0) AS usedTokens, MIN(completedAt) AS oldestCompletedAt
+    `SELECT COALESCE(SUM(promptTokens + completionTokens), 0) AS usedTokens
        FROM usageHistory WHERE apiKeyId = ? AND completedAt > ? AND status IN ('success', 'ok')`,
     [apiKeyId, cutoff],
   );
@@ -130,45 +115,59 @@ export async function getApiKeyQuotaStatuses(keys = null) {
   await advanceApiKeyQuotaResets(allKeys);
   const rules = normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules);
   const statuses = {};
-  for (const key of allKeys) statuses[key.id] = buildApiKeyQuotaStatus(key, rules, await readUsages(db, key.id, key));
+  const hasConfiguredLimit = rulesHaveLimit(rules);
+  for (const key of allKeys) {
+    const usages = normalizeApiKeyQuotaMode(key.quotaMode) === "limited" && hasConfiguredLimit
+      ? await readUsages(db, key.id, key)
+      : {};
+    statuses[key.id] = buildApiKeyQuotaStatus(key, rules, usages);
+  }
   return statuses;
 }
 
 export async function checkApiKeyQuota(apiKey) {
   if (!apiKey) return { applies: false, allowed: true };
-
-  // 检查缓存
-  const cacheKey = apiKey;
-  const now = Date.now();
-  const cached = quotaCache.get(cacheKey);
-
-  if (cached && now - cached.timestamp < QUOTA_TTL_MS) {
-    return cached.result;
-  }
-
-  // 缓存未命中，执行完整查询
-  const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
-  const key = db.get(`SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [apiKey]);
-  if (!key || normalizeApiKeyQuotaMode(key.quotaMode) !== "limited") return { applies: false, allowed: true };
-  await advanceApiKeyQuotaResets([key]);
-  const rules = normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules);
-  if (!rulesHaveLimit(rules)) return { applies: false, allowed: true };
-  const status = buildApiKeyQuotaStatus(key, rules, await readUsages(db, key.id, key));
-  const result = { applies: true, allowed: !status.exceededWindow, status };
-
-  // 存入缓存
-  quotaCache.set(cacheKey, { result, timestamp: now });
-
-  return result;
+  const status = await getApiKeyQuotaStatus(apiKey);
+  if (!status?.enabled) return { applies: false, allowed: true };
+  return { applies: true, allowed: !status.exceededWindow, status };
 }
 
 export async function getApiKeyQuotaStatus(apiKey) {
   if (!apiKey) return null;
-  const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
-  const key = db.get(`SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [apiKey]);
-  if (!key) return null;
-  await advanceApiKeyQuotaResets([key]);
-  return buildApiKeyQuotaStatus(key, normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules), await readUsages(db, key.id, key));
+  const now = Date.now();
+  const cached = getCachedQuotaStatus(apiKey, now);
+  if (cached) return cached;
+
+  // Collapse concurrent cold misses for one key into a single synchronous
+  // SQLite aggregation. This is critical because node:sqlite blocks the event
+  // loop while the query is executing.
+  const existingLoad = getQuotaStatusLoad(apiKey);
+  if (existingLoad) return existingLoad;
+
+  const generation = getQuotaCacheGeneration();
+  const load = (async () => {
+    const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
+    const key = db.get(`SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [apiKey]);
+    if (!key) return null;
+
+    await advanceApiKeyQuotaResets([key]);
+    const rules = normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules);
+    const usages = normalizeApiKeyQuotaMode(key.quotaMode) === "limited" && rulesHaveLimit(rules)
+      ? await readUsages(db, key.id, key)
+      : {};
+    const status = buildApiKeyQuotaStatus(key, rules, usages);
+
+    // An explicit reset or rule change may happen while the query is running.
+    // In that case return the result to the original caller but do not let the
+    // stale load repopulate the cache after invalidation.
+    cacheQuotaStatus(apiKey, status, generation);
+    return status;
+  })().finally(() => {
+    clearQuotaStatusLoad(apiKey, load);
+  });
+
+  setQuotaStatusLoad(apiKey, load);
+  return load;
 }
 
 export function buildCodexUsagePayload(status) {

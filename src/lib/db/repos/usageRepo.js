@@ -99,6 +99,14 @@ function getLocalDateKey(timestamp) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Normalize all timestamps at the storage/read boundary. Request handlers may
+// pass either Date.now() numbers or ISO strings; canonical ISO values keep
+// relative-time rendering independent of the browser/server timezone.
+function normalizeTimestamp(value, fallback = new Date().toISOString()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : fallback;
+}
+
 function addToCounter(target, key, values) {
   if (!target[key]) target[key] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
   target[key].requests += values.requests || 1;
@@ -336,9 +344,9 @@ async function ensureRingInitialized() {
   recentRing.initialized = true;
   try {
     const db = await getAdapter();
-    const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
+    const rows = db.all(`SELECT timestamp, completedAt, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
     recentRing.items = rows.reverse().map((r) => ({
-      timestamp: r.timestamp, provider: r.provider, model: r.model, connectionId: r.connectionId,
+      timestamp: normalizeTimestamp(r.completedAt || r.timestamp), provider: r.provider, model: r.model, connectionId: r.connectionId,
       apiKey: r.apiKey, endpoint: r.endpoint, cost: r.cost, status: r.status,
       tokens: parseJson(r.tokens, {}),
     }));
@@ -457,11 +465,11 @@ export async function getActiveRequests(apiKeyId = null) {
   const seen = new Set();
   const recentRequests = [...recentRing.items]
     .filter((e) => !apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id === apiKeyId)
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .sort((a, b) => new Date(b.completedAt || b.timestamp) - new Date(a.completedAt || a.timestamp))
     .map((e) => {
       const t = e.tokens || {};
       return {
-        timestamp: e.timestamp, model: e.model, provider: e.provider || "",
+        timestamp: normalizeTimestamp(e.completedAt || e.timestamp), model: e.model, provider: e.provider || "",
         apiKeyId: e.apiKey || "local-no-key",
         userName: getUsageUserName(e.apiKey || "local-no-key", apiKeyMaps.byId),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,
@@ -486,8 +494,8 @@ export async function getActiveRequests(apiKeyId = null) {
 export async function saveRequestUsage(entry) {
   try {
     const db = await getAdapter();
-    const completedAt = entry.completedAt || new Date().toISOString();
-    const startedAt = entry.startedAt || entry.timestamp || completedAt;
+    const completedAt = normalizeTimestamp(entry.completedAt);
+    const startedAt = normalizeTimestamp(entry.startedAt || entry.timestamp, completedAt);
     const requestId = entry.requestId || randomUUID();
     const rawApiKey = typeof entry.apiKey === "string" ? entry.apiKey : null;
     const knownKey = entry.apiKeyId
@@ -822,7 +830,7 @@ async function calculateUsageStats(period = "all", range = {}) {
   const recentRows = range.apiKeyId && !apiKeyFilter
     ? []
     : db.all(
-      `SELECT timestamp, provider, model, apiKeyId, tokens, status FROM usageHistory${apiKeyFilter ? " WHERE apiKeyId = ?" : ""} ORDER BY id DESC LIMIT 100`,
+      `SELECT timestamp, completedAt, provider, model, apiKeyId, tokens, status FROM usageHistory${apiKeyFilter ? " WHERE apiKeyId = ?" : ""} ORDER BY id DESC LIMIT 100`,
       apiKeyFilter ? [apiKeyFilter] : [],
     );
   const seen = new Set();
@@ -830,7 +838,7 @@ async function calculateUsageStats(period = "all", range = {}) {
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
       return {
-        timestamp: r.timestamp, model: r.model, provider: r.provider || "",
+        timestamp: normalizeTimestamp(r.completedAt || r.timestamp), model: r.model, provider: r.provider || "",
         apiKeyId: r.apiKeyId || "local-no-key",
         userName: getUsageUserName(r.apiKeyId || "local-no-key", apiKeyMap),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,
@@ -1344,6 +1352,48 @@ export async function getUsageStats(period = "all", range = {}) {
   return promise;
 }
 
+function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn }) {
+  const startIso = new Date(startTime).toISOString();
+  const endIso = new Date(endTime).toISOString();
+
+  // Group by elapsed time from the requested range start. SQLite strftime()
+  // returns UTC text, while JavaScript parses an offset-less bucket as local
+  // time; mixing them can move requests outside today's visible buckets.
+  const rows = db.all(
+    `SELECT
+      CAST(((julianday(timestamp) - julianday(?)) * 86400000.0) / ? AS INTEGER) AS bucketIndex,
+      SUM(promptTokens + completionTokens) as tokens,
+      SUM(cost) as cost,
+      COUNT(*) as requests
+    FROM usageHistory
+    WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+    GROUP BY bucketIndex
+    ORDER BY bucketIndex`,
+    apiKeyFilter
+      ? [startIso, bucketMs, startIso, endIso, apiKeyFilter]
+      : [startIso, bucketMs, startIso, endIso],
+  );
+
+  const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+    label: labelFn(startTime + index * bucketMs),
+    tokens: 0,
+    cost: 0,
+    requests: 0,
+  }));
+  for (const row of rows) {
+    const index = Number(row.bucketIndex);
+    if (index >= 0 && index < bucketCount) {
+      buckets[index] = {
+        label: labelFn(startTime + index * bucketMs),
+        tokens: Number(row.tokens) || 0,
+        cost: Number(row.cost) || 0,
+        requests: Number(row.requests) || 0,
+      };
+    }
+  }
+  return buckets;
+}
+
 export async function getChartData(period = "7d", range = {}) {
   const db = await getAdapter();
   const now = Date.now();
@@ -1360,31 +1410,7 @@ export async function getChartData(period = "7d", range = {}) {
       ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
       : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
-    const timeFormat = useHourlyBuckets ? "%Y-%m-%d %H:00" : "%Y-%m-%d";
-    const rows = db.all(
-      `SELECT
-        strftime('${timeFormat}', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [range.startDate, range.endDate, apiKeyFilter] : [range.startDate, range.endDate],
-    );
-
-    // 填充所有时间桶（确保空桶也显示）
-    const buckets = Array.from({ length: bucketCount }, (_, index) => ({ label: labelFn(startTime + index * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const row of rows) {
-      const rowTime = new Date(row.bucket).getTime();
-      const index = Math.floor((rowTime - startTime) / bucketMs);
-      if (index >= 0 && index < buckets.length) {
-        buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
-      }
-    }
-    return buckets;
+    return getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn });
   }
 
   if (period === "today") {
@@ -1393,99 +1419,50 @@ export async function getChartData(period = "7d", range = {}) {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const startTime = startOfDay.getTime();
-    const endTime = startTime + bucketCount * bucketMs;
-    const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    // 使用 SQL 聚合替代 JS 分桶
-    const rows = db.all(
-      `SELECT
-        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
-    );
-
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const r of rows) {
-      const t = new Date(r.bucket).getTime();
-      if (t < startTime || t >= endTime) continue;
-      const idx = Math.floor((t - startTime) / bucketMs);
-      if (idx >= 0 && idx < bucketCount) {
-        buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
-      }
-    }
-    return buckets;
+    return getChartBuckets(db, {
+      startTime,
+      endTime: startTime + bucketCount * bucketMs,
+      bucketMs,
+      bucketCount,
+      apiKeyFilter,
+      labelFn,
+    });
   }
 
   if (period === "24h") {
     const bucketCount = 24;
     const bucketMs = 3600000;
-    const labelFn = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const startTime = now - bucketCount * bucketMs;
+    const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    // 使用 SQL 聚合替代 JS 分桶
-    const rows = db.all(
-      `SELECT
-        strftime('%Y-%m-%d %H:00', timestamp) as bucket,
-        SUM(promptTokens + completionTokens) as tokens,
-        SUM(cost) as cost,
-        COUNT(*) as requests
-      FROM usageHistory
-      WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-      GROUP BY bucket
-      ORDER BY bucket`,
-      apiKeyFilter ? [new Date(startTime).toISOString(), apiKeyFilter] : [new Date(startTime).toISOString()]
-    );
-
-    const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0, requests: 0 }));
-    for (const r of rows) {
-      const t = new Date(r.bucket).getTime();
-      const idx = Math.min(Math.floor((t - startTime) / bucketMs), bucketCount - 1);
-      buckets[idx] = { label: r.bucket, tokens: r.tokens || 0, cost: r.cost || 0, requests: r.requests || 0 };
-    }
-    return buckets;
+    return getChartBuckets(db, {
+      startTime,
+      endTime: now,
+      bucketMs,
+      bucketCount,
+      apiKeyFilter,
+      labelFn,
+    });
   }
 
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
-  const today = new Date();
-  const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-
-  const start = new Date(today);
+  const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (bucketCount - 1));
+  const startTime = start.getTime();
+  const bucketMs = 86400000;
+  const labelFn = (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-  // 使用 SQL 聚合替代 JS 分桶，大幅提升大数据集性能
-  const rows = db.all(
-    `SELECT
-      strftime('%Y-%m-%d', timestamp) as bucket,
-      SUM(promptTokens + completionTokens) as tokens,
-      SUM(cost) as cost,
-      COUNT(*) as requests
-    FROM usageHistory
-    WHERE timestamp >= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
-    GROUP BY bucket
-    ORDER BY bucket`,
-    apiKeyFilter ? [start.toISOString(), apiKeyFilter] : [start.toISOString()],
-  );
-
-  const buckets = Array.from({ length: bucketCount }, (_, i) => {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    return { label: labelFn(d), tokens: 0, cost: 0, requests: 0 };
+  return getChartBuckets(db, {
+    startTime,
+    endTime: startTime + bucketCount * bucketMs,
+    bucketMs,
+    bucketCount,
+    apiKeyFilter,
+    labelFn,
   });
-
-  for (const row of rows) {
-    const index = Math.floor((new Date(row.bucket).getTime() - start.getTime()) / 86400000);
-    if (index >= 0 && index < buckets.length) {
-      buckets[index] = { label: row.bucket, tokens: row.tokens || 0, cost: row.cost || 0, requests: row.requests || 0 };
-    }
-  }
-  return buckets;
 }
 
 function formatLogDate(date = new Date()) {

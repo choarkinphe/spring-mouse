@@ -272,6 +272,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       providerThinking,
       requestLogFileDumpsEnabled: chatSettings.enableRequestLogFileDumps === true,
       requestLogsDir: REQUEST_LOGS_DIR,
+      observabilityEnabled: chatSettings.enableObservability === true,
+      observabilityMaxJsonChars: Math.max(1024, Number(chatSettings.observabilityMaxJsonSize || 5) * 1024),
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

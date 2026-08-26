@@ -10,7 +10,7 @@ describe("system status collector", () => {
     const processRef = {
       cpuUsage,
       uptime: () => 90_061.9,
-      memoryUsage: () => ({ rss: 256 * 1024 * 1024, heapUsed: 100, heapTotal: 200 }),
+      memoryUsage: () => ({ rss: 256 * 1024 * 1024, heapUsed: 100, heapTotal: 200, external: 30, arrayBuffers: 20 }),
     };
     const osRef = { cpus: () => [{}, {}, {}], loadavg: () => [0.1, 0.2, 0.3] };
     const getStatus = createSystemStatusCollector({ processRef, osRef, getVersion: () => "0.1.0", now });
@@ -22,7 +22,7 @@ describe("system status collector", () => {
       version: "0.1.0",
       uptimeSeconds: 90_061,
       cpu: { processPercent: null, cores: 3, loadAverage: [0.1, 0.2, 0.3] },
-      memory: { rssBytes: 256 * 1024 * 1024, heapUsedBytes: 100, heapTotalBytes: 200 },
+      memory: { rssBytes: 256 * 1024 * 1024, heapUsedBytes: 100, heapTotalBytes: 200, externalBytes: 30, arrayBuffersBytes: 20 },
     });
     expect(second.cpu.processPercent).toBe(12.5);
     expect(second.sampledAt).toBe("1970-01-01T00:00:12.000Z");

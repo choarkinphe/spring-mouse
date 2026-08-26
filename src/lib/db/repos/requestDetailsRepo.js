@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { compactJsonField } from "@/lib/requestDetailCompact.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -55,8 +56,6 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-export const __test__ = { sanitizeHeaders };
-
 function generateDetailId(model) {
   const timestamp = new Date().toISOString();
   const random = Math.random().toString(36).substring(2, 8);
@@ -64,13 +63,29 @@ function generateDetailId(model) {
   return `${timestamp}-${random}-${modelPart}`;
 }
 
-function truncateField(obj, maxSize) {
-  const str = JSON.stringify(obj || {});
-  if (str.length > maxSize) {
-    return { _truncated: true, _originalSize: str.length, _preview: str.substring(0, 200) };
-  }
-  return obj || {};
+function prepareRecord(item, config) {
+  const request = item.request?.headers
+    ? { ...item.request, headers: sanitizeHeaders(item.request.headers) }
+    : item.request;
+
+  return {
+    id: item.id || generateDetailId(item.model),
+    provider: item.provider || null,
+    model: item.model || null,
+    connectionId: item.connectionId || null,
+    timestamp: item.timestamp || new Date().toISOString(),
+    status: item.status || null,
+    latency: item.latency || {},
+    tokens: item.tokens || {},
+    request: compactJsonField(request, config.maxJsonSize),
+    providerRequest: compactJsonField(item.providerRequest, config.maxJsonSize),
+    providerResponse: compactJsonField(item.providerResponse, config.maxJsonSize),
+    response: compactJsonField(item.response, config.maxJsonSize),
+    pxpipe: item.pxpipe || undefined,
+  };
 }
+
+export const __test__ = { sanitizeHeaders, prepareRecord };
 
 async function flushToDatabase() {
   if (isFlushing) return;
@@ -84,27 +99,7 @@ async function flushToDatabase() {
       const config = await getObservabilityConfig();
 
       db.transaction(() => {
-        for (const item of items) {
-          if (!item.id) item.id = generateDetailId(item.model);
-          if (!item.timestamp) item.timestamp = new Date().toISOString();
-          if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
-
-          const record = {
-            id: item.id,
-            provider: item.provider || null,
-            model: item.model || null,
-            connectionId: item.connectionId || null,
-            timestamp: item.timestamp,
-            status: item.status || null,
-            latency: item.latency || {},
-            tokens: item.tokens || {},
-            request: truncateField(item.request, config.maxJsonSize),
-            providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
-            providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
-            response: truncateField(item.response, config.maxJsonSize),
-            pxpipe: item.pxpipe || undefined,
-          };
-
+        for (const record of items) {
           db.run(
             `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
             [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
@@ -131,7 +126,9 @@ export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
   if (!config.enabled) {return;}
 
-  writeBuffer.push(detail);
+  // Bound large payloads before they enter the delayed write queue. Otherwise
+  // long-context requests remain strongly referenced until the next flush.
+  writeBuffer.push(prepareRecord(detail, config));
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.

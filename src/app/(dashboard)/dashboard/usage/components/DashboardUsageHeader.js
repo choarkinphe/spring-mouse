@@ -190,6 +190,9 @@ export default function DashboardUsageHeader({ initialSystemStatus = null }) {
   const writerDetails = usageQueue?.configured
     ? `SQLite Writer ${usageQueue.writerHealthy ? "心跳正常" : "心跳异常"}，最近心跳 ${formatHeartbeat(usageQueue.writerHeartbeatAgeMs)}。`
     : "本地开发环境使用同步 SQLite 回退路径。";
+  const processMemoryDetails = systemStatus?.memory
+    ? `RSS ${formatBytes(systemStatus.memory.rssBytes)}；Heap ${formatBytes(systemStatus.memory.heapUsedBytes)} / ${formatBytes(systemStatus.memory.heapTotalBytes)}；External ${formatBytes(systemStatus.memory.externalBytes)}；ArrayBuffers ${formatBytes(systemStatus.memory.arrayBuffersBytes)}。`
+    : "Spring Mouse 服务进程内存读取中。";
 
   return (
     <section className="relative flex min-w-0 flex-col gap-4 rounded-2xl border border-border bg-surface/80 px-5 py-4 shadow-sm xl:flex-row xl:items-center xl:justify-between">
@@ -224,7 +227,7 @@ export default function DashboardUsageHeader({ initialSystemStatus = null }) {
               icon="database"
               label="内存 RSS"
               value={systemStatus ? formatBytes(systemStatus.memory?.rssBytes) : "—"}
-              title="Spring Mouse 服务进程实际占用的物理内存。"
+              title={processMemoryDetails}
             />
           </div>
           <div className="grid grid-cols-2 gap-x-5 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-4">

@@ -391,8 +391,12 @@ export function formatUsage(inputTokens, outputTokens, targetFormat) {
  * @param {string} targetFormat - Target format from FORMATS constant
  */
 export function estimateUsage(body, contentLength, targetFormat = FORMATS.OPENAI) {
+  return estimateUsageFromInputTokens(estimateInputTokens(body), contentLength, targetFormat);
+}
+
+export function estimateUsageFromInputTokens(inputTokens, contentLength, targetFormat = FORMATS.OPENAI) {
   return formatUsage(
-    estimateInputTokens(body),
+    inputTokens,
     estimateOutputTokens(contentLength),
     targetFormat
   );

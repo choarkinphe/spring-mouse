@@ -54,6 +54,8 @@ export function createSystemStatusCollector({
         rssBytes: memory.rss,
         heapUsedBytes: memory.heapUsed,
         heapTotalBytes: memory.heapTotal,
+        externalBytes: memory.external ?? 0,
+        arrayBuffersBytes: memory.arrayBuffers ?? 0,
       },
       sampledAt: new Date(nowMs).toISOString(),
     };

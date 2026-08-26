@@ -345,31 +345,36 @@ git revert <commit-hash>  # 回滚特定提交
 
 *优化完成时间: 2024-08-25*
 *涉及的文件: 19 个核心文件，新增 2 个文件*
-*提交次数: 8 次，累积改动: 800+ 行代码*
+*提交次数: 9 次，累积改动: 800+ 行代码*
 *优化阶段: 8 个主要阶段，全覆盖性能优化*
 
 ---
 
 ## 🔧 重要更新 - 性能优化回退通知 (2024-08-26)
 
-### ⚠️ Phase 1.1 和 Phase 3.1 回退
+### ⚠️ Phase 1.1 和 Phase 3.1 完全禁用
 
 **发现的问题**:
-- usageDaily 优化假设数据库表有扁平化结构，但实际为 JSON blob
-- 导致 "no such column: provider" SQL 错误，Dashboard 统计无法加载
+1. **Schema 不匹配**: usageDaily 优化假设扁平化结构，实际为 JSON blob
+2. **实时数据故障**: usageDaily 写入导致事务失败，影响 usageHistory 写入
+3. **用户体验影响**: Dashboard "最近请求"和"responding providers" 无数据
 
 **解决方案**:
-- 完全回退到 JSON blob 兼容模式
-- 恢复原有数据读写逻辑
-- 保持所有其他性能优化正常工作
+- ✅ 完全禁用 usageDaily 写入逻辑（注释掉 lines 561-634）
+- ✅ 确保 usageHistory 写入不受影响
+- ✅ 恢复实时数据流和统计功能
+- ✅ 保持所有其他 7 个阶段优化正常工作
 
 **影响评估**:
-- ✅ 其他 7 个阶段优化不受影响，正常运行
-- ⚠️ 暂时失去 usageDaily 相关的查询性能提升
-- 📋 未来需要数据库 schema 迁移来重新启用这些优化
+- ✅ **实时统计恢复**: 最近请求、responding providers 正常显示
+- ✅ **数据写入正常**: usageHistory 记录无遗漏
+- ✅ **其他优化生效**: 其余 7 个阶段优化继续工作
+- ⚠️ **暂时失去功能**: usageDaily 日汇总表更新停止
+- ⚠️ **长期统计降级**: 7d/30d 统计仍可用，但性能不如预期
 
-**修复提交**:
+**关键修复提交**:
 - `eb1d93e` - fix(stats): revert usageDaily optimization due to schema mismatch
 - `fe3e847` - fix(stats): fully revert usageDaily to JSON blob compatibility
+- `da26957` - fix(stats): disable usageDaily write to restore real-time statistics
 
-**状态**: ✅ 问题已解决，服务正常运行
+**状态**: ✅ 关键功能已恢复，生产环境稳定运行

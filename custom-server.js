@@ -144,6 +144,35 @@ function startBackgroundTokenRefreshFromCustomServer() {
     });
 }
 
+// Start usageDaily periodic updater for batch processing
+function startUsageDailyUpdater() {
+  try {
+    // Try standalone path first (published CLI)
+    const updaterPath = path.join(__dirname, "lib", "db", "usageDailyUpdater.js");
+    import(pathToFileURL(updaterPath).href).then((m) => {
+      m.startPeriodicUpdates();
+      console.log("[UsageDaily] Periodic batch updates started (every 15 minutes)");
+    }).catch((e) => {
+      // Fallback to Next.js standalone path (development mode)
+      const devUpdaterPath = path.join(__dirname, ".next", "server", "lib", "db", "usageDailyUpdater.js");
+      import(pathToFileURL(devUpdaterPath).href).then((m) => {
+        m.startPeriodicUpdates();
+        console.log("[UsageDaily] Development mode periodic updates started");
+      }).catch(() => {
+        // Expected in development when files are compiled on-demand
+        if (process.env.DEBUG_USAGE_DAILY_UPDATER) {
+          console.error("[UsageDaily] Both paths failed, updater not started");
+        }
+      });
+    });
+  } catch (e) {
+    // Ignore errors in development mode
+    if (process.env.DEBUG_USAGE_DAILY_UPDATER) {
+      console.error("[UsageDaily] Failed to start:", e && e.message ? e.message : e);
+    }
+  }
+}
+
 // Wrap Next standalone HTTP server: derive client IP from the TCP socket
 // (unspoofable) and strip client-supplied forwarding headers so downstream
 // rate-limiting keys on the real peer address instead of attacker-controlled XFF.
@@ -192,6 +221,7 @@ http.createServer = (...args) => {
   const server = origCreate(...rest, wrapped);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
+    startUsageDailyUpdater();
   });
   const origEmit = server.emit;
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.

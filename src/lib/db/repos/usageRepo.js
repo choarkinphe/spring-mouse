@@ -5,7 +5,6 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
-import { invalidateQuotaCache } from "@/lib/apiKeyQuota.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -537,11 +536,6 @@ export async function saveRequestUsage(entry) {
         ]
       );
       if ((insertResult?.changes ?? 1) === 0) return;
-
-      // Invalidate quota cache for this API key when new usage is recorded
-      if (rawApiKey) {
-        invalidateQuotaCache(rawApiKey);
-      }
 
       // Keep the key-management page accurate even if a request path persisted
       // usage without going through the normal route-level auth guard first.

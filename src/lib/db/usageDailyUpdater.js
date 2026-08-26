@@ -6,10 +6,14 @@
 
 import { getAdapter } from "./driver.js";
 
-// Local date key function (copied from usageRepo.js to avoid circular dependency)
+// Local date key function (handles timezone correctly)
 function getLocalDateKey(timestamp) {
   const d = timestamp ? new Date(timestamp) : new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  // Get local date components, not UTC
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 // Track last update time to avoid redundant processing
@@ -21,10 +25,13 @@ const UPDATE_BATCH_SIZE = 1000; // Process at most 1000 records per batch
  * Calculate usageDaily aggregation from usageHistory for a specific date
  */
 function aggregateDailyStats(db, targetDateKey) {
-  const startDate = new Date(targetDateKey);
-  const endDate = new Date(startDate);
-  endDate.setDate(endDate.getDate() + 1);
-  endDate.setHours(0, 0, 0, 0);
+  // Parse the date key as LOCAL time, not UTC
+  const [year, month, day] = targetDateKey.split('-').map(Number);
+
+  // Create start of day in local timezone
+  const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
+  // Create start of next day in local timezone
+  const endDate = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
 
   // First get total count and totals for the date
   const totals = db.get(
@@ -43,7 +50,7 @@ function aggregateDailyStats(db, targetDateKey) {
     return { success: true, message: "No data found for this date", records: 0 };
   }
 
-  // Then get breakdown by provider
+  // Then get breakdown by provider (same date range)
   const rows = db.all(
     `SELECT
        provider,

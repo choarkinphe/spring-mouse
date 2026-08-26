@@ -99,6 +99,14 @@ function getLocalDateKey(timestamp) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Normalize all timestamps at the storage/read boundary. Request handlers may
+// pass either Date.now() numbers or ISO strings; canonical ISO values keep
+// relative-time rendering independent of the browser/server timezone.
+function normalizeTimestamp(value, fallback = new Date().toISOString()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : fallback;
+}
+
 function addToCounter(target, key, values) {
   if (!target[key]) target[key] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
   target[key].requests += values.requests || 1;
@@ -338,7 +346,7 @@ async function ensureRingInitialized() {
     const db = await getAdapter();
     const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
     recentRing.items = rows.reverse().map((r) => ({
-      timestamp: r.timestamp, provider: r.provider, model: r.model, connectionId: r.connectionId,
+      timestamp: normalizeTimestamp(r.timestamp), provider: r.provider, model: r.model, connectionId: r.connectionId,
       apiKey: r.apiKey, endpoint: r.endpoint, cost: r.cost, status: r.status,
       tokens: parseJson(r.tokens, {}),
     }));
@@ -461,7 +469,7 @@ export async function getActiveRequests(apiKeyId = null) {
     .map((e) => {
       const t = e.tokens || {};
       return {
-        timestamp: e.timestamp, model: e.model, provider: e.provider || "",
+        timestamp: normalizeTimestamp(e.timestamp), model: e.model, provider: e.provider || "",
         apiKeyId: e.apiKey || "local-no-key",
         userName: getUsageUserName(e.apiKey || "local-no-key", apiKeyMaps.byId),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,
@@ -486,8 +494,8 @@ export async function getActiveRequests(apiKeyId = null) {
 export async function saveRequestUsage(entry) {
   try {
     const db = await getAdapter();
-    const completedAt = entry.completedAt || new Date().toISOString();
-    const startedAt = entry.startedAt || entry.timestamp || completedAt;
+    const completedAt = normalizeTimestamp(entry.completedAt);
+    const startedAt = normalizeTimestamp(entry.startedAt || entry.timestamp, completedAt);
     const requestId = entry.requestId || randomUUID();
     const rawApiKey = typeof entry.apiKey === "string" ? entry.apiKey : null;
     const knownKey = entry.apiKeyId
@@ -886,7 +894,7 @@ async function calculateUsageStats(period = "all", range = {}) {
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
       return {
-        timestamp: r.timestamp, model: r.model, provider: r.provider || "",
+        timestamp: normalizeTimestamp(r.timestamp), model: r.model, provider: r.provider || "",
         apiKeyId: r.apiKeyId || "local-no-key",
         userName: getUsageUserName(r.apiKeyId || "local-no-key", apiKeyMap),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,

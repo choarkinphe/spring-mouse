@@ -307,6 +307,41 @@ describe("DB SQLite layer — public API parity", () => {
     expect(data[0]).toHaveProperty("cost");
   });
 
+  it("getChartData: keeps ISO timestamps in the correct local range bucket", async () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = "Asia/Shanghai";
+    try {
+      const startDate = "2026-08-25T16:00:00.000Z"; // Aug 26 00:00 in UTC+08
+      const endDate = "2026-08-26T15:59:59.999Z";
+      await sqliteDb.saveRequestUsage({
+        requestId: "chart-timezone-midnight",
+        startedAt: "2026-08-25T16:30:00.000Z", // Aug 26 00:30 in UTC+08
+        completedAt: "2026-08-25T16:30:01.000Z",
+        provider: "test",
+        model: "timezone-model",
+        tokens: { prompt_tokens: 10, completion_tokens: 5 },
+        status: "success",
+      });
+      await sqliteDb.saveRequestUsage({
+        requestId: "chart-timezone-morning",
+        startedAt: "2026-08-26T02:30:00.000Z", // Aug 26 10:30 in UTC+08
+        completedAt: "2026-08-26T02:30:01.000Z",
+        provider: "test",
+        model: "timezone-model",
+        tokens: { prompt_tokens: 20, completion_tokens: 5 },
+        status: "success",
+      });
+
+      const data = await sqliteDb.getChartData("today", { startDate, endDate });
+      expect(data).toHaveLength(24);
+      expect(data[0].requests).toBeGreaterThanOrEqual(1);
+      expect(data[10].requests).toBeGreaterThanOrEqual(1);
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  });
+
   it("getChartData: 7d buckets", async () => {
     const data = await sqliteDb.getChartData("7d");
     expect(data).toHaveLength(7);

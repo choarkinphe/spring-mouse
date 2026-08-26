@@ -6,6 +6,7 @@ import Card from "@/shared/components/Card";
 import UsageChart from "./UsageChart";
 import PersonAnalysisReport from "./PersonAnalysisReport";
 import UsageDetailsDrawer from "./UsageDetailsDrawer";
+import { formatBytes } from "@/shared/utils/formatBytes";
 
 const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间"];
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -271,7 +272,7 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
         <p className="py-10 text-center text-sm text-text-muted">当前筛选时间范围内暂无模型调用记录。</p>
       ) : (
         <div className="mt-3 max-h-[500px] overflow-auto rounded-lg border border-border custom-scrollbar">
-          <table className="w-full min-w-[1060px] border-collapse text-xs">
+          <table className="w-full min-w-[1380px] border-collapse text-xs">
             <thead className="sticky top-0 z-10 border-b border-border bg-surface-2 shadow-[0_1px_0_var(--color-border)] text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
               <tr>
                 <th className="px-3 py-2.5 text-left">调用时间</th>
@@ -280,6 +281,9 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
                 <th className="px-3 py-2.5 text-left">来源</th>
                 <th className="px-3 py-2.5 text-right">输入 / 输出</th>
                 <th className="px-3 py-2.5 text-right">总 Token</th>
+                <th className="px-3 py-2.5 text-right">上传流量</th>
+                <th className="px-3 py-2.5 text-right">下载流量</th>
+                <th className="px-3 py-2.5 text-right">总流量</th>
                 <th className="px-3 py-2.5 text-right">成本</th>
                 <th className="px-3 py-2.5 text-left">端点</th>
               </tr>
@@ -305,6 +309,9 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
                     <span className="text-emerald-500">{fmtTokens(row.completionTokens)}</span>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-primary">{fmtTokens(row.totalTokens)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-indigo-600">{formatBytes(row.requestBytes)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-emerald-600">{formatBytes(row.responseBytes)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-cyan-600">{formatBytes(row.totalBytes)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-warning">{fmtCost(row.cost)}</td>
                   <td className="max-w-[170px] px-3 py-2.5 font-mono text-[11px] text-text-muted" title={row.endpoint}>{row.endpoint}</td>
                 </tr>
@@ -408,10 +415,11 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, chartRe
 
       <CaptureStatus capture={stats.sourceCapture} hasIpData={sourceIps.length > 0} hasAppData={apps.some((item) => item.appName !== "未知客户端")} />
 
-      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
         <MetricCard icon="send" label="模型调用次数" value={fmt(stats.totalRequests)} detail={`Top 使用人：${topPerson?.keyName || "暂无"}`} points={recent.map((item) => item.requests || 0)} tone="bg-sky-500 text-sky-600" color="#0ea5e9" />
         <MetricCard icon="input" label="输入 Token" value={fmtTokens(stats.totalPromptTokens)} detail={`缓存命中 ${fmtTokens(stats.totalCachedTokens)}`} points={recent.map((item) => item.promptTokens || 0)} tone="bg-indigo-500 text-indigo-600" color="#6366f1" />
         <MetricCard icon="output" label="输出 Token" value={fmtTokens(stats.totalCompletionTokens)} detail={`总消耗 ${fmtTokens(totalTokens)}`} points={recent.map((item) => item.completionTokens || 0)} tone="bg-emerald-500 text-emerald-600" color="#10b981" />
+        <MetricCard icon="network_check" label="数据流量" value={formatBytes(stats.totalTrafficBytes)} detail={`↑ ${formatBytes(stats.totalRequestBytes)} · ↓ ${formatBytes(stats.totalResponseBytes)}`} points={recent.map((item) => item.trafficBytes || 0)} tone="bg-cyan-500 text-cyan-600" color="#0891b2" />
         <MetricCard icon="paid" label="预估成本" value={fmtCost(stats.totalCost)} detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`} points={recent.map((item) => item.cost || 0)} tone="bg-amber-500 text-amber-600" color="#f59e0b" />
         <MetricCard icon="hub" label="活跃路由" value={apiKeyId ? "—" : fmt(stats.activeRequests?.length)} detail={apiKeyId ? "实时队列不保留 API Key" : `识别应用 ${fmt(apps.length)} 个`} points={recent.map((item) => item.requests || 0)} tone="bg-violet-500 text-violet-600" color="#8b5cf6" />
       </div>

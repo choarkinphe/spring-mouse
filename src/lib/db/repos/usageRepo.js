@@ -805,7 +805,10 @@ function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, provid
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = db.all(
-    `SELECT id, timestamp, startedAt, completedAt, provider, model, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta FROM usageHistory ${where} ORDER BY id DESC LIMIT 100`,
+    `SELECT id, timestamp, startedAt, completedAt, provider, model, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
+            COALESCE((SELECT requestBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS requestBytes,
+            COALESCE((SELECT responseBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS responseBytes
+       FROM usageHistory ${where} ORDER BY id DESC LIMIT 100`,
     params,
   );
 
@@ -831,6 +834,9 @@ function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, provid
       promptTokens,
       completionTokens,
       totalTokens: promptTokens + completionTokens,
+      requestBytes: Number(row.requestBytes) || 0,
+      responseBytes: Number(row.responseBytes) || 0,
+      totalBytes: (Number(row.requestBytes) || 0) + (Number(row.responseBytes) || 0),
       cost: row.cost || 0,
       status: row.status || "ok",
     };
@@ -974,6 +980,18 @@ async function calculateUsageStats(period = "all", range = {}) {
       bucketMap[minuteStart].cost += r.cost || 0;
     }
   }
+  const recentTraffic = await getTrafficBuckets({
+    startTime: tenMinutesAgo.getTime(),
+    endTime: now.getTime(),
+    bucketMs: 60 * 1000,
+    bucketCount: 10,
+    apiKeyId: apiKeyFilter,
+  });
+  stats.last10Minutes.forEach((bucket, index) => Object.assign(bucket, recentTraffic[index] || {
+    requestBytes: 0,
+    responseBytes: 0,
+    trafficBytes: 0,
+  }));
 
   if (range.apiKeyId && !apiKeyFilter) return stats;
 

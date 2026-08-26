@@ -8,7 +8,6 @@ import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/Overview
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import ChannelQuotaPanel from "@/app/(dashboard)/dashboard/usage/components/ChannelQuotaPanel";
 import UsageBreakdownGrid from "@/app/(dashboard)/dashboard/usage/components/UsageBreakdownGrid";
-import TrafficMonitor from "@/app/(dashboard)/dashboard/usage/components/TrafficMonitor";
 
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders.
 const ProviderTopology = dynamic(
@@ -212,7 +211,6 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
         </div>
       )}
 
-      <TrafficMonitor stats={stats} />
       {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} refreshToken={chartRefreshToken} />}
       {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} chartRefreshToken={chartRefreshToken} />}
     </div>

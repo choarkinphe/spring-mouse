@@ -106,6 +106,12 @@ describe("traffic repository", () => {
       totalResponseBytes: 256,
       totalTrafficBytes: 320,
     }));
+    expect(stats.recentCallDetails[0]).toEqual(expect.objectContaining({
+      requestBytes: 64,
+      responseBytes: 256,
+      totalBytes: 320,
+    }));
+    expect(stats.last10Minutes.reduce((sum, bucket) => sum + bucket.trafficBytes, 0)).toBe(320);
     const chart = await getChartData("today", {
       startDate: new Date(Date.now() - 60_000).toISOString(),
       endDate: new Date(Date.now() + 60_000).toISOString(),

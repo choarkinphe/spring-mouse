@@ -1,11 +1,12 @@
 import { EventEmitter } from "events";
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
+import { enqueueUsageEvent, getCachedUsageStats, setCachedUsageStats, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -84,6 +85,11 @@ function trimUsageStatsCache() {
 }
 
 export const statsEmitter = global._statsEmitter;
+
+export function notifyUsageCommitted() {
+  clearUsageStatsCache();
+  scheduleStatsEvent("update", 0);
+}
 
 function scheduleStatsEvent(event, delayMs = 150) {
   const key = event === "update" ? "update" : "pending";
@@ -294,6 +300,22 @@ function pushToRing(entry) {
   }
 }
 
+function toRecentRequest(entry, apiKeyMaps) {
+  const t = entry.tokens || {};
+  const apiKeyId = entry.apiKeyId || entry.apiKey || "local-no-key";
+  return {
+    requestId: entry.requestId || null,
+    timestamp: entry.timestamp,
+    model: entry.model,
+    provider: entry.provider || "",
+    apiKeyId,
+    userName: getUsageUserName(apiKeyId, apiKeyMaps.byId),
+    promptTokens: Number(entry.promptTokens ?? t.prompt_tokens ?? t.input_tokens) || 0,
+    completionTokens: Number(entry.completionTokens ?? t.completion_tokens ?? t.output_tokens) || 0,
+    status: entry.status || "ok",
+  };
+}
+
 async function getConnectionMapCached() {
   if (Date.now() - connCache.ts < CONN_CACHE_TTL_MS) return connCache.map;
   try {
@@ -385,6 +407,7 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
   // only in process memory until the request completes; the dashboard receives
   // the resolved key name or a masked fallback, never the credential itself.
   const flowKey = JSON.stringify([connectionId || "", modelKey, apiKey || ""]);
+  const redisFlowId = createHash("sha256").update(flowKey).digest("hex").slice(0, 32);
   const existingFlow = pendingRequests.byFlow[flowKey];
 
   if (started) {
@@ -407,13 +430,16 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
         // Fail open for a stalled upstream request: remove only this exact route
         // rather than hiding other callers that happen to use the same model.
         updatePendingAggregate(modelKey, connectionId, -staleFlow.count);
+        updateActiveFlow(redisFlowId, staleFlow, -staleFlow.count).catch(() => {});
         delete pendingRequests.byFlow[flowKey];
       }
       scheduleStatsEvent("pending");
     }, PENDING_TIMEOUT_MS);
+    updateActiveFlow(redisFlowId, flow, 1).catch(() => {});
   } else if (existingFlow) {
     updatePendingAggregate(modelKey, connectionId, -1);
     existingFlow.count = Math.max(0, existingFlow.count - 1);
+    updateActiveFlow(redisFlowId, existingFlow, -1).catch(() => {});
     if (existingFlow.count === 0) {
       clearTimeout(pendingTimers[flowKey]);
       delete pendingTimers[flowKey];
@@ -455,25 +481,18 @@ export async function getActiveRequests(apiKeyId = null) {
   }
 
   await ensureRingInitialized();
+  const redisRecent = await getRecentUsageEvents(50).catch(() => null);
+  const recentEntries = redisRecent
+    ? [...recentRing.items, ...redisRecent]
+    : recentRing.items;
   const seen = new Set();
-  const recentRequests = [...recentRing.items]
-    .filter((e) => !apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id === apiKeyId)
+  const recentRequests = recentEntries
+    .filter((e) => !apiKeyId || (e.apiKeyId || e.apiKey) === apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id === apiKeyId)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .map((e) => {
-      const t = e.tokens || {};
-      return {
-        timestamp: e.timestamp, model: e.model, provider: e.provider || "",
-        apiKeyId: e.apiKey || "local-no-key",
-        userName: getUsageUserName(e.apiKey || "local-no-key", apiKeyMaps.byId),
-        promptTokens: t.prompt_tokens || t.input_tokens || 0,
-        completionTokens: t.completion_tokens || t.output_tokens || 0,
-        status: e.status || "ok",
-      };
-    })
+    .map((e) => toRecentRequest(e, apiKeyMaps))
     .filter((e) => {
       if (e.promptTokens === 0 && e.completionTokens === 0) return false;
-      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
-      const key = `${e.apiKeyId}|${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      const key = e.requestId || `${e.apiKeyId}|${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${e.timestamp}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -484,17 +503,54 @@ export async function getActiveRequests(apiKeyId = null) {
   return { activeRequests, recentRequests, errorProvider };
 }
 
+function persistUsageRecord(db, record, knownKeyId, promptTokens, completionTokens) {
+  let inserted = false;
+  db.transaction(() => {
+    const existing = db.get(`SELECT id FROM usageHistory WHERE requestId = ?`, [record.requestId]);
+    if (existing) return;
+
+    const insertResult = db.run(
+      `INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.timestamp, record.provider || null, record.model || null,
+        record.connectionId || null, record.apiKeyId, record.requestId, record.startedAt, record.completedAt, record.endpoint || null,
+        promptTokens, completionTokens, record.cost || 0, record.status || "success", stringifyJson(record.tokens || {}), stringifyJson(record.meta || {}),
+      ],
+    );
+    if ((insertResult?.changes ?? 1) === 0) return;
+
+    if (knownKeyId) {
+      db.run(
+        `UPDATE apiKeys
+            SET lastUsedAt = CASE
+              WHEN lastUsedAt IS NULL OR lastUsedAt < ? THEN ?
+              ELSE lastUsedAt
+            END
+          WHERE id = ?`,
+        [record.completedAt, record.completedAt, knownKeyId],
+      );
+    }
+
+    const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
+    const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
+    db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+    inserted = true;
+  });
+  return inserted;
+}
+
 export async function saveRequestUsage(entry) {
   try {
     const db = await getAdapter();
     const completedAt = entry.completedAt || new Date().toISOString();
     const startedAt = entry.startedAt || entry.timestamp || completedAt;
     const requestId = entry.requestId || randomUUID();
+    if (db.get(`SELECT id FROM usageHistory WHERE requestId = ?`, [requestId])) return;
     const rawApiKey = typeof entry.apiKey === "string" ? entry.apiKey : null;
     const knownKey = entry.apiKeyId
-      ? db.get(`SELECT id, key FROM apiKeys WHERE id = ?`, [entry.apiKeyId]) || { id: entry.apiKeyId }
+      ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE id = ?`, [entry.apiKeyId]) || { id: entry.apiKeyId }
       : rawApiKey
-        ? db.get(`SELECT id, key FROM apiKeys WHERE key = ?`, [rawApiKey])
+        ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [rawApiKey])
         : null;
     const apiKeyId = knownKey?.id
       || (rawApiKey ? externalApiKeyId(db, rawApiKey) : "local-no-key");
@@ -504,7 +560,7 @@ export async function saveRequestUsage(entry) {
       timestamp: startedAt,
       startedAt,
       completedAt,
-      apiKey: apiKeyId, // internal aggregation identity; never persisted as the raw credential
+      apiKey: apiKeyId,
       apiKeyId,
     };
 
@@ -514,63 +570,53 @@ export async function saveRequestUsage(entry) {
     const tokens = record.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-    let inserted = false;
+    const status = record.status || "success";
+    const usageEvent = {
+      requestId: record.requestId,
+      timestamp: record.timestamp,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      provider: record.provider || null,
+      model: record.model || null,
+      connectionId: record.connectionId || null,
+      apiKeyId: record.apiKeyId,
+      knownApiKeyId: knownKey?.id || null,
+      endpoint: record.endpoint || null,
+      promptTokens,
+      completionTokens,
+      cost: record.cost || 0,
+      status,
+      tokens,
+      meta: {
+        sourceIp: record.sourceIp || null,
+        sourceGeo: record.sourceGeo || null,
+        appName: record.appName || null,
+        userAgent: record.userAgent || null,
+        sourceUrl: record.sourceUrl || null,
+      },
+    };
 
-    db.transaction(() => {
-      // requestId is a durable idempotency key. It cannot suppress a distinct
-      // concurrent request merely because timestamps and token counts coincide.
-      const existing = db.get(`SELECT id FROM usageHistory WHERE requestId = ?`, [requestId]);
-      if (existing) return;
+    const usageAffectsQuota = ["success", "ok"].includes(status) && promptTokens + completionTokens > 0;
+    const quotaCounters = usageAffectsQuota && knownKey?.id
+      ? [
+        knownKey.fiveHourQuotaResetAt && { key: quotaCounterKey(knownKey.id, "fiveHour", knownKey.fiveHourQuotaResetAt), delta: promptTokens + completionTokens },
+        knownKey.weeklyQuotaResetAt && { key: quotaCounterKey(knownKey.id, "weekly", knownKey.weeklyQuotaResetAt), delta: promptTokens + completionTokens },
+      ].filter(Boolean)
+      : [];
 
-      const insertResult = db.run(
-        `INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          record.timestamp, record.provider || null, record.model || null,
-          record.connectionId || null, record.apiKeyId, record.requestId, record.startedAt, record.completedAt, record.endpoint || null,
-          promptTokens, completionTokens, record.cost || 0, record.status || "success", stringifyJson(tokens), stringifyJson({
-            sourceIp: record.sourceIp || null,
-            sourceGeo: record.sourceGeo || null,
-            appName: record.appName || null,
-            userAgent: record.userAgent || null,
-            sourceUrl: record.sourceUrl || null,
-          }),
-        ]
-      );
-      if ((insertResult?.changes ?? 1) === 0) return;
+    let queued = false;
+    try {
+      queued = await enqueueUsageEvent(usageEvent, quotaCounters);
+    } catch (error) {
+      console.error("[UsageQueue] enqueue failed, falling back to SQLite:", error.message);
+    }
 
-      // Keep the key-management page accurate even if a request path persisted
-      // usage without going through the normal route-level auth guard first.
-      // Store only the key id; the raw credential never enters usageHistory.
-      if (knownKey?.id) {
-        db.run(
-          `UPDATE apiKeys
-              SET lastUsedAt = CASE
-                WHEN lastUsedAt IS NULL OR lastUsedAt < ? THEN ?
-                ELSE lastUsedAt
-              END
-            WHERE id = ?`,
-          [completedAt, completedAt, knownKey.id],
-        );
-      }
-
-      // usageDaily still uses the legacy JSON-blob schema. Exact dashboard
-      // stats already read usageHistory, so do not write the incompatible flat
-      // columns here; that statement rolled back the entire usage transaction.
-
-      const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
-      const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
-      db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
-      inserted = true;
-    });
-
+    const inserted = queued || persistUsageRecord(db, usageEvent, knownKey?.id || null, promptTokens, completionTokens);
     if (inserted) {
-      // New successful usage changes the rolling quota aggregate. Invalidate
-      // through the dependency-free cache module so writes never import the
-      // quota service and create a circular dependency.
       const quotaCacheKey = rawApiKey || knownKey?.key;
-      const usageAffectsQuota = ["success", "ok"].includes(record.status || "success")
-        && promptTokens + completionTokens > 0;
       if (quotaCacheKey && usageAffectsQuota) invalidateQuotaCache(quotaCacheKey);
+      // Keep the local recent-request overlay and SSE event immediate. Aggregate
+      // snapshots are cached in Redis briefly while the writer catches SQLite up.
       clearUsageStatsCache();
       pushToRing(record);
       scheduleStatsEvent("update", 250);
@@ -1295,6 +1341,16 @@ export async function getUsageStats(period = "all", range = {}) {
   const now = Date.now();
   const cached = usageStatsCache.get(key);
 
+  if (!cached) {
+    try {
+      const shared = await getCachedUsageStats(key);
+      if (shared) {
+        usageStatsCache.set(key, { createdAt: now, promise: Promise.resolve(shared), stale: false, refreshPromise: null });
+        return shared;
+      }
+    } catch {}
+  }
+
   if (cached && !cached.stale && now - cached.createdAt < STATS_CACHE_TTL_MS) {
     return cached.promise;
   }
@@ -1304,6 +1360,7 @@ export async function getUsageStats(period = "all", range = {}) {
     if (!cached.refreshPromise) {
       const refreshPromise = calculateUsageStats(period, range)
         .then((stats) => {
+          setCachedUsageStats(key, stats).catch(() => {});
           const current = usageStatsCache.get(key);
           if (current?.refreshPromise !== refreshPromise) return stats;
           usageStatsCache.set(key, {
@@ -1326,11 +1383,16 @@ export async function getUsageStats(period = "all", range = {}) {
     return cached.promise;
   }
 
-  const promise = calculateUsageStats(period, range).catch((error) => {
-    const current = usageStatsCache.get(key);
-    if (current?.promise === promise) usageStatsCache.delete(key);
-    throw error;
-  });
+  const promise = calculateUsageStats(period, range)
+    .then((stats) => {
+      setCachedUsageStats(key, stats).catch(() => {});
+      return stats;
+    })
+    .catch((error) => {
+      const current = usageStatsCache.get(key);
+      if (current?.promise === promise) usageStatsCache.delete(key);
+      throw error;
+    });
   usageStatsCache.set(key, { createdAt: now, promise, stale: false, refreshPromise: null });
   trimUsageStatsCache();
   return promise;

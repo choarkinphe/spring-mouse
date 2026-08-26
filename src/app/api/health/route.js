@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getRedisHealth } from "@/lib/redis/client.js";
+import { getUsageQueueHealth } from "@/lib/redis/liveUsage.js";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -7,7 +9,14 @@ const CORS_HEADERS = {
 };
 
 export async function GET() {
-  return NextResponse.json({ ok: true }, { headers: CORS_HEADERS });
+  const [redis, usageQueue] = await Promise.all([
+    getRedisHealth(),
+    getUsageQueueHealth().catch((error) => ({ configured: true, error: error.message })),
+  ]);
+  const redisRequired = process.env.SPRING_MOUSE_REDIS_REQUIRED === "true";
+  const ok = (!redisRequired || redis.connected)
+    && (!redisRequired || usageQueue.writerHealthy !== false);
+  return NextResponse.json({ ok, redis, usageQueue }, { status: ok ? 200 : 503, headers: CORS_HEADERS });
 }
 
 export async function OPTIONS() {

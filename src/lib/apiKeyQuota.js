@@ -9,6 +9,7 @@ import {
   getQuotaStatusLoad,
   setQuotaStatusLoad,
 } from "@/lib/apiKeyQuotaCache.js";
+import { getQuotaCounter, initializeQuotaCounter } from "@/lib/redis/liveUsage.js";
 
 export { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 
@@ -93,6 +94,9 @@ export async function advanceApiKeyQuotaResets(keys = null, nowMs = Date.now()) 
 }
 
 async function readWindowUsage(db, apiKeyId, window, nextResetAt) {
+  const cached = await getQuotaCounter(apiKeyId, window.id, nextResetAt);
+  if (cached !== null) return { usedTokens: cached, nextResetAt };
+
   const nextMs = new Date(nextResetAt).getTime();
   const cutoff = new Date(nextMs - window.durationMs).toISOString();
   const usage = db.get(
@@ -100,7 +104,8 @@ async function readWindowUsage(db, apiKeyId, window, nextResetAt) {
        FROM usageHistory WHERE apiKeyId = ? AND completedAt > ? AND status IN ('success', 'ok')`,
     [apiKeyId, cutoff],
   );
-  return { ...usage, nextResetAt };
+  const usedTokens = await initializeQuotaCounter(apiKeyId, window.id, nextResetAt, usage?.usedTokens || 0);
+  return { usedTokens, nextResetAt };
 }
 
 async function readUsages(db, apiKeyId, key) {

@@ -35,6 +35,13 @@ const g = global.__appSingleton ??= {
 
 export async function initializeApp() {
   try {
+    import("@/lib/redis/liveUsage.js")
+      .then(({ startUsageCommitSubscriber }) => startUsageCommitSubscriber(async () => {
+        const { notifyUsageCommitted } = await import("@/lib/db/repos/usageRepo.js");
+        notifyUsageCommitted();
+      }))
+      .catch((e) => console.log("[UsageSubscriber] start failed:", e.message));
+
     // Register cleanup + exit-respawn callback immediately so signals and
     // unexpected cloudflared exits are handled even during the deferred window.
     if (!g.signalHandlersRegistered) {

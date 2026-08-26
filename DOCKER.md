@@ -70,6 +70,8 @@ docker compose logs -f spring-mouse
 
 其中 `data/db/data.sqlite` 是主数据库。升级、备份、外部 Headroom、Nginx 和 Cloudflare Tunnel 的配置见 [DEPLOY.md](DEPLOY.md)。
 
+发布镜像已内置仅监听容器回环地址的 Redis，用于实时用量、配额缓存和 SQLite 异步写入队列。Redis AOF 自动保存在 `data/redis/`；不需要新增 Compose 服务、端口、环境变量或数据卷，升级仍只需拉取并重建 Spring Mouse 镜像。
+
 ## Headroom
 
 Compose 网络中的地址：

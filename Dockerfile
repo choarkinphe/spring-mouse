@@ -72,6 +72,11 @@ COPY --from=builder /app/node_modules/next ./node_modules/next
 # sql.js loads dist/sql-wasm.wasm by path at runtime; tracing only follows JS imports,
 # so the last-resort DB driver would abort with ENOENT on the missing binary.
 COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
+# The standalone tracer sees the web-side Redis client, but the SQLite writer
+# is an external runtime script. Copy its client packages explicitly as well.
+COPY --from=builder /app/node_modules/redis ./node_modules/redis
+COPY --from=builder /app/node_modules/@redis ./node_modules/@redis
+COPY --from=builder /app/node_modules/cluster-key-slot ./node_modules/cluster-key-slot
 
 # Build provenance consumed by the Jenkins deploy script (docker exec cat).
 RUN printf '{"revision":"%s"}\n' "${APP_BUILD_VERSION}" > /app/build-info.json
@@ -80,13 +85,17 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.spring-mouse 2>/dev/null || true
 
-# Fix permissions at runtime (handles mounted volumes)
+# Redis is embedded in the application container. It binds only to loopback;
+# the existing /app/data mount persists its AOF beside SQLite.
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories \
-  && apk --no-cache upgrade && apk --no-cache add su-exec && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
-  chmod +x /entrypoint.sh
+  && apk --no-cache upgrade && apk --no-cache add redis su-exec
+
+COPY --from=builder /app/runtime ./runtime
+RUN chmod +x /app/runtime/entrypoint.sh \
+  && mkdir -p /app/data /app/data-home /app/data/redis \
+  && chown -R node:node /app
 
 EXPOSE 8008
 
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "custom-server.js"]
+ENTRYPOINT ["/app/runtime/entrypoint.sh"]
+CMD ["node", "/app/runtime/docker-supervisor.mjs"]

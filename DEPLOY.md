@@ -41,7 +41,7 @@
 /opt/spring-mouse/
 ├── .env                  # 仅本机保存，不提交 Git
 ├── docker-compose.yml    # 部署配置
-├── data/                 # SQLite、证书、日志、Tunnel 状态
+├── data/                 # SQLite、内嵌 Redis AOF、证书、日志、Tunnel 状态
 └── geoip/                # 可选：MaxMind mmdb 文件
 ```
 
@@ -493,6 +493,8 @@ docker compose ps
 curl -fsS http://127.0.0.1:8008/api/health
 curl -fsS http://127.0.0.1:8008/api/version
 ```
+
+Spring Mouse 镜像内置 Redis 热数据层和 SQLite 异步写入进程。Redis 不暴露宿主机端口，其持久化文件写入现有 `data/redis/`，因此升级不需要修改 `.env`、Compose、端口或 volume。
 
 升级前先备份 `data/`。升级后进入 Dashboard 检查通道、路由策略、API Key 和最近请求是否正常。
 

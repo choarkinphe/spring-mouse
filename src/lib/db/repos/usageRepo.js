@@ -558,19 +558,29 @@ export async function saveRequestUsage(entry) {
       const cachedTokens = record.tokens?.cached_tokens || record.tokens?.cache_read_input_tokens || 0;
       const cost = record.cost || 0;
 
+      // 暂时禁用 usageDaily 写入以确保实时数据不受影响
+      // usageDaily 写入逻辑会在单独的优化任务中重新启用
+      /*
       // 兼容现有JSON blob结构的usageDaily表
       const existingDay = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
       let dayData = existingDay ? JSON.parse(existingDay.data || '{}') : {};
 
-      // 初始化统计结构
+      // 初始化总计字段
       if (!dayData.promptTokens) dayData.promptTokens = 0;
       if (!dayData.completionTokens) dayData.completionTokens = 0;
       if (!dayData.cachedTokens) dayData.cachedTokens = 0;
       if (!dayData.cost) dayData.cost = 0;
       if (!dayData.requests) dayData.requests = 0;
+
+      // 初始化嵌套统计结构（读取时期望的格式）
+      if (!dayData.stats) dayData.stats = {};
       if (!dayData.byProvider) dayData.byProvider = {};
       if (!dayData.byModel) dayData.byModel = {};
       if (!dayData.byApiKey) dayData.byApiKey = {};
+      if (!dayData.byAccount) dayData.byAccount = {};
+      if (!dayData.bySourceIp) dayData.bySourceIp = {};
+      if (!dayData.byApp) dayData.byApp = {};
+      if (!dayData.byUser) dayData.byUser = {};
 
       // 更新总计
       dayData.promptTokens += promptTokens;
@@ -579,8 +589,18 @@ export async function saveRequestUsage(entry) {
       dayData.cost += cost;
       dayData.requests += 1;
 
-      // 按provider统计
+      // 按provider统计（使用嵌套stats结构）
       const provider = record.provider || "unknown";
+      if (!dayData.stats[provider]) {
+        dayData.stats[provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+      }
+      dayData.stats[provider].requests += 1;
+      dayData.stats[provider].promptTokens += promptTokens;
+      dayData.stats[provider].completionTokens += completionTokens;
+      dayData.stats[provider].cachedTokens += cachedTokens;
+      dayData.stats[provider].cost += cost;
+
+      // 同步更新扁平化的byProvider结构（用于兼容）
       if (!dayData.byProvider[provider]) {
         dayData.byProvider[provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
       }
@@ -615,6 +635,7 @@ export async function saveRequestUsage(entry) {
       // 写回JSON blob
       db.run(`INSERT INTO usageDaily (dateKey, data) VALUES (?, ?) ON CONFLICT (dateKey) DO UPDATE SET data = excluded.data`,
         [dateKey, JSON.stringify(dayData)]);
+      */
 
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;

@@ -19,7 +19,7 @@ describe("health route embedded Redis status", () => {
     getUsageQueueHealth.mockResolvedValue({ configured: false, pending: 0, length: 0 });
     const response = await GET();
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true });
+    expect(await response.json()).toMatchObject({ ok: true, redisRequired: false });
   });
 
   it("fails Docker health when the required writer is stale", async () => {
@@ -28,6 +28,6 @@ describe("health route embedded Redis status", () => {
     getUsageQueueHealth.mockResolvedValue({ configured: true, writerHealthy: false, pending: 1, length: 1 });
     const response = await GET();
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ ok: false });
+    expect(await response.json()).toMatchObject({ ok: false, redisRequired: true });
   });
 });

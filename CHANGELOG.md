@@ -2,6 +2,18 @@
 
 本项目的公开发行记录从 `v0.1.0` 开始。此前的内部迭代记录、版本号和部署信息已从本文件移除。
 
+## v0.4.1 — 2026-08-26
+
+### 📊 Redis 与异步持久化状态可视化
+
+- Dashboard 顶部增加 Redis 连接状态、延迟和内存使用量
+- 增加 Redis Key 数量、RSS 与 AOF 文件大小详情
+- 增加 Redis Stream 队列长度、Pending 数量和 SQLite Writer 心跳状态
+- 顶部状态灯综合判断系统负载、Redis 连接、Writer 健康度与队列积压
+- Redis 异常时仍可正常打开 Dashboard，并明确显示故障状态
+
+---
+
 ## v0.4.0 — 2026-08-26
 
 ### 🚀 Redis 实时用量层与 SQLite 异步持久化

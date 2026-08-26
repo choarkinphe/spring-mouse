@@ -18,6 +18,22 @@ export function isRedisConfigured() {
   return Boolean(REDIS_URL);
 }
 
+export function parseRedisInfo(info = "") {
+  const fields = {};
+  for (const line of String(info).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const separator = line.indexOf(":");
+    if (separator <= 0) continue;
+    fields[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  return fields;
+}
+
+function numericInfoField(fields, key) {
+  const value = Number(fields?.[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
 export async function getRedisClient({ required = REDIS_REQUIRED } = {}) {
   if (!REDIS_URL) {
     if (required) throw new Error("Embedded Redis is required but SPRING_MOUSE_REDIS_URL is not configured");
@@ -69,11 +85,34 @@ export async function getRedisHealth() {
     if (!client) return { configured: true, connected: false, error: state.lastError };
     const started = performance.now();
     await client.ping();
+    const latencyMs = Number((performance.now() - started).toFixed(1));
+    const [memoryResult, persistenceResult, keyCountResult] = await Promise.allSettled([
+      client.info("memory"),
+      client.info("persistence"),
+      client.dbSize(),
+    ]);
+    const memoryInfo = memoryResult.status === "fulfilled" ? parseRedisInfo(memoryResult.value) : {};
+    const persistenceInfo = persistenceResult.status === "fulfilled" ? parseRedisInfo(persistenceResult.value) : {};
+    const metricsError = [memoryResult, persistenceResult, keyCountResult]
+      .find((result) => result.status === "rejected")?.reason;
+
     return {
       configured: true,
       connected: true,
-      latencyMs: Number((performance.now() - started).toFixed(1)),
+      latencyMs,
       lastConnectedAt: state.lastConnectedAt,
+      keyCount: keyCountResult.status === "fulfilled" ? Number(keyCountResult.value) || 0 : null,
+      memory: {
+        usedBytes: numericInfoField(memoryInfo, "used_memory"),
+        rssBytes: numericInfoField(memoryInfo, "used_memory_rss"),
+        maxBytes: numericInfoField(memoryInfo, "maxmemory"),
+        fragmentationRatio: numericInfoField(memoryInfo, "mem_fragmentation_ratio"),
+      },
+      persistence: {
+        aofEnabled: persistenceInfo.aof_enabled === "1",
+        aofSizeBytes: numericInfoField(persistenceInfo, "aof_current_size"),
+      },
+      metricsError: metricsError?.message || null,
       error: null,
     };
   } catch (error) {

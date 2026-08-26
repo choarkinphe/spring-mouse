@@ -1,6 +1,6 @@
 {
   "name": "spring-mouse",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Spring Mouse CLI - Start and manage Spring Mouse server",
   "bin": {
     "spring-mouse": "./cli.js"

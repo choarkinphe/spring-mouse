@@ -12,6 +12,7 @@ let createApiKey;
 let getApiKeyQuotaStatuses;
 let checkApiKeyQuota;
 let getApiKeyQuotaStatus;
+let invalidateQuotaCache;
 let updateSettings;
 let codexUsageRoute;
 let keysRoute;
@@ -22,7 +23,7 @@ beforeAll(async () => {
   ({ initDb } = await import("@/lib/db/index.js"));
   ({ createApiKey, validateApiKey } = await import("@/lib/db/repos/apiKeysRepo.js"));
   ({ updateSettings } = await import("@/lib/db/repos/settingsRepo.js"));
-  ({ getApiKeyQuotaStatuses, getApiKeyQuotaStatus, checkApiKeyQuota } = await import("@/lib/apiKeyQuota.js"));
+  ({ getApiKeyQuotaStatuses, getApiKeyQuotaStatus, checkApiKeyQuota, invalidateQuotaCache } = await import("@/lib/apiKeyQuota.js"));
   codexUsageRoute = await import("@/app/api/codex/usage/route.js");
   keysRoute = await import("@/app/api/keys/[id]/route.js");
   await initDb();
@@ -143,6 +144,28 @@ describe("API key quota window resets", () => {
     const fiveHour = status.windows.find((window) => window.id === "fiveHour");
     expect(fiveHour.usedTokens).toBe(0);
     expect(new Date(fiveHour.resetAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("reuses quota status until the cache is explicitly invalidated", async () => {
+    const key = await createApiKey("cached-status", "machine");
+    await updateSettings({ apiKeyQuotaRules: { fiveHourTokenLimitM: 2, weeklyTokenLimitM: 20 } });
+    db.run(`UPDATE apiKeys SET quotaMode = 'limited' WHERE id = ?`, [key.id]);
+
+    const before = await getApiKeyQuotaStatus(key.key);
+    const completedAt = new Date().toISOString();
+    db.run(
+      `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta)
+       VALUES(?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, 500000, 0, 0, 'success', '{}', '{}')`,
+      [completedAt, "test", "test:model", key.id, "cached-status-usage", completedAt, completedAt],
+    );
+
+    const cached = await getApiKeyQuotaStatus(key.key);
+    expect(cached).toBe(before);
+    expect(cached.windows.find((window) => window.id === "fiveHour").usedTokens).toBe(0);
+
+    invalidateQuotaCache(key.key);
+    const refreshed = await getApiKeyQuotaStatus(key.key);
+    expect(refreshed.windows.find((window) => window.id === "fiveHour").usedTokens).toBe(500_000);
   });
 
   it("treats the off mode as disabled authentication", async () => {

@@ -112,7 +112,7 @@ async function readWindowUsage(db, apiKeyId, window, nextResetAt) {
   const cutoff = new Date(nextMs - window.durationMs).toISOString();
   const usage = db.get(
     `SELECT COALESCE(SUM(promptTokens + completionTokens), 0) AS usedTokens, MIN(completedAt) AS oldestCompletedAt
-       FROM usageHistory WHERE apiKeyId = ? AND completedAt >= ? AND status IN ('success', 'ok')`,
+       FROM usageHistory WHERE apiKeyId = ? AND completedAt > ? AND status IN ('success', 'ok')`,
     [apiKeyId, cutoff],
   );
   return { ...usage, nextResetAt };

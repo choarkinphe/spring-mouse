@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -134,6 +134,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
       "CREATE INDEX IF NOT EXISTS idx_uh_key_id ON usageHistory(apiKeyId)",
       "CREATE INDEX IF NOT EXISTS idx_uh_key_completed ON usageHistory(apiKeyId, completedAt)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_key_completed_status_tokens ON usageHistory(apiKeyId, completedAt, status, promptTokens, completionTokens)",
       "CREATE INDEX IF NOT EXISTS idx_uh_started_at ON usageHistory(startedAt DESC)",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_uh_request_id ON usageHistory(requestId) WHERE requestId IS NOT NULL",
     ],

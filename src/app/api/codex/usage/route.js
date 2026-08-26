@@ -22,6 +22,7 @@ export function OPTIONS() {
 }
 
 export async function GET(request) {
+  const startedAt = performance.now();
   const apiKey = extractApiKey(request);
   if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
 
@@ -34,5 +35,10 @@ export async function GET(request) {
   const status = await getApiKeyQuotaStatus(apiKey);
   if (!status) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
 
-  return NextResponse.json(buildCodexUsagePayload(status), { headers: RESPONSE_HEADERS });
+  return NextResponse.json(buildCodexUsagePayload(status), {
+    headers: {
+      ...RESPONSE_HEADERS,
+      "Server-Timing": `codex-quota;dur=${(performance.now() - startedAt).toFixed(1)}`,
+    },
+  });
 }

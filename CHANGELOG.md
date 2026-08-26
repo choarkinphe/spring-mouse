@@ -2,6 +2,19 @@
 
 本项目的公开发行记录从 `v0.1.0` 开始。此前的内部迭代记录、版本号和部署信息已从本文件移除。
 
+## v0.4.0 — 2026-08-26
+
+### 🚀 Redis 实时用量层与 SQLite 异步持久化
+
+- Docker 镜像内置仅监听容器回环地址的 Redis，无需新增服务、端口、环境变量或数据卷
+- 实时用量、配额计数、最近请求和 Dashboard 快照优先使用 Redis
+- 新增独立 SQLite Writer，通过 Redis Stream 批量异步写入历史数据
+- Redis AOF 持久化到现有 `/app/data/redis/`，升级仍只需更新 Spring Mouse 镜像
+- 增加请求幂等、Writer 心跳、队列状态和 Redis 健康检查
+- 非 Docker 开发环境未配置 Redis 时继续使用 SQLite 回退路径
+
+---
+
 ## v0.3.1 — 2026-08-26
 
 ### 🚨 关键性能修复 - Codex 连接速度问题

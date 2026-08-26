@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { PROVIDER_MODELS } from "open-sse/config/providerModels.js";
 import { AI_PROVIDERS, ALIAS_TO_ID } from "@/shared/constants/providers";
 import { getModelKind } from "@/shared/constants/models";
@@ -83,7 +84,7 @@ export async function OPTIONS() {
 }
 
 // GET /v1/models/info?id={alias}/{modelId} — metadata for a single model
-export async function GET(request) {
+async function handleGET(request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   const kind = searchParams.get("kind");
@@ -101,4 +102,9 @@ export async function GET(request) {
     );
   }
   return Response.json(info, { headers: { "Access-Control-Allow-Origin": "*" } });
+}
+
+
+export async function GET(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handleGET(monitoredRequest));
 }

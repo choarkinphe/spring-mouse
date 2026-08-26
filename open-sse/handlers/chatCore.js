@@ -62,6 +62,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   const requestId = randomUUID();
+  const trafficRequestId = clientRawRequest?.headers?.["x-sm-traffic-request-id"] || clientRawRequest?.headers?.["X-Sm-Traffic-Request-Id"] || null;
   const startedAt = new Date(requestStartTime).toISOString();
   // Stable per-session color so all lines of one CLI conversation share a tag
   const sessionSeed = (() => {
@@ -76,6 +77,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const sourceFormat = sourceFormatOverride || detectFormat(body);
   const saveFailedUsage = (status) => saveRequestUsage({
     requestId,
+    trafficRequestId,
     startedAt,
     provider,
     model,
@@ -515,7 +517,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey);
 

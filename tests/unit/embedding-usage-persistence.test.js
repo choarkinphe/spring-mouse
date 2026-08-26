@@ -15,6 +15,7 @@ vi.mock("../../src/sse/services/auth.js", () => ({
   clearAccountError: vi.fn(),
   extractApiKey: () => "client-key",
   isValidApiKey: vi.fn(),
+  authorizeApiKey: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({ requireApiKey: false }) }));
 vi.mock("../../src/sse/services/model.js", () => ({
@@ -52,6 +53,7 @@ describe("embedding usage persistence", () => {
   it("records exact provider usage for successful embedding requests", async () => {
     await handleEmbeddings(new Request("http://localhost/v1/embeddings", {
       method: "POST",
+      headers: { "x-sm-traffic-request-id": "traffic-embedding-1" },
       body: JSON.stringify({ model: "openai/text-embedding-3-small", input: "hello" }),
     }));
 
@@ -61,6 +63,7 @@ describe("embedding usage persistence", () => {
       connectionId: "connection-a",
       apiKey: "client-key",
       endpoint: "/v1/embeddings",
+      trafficRequestId: "traffic-embedding-1",
       status: "success",
       tokens: { prompt_tokens: 12, completion_tokens: 0, total_tokens: 12 },
     }));

@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleStt } from "@/sse/handlers/stt.js";
 
 // Allow large audio uploads — 5min for processing large files
@@ -14,6 +15,11 @@ export async function OPTIONS() {
 }
 
 /** POST /v1/audio/transcriptions - OpenAI Whisper compatible STT */
-export async function POST(request) {
+async function handlePOST(request) {
   return await handleStt(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

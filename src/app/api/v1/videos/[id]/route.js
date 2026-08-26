@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleVideoGet } from "@/sse/handlers/videoGeneration.js";
 
 export async function OPTIONS() {
@@ -11,7 +12,12 @@ export async function OPTIONS() {
 }
 
 /** GET /v1/videos/{request_id} - poll async video job status (xAI Grok Imagine) */
-export async function GET(request, { params }) {
+async function handleGET(request, { params }) {
   const { id } = await params;
   return await handleVideoGet(request, id);
+}
+
+
+export async function GET(request, context) {
+  return withNetworkTraffic(request, (monitoredRequest) => handleGET(monitoredRequest, context));
 }

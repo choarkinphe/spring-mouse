@@ -15,6 +15,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { randomUUID } from "node:crypto";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
+import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
@@ -33,6 +34,7 @@ function exactEmbeddingUsage(raw) {
  */
 export async function handleEmbeddings(request) {
   const requestId = randomUUID();
+  const trafficRequestId = getTrafficRequestId(request);
   const startedAt = new Date().toISOString();
   let body;
   try {
@@ -133,6 +135,7 @@ export async function handleEmbeddings(request) {
       const usage = exactEmbeddingUsage(result.usage);
       saveRequestUsage({
         requestId,
+        trafficRequestId,
         startedAt,
         provider,
         model,
@@ -158,6 +161,7 @@ export async function handleEmbeddings(request) {
 
     saveRequestUsage({
       requestId,
+      trafficRequestId,
       startedAt,
       provider,
       model,

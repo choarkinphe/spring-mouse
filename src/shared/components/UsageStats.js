@@ -8,6 +8,7 @@ import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/Overview
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import ChannelQuotaPanel from "@/app/(dashboard)/dashboard/usage/components/ChannelQuotaPanel";
 import UsageBreakdownGrid from "@/app/(dashboard)/dashboard/usage/components/UsageBreakdownGrid";
+import TrafficMonitor from "@/app/(dashboard)/dashboard/usage/components/TrafficMonitor";
 
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders.
 const ProviderTopology = dynamic(
@@ -43,8 +44,8 @@ function TimeAgo({ timestamp }) {
 
 function UsageMetricSkeletons() {
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 sm:gap-4" aria-label="正在加载概览指标">
-      {Array.from({ length: 5 }, (_, index) => (
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 sm:gap-4" aria-label="正在加载概览指标">
+      {Array.from({ length: 6 }, (_, index) => (
         <div key={index} className="rounded-xl border border-border bg-surface/70 p-4 shadow-[var(--shadow-soft)]">
           <div className="flex items-center justify-between gap-3">
             <Skeleton className="h-3 w-20" />
@@ -211,6 +212,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
         </div>
       )}
 
+      <TrafficMonitor stats={stats} />
       {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} refreshToken={chartRefreshToken} />}
       {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} chartRefreshToken={chartRefreshToken} />}
     </div>

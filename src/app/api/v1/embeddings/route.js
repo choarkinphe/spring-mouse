@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleEmbeddings } from "@/sse/handlers/embeddings.js";
 
 /**
@@ -16,6 +17,11 @@ export async function OPTIONS() {
 /**
  * POST /v1/embeddings - OpenAI-compatible embeddings endpoint
  */
-export async function POST(request) {
+async function handlePOST(request) {
   return await handleEmbeddings(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

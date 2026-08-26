@@ -14,11 +14,13 @@ import {
 } from "recharts";
 import Card from "@/shared/components/Card";
 import { Skeleton } from "@/shared/components/Loading";
+import { formatBytes } from "@/shared/utils/formatBytes";
 
 const METRICS = {
   tokens: { label: "Token", color: "#6366f1", yAxisId: "tokens", format: (value) => fmtTokens(value) },
   cost: { label: "成本", color: "#f59e0b", yAxisId: "cost", format: (value) => fmtCost(value) },
   requests: { label: "模型调用", color: "#10b981", yAxisId: "requests", format: (value) => new Intl.NumberFormat("zh-CN").format(value || 0) },
+  trafficBytes: { label: "流量", color: "#0891b2", yAxisId: "traffic", format: (value) => formatBytes(value) },
 };
 
 const fmtTokens = (n) => {
@@ -61,7 +63,7 @@ function UsageChartSkeleton() {
 export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, title = "使用趋势", className = "" }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedMetrics, setSelectedMetrics] = useState(["tokens", "cost", "requests"]);
+  const [selectedMetrics, setSelectedMetrics] = useState(["tokens", "trafficBytes", "requests"]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,7 +100,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
     });
   };
 
-  const hasData = data.some((item) => item.tokens > 0 || item.cost > 0 || item.requests > 0);
+  const hasData = data.some((item) => item.tokens > 0 || item.cost > 0 || item.requests > 0 || item.trafficBytes > 0);
 
   return (
     <Card className={`flex min-w-0 flex-col gap-3 p-3 sm:p-4 ${className}`}>
@@ -159,6 +161,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
             />
             <YAxis yAxisId="cost" hide />
             <YAxis yAxisId="requests" hide />
+            <YAxis yAxisId="traffic" hide />
             <Tooltip
               contentStyle={{
                 backgroundColor: "var(--color-bg)",
@@ -191,6 +194,18 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
                 type="monotone"
                 dataKey="cost"
                 stroke={METRICS.cost.color}
+                strokeWidth={2.25}
+                dot={false}
+                activeDot={{ r: 4 }}
+              />
+            ) : null}
+            {selectedMetrics.includes("trafficBytes") ? (
+              <Line
+                yAxisId="traffic"
+                name="流量"
+                type="monotone"
+                dataKey="trafficBytes"
+                stroke={METRICS.trafficBytes.color}
                 strokeWidth={2.25}
                 dot={false}
                 activeDot={{ r: 4 }}

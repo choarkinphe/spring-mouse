@@ -7,6 +7,7 @@ import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
 import { enqueueUsageEvent, getCachedUsageStats, setCachedUsageStats, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
+import { getTrafficBuckets, getTrafficSummary, getTrafficTotals } from "./trafficRepo.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -510,10 +511,10 @@ function persistUsageRecord(db, record, knownKeyId, promptTokens, completionToke
     if (existing) return;
 
     const insertResult = db.run(
-      `INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, trafficRequestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.timestamp, record.provider || null, record.model || null,
-        record.connectionId || null, record.apiKeyId, record.requestId, record.startedAt, record.completedAt, record.endpoint || null,
+        record.connectionId || null, record.apiKeyId, record.requestId, record.trafficRequestId || null, record.startedAt, record.completedAt, record.endpoint || null,
         promptTokens, completionTokens, record.cost || 0, record.status || "success", stringifyJson(record.tokens || {}), stringifyJson(record.meta || {}),
       ],
     );
@@ -573,6 +574,7 @@ export async function saveRequestUsage(entry) {
     const status = record.status || "success";
     const usageEvent = {
       requestId: record.requestId,
+      trafficRequestId: record.trafficRequestId || null,
       timestamp: record.timestamp,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
@@ -677,7 +679,9 @@ export async function getUsageDetails(filter = {}) {
 
   // 使用 SQL 分页而非内存分页，大幅提升大数据集性能
   const rows = db.all(
-    `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta
+    `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
+            COALESCE((SELECT requestBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS requestBytes,
+            COALESCE((SELECT responseBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS responseBytes
        FROM usageHistory ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset],
   );
@@ -708,6 +712,9 @@ export async function getUsageDetails(filter = {}) {
         totalTokens: promptTokens + completionTokens,
         cost: row.cost || 0,
         durationMs: getRequestDurationMs(row.startedAt || row.timestamp, row.completedAt || row.timestamp),
+        requestBytes: Number(row.requestBytes) || 0,
+        responseBytes: Number(row.responseBytes) || 0,
+        totalBytes: (Number(row.requestBytes) || 0) + (Number(row.responseBytes) || 0),
       };
     })
     // JS层过滤保留（用于appName/sourceIp等复杂条件）
@@ -830,6 +837,18 @@ function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, provid
   });
 }
 
+function getTrafficRange(period, range = {}) {
+  if (range.startDate && range.endDate) return { startDate: range.startDate, endDate: range.endDate, apiKeyId: range.apiKeyId || null };
+  const endDate = new Date().toISOString();
+  if (period === "today") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { startDate: start.toISOString(), endDate, apiKeyId: range.apiKeyId || null };
+  }
+  if (PERIOD_MS[period]) return { startDate: new Date(Date.now() - PERIOD_MS[period]).toISOString(), endDate, apiKeyId: range.apiKeyId || null };
+  return { apiKeyId: range.apiKeyId || null };
+}
+
 async function calculateUsageStats(period = "all", range = {}) {
   const db = await getAdapter();
 
@@ -891,6 +910,8 @@ async function calculateUsageStats(period = "all", range = {}) {
     totalRequests: 0,
     completedRequests: 0, failedRequests: 0, cancelledRequests: 0, meteredRequests: 0,
     totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
+    totalRequestBytes: 0, totalResponseBytes: 0, totalTrafficBytes: 0,
+    trafficSummary: { today: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, week: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, month: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, recent: [] },
     byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {}, bySourceIp: {}, byApp: {}, byUser: {},
     sourceCapture: {
       ipEnabled: Boolean(process.env.SPRING_MOUSE_PEER_TOKEN) || process.env.NODE_ENV !== "production",
@@ -1325,6 +1346,14 @@ async function calculateUsageStats(period = "all", range = {}) {
     finalizePersonSessionMetrics(stats.byUser, personEvents);
   }
 
+  const [trafficTotals, trafficSummary] = await Promise.all([
+    getTrafficTotals(getTrafficRange(period, range)),
+    getTrafficSummary({ apiKeyId: range.apiKeyId || null }),
+  ]);
+  stats.totalRequestBytes = trafficTotals.requestBytes;
+  stats.totalResponseBytes = trafficTotals.responseBytes;
+  stats.totalTrafficBytes = trafficTotals.totalBytes;
+  stats.trafficSummary = trafficSummary;
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
   return stats;
 }
@@ -1436,6 +1465,11 @@ function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKey
   return buckets;
 }
 
+async function addTrafficToChartBuckets(buckets, options) {
+  const trafficBuckets = await getTrafficBuckets(options);
+  return buckets.map((bucket, index) => ({ ...bucket, ...(trafficBuckets[index] || { requestBytes: 0, responseBytes: 0, trafficBytes: 0 }) }));
+}
+
 export async function getChartData(period = "7d", range = {}) {
   const db = await getAdapter();
   const now = Date.now();
@@ -1452,7 +1486,7 @@ export async function getChartData(period = "7d", range = {}) {
       ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
       : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    return getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn });
+    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
   }
 
   if (period === "today") {
@@ -1463,14 +1497,15 @@ export async function getChartData(period = "7d", range = {}) {
     const startTime = startOfDay.getTime();
     const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    return getChartBuckets(db, {
+    const endTime = startTime + bucketCount * bucketMs - 1;
+    return addTrafficToChartBuckets(getChartBuckets(db, {
       startTime,
-      endTime: startTime + bucketCount * bucketMs - 1,
+      endTime,
       bucketMs,
       bucketCount,
       apiKeyFilter,
       labelFn,
-    });
+    }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
   }
 
   if (period === "24h") {
@@ -1479,7 +1514,7 @@ export async function getChartData(period = "7d", range = {}) {
     const startTime = now - bucketCount * bucketMs;
     const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    return getChartBuckets(db, { startTime, endTime: now, bucketMs, bucketCount, apiKeyFilter, labelFn });
+    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime: now, bucketMs, bucketCount, apiKeyFilter, labelFn }), { startTime, endTime: now, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
   }
 
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
@@ -1490,14 +1525,15 @@ export async function getChartData(period = "7d", range = {}) {
   const bucketMs = 86400000;
   const labelFn = (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-  return getChartBuckets(db, {
+  const endTime = startTime + bucketCount * bucketMs - 1;
+  return addTrafficToChartBuckets(getChartBuckets(db, {
     startTime,
-    endTime: startTime + bucketCount * bucketMs - 1,
+    endTime,
     bucketMs,
     bucketCount,
     apiKeyFilter,
     labelFn,
-  });
+  }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
 }
 
 function formatLogDate(date = new Date()) {

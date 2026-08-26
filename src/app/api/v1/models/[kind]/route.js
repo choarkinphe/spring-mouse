@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { buildModelsList } from "../route.js";
 
 // URL slug → service kind(s). `web` covers both webSearch and webFetch.
@@ -24,7 +25,7 @@ export async function OPTIONS() {
  * GET /v1/models/{kind} - OpenAI-compatible models list filtered by capability.
  * Supported kinds: image, tts, stt, embedding, image-to-text, web.
  */
-export async function GET(_request, { params }) {
+async function handleGET(_request, { params }) {
   try {
     const { kind } = await params;
     const kindFilter = KIND_SLUG_MAP[kind];
@@ -52,4 +53,9 @@ export async function GET(_request, { params }) {
       { status: 500 }
     );
   }
+}
+
+
+export async function GET(request, context) {
+  return withNetworkTraffic(request, (monitoredRequest) => handleGET(monitoredRequest, context));
 }

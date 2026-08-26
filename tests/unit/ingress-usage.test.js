@@ -24,6 +24,7 @@ describe("ingress usage attribution", () => {
         "user-agent": "test-client",
         "x-sm-peer-token": "peer-token",
         "x-sm-real-ip": "127.0.0.1",
+        "x-sm-traffic-request-id": "traffic-request-1",
       },
     });
 
@@ -33,6 +34,7 @@ describe("ingress usage attribution", () => {
       apiKey: "sk-source-key",
       model: "openai/tts-1",
       endpoint: "/v1/audio/speech",
+      trafficRequestId: "traffic-request-1",
       sourceIp: "127.0.0.1",
       status: "success",
     }));

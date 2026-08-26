@@ -2,19 +2,25 @@
 
 import PropTypes from "prop-types";
 import Card from "@/shared/components/Card";
+import { formatBytes } from "@/shared/utils/formatBytes";
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
 const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
 
 export default function OverviewCards({ stats }) {
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 sm:gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 sm:gap-4">
       <Card className="flex min-w-0 flex-col gap-1 px-4 py-3">
         <span className="text-text-muted text-sm font-semibold">模型调用次数</span>
         <span className="truncate text-2xl font-bold">{fmt(stats.totalRequests)}</span>
         <span className="text-[10px] text-text-muted">
           {fmt(stats.completedRequests)} 已完成 · {fmt(stats.failedRequests)} 失败 · {fmt(stats.cancelledRequests)} 已取消
         </span>
+      </Card>
+      <Card className="flex min-w-0 flex-col gap-1 border-cyan-500/20 px-4 py-3">
+        <span className="text-text-muted text-sm font-semibold">数据流量</span>
+        <span className="truncate text-2xl font-bold text-cyan-600">{formatBytes(stats.totalTrafficBytes)}</span>
+        <span className="text-[10px] text-text-muted">↑ {formatBytes(stats.totalRequestBytes)} · ↓ {formatBytes(stats.totalResponseBytes)}</span>
       </Card>
       <Card className="flex min-w-0 flex-col gap-1 px-4 py-3">
         <span className="text-text-muted text-sm font-semibold">输入 Token 总计</span>

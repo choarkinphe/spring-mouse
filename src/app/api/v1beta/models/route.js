@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { getCombos } from "@/lib/localDb";
 
 /**
@@ -17,7 +18,7 @@ export async function OPTIONS() {
  * GET /v1beta/models - Gemini compatible models list
  * Exposes configured combo routing entrypoints only.
  */
-export async function GET() {
+async function handleGET() {
   try {
     const combos = await getCombos();
 
@@ -36,4 +37,9 @@ export async function GET() {
     console.log("Error fetching models:", error);
     return Response.json({ error: { message: error.message } }, { status: 500 });
   }
+}
+
+
+export async function GET(request = new Request("http://localhost/api/v1beta/models")) {
+  return withNetworkTraffic(request, () => handleGET());
 }

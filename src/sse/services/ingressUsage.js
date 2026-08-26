@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
+import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 
 /**
  * Persist one accepted non-chat service request with its ingress API-key
@@ -13,6 +14,7 @@ export async function recordIngressUsage(request, apiKey, { model = null, respon
   const now = new Date().toISOString();
   await saveRequestUsage({
     requestId: randomUUID(),
+    trafficRequestId: getTrafficRequestId(request),
     startedAt: now,
     completedAt: now,
     provider: null,

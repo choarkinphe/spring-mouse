@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleSearch } from "@/sse/handlers/search.js";
 
 /**
@@ -16,6 +17,11 @@ export async function OPTIONS() {
 /**
  * POST /v1/search - Web search endpoint
  */
-export async function POST(request) {
+async function handlePOST(request) {
   return await handleSearch(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

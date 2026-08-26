@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import PropTypes from "prop-types";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
+import { formatBytes } from "@/shared/utils/formatBytes";
 
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
 const fmtCost = (value) => `$${Number(value || 0).toFixed(4)}`;
@@ -306,7 +307,7 @@ export default function UsageDetailsDrawer({ isOpen, onClose, subject, initialFi
 
         <section className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-xs">
+            <table className="w-full min-w-[1440px] border-collapse text-xs">
               <thead className="border-b border-border bg-bg-subtle/50 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
                 <tr>
                   <th className="px-4 py-3 text-left">调用时间</th>
@@ -317,17 +318,18 @@ export default function UsageDetailsDrawer({ isOpen, onClose, subject, initialFi
                   <th className="px-4 py-3 text-left">状态</th>
                   <th className="px-4 py-3 text-right">输入 / 输出</th>
                   <th className="px-4 py-3 text-right">总 Token</th>
+                  <th className="px-4 py-3 text-right">流量 ↑ / ↓</th>
                   <th className="px-4 py-3 text-right">成本</th>
                   <th className="px-4 py-3 text-right">耗时</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {loading ? (
-                  <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-text-muted"><span className="material-symbols-outlined mr-2 animate-spin align-[-4px] text-[18px]">progress_activity</span>正在读取调用明细…</td></tr>
+                  <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-text-muted"><span className="material-symbols-outlined mr-2 animate-spin align-[-4px] text-[18px]">progress_activity</span>正在读取调用明细…</td></tr>
                 ) : error ? (
-                  <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-rose-600">{error}</td></tr>
+                  <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-rose-600">{error}</td></tr>
                 ) : !data.details?.length ? (
-                  <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-text-muted">当前筛选范围内没有调用记录。</td></tr>
+                  <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-text-muted">当前筛选范围内没有调用记录。</td></tr>
                 ) : data.details.map((detail) => (
                   <tr key={detail.id} className="transition-colors hover:bg-primary/[0.025]">
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-text-muted">{formatDateTime(detail.timestamp)}</td>
@@ -338,6 +340,7 @@ export default function UsageDetailsDrawer({ isOpen, onClose, subject, initialFi
                     <td className="px-4 py-3"><StatusBadge status={detail.status} /></td>
                     <td className="whitespace-nowrap px-4 py-3 text-right"><span className="text-indigo-500">{fmt(detail.promptTokens)}</span><span className="px-1 text-text-muted">/</span><span className="text-emerald-500">{fmt(detail.completionTokens)}</span></td>
                     <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-primary">{fmt(detail.totalTokens)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-[10px]"><span className="text-indigo-600">{formatBytes(detail.requestBytes)}</span><span className="px-1 text-text-muted">/</span><span className="text-emerald-600">{formatBytes(detail.responseBytes)}</span><p className="mt-0.5 font-sans font-semibold text-text-main">{formatBytes(detail.totalBytes)}</p></td>
                     <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-warning">{fmtCost(detail.cost)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-text-muted">{formatDuration(detail.durationMs)}</td>
                   </tr>

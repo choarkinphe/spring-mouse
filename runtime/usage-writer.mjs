@@ -26,7 +26,8 @@ function openDatabase() {
   const candidate = new DatabaseSync(dbFile);
   candidate.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
   const ready = candidate.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usageHistory'").get();
-  if (!ready) { candidate.close(); return null; }
+  const columns = ready ? candidate.prepare("PRAGMA table_info(usageHistory)").all() : [];
+  if (!ready || !columns.some((column) => column.name === "trafficRequestId")) { candidate.close(); return null; }
   db = candidate;
   return db;
 }
@@ -38,7 +39,7 @@ function persistBatch(events) {
   database.exec(`SAVEPOINT ${savepoint}`);
   try {
     const existingStmt = database.prepare("SELECT id FROM usageHistory WHERE requestId = ?");
-    const insertStmt = database.prepare(`INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insertStmt = database.prepare(`INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, trafficRequestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const lastUsedStmt = database.prepare(`UPDATE apiKeys SET lastUsedAt = CASE WHEN lastUsedAt IS NULL OR lastUsedAt < ? THEN ? ELSE lastUsedAt END WHERE id = ?`);
     const metaGet = database.prepare("SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'");
     const metaSet = database.prepare("INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
@@ -48,7 +49,7 @@ function persistBatch(events) {
       if (!event?.requestId || existingStmt.get(event.requestId)) continue;
       const result = insertStmt.run(
         event.timestamp, event.provider || null, event.model || null, event.connectionId || null,
-        event.apiKeyId, event.requestId, event.startedAt, event.completedAt, event.endpoint || null,
+        event.apiKeyId, event.requestId, event.trafficRequestId || null, event.startedAt, event.completedAt, event.endpoint || null,
         Number(event.promptTokens) || 0, Number(event.completionTokens) || 0, Number(event.cost) || 0,
         event.status || "success", JSON.stringify(event.tokens || {}), JSON.stringify(event.meta || {}),
       );

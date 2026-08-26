@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleFetch } from "@/sse/handlers/fetch.js";
 
 /**
@@ -16,6 +17,11 @@ export async function OPTIONS() {
 /**
  * POST /v1/web/fetch - Web URL fetch/extract endpoint
  */
-export async function POST(request) {
+async function handlePOST(request) {
   return await handleFetch(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

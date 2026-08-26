@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 
 // Provider → internal voices API. Edge/local-device share the generic endpoint.
@@ -17,7 +18,7 @@ export async function OPTIONS() {
 
 // GET /v1/audio/voices?provider={p}[&lang=xx]
 // Returns OpenAI-style list with each voice's full model id ready for /v1/audio/speech
-export async function GET(request) {
+async function handleGET(request) {
   try {
     const { searchParams, origin } = new URL(request.url);
     const provider = searchParams.get("provider");
@@ -65,4 +66,9 @@ export async function GET(request) {
       { status: 502, headers: { "Access-Control-Allow-Origin": "*" } },
     );
   }
+}
+
+
+export async function GET(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handleGET(monitoredRequest));
 }

@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 
@@ -29,8 +30,13 @@ export async function OPTIONS() {
 /**
  * POST /v1/messages - Claude format (auto convert via handleChat)
  */
-export async function POST(request) {
+async function handlePOST(request) {
   await ensureInitialized();
   return await handleChat(request);
 }
 
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
+}

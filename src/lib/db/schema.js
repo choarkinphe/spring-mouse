@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -117,6 +117,7 @@ export const TABLES = {
       apiKey: "TEXT",
       apiKeyId: "TEXT",
       requestId: "TEXT",
+      trafficRequestId: "TEXT",
       startedAt: "TEXT",
       completedAt: "TEXT",
       endpoint: "TEXT",
@@ -137,6 +138,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_key_completed_status_tokens ON usageHistory(apiKeyId, completedAt, status, promptTokens, completionTokens)",
       "CREATE INDEX IF NOT EXISTS idx_uh_started_at ON usageHistory(startedAt DESC)",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_uh_request_id ON usageHistory(requestId) WHERE requestId IS NOT NULL",
+      "CREATE INDEX IF NOT EXISTS idx_uh_traffic_request_id ON usageHistory(trafficRequestId)",
     ],
   },
   usageDaily: {
@@ -144,6 +146,26 @@ export const TABLES = {
       dateKey: "TEXT PRIMARY KEY",
       data: "TEXT NOT NULL",
     },
+  },
+  networkTraffic: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      requestId: "TEXT UNIQUE NOT NULL",
+      timestamp: "TEXT NOT NULL",
+      completedAt: "TEXT",
+      method: "TEXT",
+      endpoint: "TEXT",
+      statusCode: "INTEGER DEFAULT 0",
+      requestBytes: "INTEGER DEFAULT 0",
+      responseBytes: "INTEGER DEFAULT 0",
+      durationMs: "INTEGER DEFAULT 0",
+      aborted: "INTEGER DEFAULT 0",
+      meta: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_nt_ts ON networkTraffic(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_nt_endpoint ON networkTraffic(endpoint)",
+    ],
   },
   requestDetails: {
     columns: {

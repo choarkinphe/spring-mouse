@@ -35,10 +35,12 @@ describe("Schema migrations", () => {
     const tables = db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map(t => t.name);
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
-"apiKeys", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
+"apiKeys", "combos", "kv", "usageHistory", "usageDaily", "networkTraffic", "requestDetails",
     ]));
     const usageIndexes = db.all(`PRAGMA index_list(usageHistory)`).map(i => i.name);
     expect(usageIndexes).toContain("idx_uh_key_completed_status_tokens");
+    expect(db.all(`PRAGMA table_info(usageHistory)`).map((column) => column.name)).toContain("trafficRequestId");
+    expect(db.all(`PRAGMA index_list(networkTraffic)`).map((index) => index.name)).toContain("idx_nt_ts");
   });
 
   it("existing DB at older schemaVersion → re-applies pending migrations on restart", async () => {

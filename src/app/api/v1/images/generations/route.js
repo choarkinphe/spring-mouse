@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
 
 export async function OPTIONS() {
@@ -11,6 +12,11 @@ export async function OPTIONS() {
 }
 
 /** POST /v1/images/generations - OpenAI-compatible image generation endpoint */
-export async function POST(request) {
+async function handlePOST(request) {
   return await handleImageGeneration(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { authorizeApiKey, extractApiKey } from "@/sse/services/auth";
 import { recordIngressUsage } from "@/sse/services/ingressUsage";
 
@@ -75,7 +76,7 @@ export function estimateAnthropicInputTokens(body = {}) {
 /**
  * POST /v1/messages/count_tokens - Mock token count response
  */
-export async function POST(request) {
+async function handlePOST(request) {
   let body;
   try {
     body = await request.json();
@@ -101,3 +102,8 @@ export async function POST(request) {
   });
 }
 
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
+}

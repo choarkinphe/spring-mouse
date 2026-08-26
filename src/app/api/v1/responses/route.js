@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 
@@ -24,7 +25,12 @@ export async function OPTIONS() {
  * POST /v1/responses - OpenAI Responses API format
  * Now handled by translator pattern (openai-responses format auto-detected)
  */
-export async function POST(request) {
+async function handlePOST(request) {
   await ensureInitialized();
   return await handleChat(request);
+}
+
+
+export async function POST(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
 }

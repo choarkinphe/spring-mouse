@@ -1,3 +1,4 @@
+import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/constants/models";
 import {
   AI_PROVIDERS,
@@ -583,7 +584,7 @@ export async function OPTIONS() {
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
-export async function GET(request) {
+async function handleGET(request) {
   try {
     // Detect cross-instance recursive /models fetch (another spring-mouse fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
@@ -598,4 +599,9 @@ export async function GET(request) {
       { status: 500 }
     );
   }
+}
+
+
+export async function GET(request) {
+  return withNetworkTraffic(request, (monitoredRequest) => handleGET(monitoredRequest));
 }

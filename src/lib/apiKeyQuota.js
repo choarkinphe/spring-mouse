@@ -19,7 +19,7 @@ function trimQuotaCache() {
   }
 }
 
-export function invalidateQuotaCache(apiKey = null) {
+function invalidateQuotaCache(apiKey = null) {
   if (apiKey) {
     quotaCache.delete(apiKey);
   } else {
@@ -164,28 +164,11 @@ export async function checkApiKeyQuota(apiKey) {
 
 export async function getApiKeyQuotaStatus(apiKey) {
   if (!apiKey) return null;
-
-  // Check cache first - critical for codex usage performance
-  const cacheKey = apiKey;
-  const now = Date.now();
-  const cached = quotaCache.get(cacheKey);
-
-  if (cached && now - cached.timestamp < QUOTA_TTL_MS) {
-    return cached.result;
-  }
-
-  // Cache miss - perform full query
   const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
   const key = db.get(`SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [apiKey]);
   if (!key) return null;
-
   await advanceApiKeyQuotaResets([key]);
-  const result = buildApiKeyQuotaStatus(key, normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules), await readUsages(db, key.id, key));
-
-  // Store in cache
-  quotaCache.set(cacheKey, { result, timestamp: now });
-
-  return result;
+  return buildApiKeyQuotaStatus(key, normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules), await readUsages(db, key.id, key));
 }
 
 export function buildCodexUsagePayload(status) {

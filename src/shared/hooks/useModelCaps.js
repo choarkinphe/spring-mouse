@@ -37,6 +37,11 @@ function loadModelCaps() {
   return inflight;
 }
 
+function clearModelCapsCache() {
+  cache = null;
+  inflight = null;
+}
+
 // Resolve caps from a "provider/model" string or a bare model id.
 function resolveCaps(byFull, byId, input) {
   // Combo entries can be strings or `{ model, schedule }` wrappers. Capability
@@ -64,16 +69,23 @@ export function useModelCaps() {
   const [byId, setById] = useState(() => cache?.byId || {});
 
   useEffect(() => {
-    if (cache) {
-      setByFull(cache.byFull);
-      setById(cache.byId);
-      return;
-    }
     let alive = true;
-    loadModelCaps().then((maps) => {
+    Promise.resolve(cache || loadModelCaps()).then((maps) => {
       if (alive) { setByFull(maps.byFull); setById(maps.byId); }
     });
     return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    const handleChange = () => {
+      clearModelCapsCache();
+      loadModelCaps().then((maps) => {
+        setByFull(maps.byFull);
+        setById(maps.byId);
+      });
+    };
+    window.addEventListener("customModelChanged", handleChange);
+    return () => window.removeEventListener("customModelChanged", handleChange);
   }, []);
 
   const getCaps = useCallback(

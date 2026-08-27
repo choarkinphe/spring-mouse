@@ -51,6 +51,23 @@ export const DEFAULT_CAPABILITIES = {
   maxOutput: 64000,
 };
 
+const MODEL_CAPABILITY_OVERRIDES = new Map();
+
+function overrideKey(provider, model) {
+  return `${provider || ""}/${model || ""}`;
+}
+
+export function replaceModelCapabilityOverrides(entries = []) {
+  MODEL_CAPABILITY_OVERRIDES.clear();
+  for (const entry of entries) {
+    if (!entry?.provider || !entry?.model || !entry?.capabilities) continue;
+    MODEL_CAPABILITY_OVERRIDES.set(
+      overrideKey(entry.provider, entry.model),
+      { ...entry.capabilities },
+    );
+  }
+}
+
 // User-added model metadata can carry dashboard service kinds instead of the
 // runtime capability names used here. Map those typed model kinds into input /
 // output capabilities so custom vision models are not treated as text-only.
@@ -96,6 +113,7 @@ export const MODEL_CAPABILITIES = {
 
   // GLM vision variant (text GLM has no vision)
   "glm-4.6v":          { vision: true, reasoning: true, thinkingFormat: "zai", contextWindow: 128000 },
+  "glm-5.3-flash":     { vision: true, pdf: true, videoInput: true, reasoning: true, thinkingFormat: "zai", contextWindow: 1000000, maxOutput: 131072 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
   "vision-model":      { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 },
@@ -331,24 +349,32 @@ export function getCapabilitiesForModel(provider, model) {
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
   const baseModel = model.includes("/") ? model.split("/").pop() : model;
 
+  let resolved = null;
+
   // 1. Provider-specific override
   if (provider) {
     const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[model]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[model] };
-    if (providerCaps?.[baseModel]) return { ...DEFAULT_CAPABILITIES, ...providerCaps[baseModel] };
+    if (providerCaps?.[model]) resolved = providerCaps[model];
+    else if (providerCaps?.[baseModel]) resolved = providerCaps[baseModel];
   }
 
   // 2. Canonical exact
-  if (MODEL_CAPABILITIES[baseModel]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[baseModel] };
-  if (MODEL_CAPABILITIES[model]) return { ...DEFAULT_CAPABILITIES, ...MODEL_CAPABILITIES[model] };
+  if (!resolved && MODEL_CAPABILITIES[baseModel]) resolved = MODEL_CAPABILITIES[baseModel];
+  if (!resolved && MODEL_CAPABILITIES[model]) resolved = MODEL_CAPABILITIES[model];
 
   // 3. Pattern match (first match wins)
-  for (const { pattern, caps } of PATTERN_CAPABILITIES) {
-    if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
-      return { ...DEFAULT_CAPABILITIES, ...caps };
+  if (!resolved) {
+    for (const { pattern, caps } of PATTERN_CAPABILITIES) {
+      if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
+        resolved = caps;
+        break;
+      }
     }
   }
 
-  // 4. Floor
-  return { ...DEFAULT_CAPABILITIES };
+  const dynamic = MODEL_CAPABILITY_OVERRIDES.get(overrideKey(provider, model))
+    || MODEL_CAPABILITY_OVERRIDES.get(overrideKey(provider, baseModel));
+
+  // 4. Floor, then static catalog, then synchronized provider metadata.
+  return { ...DEFAULT_CAPABILITIES, ...(resolved || {}), ...(dynamic || {}) };
 }

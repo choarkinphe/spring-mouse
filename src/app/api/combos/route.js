@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError } from "open-sse/services/combo.js";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,7 @@ export async function POST(request) {
     if (normalizedCapabilities === null) {
       return NextResponse.json({ error: "Context window must be a positive integer" }, { status: 400 });
     }
+    await refreshModelCapabilityOverrides();
     const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities);
     if (capabilityError) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });

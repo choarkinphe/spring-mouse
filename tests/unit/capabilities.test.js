@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { getCapabilitiesForModel, replaceModelCapabilityOverrides } from "../../open-sse/providers/capabilities.js";
+
+afterEach(() => replaceModelCapabilityOverrides([]));
 
 describe("getCapabilitiesForModel", () => {
   const claudeSonnet5Expected = {
@@ -54,5 +56,32 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("kiro", "gpt-5.6-terra-thinking")).toMatchObject(kiroGpt56Expected);
     expect(getCapabilitiesForModel("kiro", "gpt-5.6-luna-agentic")).toMatchObject(kiroGpt56Expected);
     expect(getCapabilitiesForModel("kiro", "gpt-5.6-sol-thinking-agentic")).toMatchObject(kiroGpt56Expected);
+  });
+
+  it("reports GLM 5.3 Flash as a native multimodal model", () => {
+    expect(getCapabilitiesForModel("glm-cn", "glm-5.3-flash")).toMatchObject({
+      vision: true,
+      pdf: true,
+      videoInput: true,
+      reasoning: true,
+      contextWindow: 1000000,
+      maxOutput: 131072,
+    });
+  });
+
+  it("merges synchronized metadata over static family defaults", () => {
+    replaceModelCapabilityOverrides([{
+      provider: "glm-cn",
+      model: "glm-future-flash",
+      capabilities: { vision: true, pdf: true, contextWindow: 500000 },
+    }]);
+
+    expect(getCapabilitiesForModel("glm-cn", "glm-future-flash")).toMatchObject({
+      vision: true,
+      pdf: true,
+      reasoning: true,
+      thinkingFormat: "zai",
+      contextWindow: 500000,
+    });
   });
 });

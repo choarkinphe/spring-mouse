@@ -73,6 +73,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [syncingModels, setSyncingModels] = useState(false);
+  const [modelSyncStatus, setModelSyncStatus] = useState(null);
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -554,6 +556,47 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  const handleSyncSupportedModels = async () => {
+    if (syncingModels) return;
+    const activeConnection = connections.find((connection) => connection.isActive !== false);
+    if (!activeConnection) {
+      setModelSyncStatus({ type: "error", text: translate("Please add an active connection before syncing models") });
+      return;
+    }
+    setSyncingModels(true);
+    setModelSyncStatus(null);
+    try {
+      const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
+      const officialData = await officialRes.json();
+      if (!officialRes.ok) {
+        setModelSyncStatus({ type: "error", text: officialData.error || translate("Failed to fetch official model list") });
+        return;
+      }
+
+      const res = await fetch("/api/providers/model-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId, supportedModels: officialData.models || [] }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setModelSyncStatus({ type: "error", text: data.error || translate("Failed to sync supported models") });
+        return;
+      }
+
+      await fetchCustomModels();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      setModelSyncStatus({
+        type: "success",
+        text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")}, ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`,
+      });
+    } catch (error) {
+      setModelSyncStatus({ type: "error", text: `${translate("Failed to sync supported models")}: ${error.message}` });
+    } finally {
+      setSyncingModels(false);
+    }
+  };
+
   const handleRunOneByOneTest = async () => {
     if (oneByOneRunning || connections.length === 0) return;
 
@@ -934,7 +977,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             isTesting={testingModelIds.has(model.id)}
             isCustom
             isFree={false}
-            caps={getCaps(`${providerId}/${model.id}`)}
+            caps={model.capabilities || getCaps(`${providerId}/${model.id}`)}
             thinkingSuffix={resolveThinkingSuffix(model.id)}
           />
         ))}
@@ -1291,7 +1334,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   )}
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {hasDualAuthModes ? (
                   <>
                     <Button size="sm" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
@@ -1446,7 +1489,18 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
             const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                {providerInfo?.modelCatalog && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={syncingModels ? "progress_activity" : "sync"}
+                    onClick={handleSyncSupportedModels}
+                    disabled={syncingModels}
+                  >
+                    {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
+                  </Button>
+                )}
                 {disabledModelIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
@@ -1463,6 +1517,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         </div>
         {!!modelsTestError && (
           <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
+        )}
+        {!!modelSyncStatus && (
+          <p className={`mb-3 text-xs break-words ${modelSyncStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+            {modelSyncStatus.text}
+          </p>
         )}
         {renderModelsSection()}
       </Card>

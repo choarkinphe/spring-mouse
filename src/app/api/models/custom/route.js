@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel } from "@/models";
+import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
     const added = await addCustomModel({ providerAlias, id, type: type || "llm", name });
+    await refreshModelCapabilityOverrides({ force: true });
     return NextResponse.json({ success: true, added });
   } catch (error) {
     console.log("Error adding custom model:", error);
@@ -40,6 +42,7 @@ export async function DELETE(request) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
     await deleteCustomModel({ providerAlias, id, type });
+    await refreshModelCapabilityOverrides({ force: true });
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting custom model:", error);

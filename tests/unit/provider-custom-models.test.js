@@ -81,4 +81,22 @@ describe("provider custom model rows", () => {
       },
     ]);
   });
+
+  it("preserves synchronized capability metadata for custom model rows", () => {
+    const rows = getProviderCustomModelRows({
+      customModels: [{
+        providerAlias: "glm-cn",
+        id: "glm-5.3-flash",
+        type: "llm",
+        name: "GLM-5.3-Flash",
+        capabilities: { vision: true, pdf: true },
+      }],
+      providerAlias: "glm-cn",
+    });
+
+    expect(rows[0]).toMatchObject({
+      id: "glm-5.3-flash",
+      capabilities: { vision: true, pdf: true },
+    });
+  });
 });

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError, resetComboRotation } from "open-sse/services/combo.js";
 import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
+import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -81,6 +82,7 @@ export async function PUT(request, { params }) {
     if (normalizedCapabilities === null) {
       return NextResponse.json({ error: "Context window must be a positive integer" }, { status: 400 });
     }
+    await refreshModelCapabilityOverrides();
     const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities);
     if (capabilityError) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });

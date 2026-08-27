@@ -23,6 +23,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
+import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -83,6 +84,10 @@ export async function handleChat(request, clientRawRequest = null) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   }
+
+  await refreshModelCapabilityOverrides().catch((error) => {
+    log.warn("CAPABILITIES", `Failed to load synchronized model capabilities: ${error.message}`);
+  });
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";

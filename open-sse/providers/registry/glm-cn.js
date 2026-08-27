@@ -29,6 +29,11 @@ export default {
     { id: "glm-4.6", name: "GLM-4.6" },
     { id: "glm-4.5-air", name: "GLM-4.5-Air" },
   ],
+  modelCatalog: {
+    type: "models-dev",
+    url: "https://models.dev/api.json",
+    provider: "zhipuai-coding-plan",
+  },
   features: {
     usage: true,
     usageApikey: true,

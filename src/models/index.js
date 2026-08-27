@@ -22,6 +22,7 @@ export {
   deleteModelAlias,
   getCustomModels,
   addCustomModel,
+  syncCustomModels,
   deleteCustomModel,
   getMitmAlias,
   setMitmAliasAll,

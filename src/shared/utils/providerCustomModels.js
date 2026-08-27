@@ -29,6 +29,9 @@ export function getProviderCustomModelRows({
       fullModel,
       source: "custom",
       type: rowType,
+      ...(model.capabilities && Object.keys(model.capabilities).length > 0
+        ? { capabilities: model.capabilities }
+        : {}),
     });
   }
 

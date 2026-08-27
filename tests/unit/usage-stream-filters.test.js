@@ -107,7 +107,7 @@ describe("usage stats stream filtering", () => {
       await Promise.resolve();
 
       expect(getUsageStats).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(5_000);
       expect(getUsageStats).toHaveBeenCalledTimes(1);
 
       await reader.cancel();

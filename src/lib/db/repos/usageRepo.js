@@ -1216,7 +1216,7 @@ async function calculateUsageStats(period = "all", range = {}) {
       cutoff = new Date(0).toISOString();
     }
     const where = `${endDate ? "WHERE timestamp >= ? AND timestamp <= ?" : "WHERE timestamp >= ?"}${apiKeyFilter ? " AND apiKeyId = ?" : ""}`;
-    const filtered = db.all(
+    const filtered = db.iterate(
       `SELECT timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta FROM usageHistory ${where}`,
       endDate
         ? (apiKeyFilter ? [cutoff, endDate, apiKeyFilter] : [cutoff, endDate])

@@ -2,7 +2,7 @@ import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
-const FULL_REFRESH_MIN_INTERVAL_MS = 2_000;
+const FULL_REFRESH_MIN_INTERVAL_MS = 5_000;
 
 export async function GET(request) {
   const encoder = new TextEncoder();
@@ -108,7 +108,7 @@ export async function GET(request) {
       };
 
       // Completed requests refresh the small live section immediately, while
-      // expensive aggregate scans are single-flight and capped at once per 2s.
+      // expensive aggregate scans are single-flight and capped at once per 5s.
       state.send = () => {
         void sendLivePatch();
         scheduleFullRefresh();

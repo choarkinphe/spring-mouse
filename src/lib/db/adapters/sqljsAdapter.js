@@ -80,6 +80,16 @@ export async function createSqlJsAdapter(filePath) {
     }
   }
 
+  function* iterate(sql, params = []) {
+    const stmt = db.prepare(sql);
+    try {
+      stmt.bind(paramsObj(params));
+      while (stmt.step()) yield stmt.getAsObject();
+    } finally {
+      stmt.free();
+    }
+  }
+
   function exec(sql) {
     db.exec(sql);
     scheduleSave();
@@ -111,5 +121,5 @@ export async function createSqlJsAdapter(filePath) {
   process.on("SIGINT", flush);
   process.on("SIGTERM", flush);
 
-  return { driver: "sql.js", run, get, all, exec, transaction, close, raw: db };
+  return { driver: "sql.js", run, get, all, iterate, exec, transaction, close, raw: db };
 }

@@ -55,6 +55,11 @@ export async function createNodeSqliteAdapter(filePath) {
     all(sql, params = []) {
       return prepare(sql).all(...params);
     },
+    iterate(sql, params = []) {
+      // Use an uncached statement so concurrent dashboard aggregations can
+      // iterate independently without materializing every row in memory.
+      return db.prepare(sql).iterate(...params);
+    },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
       // node:sqlite has no transaction wrapper. Use SAVEPOINT for nested support.

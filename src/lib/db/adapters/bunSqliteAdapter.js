@@ -43,6 +43,10 @@ export async function createBunSqliteAdapter(filePath) {
     all(sql, params = []) {
       return prepare(sql).all(...params);
     },
+    iterate(sql, params = []) {
+      // Keep long-running readers independent from the shared statement cache.
+      return db.prepare(sql).iterate(...params);
+    },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
       // bun:sqlite has db.transaction() API (similar to better-sqlite3)

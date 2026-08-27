@@ -175,8 +175,13 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        setStats(data);
-        if (data.streamUpdatedAt) {
+        if (data.streamPatch) {
+          const { streamPatch: _streamPatch, ...patch } = data;
+          setStats((previous) => previous ? { ...previous, ...patch } : previous);
+        } else {
+          setStats(data);
+        }
+        if (!data.streamPatch && data.streamUpdatedAt) {
           setChartRefreshToken((previous) => (data.streamUpdatedAt > previous ? data.streamUpdatedAt : previous));
         }
         if (hasLoadedStats.current) setLoading(false);

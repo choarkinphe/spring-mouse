@@ -3,8 +3,6 @@ import { getRedisClient, isRedisConfigured } from "./client.js";
 export const USAGE_STREAM_KEY = "spring-mouse:usage:events";
 export const USAGE_STREAM_GROUP = "sqlite-writers";
 const RECENT_USAGE_KEY = "spring-mouse:usage:recent";
-const STATS_CACHE_PREFIX = "spring-mouse:stats:";
-const STATS_CACHE_TTL_SECONDS = 3;
 const RECENT_USAGE_CAP = 200;
 const USAGE_DEDUPE_TTL_SECONDS = 8 * 24 * 60 * 60;
 const WRITER_HEARTBEAT_KEY = "spring-mouse:usage:writer:heartbeat";
@@ -118,25 +116,6 @@ export async function getRecentUsageEvents(limit = 50) {
   return rows.map((row) => {
     try { return JSON.parse(row); } catch { return null; }
   }).filter(Boolean);
-}
-
-function statsCacheKey(key) {
-  return `${STATS_CACHE_PREFIX}${Buffer.from(key).toString("base64url")}`;
-}
-
-export async function getCachedUsageStats(key) {
-  const client = await getRedisClient({ required: false });
-  if (!client) return null;
-  const value = await client.get(statsCacheKey(key));
-  if (!value) return null;
-  try { return JSON.parse(value); } catch { return null; }
-}
-
-export async function setCachedUsageStats(key, stats) {
-  const client = await getRedisClient({ required: false });
-  if (!client) return false;
-  await client.set(statsCacheKey(key), JSON.stringify(stats), { expiration: { type: "EX", value: STATS_CACHE_TTL_SECONDS } });
-  return true;
 }
 
 export async function getUsageQueueHealth() {

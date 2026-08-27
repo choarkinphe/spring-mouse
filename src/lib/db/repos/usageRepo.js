@@ -6,7 +6,7 @@ import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
-import { enqueueUsageEvent, getCachedUsageStats, setCachedUsageStats, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
+import { enqueueUsageEvent, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
 import { getTrafficBuckets, getTrafficSummary, getTrafficTotals } from "./trafficRepo.js";
 
 function maskApiKey(key) {
@@ -31,11 +31,9 @@ const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 // The dashboard initially opens a REST request and an SSE connection together.
-// Both need the same expensive aggregation, so share that calculation briefly.
-// After a write, serve the last snapshot for a short bounded window while a
-// refresh runs in the background. The SSE subscriber receives that fresh
-// result immediately afterwards, so opening the dashboard never waits on a
-// full usageHistory aggregation just because requests are still arriving.
+// Both need the same expensive aggregation, so share that calculation in-process.
+// Keeping the promise local also prevents a stale cross-process snapshot from
+// replacing a newer SQLite result on the dashboard.
 const STATS_CACHE_TTL_MS = 750;
 const STATS_STALE_TTL_MS = 2000;
 const STATS_CACHE_MAX_ENTRIES = 50;
@@ -617,8 +615,8 @@ export async function saveRequestUsage(entry) {
     if (inserted) {
       const quotaCacheKey = rawApiKey || knownKey?.key;
       if (quotaCacheKey && usageAffectsQuota) invalidateQuotaCache(quotaCacheKey);
-      // Keep the local recent-request overlay and SSE event immediate. Aggregate
-      // snapshots are cached in Redis briefly while the writer catches SQLite up.
+      // Keep the local recent-request overlay and SSE event immediate. The
+      // durable aggregate refresh follows the writer commit notification.
       clearUsageStatsCache();
       pushToRing(record);
       scheduleStatsEvent("update", 250);
@@ -1388,16 +1386,6 @@ export async function getUsageStats(period = "all", range = {}) {
   const now = Date.now();
   const cached = usageStatsCache.get(key);
 
-  if (!cached) {
-    try {
-      const shared = await getCachedUsageStats(key);
-      if (shared) {
-        usageStatsCache.set(key, { createdAt: now, promise: Promise.resolve(shared), stale: false, refreshPromise: null });
-        return shared;
-      }
-    } catch {}
-  }
-
   if (cached && !cached.stale && now - cached.createdAt < STATS_CACHE_TTL_MS) {
     return cached.promise;
   }
@@ -1407,7 +1395,6 @@ export async function getUsageStats(period = "all", range = {}) {
     if (!cached.refreshPromise) {
       const refreshPromise = calculateUsageStats(period, range)
         .then((stats) => {
-          setCachedUsageStats(key, stats).catch(() => {});
           const current = usageStatsCache.get(key);
           if (current?.refreshPromise !== refreshPromise) return stats;
           usageStatsCache.set(key, {
@@ -1431,10 +1418,6 @@ export async function getUsageStats(period = "all", range = {}) {
   }
 
   const promise = calculateUsageStats(period, range)
-    .then((stats) => {
-      setCachedUsageStats(key, stats).catch(() => {});
-      return stats;
-    })
     .catch((error) => {
       const current = usageStatsCache.get(key);
       if (current?.promise === promise) usageStatsCache.delete(key);

@@ -45,6 +45,20 @@ describe("DB Concurrency — atomic safety", () => {
     expect(hist.length).toBe(N);
   });
 
+  it("shares one exact-range aggregation across concurrent dashboard loaders", async () => {
+    const range = {
+      startDate: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      endDate: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    };
+
+    const snapshots = await Promise.all(
+      Array.from({ length: 6 }, () => db.getUsageStats("today", range)),
+    );
+
+    expect(snapshots[0].totalRequests).toBe(100);
+    for (const snapshot of snapshots.slice(1)) expect(snapshot).toBe(snapshots[0]);
+  });
+
   it("200 parallel saveRequestDetail → all flushed", async () => {
     await db.updateSettings({ enableObservability: true, observabilityBatchSize: 10 });
 

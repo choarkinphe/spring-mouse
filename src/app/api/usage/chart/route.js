@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { getChartData } from "@/lib/usageDb";
 
+const NO_STORE_HEADERS = { "Cache-Control": "no-store, max-age=0" };
+
 const VALID_PERIODS = new Set(["today", "24h", "7d", "30d", "60d"]);
+
+export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   try {
@@ -12,19 +16,19 @@ export async function GET(request) {
     const apiKeyId = searchParams.get("apiKeyId") || null;
 
     if (!VALID_PERIODS.has(period)) {
-      return NextResponse.json({ error: "Invalid period" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid period" }, { status: 400, headers: NO_STORE_HEADERS });
     }
     if ((startDate && !endDate) || (!startDate && endDate) || (startDate && endDate && (Number.isNaN(Date.parse(startDate)) || Number.isNaN(Date.parse(endDate)) || Date.parse(startDate) > Date.parse(endDate)))) {
-      return NextResponse.json({ error: "Invalid date range" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid date range" }, { status: 400, headers: NO_STORE_HEADERS });
     }
     if (apiKeyId && apiKeyId.length > 128) {
-      return NextResponse.json({ error: "Invalid API key filter" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid API key filter" }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
     const data = await getChartData(period, { startDate, endDate, apiKeyId });
-    return NextResponse.json(data);
+    return NextResponse.json(data, { headers: NO_STORE_HEADERS });
   } catch (error) {
     console.error("[API] Failed to get chart data:", error);
-    return NextResponse.json({ error: "Failed to fetch chart data" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch chart data" }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }

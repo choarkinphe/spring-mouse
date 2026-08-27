@@ -8,6 +8,7 @@ import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/Overview
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import ChannelQuotaPanel from "@/app/(dashboard)/dashboard/usage/components/ChannelQuotaPanel";
 import UsageBreakdownGrid from "@/app/(dashboard)/dashboard/usage/components/UsageBreakdownGrid";
+import { applyUsageStatsUpdate } from "@/shared/utils/usageStatsSnapshot";
 
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders.
 const ProviderTopology = dynamic(
@@ -151,12 +152,12 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
     if (apiKeyId) params.set("apiKeyId", apiKeyId);
 
-    fetch(`/api/usage/stats?${params.toString()}`)
+    fetch(`/api/usage/stats?${params.toString()}`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
         if (data) {
           hasLoadedStats.current = true;
-          setStats((previous) => ({ ...previous, ...data }));
+          setStats((previous) => applyUsageStatsUpdate(previous, data));
         }
       })
       .catch(() => {})
@@ -177,9 +178,9 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
         const data = JSON.parse(event.data);
         if (data.streamPatch) {
           const { streamPatch: _streamPatch, ...patch } = data;
-          setStats((previous) => previous ? { ...previous, ...patch } : previous);
+          setStats((previous) => applyUsageStatsUpdate(previous, patch, { streamPatch: true }));
         } else {
-          setStats(data);
+          setStats((previous) => applyUsageStatsUpdate(previous, data));
         }
         if (!data.streamPatch && data.streamUpdatedAt) {
           setChartRefreshToken((previous) => (data.streamUpdatedAt > previous ? data.streamUpdatedAt : previous));

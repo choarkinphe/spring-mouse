@@ -8,8 +8,9 @@ const buildVersion = String(process.env.APP_BUILD_VERSION || "").trim();
 // Next uses this identifier to detect a browser/RSC payload from an older
 // deployment. CI injects the commit SHA; local release builds fall back to the
 // package version so every published build still gets a stable, distinct ID.
-const deploymentId = String(process.env.NEXT_DEPLOYMENT_ID || "").trim()
+const rawDeploymentId = String(process.env.NEXT_DEPLOYMENT_ID || "").trim()
   || (buildVersion && buildVersion !== "dev" ? buildVersion : packageVersion);
+const deploymentId = rawDeploymentId.replace(/[^A-Za-z0-9_-]/g, "-");
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
 // Docker / default uses projectRoot so server.js lands at /app/server.js (not nested).
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"

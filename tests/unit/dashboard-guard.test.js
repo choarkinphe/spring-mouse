@@ -340,3 +340,29 @@ describe("dashboard guard helpers", () => {
     expect(__test__.extractApiKey(apiRequest)).toBe("header-key");
   });
 });
+
+
+describe("dashboard guard open platform API access", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SPRING_MOUSE_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("lets the open API handler validate its dedicated credential", async () => {
+    const response = await proxy(request("/open/v1/users", { host: "router.example.com" }));
+
+    expect(response).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+
+  it("also exposes the rewritten internal open API path", async () => {
+    const response = await proxy(request("/api/open/v1/usage/report", { host: "router.example.com" }));
+
+    expect(response).toBe(mocks.nextResponse);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+});

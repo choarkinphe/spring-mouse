@@ -26,6 +26,17 @@ export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
 } from "./repos/apiKeysRepo.js";
 
+// Open platform API keys
+export {
+  getOpenPlatformApiKeys, getOpenPlatformApiKeyById, createOpenPlatformApiKey,
+  updateOpenPlatformApiKey, deleteOpenPlatformApiKey, authenticateOpenPlatformApiKey,
+} from "./repos/openPlatformKeysRepo.js";
+
+// Open platform API call logs
+export {
+  recordOpenPlatformApiCall, getOpenPlatformApiCallLogs,
+} from "./repos/openPlatformLogsRepo.js";
+
 // Combos
 export {
   getCombos, getComboById, getComboByName,
@@ -71,6 +82,8 @@ export async function exportDb() {
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, quotaMode: r.quotaMode || "unlimited", quotaResetAt: r.quotaResetAt || null, fiveHourQuotaResetAt: r.fiveHourQuotaResetAt || null, weeklyQuotaResetAt: r.weeklyQuotaResetAt || null, createdAt: r.createdAt, lastUsedAt: r.lastUsedAt || null })),
+    openPlatformApiKeys: db.all(`SELECT * FROM openPlatformApiKeys`).map((r) => ({ id: r.id, name: r.name, keyPrefix: r.keyPrefix, keyHash: r.keyHash, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt, lastUsedAt: r.lastUsedAt || null })),
+    openPlatformApiCallLogs: db.all(`SELECT * FROM openPlatformApiCallLogs`),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -102,6 +115,8 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerConnections`);
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM apiKeys`);
+    db.run(`DELETE FROM openPlatformApiKeys`);
+    db.run(`DELETE FROM openPlatformApiCallLogs`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
@@ -131,6 +146,18 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, normalizeApiKeyQuotaMode(k.quotaMode), k.quotaResetAt || null, k.fiveHourQuotaResetAt || null, k.weeklyQuotaResetAt || null, k.createdAt || new Date().toISOString()]
+      );
+    }
+    for (const k of payload.openPlatformApiKeys || []) {
+      db.run(
+        `INSERT OR REPLACE INTO openPlatformApiKeys(id, name, keyPrefix, keyHash, isActive, createdAt, updatedAt, lastUsedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [k.id, k.name, k.keyPrefix, k.keyHash, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), k.updatedAt || k.createdAt || new Date().toISOString(), k.lastUsedAt || null]
+      );
+    }
+    for (const log of payload.openPlatformApiCallLogs || []) {
+      db.run(
+        `INSERT OR REPLACE INTO openPlatformApiCallLogs(id, apiKeyId, keyName, keyPrefix, timestamp, method, path, statusCode, durationMs, sourceIp, userAgent, subjectUserId) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [log.id, log.apiKeyId, log.keyName, log.keyPrefix, log.timestamp, log.method, log.path, log.statusCode, log.durationMs || 0, log.sourceIp || null, log.userAgent || null, log.subjectUserId || null]
       );
     }
     for (const c of payload.combos || []) {

@@ -35,6 +35,7 @@ const PUBLIC_API_PATHS = [
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
+const OPEN_PLATFORM_PREFIXES = ["/open/v1", "/api/open/v1"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -126,6 +127,10 @@ function isPublicLlmApi(pathname) {
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+function isPublicOpenPlatformApi(pathname) {
+  return OPEN_PLATFORM_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 function extractApiKey(request) {
   const authHeader = request.headers.get("Authorization");
   const bearerMatch = authHeader?.match(/^Bearer\s+(.+)$/i);
@@ -175,7 +180,7 @@ async function loadSettings() {
 function shouldEnforceIpAccess(pathname) {
   // Model/API clients authenticate with API keys. Keep source IP policies for
   // the browser-admin surface and its management endpoints only.
-  if (isPublicLlmApi(pathname) || pathname === "/api/codex/usage") return false;
+  if (isPublicLlmApi(pathname) || isPublicOpenPlatformApi(pathname) || pathname === "/api/codex/usage") return false;
   return pathname === "/login" || pathname.startsWith("/dashboard") || pathname.startsWith("/api/");
 }
 
@@ -203,7 +208,7 @@ async function isAuthenticated(request) {
 }
 
 function isPublicApi(pathname) {
-  if (isPublicLlmApi(pathname)) return true;
+  if (isPublicLlmApi(pathname) || isPublicOpenPlatformApi(pathname)) return true;
   return PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
@@ -212,6 +217,7 @@ export const __test__ = {
   enforceIpAccess,
   shouldEnforceIpAccess,
   isPublicLlmApi,
+  isPublicOpenPlatformApi,
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
@@ -235,6 +241,11 @@ export async function proxy(request) {
     if (await hasValidCliToken(request) || await hasValidToken(request))
       return NextResponse.next();
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (isPublicOpenPlatformApi(pathname)) {
+    // Open-platform routes validate their own smop_* credential in the handler.
+    return NextResponse.next();
   }
 
   if (isPublicLlmApi(pathname)) {

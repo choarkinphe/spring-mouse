@@ -95,6 +95,10 @@ const nextConfig = {
         destination: "/api/codex/usage"
       },
       {
+        source: "/open/v1/:path*",
+        destination: "/api/open/v1/:path*"
+      },
+      {
         source: "/v1/v1/:path*",
         destination: "/api/v1/:path*"
       },

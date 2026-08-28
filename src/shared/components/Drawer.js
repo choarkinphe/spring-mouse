@@ -15,10 +15,10 @@ export default function Drawer({
   lockScroll = true,
 }) {
   const widths = {
-    sm: "w-[400px]",
-    md: "w-[500px]",
-    lg: "w-[600px]",
-    xl: "w-[800px]",
+    sm: "w-full max-w-[400px]",
+    md: "w-full max-w-[500px]",
+    lg: "w-full max-w-[600px]",
+    xl: "w-full max-w-[800px]",
     "2xl": "w-full max-w-[1200px]",
     "3xl": "w-full max-w-[1500px]",
     full: "w-full",

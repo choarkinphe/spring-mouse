@@ -267,6 +267,7 @@ Dashboard 默认运行在：
 | 视频 | `POST /v1/videos/generations`、`POST /v1/videos/edits`、`GET /v1/videos/:id` |
 | 语音 | `POST /v1/audio/speech`、`POST /v1/audio/transcriptions`、`GET /v1/audio/voices` |
 | 网络 | `POST /v1/search`、`POST /v1/web/fetch` |
+| 开放平台 | `GET /open/v1/users`、`GET /open/v1/usage/report`（见[开放平台与使用报告 API](EXTERNAL_USAGE_REPORT_API.md)） |
 
 示例：
 
@@ -438,6 +439,7 @@ spring-mouse/
 - [Docker 快速参考](DOCKER.md)
 - [Docker Hub 发布与 Compose 部署](docs/DOCKERHUB.md)
 - [功能全景](docs/FEATURES.md)
+- [开放平台与使用报告 API](EXTERNAL_USAGE_REPORT_API.md)
 
 Spring Mouse 的产品形态受到 [9Router](https://github.com/decolua/9router) 的启发。感谢其在 AI 路由、Token 节省和多 Provider 接入方面提供的思路；Spring Mouse 以自身的通道治理、路由策略、调用方配额和运营分析需求继续演进。
 

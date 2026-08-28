@@ -35,7 +35,7 @@ describe("Schema migrations", () => {
     const tables = db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map(t => t.name);
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
-"apiKeys", "combos", "kv", "usageHistory", "usageDaily", "networkTraffic", "requestDetails",
+"apiKeys", "openPlatformApiKeys", "openPlatformApiCallLogs", "combos", "kv", "usageHistory", "usageDaily", "networkTraffic", "requestDetails",
     ]));
     const usageIndexes = db.all(`PRAGMA index_list(usageHistory)`).map(i => i.name);
     expect(usageIndexes).toContain("idx_uh_key_completed_status_tokens");

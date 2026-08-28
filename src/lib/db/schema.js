@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 16;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -81,6 +81,42 @@ export const TABLES = {
       lastUsedAt: "TEXT",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+  },
+  openPlatformApiKeys: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      keyPrefix: "TEXT NOT NULL",
+      keyHash: "TEXT UNIQUE NOT NULL",
+      isActive: "INTEGER DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      lastUsedAt: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_opak_hash ON openPlatformApiKeys(keyHash)",
+      "CREATE INDEX IF NOT EXISTS idx_opak_active ON openPlatformApiKeys(isActive)",
+    ],
+  },
+  openPlatformApiCallLogs: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      apiKeyId: "TEXT NOT NULL",
+      keyName: "TEXT NOT NULL",
+      keyPrefix: "TEXT NOT NULL",
+      timestamp: "TEXT NOT NULL",
+      method: "TEXT NOT NULL",
+      path: "TEXT NOT NULL",
+      statusCode: "INTEGER NOT NULL",
+      durationMs: "INTEGER DEFAULT 0",
+      sourceIp: "TEXT",
+      userAgent: "TEXT",
+      subjectUserId: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_opacl_key_ts ON openPlatformApiCallLogs(apiKeyId, timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_opacl_ts ON openPlatformApiCallLogs(timestamp DESC)",
+    ],
   },
   combos: {
     columns: {

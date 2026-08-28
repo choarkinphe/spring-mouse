@@ -123,6 +123,13 @@ const getPageInfo = (pathname) => {
       icon: "security",
       breadcrumbs: [],
     };
+  if (pathname.includes("/open-platform"))
+    return {
+      title: "开放平台",
+      description: "管理开放接口凭证与服务端集成文档",
+      icon: "api",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/endpoint"))
     return {
       title: "集成与凭据",

@@ -65,6 +65,32 @@ describe("traffic repository", () => {
     expect(buckets.reduce((sum, bucket) => sum + bucket.trafficBytes, 0)).toBe(1000);
   });
 
+  it("filters source IP before pagination and reports the full result count", async () => {
+    const { getAdapter } = await import("../../src/lib/db/driver.js");
+    const { getUsageDetails } = await import("../../src/lib/db/repos/usageRepo.js");
+    const db = await getAdapter();
+    const rareIp = "fdbd:dc02:17:604::206";
+
+    for (let index = 0; index < 25; index++) {
+      const timestamp = new Date(Date.now() + index * 1000).toISOString();
+      const sourceIp = index === 0 ? rareIp : "221.232.240.98";
+      db.run(
+        `INSERT INTO usageHistory(timestamp, provider, model, apiKeyId, requestId, startedAt, completedAt, promptTokens, completionTokens, status, tokens, meta)
+         VALUES(?, 'test', 'test-model', 'local-no-key', ?, ?, ?, 1, 1, 'success', ?, ?)`,
+        [timestamp, `source-ip-${index}`, timestamp, timestamp, JSON.stringify({ prompt_tokens: 1, completion_tokens: 1 }), JSON.stringify({ sourceIp })],
+      );
+    }
+
+    const all = await getUsageDetails({ page: 1, pageSize: 10 });
+    expect(all.details).toHaveLength(10);
+    expect(all.pagination).toEqual(expect.objectContaining({ totalItems: 25, totalPages: 3, hasNext: true }));
+
+    const filtered = await getUsageDetails({ sourceIp: rareIp, page: 1, pageSize: 10 });
+    expect(filtered.details).toHaveLength(1);
+    expect(filtered.details[0]).toEqual(expect.objectContaining({ sourceIp: rareIp }));
+    expect(filtered.pagination).toEqual(expect.objectContaining({ totalItems: 1, totalPages: 1, hasNext: false }));
+  });
+
   it("links traffic bytes into existing usage request details", async () => {
     const { saveNetworkTraffic } = await import("../../src/lib/db/repos/trafficRepo.js");
     const { saveRequestUsage, getChartData, getUsageDetails, getUsageStats } = await import("../../src/lib/db/repos/usageRepo.js");

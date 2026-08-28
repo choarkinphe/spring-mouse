@@ -664,25 +664,42 @@ export async function getUsageDetails(filter = {}) {
   }
   if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
+  if (filter.sourceIp) {
+    conds.push("json_extract(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END, '$.sourceIp') = ?");
+    params.push(filter.sourceIp);
+  }
 
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const page = Math.max(1, Number(filter.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(filter.pageSize) || 20));
   const offset = (page - 1) * pageSize;
 
-  // 先获取总数（用于分页信息）
+  // sourceIp is stored in the JSON metadata column. Keep that filter in SQL so
+  // rare/old IPs are not discarded by LIMIT before the metadata is inspected.
+  // appName still needs detectSourceApp(), so resolve matching IDs first and
+  // paginate that filtered ID list instead of filtering only the current page.
   const countResult = db.get(`SELECT COUNT(*) as total FROM usageHistory ${where}`, params);
-  const totalItems = countResult?.total || 0;
-  const totalPages = Math.ceil(totalItems / pageSize);
-
-  // 使用 SQL 分页而非内存分页，大幅提升大数据集性能
-  const rows = db.all(
-    `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
+  const unfilteredTotalItems = countResult?.total || 0;
+  let totalItems = unfilteredTotalItems;
+  let rows;
+  const selectDetails = `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
             COALESCE((SELECT requestBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS requestBytes,
             COALESCE((SELECT responseBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS responseBytes
-       FROM usageHistory ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset],
-  );
+       FROM usageHistory`;
+
+  if (filter.appName) {
+    const matchingIds = db.all(`SELECT id, meta FROM usageHistory ${where} ORDER BY id DESC`, params)
+      .filter((row) => detectSourceApp(parseJson(row.meta, {}) || {}) === filter.appName)
+      .map((row) => row.id);
+    totalItems = matchingIds.length;
+    const pageIds = matchingIds.slice(offset, offset + pageSize);
+    rows = pageIds.length
+      ? db.all(`${selectDetails} WHERE id IN (${pageIds.map(() => "?").join(", ")}) ORDER BY id DESC`, pageIds)
+      : [];
+  } else {
+    rows = db.all(`${selectDetails} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`, [...params, pageSize, offset]);
+  }
+  const totalPages = Math.ceil(totalItems / pageSize);
   const apiKeyMaps = await getApiKeyMapCached();
 
   const details = rows
@@ -714,31 +731,24 @@ export async function getUsageDetails(filter = {}) {
         responseBytes: Number(row.responseBytes) || 0,
         totalBytes: (Number(row.requestBytes) || 0) + (Number(row.responseBytes) || 0),
       };
-    })
-    // JS层过滤保留（用于appName/sourceIp等复杂条件）
-    .filter((detail) => !filter.appName || detail.appName === filter.appName)
-    .filter((detail) => !filter.sourceIp || detail.sourceIp === filter.sourceIp);
-
-  // 计算过滤后的实际分页信息
-  const filteredTotalItems = details.length;
-  const filteredTotalPages = Math.ceil(filteredTotalItems / pageSize);
-  const filteredOffset = (page - 1) * pageSize;
+    });
 
   return {
-    details: details.slice(filteredOffset, filteredOffset + pageSize),
+    details,
     pagination: {
       page,
       pageSize,
-      totalItems: filteredTotalItems,
-      totalPages: filteredTotalPages,
-      hasNext: page < filteredTotalPages,
-      hasPrev: page > 1
-    },
-    // 同时返回原始总数信息（未经JS过滤）
-    unfilteredPagination: {
       totalItems,
       totalPages,
-    }
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    },
+    // appName is derived from metadata; expose the candidate count before that
+    // derived filter for diagnostics while keeping normal SQL filters included.
+    unfilteredPagination: {
+      totalItems: unfilteredTotalItems,
+      totalPages: Math.ceil(unfilteredTotalItems / pageSize),
+    },
   };
 }
 

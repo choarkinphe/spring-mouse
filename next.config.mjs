@@ -1,7 +1,15 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
+const packageVersion = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8")).version;
+const buildVersion = String(process.env.APP_BUILD_VERSION || "").trim();
+// Next uses this identifier to detect a browser/RSC payload from an older
+// deployment. CI injects the commit SHA; local release builds fall back to the
+// package version so every published build still gets a stable, distinct ID.
+const deploymentId = String(process.env.NEXT_DEPLOYMENT_ID || "").trim()
+  || (buildVersion && buildVersion !== "dev" ? buildVersion : packageVersion);
 // CLI bundling needs workspace root so tracing includes hoisted node_modules (slim ~50MB).
 // Docker / default uses projectRoot so server.js lands at /app/server.js (not nested).
 const tracingRoot = process.env.NEXT_TRACING_ROOT_MODE === "workspace"
@@ -20,11 +28,20 @@ const allowedDevOrigins = [
     .map((origin) => origin.trim())
     .filter(Boolean),
 ];
+const dashboardNoStoreHeaders = [
+  {
+    key: "Cache-Control",
+    value: "private, no-cache, no-store, max-age=0, must-revalidate",
+  },
+];
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
+  // Protect self-hosted rolling deployments from version skew. Next appends
+  // this ID to chunk URLs and compares it on client navigation requests.
+  deploymentId,
   // `open` must stay external. It derives its own directory from `import.meta.url`, and
   // webpack replaces that with the absolute path of the BUILD machine as a string literal.
   // A release built on macOS therefore ships `file:///Users/.../open/index.js`, which
@@ -108,6 +125,18 @@ const nextConfig = {
         source: "/v1",
         destination: "/api/v1"
       }
+    ];
+  },
+  async headers() {
+    return [
+      // Dashboard HTML and RSC payloads must never outlive the deployment that
+      // generated their hashed JavaScript references. Static /_next assets keep
+      // Next's own immutable cache headers because these matchers do not include
+      // them.
+      { source: "/dashboard", headers: dashboardNoStoreHeaders },
+      { source: "/dashboard/:path*", headers: dashboardNoStoreHeaders },
+      { source: "/login", headers: dashboardNoStoreHeaders },
+      { source: "/callback", headers: dashboardNoStoreHeaders },
     ];
   }
 };

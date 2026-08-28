@@ -184,7 +184,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        const normalized = normalizeUsageStatsSnapshot(data);
+        const normalized = normalizeUsageStatsSnapshot(data, { partial: Boolean(data.streamPatch) });
         if (!normalized) return;
         if (data.streamPatch) {
           const { streamPatch: _streamPatch, ...patch } = normalized;

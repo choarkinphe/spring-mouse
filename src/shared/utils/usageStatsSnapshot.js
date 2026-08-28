@@ -80,7 +80,7 @@ function normalizeCounterMap(value) {
  * numeric counters are serialized as strings. Normalize at the client boundary
  * so one malformed cached snapshot cannot crash the entire Usage route render.
  */
-export function normalizeUsageStatsSnapshot(incoming, { partial = false } = {}) {
+export function normalizeUsageStatsSnapshot(incoming, { partial = Boolean(incoming?.streamPatch) } = {}) {
   if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return null;
 
   const normalized = normalizeRecord(incoming);

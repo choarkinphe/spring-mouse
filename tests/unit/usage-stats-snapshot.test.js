@@ -68,7 +68,7 @@ describe("usage stats snapshot updates", () => {
     const normalized = normalizeUsageStatsSnapshot({
       streamPatch: true,
       activeRequests: [{ promptTokens: "10" }],
-    }, { partial: true });
+    });
 
     expect(normalized).toEqual({
       streamPatch: true,

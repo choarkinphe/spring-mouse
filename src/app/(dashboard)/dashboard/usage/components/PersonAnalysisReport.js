@@ -11,7 +11,7 @@ const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间
 const SESSION_GAP_MINUTES = 30;
 
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
-const fmtCost = (value) => `$${(value || 0).toFixed(2)}`;
+const fmtCost = (value) => `$${Number(value || 0).toFixed(2)}`;
 const fmtPct = (value, digits = 1) => `${((value || 0) * 100).toFixed(digits)}%`;
 const fmtTokens = (value) => {
   const amount = value || 0;

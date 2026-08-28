@@ -7,8 +7,7 @@ import { ModuleSkeleton, Skeleton } from "./Loading";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import ChannelQuotaPanel from "@/app/(dashboard)/dashboard/usage/components/ChannelQuotaPanel";
-import UsageBreakdownGrid from "@/app/(dashboard)/dashboard/usage/components/UsageBreakdownGrid";
-import { applyUsageStatsUpdate } from "@/shared/utils/usageStatsSnapshot";
+import { applyUsageStatsUpdate, normalizeUsageStatsSnapshot } from "@/shared/utils/usageStatsSnapshot";
 
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders.
 const ProviderTopology = dynamic(
@@ -16,6 +15,14 @@ const ProviderTopology = dynamic(
   {
     ssr: false,
     loading: () => <ModuleSkeleton title="正在初始化请求拓扑" icon="account_tree" lines={4} className="min-h-[320px] xl:h-full" />,
+  },
+);
+
+const UsageBreakdownGrid = dynamic(
+  () => import("@/app/(dashboard)/dashboard/usage/components/UsageBreakdownGrid"),
+  {
+    ssr: false,
+    loading: () => <ModuleSkeleton title="正在装载使用分析面板" icon="analytics" lines={7} className="min-h-[520px]" />,
   },
 );
 
@@ -155,9 +162,10 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     fetch(`/api/usage/stats?${params.toString()}`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
-        if (data) {
+        const normalized = normalizeUsageStatsSnapshot(data, { partial: Boolean(data.streamPatch) });
+        if (normalized) {
           hasLoadedStats.current = true;
-          setStats((previous) => applyUsageStatsUpdate(previous, data));
+          setStats((previous) => applyUsageStatsUpdate(previous, normalized));
         }
       })
       .catch(() => {})
@@ -176,14 +184,16 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        const normalized = normalizeUsageStatsSnapshot(data);
+        if (!normalized) return;
         if (data.streamPatch) {
-          const { streamPatch: _streamPatch, ...patch } = data;
+          const { streamPatch: _streamPatch, ...patch } = normalized;
           setStats((previous) => applyUsageStatsUpdate(previous, patch, { streamPatch: true }));
         } else {
-          setStats((previous) => applyUsageStatsUpdate(previous, data));
+          setStats((previous) => applyUsageStatsUpdate(previous, normalized));
         }
-        if (!data.streamPatch && data.streamUpdatedAt) {
-          setChartRefreshToken((previous) => (data.streamUpdatedAt > previous ? data.streamUpdatedAt : previous));
+        if (!data.streamPatch && normalized.streamUpdatedAt) {
+          setChartRefreshToken((previous) => (normalized.streamUpdatedAt > previous ? normalized.streamUpdatedAt : previous));
         }
         if (hasLoadedStats.current) setLoading(false);
       } catch (error) {

@@ -12,7 +12,7 @@ const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
-const fmtCost = (value) => `$${(value || 0).toFixed(2)}`;
+const fmtCost = (value) => `$${Number(value || 0).toFixed(2)}`;
 const fmtTokens = (value) => {
   const amount = value || 0;
   if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`;
@@ -42,11 +42,14 @@ function formatGeo(geo) {
 
 function getRows(data, limit = 6, sortBy = "requests") {
   return Object.entries(data || {})
-    .map(([key, item]) => ({
+    .map(([key, rawItem]) => {
+      const item = rawItem && typeof rawItem === "object" ? rawItem : {};
+      return {
       key,
       ...item,
-      totalTokens: (item.promptTokens || 0) + (item.completionTokens || 0),
-    }))
+      totalTokens: (Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0),
+      };
+    })
     .sort((a, b) => (b[sortBy] || 0) - (a[sortBy] || 0))
     .slice(0, limit);
 }
@@ -369,7 +372,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, chartRe
   const apps = getRows(stats.byApp, Number.MAX_SAFE_INTEGER);
   const people = getRows(stats.byUser, Number.MAX_SAFE_INTEGER, "totalTokens");
   const totalTokens = (stats.totalPromptTokens || 0) + (stats.totalCompletionTokens || 0);
-  const recent = stats.last10Minutes || [];
+  const recent = Array.isArray(stats.last10Minutes) ? stats.last10Minutes : [];
   const topPerson = people[0];
   const topModel = models[0];
   const focusPerson = apiKeyId ? people.find((person) => person.userId === apiKeyId) || people[0] : people.length === 1 ? people[0] : null;

@@ -29,7 +29,20 @@ const fmtTokens = (n) => {
   return String(n || 0);
 };
 
-const fmtCost = (n) => `$${(n || 0).toFixed(4)}`;
+const fmtCost = (n) => `$${Number(n || 0).toFixed(4)}`;
+
+function normalizeChartData(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    ...(item && typeof item === "object" ? item : {}),
+    tokens: Number(item?.tokens) || 0,
+    cost: Number(item?.cost) || 0,
+    requests: Number(item?.requests) || 0,
+    requestBytes: Number(item?.requestBytes) || 0,
+    responseBytes: Number(item?.responseBytes) || 0,
+    trafficBytes: Number(item?.trafficBytes) || 0,
+  }));
+}
 
 function UsageChartSkeleton() {
   return (
@@ -77,7 +90,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
           if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
           if (apiKeyId) params.set("apiKeyId", apiKeyId);
           const res = await fetch(`/api/usage/chart?${params.toString()}`, { cache: "no-store" });
-          if (res.ok && !cancelled) setData(await res.json());
+          if (res.ok && !cancelled) setData(normalizeChartData(await res.json()));
         } catch (error) {
           console.error("Failed to fetch chart data:", error);
         } finally {

@@ -243,12 +243,22 @@ http.createServer = (...args) => {
 };
 
 if (require.main === module) {
-  const standalone = path.join(__dirname, "server.js");
-  if (fs.existsSync(standalone)) {
+  // The wrapper is used in two layouts:
+  // 1. beside server.js inside Docker / CLI standalone bundles;
+  // 2. at the repository root after `next build`.
+  // Always prefer the supported standalone server in either layout. Falling
+  // through to `next start` with `output: "standalone"` is unsupported and can
+  // serve a page whose RSC/chunk assets do not match the active build.
+  const standalone = [
+    path.join(__dirname, "server.js"),
+    path.join(__dirname, ".next", "standalone", "server.js"),
+  ].find((candidate) => fs.existsSync(candidate));
+
+  if (standalone) {
     require(standalone);
   } else {
-    // Repo checkout has no standalone build next to us. `next start` builds its HTTP
-    // server in-process, so the wrapper above still sanitizes every request.
+    // Keep a development-friendly fallback for checkouts that have not produced
+    // a standalone build yet. Production builds should never take this branch.
     const nextBin = require.resolve("next/dist/bin/next");
     process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
     require(nextBin);

@@ -411,15 +411,38 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated }) {
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, onRefreshQuota, onToggle }) {
+function ChannelRow({ connection, quotas, quotaLoading, isFirst, isLast, reordering, onRefreshQuota, onToggle, onMoveUp, onMoveDown }) {
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
   const status = getAccountStatus(connection);
+  const canReorder = !(isFirst && isLast);
 
   return (
     <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_5.5rem] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
       <div className="flex min-w-0 items-center gap-3">
+        {canReorder && (
+          <div className="flex shrink-0 flex-col" aria-label="调整账号顺序">
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={isFirst || reordering}
+              aria-label={`上移 ${getConnectionName(connection)}`}
+              className={cn("rounded p-0.5 text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]", (isFirst || reordering) && "cursor-not-allowed opacity-25 hover:bg-transparent hover:text-text-muted")}
+            >
+              <span className="material-symbols-outlined text-[16px]">keyboard_arrow_up</span>
+            </button>
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={isLast || reordering}
+              aria-label={`下移 ${getConnectionName(connection)}`}
+              className={cn("rounded p-0.5 text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]", (isLast || reordering) && "cursor-not-allowed opacity-25 hover:bg-transparent hover:text-text-muted")}
+            >
+              <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+            </button>
+          </div>
+        )}
         <span className="flex size-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: `${providerColor}20` }}>
           <ProviderIcon
             src={getProviderIconSrc(connection.provider)}
@@ -446,6 +469,12 @@ function ChannelRow({ connection, quotas, quotaLoading, onRefreshQuota, onToggle
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
+        {connection.lastError && connection.isActive !== false && (
+          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={connection.lastError}>
+            <span className="material-symbols-outlined shrink-0 text-[15px]">error</span>
+            <span className="truncate">{connection.lastError}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-1 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
@@ -464,7 +493,7 @@ function ChannelRow({ connection, quotas, quotaLoading, onRefreshQuota, onToggle
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, modelCounts, onRefreshQuota, onToggle, onOpen, onSetRoundRobin, onSetRoundRobinLimit }) {
+function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, modelCounts, reordering, onRefreshQuota, onToggle, onMoveConnection, onOpen, onSetRoundRobin, onSetRoundRobinLimit }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
@@ -547,14 +576,19 @@ function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, mode
         <span className="text-center">操作</span>
       </div>
       <div className="divide-y divide-white/[0.065]">
-        {group.connections.map((connection) => (
+        {group.connections.map((connection, index) => (
           <ChannelRow
             key={connection.id}
             connection={connection}
             quotas={quotaData[connection.id]}
             quotaLoading={quotaLoading[connection.id]}
+            isFirst={index === 0}
+            isLast={index === group.connections.length - 1}
+            reordering={reordering}
             onRefreshQuota={onRefreshQuota}
             onToggle={onToggle}
+            onMoveUp={() => onMoveConnection(group.connections, index, index - 1)}
+            onMoveDown={() => onMoveConnection(group.connections, index, index + 1)}
           />
         ))}
       </div>
@@ -587,6 +621,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [quotaData, setQuotaData] = useState({});
   const [quotaLoading, setQuotaLoading] = useState({});
   const [loading, setLoading] = useState(true);
+  const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [detailProviderId, setDetailProviderId] = useState(initialDetailProviderId);
 
@@ -662,6 +697,43 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     } catch (error) {
       console.error("Failed to update channel:", error);
       setConnections((items) => items.map((item) => item.id === connection.id ? { ...item, isActive: connection.isActive } : item));
+    }
+  };
+
+  const handleMoveConnection = async (orderedConnections, sourceIndex, targetIndex) => {
+    if (targetIndex < 0 || targetIndex >= orderedConnections.length || reorderingProviderId) return;
+
+    const movingConnection = orderedConnections[sourceIndex];
+    const displacedConnection = orderedConnections[targetIndex];
+    const sourcePriority = sourceIndex + 1;
+    const targetPriority = targetIndex + 1;
+
+    setReorderingProviderId(movingConnection.provider);
+    setConnections((items) => items.map((item) => {
+      if (item.id === movingConnection.id) return { ...item, priority: targetPriority };
+      if (item.id === displacedConnection.id) return { ...item, priority: sourcePriority };
+      return item;
+    }));
+
+    try {
+      const displacedResponse = await fetch(`/api/providers/${displacedConnection.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority: sourcePriority }),
+      });
+      if (!displacedResponse.ok) throw new Error("Failed to update displaced account priority");
+
+      const movingResponse = await fetch(`/api/providers/${movingConnection.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority: targetPriority }),
+      });
+      if (!movingResponse.ok) throw new Error("Failed to update account priority");
+    } catch (error) {
+      console.error("Failed to reorder channel accounts:", error);
+      await fetchConnections();
+    } finally {
+      setReorderingProviderId(null);
     }
   };
 
@@ -756,8 +828,10 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               quotaLoading={quotaLoading}
               providerStrategies={providerStrategies}
               modelCounts={modelCounts}
+              reordering={Boolean(reorderingProviderId)}
               onRefreshQuota={(item) => refreshQuota(item, true)}
               onToggle={handleToggle}
+              onMoveConnection={handleMoveConnection}
               onOpen={openChannelDetail}
               onSetRoundRobin={handleSetRoundRobin}
               onSetRoundRobinLimit={handleSetRoundRobinLimit}

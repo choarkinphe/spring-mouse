@@ -77,26 +77,30 @@ export default function ConnectionRow({ connection, isOAuth, isFirst, isLast, on
     return null;
   };
 
+  const canReorder = !(isFirst && isLast);
+
   return (
-    <div className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
+    <div className={`group flex min-w-0 flex-col gap-2 rounded-lg px-1 py-1.5 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
         {/* Priority arrows */}
-        <div className="flex shrink-0 flex-col">
-          <button
-            onClick={onMoveUp}
-            disabled={isFirst}
-            className={`p-0.5 rounded ${isFirst ? "text-text-muted/30 cursor-not-allowed" : "hover:bg-sidebar text-text-muted hover:text-primary"}`}
-          >
-            <span className="material-symbols-outlined text-sm">keyboard_arrow_up</span>
-          </button>
-          <button
-            onClick={onMoveDown}
-            disabled={isLast}
-            className={`p-0.5 rounded ${isLast ? "text-text-muted/30 cursor-not-allowed" : "hover:bg-sidebar text-text-muted hover:text-primary"}`}
-          >
-            <span className="material-symbols-outlined text-sm">keyboard_arrow_down</span>
-          </button>
-        </div>
+        {canReorder && (
+          <div className="flex shrink-0 flex-col">
+            <button
+              onClick={onMoveUp}
+              disabled={isFirst}
+              className={`rounded p-0.5 ${isFirst ? "cursor-not-allowed text-text-muted/30" : "text-text-muted hover:bg-sidebar hover:text-primary"}`}
+            >
+              <span className="material-symbols-outlined text-sm">keyboard_arrow_up</span>
+            </button>
+            <button
+              onClick={onMoveDown}
+              disabled={isLast}
+              className={`rounded p-0.5 ${isLast ? "cursor-not-allowed text-text-muted/30" : "text-text-muted hover:bg-sidebar hover:text-primary"}`}
+            >
+              <span className="material-symbols-outlined text-sm">keyboard_arrow_down</span>
+            </button>
+          </div>
+        )}
         <span className="material-symbols-outlined shrink-0 text-base text-text-muted">
           {authIcon}
         </span>

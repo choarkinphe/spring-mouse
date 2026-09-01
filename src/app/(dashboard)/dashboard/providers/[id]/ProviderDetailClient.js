@@ -34,7 +34,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export default function ProviderDetailClient({ providerId: providerIdOverride, embedded = false, onClose }) {
+export default function ProviderDetailClient({ providerId: providerIdOverride, embedded = false, onClose, onUpdated }) {
   const params = useParams();
   const router = useRouter();
   const providerId = providerIdOverride || params.id;
@@ -331,6 +331,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   }, [providerId, isCompatible]);
 
+  const notifyChannelListUpdated = useCallback(async () => {
+    await onUpdated?.();
+  }, [onUpdated]);
+
   const handleUpdateNode = async (formData) => {
     try {
       const res = await fetch(`/api/provider-nodes/${providerId}`, {
@@ -342,6 +346,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       if (res.ok) {
         setProviderNode(data.node);
         await fetchConnections();
+        await notifyChannelListUpdated();
         setShowEditNodeModal(false);
       }
     } catch (error) {
@@ -699,6 +704,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
           if (res.ok) {
             setConnections(prev => prev.filter(c => c.id !== id));
+            await notifyChannelListUpdated();
           }
         } catch (error) {
           console.log("Error deleting connection:", error);
@@ -728,18 +734,21 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         }
         setConnections(prev => prev.filter(c => !idsToDelete.includes(c.id)));
         setSelectedConnectionIds([]);
+        await notifyChannelListUpdated();
         if (failed > 0) alert(`Deleted ${idsToDelete.length - failed} connection(s), ${failed} failed.`);
       }
     });
   };
 
-  const handleOAuthSuccess = () => {
-    fetchConnections();
+  const handleOAuthSuccess = async () => {
+    await fetchConnections();
+    await notifyChannelListUpdated();
     setShowOAuthModal(false);
   };
 
-  const handleIFlowCookieSuccess = () => {
-    fetchConnections();
+  const handleIFlowCookieSuccess = async () => {
+    await fetchConnections();
+    await notifyChannelListUpdated();
     setShowIFlowCookieModal(false);
   };
 
@@ -761,6 +770,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
       if (res.ok) {
         await fetchConnections();
+        await notifyChannelListUpdated();
         setShowAddApiKeyModal(false);
         return;
       }
@@ -781,6 +791,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       });
       if (res.ok) {
         await fetchConnections();
+        await notifyChannelListUpdated();
         setShowEditModal(false);
       }
     } catch (error) {
@@ -797,6 +808,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       });
       if (res.ok) {
         setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
+        await notifyChannelListUpdated();
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -822,6 +834,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           body: JSON.stringify({ priority: index2 }),
         }),
       ]);
+      await notifyChannelListUpdated();
     } catch (error) {
       console.log("Error swapping priority:", error);
       await fetchConnections();
@@ -931,7 +944,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onDeleteAlias={handleDeleteAlias}
           onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
           onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
+          onDisableModel={handleDisableModel}
+          onEnableModel={handleEnableModel}
+          disabledModelIds={disabledModelIds}
           connections={connections}
+          getCaps={getCaps}
           isAnthropic={isAnthropicCompatible}
         />
       );
@@ -1208,9 +1225,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         </div>
       )}
 
+      <div className={isCompatible && providerNode ? "overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-soft)]" : "contents"}>
       {isCompatible && providerNode && (
-        <Card>
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <Card padding="sm" className="!rounded-none !border-0 !shadow-none">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h2 className="text-lg font-semibold">{isAnthropicCompatible ? "Anthropic Compatible Details" : "OpenAI Compatible Details"}</h2>
               <p className="break-all text-sm text-text-muted">
@@ -1252,6 +1270,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                       try {
                         const res = await fetch(`/api/provider-nodes/${providerId}`, { method: "DELETE" });
                         if (res.ok) {
+                          await notifyChannelListUpdated();
                           if (embedded) onClose?.();
                           else router.push("/dashboard/providers");
                         }
@@ -1278,9 +1297,22 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           </div>
         </Card>
       ) : (
-        <Card>
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-lg font-semibold">Connections</h2>
+        <Card padding={isCompatible && providerNode ? "sm" : "md"} className={isCompatible && providerNode ? "!rounded-none !border-x-0 !border-b-0 !shadow-none" : ""}>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-lg font-semibold">Connections</h2>
+              {connections.length > 0 && (
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleSelectAllConnections}
+                    className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                  />
+                  Select All
+                </label>
+              )}
+            </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
               {connections.length > 0 && (
                 <>
@@ -1385,19 +1417,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   </div>
                 </div>
               )}
-              {connections.length > 0 && (
-                <div className="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      onChange={toggleSelectAllConnections}
-                      className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
-                    />
-                    Select All
-                  </label>
-                </div>
-              )}
               {connectionsList}
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
@@ -1461,6 +1480,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           )}
         </Card>
       )}
+      </div>
 
       {/* Models */}
       <Card>

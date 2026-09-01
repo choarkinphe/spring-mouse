@@ -152,7 +152,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onCo
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "创建渠道失败");
-      onConnectionCreated();
+      await onConnectionCreated();
       onClose();
     } catch (requestError) {
       setError(requestError.message || "创建渠道失败");
@@ -161,10 +161,10 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onCo
     }
   };
 
-  const handleOAuthSuccess = () => {
+  const handleOAuthSuccess = async () => {
     setShowOAuth(false);
     setShowIFlowCookie(false);
-    onConnectionCreated();
+    await onConnectionCreated();
     onClose();
   };
 
@@ -603,10 +603,8 @@ function ChannelDetailDrawer({ providerId, onClose, onUpdated }) {
         <ProviderDetailClient
           providerId={providerId}
           embedded
-          onClose={() => {
-            onUpdated();
-            onClose();
-          }}
+          onClose={onClose}
+          onUpdated={onUpdated}
         />
       )}
     </Drawer>
@@ -629,7 +627,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     setLoading(true);
     try {
       const [response, settingsResponse] = await Promise.all([
-        fetch("/api/providers?includeModelCounts=1"),
+        fetch("/api/providers?includeModelCounts=1", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
       ]);
       if (!response.ok) throw new Error("Failed to fetch channels");

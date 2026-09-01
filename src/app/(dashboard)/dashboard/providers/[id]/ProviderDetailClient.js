@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
+import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
@@ -20,6 +21,7 @@ import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
+import EditCompatibleNodeIconModal from "./EditCompatibleNodeIconModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 
@@ -49,6 +51,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
+  const [showEditNodeIconModal, setShowEditNodeIconModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
@@ -345,6 +348,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       const data = await res.json();
       if (res.ok) {
         setProviderNode(data.node);
+        setHeaderImgError(false);
         await fetchConnections();
         await notifyChannelListUpdated();
         setShowEditNodeModal(false);
@@ -354,6 +358,27 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+
+  const handleUpdateNodeIcon = async (icon) => {
+    if (!providerNode) return;
+    try {
+      const res = await fetch(`/api/provider-nodes/${providerId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ icon }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setProviderNode(data.node);
+        setHeaderImgError(false);
+        await fetchConnections();
+        await notifyChannelListUpdated();
+        setShowEditNodeIconModal(false);
+      }
+    } catch (error) {
+      console.log("Error updating provider node icon:", error);
+    }
+  };
 
   const saveThinkingConfig = async (mode) => {
     try {
@@ -1131,13 +1156,43 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
   // Determine icon path: OpenAI Compatible providers use specialized icons
   const getHeaderIconPath = () => {
+    if (isCompatible && providerNode?.icon) {
+      return normalizeCustomChannelIconSrc(providerNode.icon);
+    }
     if (isOpenAICompatible && providerInfo.apiType) {
-      return providerInfo.apiType === "responses" ? "/providers/oai-r.png" : "/providers/oai-cc.png";
+      return "/providers/openai.svg";
     }
     if (isAnthropicCompatible) {
       return "/providers/anthropic-m.png";
     }
     return getProviderIconSrc(providerInfo.id);
+  };
+
+  const renderHeaderIcon = () => {
+    if (headerImgError || !getHeaderIconPath()) {
+      return (
+        <span className="text-sm font-bold" style={{ color: providerInfo.color }}>
+          {providerInfo.textIcon || providerInfo.id.slice(0, 2).toUpperCase()}
+        </span>
+      );
+    }
+
+    return (
+      <Image
+        src={getHeaderIconPath()}
+        alt={providerInfo.name}
+        width={56}
+        height={56}
+        className="max-h-14 max-w-14 rounded-xl object-contain drop-shadow-[0_1px_3px_rgba(0,0,0,0.28)]"
+        sizes="56px"
+        onError={() => {
+          markProviderIconMissing(providerInfo.id);
+          setHeaderImgError(true);
+        }}
+        loading="lazy"
+        decoding="async"
+      />
+    );
   };
 
   return (
@@ -1154,31 +1209,28 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           </Link>
         )}
         <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-          <div
-            className="flex size-12 shrink-0 items-center justify-center rounded-lg"
-            style={{ backgroundColor: `${providerInfo.color}15` }}
-          >
-            {headerImgError || !getHeaderIconPath() ? (
-              <span className="text-sm font-bold" style={{ color: providerInfo.color }}>
-                {providerInfo.textIcon || providerInfo.id.slice(0, 2).toUpperCase()}
+          {isCompatible ? (
+            <button
+              type="button"
+              onClick={() => setShowEditNodeIconModal(true)}
+              aria-label="Edit channel icon"
+              title="Edit channel icon"
+              className="group relative flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-white/[0.08] outline-none transition-transform hover:scale-[1.03] hover:ring-[#38bdf8]/35 focus-visible:ring-2 focus-visible:ring-[#38bdf8]/70"
+              style={{ backgroundColor: `${providerInfo.color}15` }}
+            >
+              {renderHeaderIcon()}
+              <span className="material-symbols-outlined absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full border border-border bg-surface text-[13px] text-[#7dd3fc] shadow-sm transition-colors group-hover:border-[#38bdf8]/50 group-hover:bg-[#0d2230]">
+                edit
               </span>
-            ) : (
-              <Image
-                src={getHeaderIconPath()}
-                alt={providerInfo.name}
-                width={48}
-                height={48}
-                className="max-h-12 max-w-12 rounded-lg object-contain"
-                sizes="48px"
-                onError={() => {
-                  markProviderIconMissing(providerInfo.id);
-                  setHeaderImgError(true);
-                }}
-              loading="lazy"
-              decoding="async"
-              />
-            )}
-          </div>
+            </button>
+          ) : (
+            <div
+              className="flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-white/[0.08]"
+              style={{ backgroundColor: `${providerInfo.color}15` }}
+            >
+              {renderHeaderIcon()}
+            </div>
+          )}
           <div className="min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">{providerInfo.name}</h1>
@@ -1614,6 +1666,14 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onSave={handleUpdateNode}
           onClose={() => setShowEditNodeModal(false)}
           isAnthropic={isAnthropicCompatible}
+        />
+      )}
+      {isCompatible && (
+        <EditCompatibleNodeIconModal
+          isOpen={showEditNodeIconModal}
+          node={providerNode}
+          onSave={handleUpdateNodeIcon}
+          onClose={() => setShowEditNodeIconModal(false)}
         />
       )}
       {!isCompatible && (

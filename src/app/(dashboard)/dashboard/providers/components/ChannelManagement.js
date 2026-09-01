@@ -14,6 +14,7 @@ import { Badge, Button, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAu
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
+import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { cn } from "@/shared/utils/cn";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
@@ -52,6 +53,11 @@ function getChannelName(providerId, connections) {
   const configuredName = getProviderName(providerId);
   if (configuredName !== providerId) return configuredName;
   return connections[0]?.providerSpecificData?.nodeName || connections[0]?.name || providerId;
+}
+
+function getChannelIconSrc(providerId, connections = []) {
+  const customIcon = connections.find((connection) => connection.providerSpecificData?.nodeIcon)?.providerSpecificData?.nodeIcon;
+  return normalizeCustomChannelIconSrc(customIcon) || getProviderIconSrc(providerId);
 }
 
 function getAccountStatus(connection) {
@@ -445,7 +451,7 @@ function ChannelRow({ connection, quotas, quotaLoading, isFirst, isLast, reorder
         )}
         <span className="flex size-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: `${providerColor}20` }}>
           <ProviderIcon
-            src={getProviderIconSrc(connection.provider)}
+            src={normalizeCustomChannelIconSrc(connection.providerSpecificData?.nodeIcon) || getProviderIconSrc(connection.provider)}
             alt={providerName}
             size={32}
             className="max-h-8 max-w-8 rounded-lg object-contain"
@@ -509,7 +515,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, mode
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${channelColor}20` }}>
             <ProviderIcon
-              src={getProviderIconSrc(group.provider)}
+              src={getChannelIconSrc(group.provider, group.connections)}
               alt={channelName}
               size={28}
               className="max-h-7 max-w-7 rounded-md object-contain"

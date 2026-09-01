@@ -1,16 +1,43 @@
 import { NextResponse } from "next/server";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { isCustomChannelIconSrc, normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, prefix, apiType, baseUrl } = body;
+    const { name, prefix, apiType, baseUrl, icon } = body;
     const node = await getProviderNodeById(id);
 
     if (!node) {
       return NextResponse.json({ error: "Provider node not found" }, { status: 404 });
+    }
+
+    const iconProvided = Object.prototype.hasOwnProperty.call(body, "icon");
+    const isIconOnlyUpdate = iconProvided
+      && name === undefined
+      && prefix === undefined
+      && apiType === undefined
+      && baseUrl === undefined;
+
+    if (isIconOnlyUpdate) {
+      if (icon != null && icon !== "" && !isCustomChannelIconSrc(icon)) {
+        return NextResponse.json({ error: "Invalid channel icon" }, { status: 400 });
+      }
+
+      const updated = await updateProviderNode(id, { icon: normalizeCustomChannelIconSrc(icon) });
+      const connections = await getProviderConnections({ provider: id });
+      await Promise.all(connections.map((connection) => (
+        updateProviderConnection(connection.id, {
+          providerSpecificData: {
+            ...(connection.providerSpecificData || {}),
+            nodeIcon: updated.icon || "",
+          },
+        })
+      )));
+
+      return NextResponse.json({ node: updated });
     }
 
     if (!name?.trim()) {
@@ -29,6 +56,13 @@ export async function PUT(request, { params }) {
     if (!baseUrl?.trim()) {
       return NextResponse.json({ error: "Base URL is required" }, { status: 400 });
     }
+
+    if (iconProvided && icon != null && icon !== "" && !isCustomChannelIconSrc(icon)) {
+      return NextResponse.json({ error: "Invalid channel icon" }, { status: 400 });
+    }
+    const sanitizedIcon = iconProvided
+      ? normalizeCustomChannelIconSrc(icon)
+      : normalizeCustomChannelIconSrc(node.icon);
 
     let sanitizedBaseUrl = baseUrl.trim();
     
@@ -52,6 +86,7 @@ export async function PUT(request, { params }) {
       name: name.trim(),
       prefix: prefix.trim(),
       baseUrl: sanitizedBaseUrl,
+      icon: sanitizedIcon,
     };
 
     if (node.type === "openai-compatible") {
@@ -69,6 +104,7 @@ export async function PUT(request, { params }) {
           apiType: node.type === "openai-compatible" ? apiType : undefined,
           baseUrl: sanitizedBaseUrl,
           nodeName: updated.name,
+          nodeIcon: updated.icon || "",
         }
       })
     )));

@@ -10,6 +10,7 @@ import { buildModelsList } from "@/app/api/v1/models/route";
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 
 export const dynamic = "force-dynamic";
 
@@ -35,24 +36,32 @@ export async function GET(request) {
     const connections = await getProviderConnections();
     const includeModelCounts = new URL(request.url).searchParams.get("includeModelCounts") === "1";
 
-    // Build nodeNameMap for compatible providers (id → name)
-    let nodeNameMap = {};
+    // Build node metadata map for compatible providers (id → name and icon).
+    let nodeMetadataMap = {};
     try {
       const nodes = await getProviderNodes();
       for (const node of nodes) {
-        if (node.id && node.name) nodeNameMap[node.id] = node.name;
+        if (node.id) nodeMetadataMap[node.id] = { name: node.name, icon: normalizeCustomChannelIconSrc(node.icon) };
       }
     } catch { }
 
-    // Hide sensitive fields, enrich name for compatible providers
+    // Hide sensitive fields, enrich name and icon for compatible providers.
     const safeConnections = connections.map(c => {
       const isCompatible = isOpenAICompatibleProvider(c.provider) || isAnthropicCompatibleProvider(c.provider);
+      const node = nodeMetadataMap[c.provider];
       const name = isCompatible
-        ? (c.name || nodeNameMap[c.provider] || c.providerSpecificData?.nodeName || c.provider)
+        ? (c.name || node?.name || c.providerSpecificData?.nodeName || c.provider)
         : c.name;
       return {
         ...c,
         name,
+        providerSpecificData: isCompatible
+          ? {
+              ...(c.providerSpecificData || {}),
+              nodeName: node?.name || c.providerSpecificData?.nodeName || "",
+              nodeIcon: node?.icon || c.providerSpecificData?.nodeIcon || "",
+            }
+          : c.providerSpecificData,
         apiKey: undefined,
         accessToken: undefined,
         refreshToken: undefined,
@@ -149,6 +158,7 @@ export async function POST(request) {
         apiType: node.apiType,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        nodeIcon: normalizeCustomChannelIconSrc(node.icon),
       };
     } else if (isAnthropicCompatibleProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -159,6 +169,7 @@ export async function POST(request) {
         prefix: node.prefix,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        nodeIcon: normalizeCustomChannelIconSrc(node.icon),
       };
     } else if (isCustomEmbeddingProvider(provider)) {
       const node = await getProviderNodeById(provider);
@@ -169,6 +180,7 @@ export async function POST(request) {
         prefix: node.prefix,
         baseUrl: node.baseUrl,
         nodeName: node.name,
+        nodeIcon: normalizeCustomChannelIconSrc(node.icon),
       };
     }
 

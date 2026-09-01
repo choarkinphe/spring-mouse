@@ -28,6 +28,7 @@ export function resolveProviderIconId(providerId) {
 /** `/providers/{id}.png` or null when previously failed. */
 export function getProviderIconSrc(providerId) {
   const id = resolveProviderIconId(providerId);
+  if (id === "openai") return "/providers/openai.svg";
   return id ? `/providers/${id}.png` : null;
 }
 

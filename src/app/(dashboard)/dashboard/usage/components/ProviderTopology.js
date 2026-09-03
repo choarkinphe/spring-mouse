@@ -57,8 +57,10 @@ function ProjectedProvider({ provider, compact }) {
             loading="lazy"
             decoding="async"
             onError={() => {
-              const match = provider.imageUrl?.match(/^\/providers\/([^/]+)\.png$/i);
-              if (match) markProviderIconMissing(match[1]);
+              if (provider.builtinIcon) {
+                const match = provider.imageUrl?.match(/^\/providers\/([^/]+)\.png$/i);
+                if (match) markProviderIconMissing(match[1]);
+              }
               setImgError(true);
             }}
           />
@@ -126,7 +128,7 @@ function makePath(x, y, direction = "outbound") {
   return `M 50 ${middleY} C 50 ${bendY}, ${x} ${endBendY}, ${x} ${y}`;
 }
 
-function buildProjection(requests) {
+function buildProjection(requests, nodeMap = {}) {
   const providerMap = new Map();
   const callerMap = new Map();
   const callerFlows = [];
@@ -135,12 +137,15 @@ function buildProjection(requests) {
   requests.forEach((request) => {
     const providerId = request.provider?.toLowerCase() || "unknown";
     const config = getProviderConfig(providerId);
+    const node = nodeMap[providerId];
+    const isBuiltin = Boolean(AI_PROVIDERS[providerId]);
     const provider = providerMap.get(providerId) || {
       id: providerId,
-      label: config.name || request.provider || "Unknown provider",
+      label: node?.name || config.name || request.provider || "Unknown provider",
       color: config.color || "#6b7280",
-      imageUrl: getProviderImageUrl(providerId),
-      textIcon: config.textIcon || providerId.slice(0, 2).toUpperCase(),
+      imageUrl: node?.icon || (isBuiltin ? getProviderImageUrl(providerId) : null),
+      builtinIcon: !node?.icon && isBuiltin,
+      textIcon: config.textIcon || (node?.name || providerId).slice(0, 2).toUpperCase(),
       count: 0,
     };
     provider.count += request.count || 1;
@@ -238,6 +243,30 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
   const callerMemoryRef = useRef({});
   const [tick, setTick] = useState(0);
 
+  // Custom compatible nodes (openai-compatible-*, anthropic-compatible-*, ...)
+  // are not in the AI_PROVIDERS constant — resolve their display name/icon
+  // from the provider-nodes table so the topology shows the user-defined
+  // channel name instead of the raw node ID.
+  const [nodeMap, setNodeMap] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/provider-nodes")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.nodes) return;
+        const map = {};
+        for (const node of data.nodes) {
+          if (node?.id) map[node.id.toLowerCase()] = { name: node.name, icon: node.icon };
+        }
+        setNodeMap(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const now = Date.now();
     const nextKeys = new Set(rawRequests.map(getRequestKey));
@@ -276,7 +305,7 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
       });
   }, [rawRequests, requestKey, tick]);
 
-  const projection = useMemo(() => buildProjection(visibleRequests), [visibleRequests]);
+  const projection = useMemo(() => buildProjection(visibleRequests, nodeMap), [visibleRequests, nodeMap]);
   const [renderedProjection, setRenderedProjection] = useState(() => buildProjection([]));
   const compactProviders = renderedProjection.providers.length > 4;
   const compactCallers = renderedProjection.callers.length > 4;

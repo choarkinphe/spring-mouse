@@ -2,7 +2,7 @@
 import "open-sse/index.js";
 
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
-import { getUsageForProvider } from "open-sse/services/usage.js";
+import { getCodexRateLimitResetCredits, getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
@@ -179,6 +179,25 @@ export async function GET(request, { params }) {
         usage = await getUsageForProvider(connection, proxyOptions, { force });
       } catch (retryError) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
+      }
+    }
+
+    // Reset credits are served by a separate Codex endpoint. The regular usage
+    // endpoint may return 429 after a limit is reached, so fetch credits
+    // independently to keep the reset action available in that state.
+    if (connection.provider === "codex" && connection.accessToken) {
+      try {
+        usage = {
+          ...usage,
+          resetCredits: await getCodexRateLimitResetCredits(
+            connection.accessToken,
+            proxyOptions,
+            connection.providerSpecificData,
+          ),
+        };
+      } catch (resetCreditsError) {
+        // Usage remains useful even when the optional reset-credit lookup fails.
+        console.warn(`[Usage] codex: failed to load reset credits: ${resetCreditsError.message}`);
       }
     }
 

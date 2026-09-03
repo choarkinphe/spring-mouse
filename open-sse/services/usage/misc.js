@@ -142,22 +142,59 @@ export async function getGlmUsage(apiKey, provider, proxyOptions = null) {
     const data = json?.data && typeof json.data === "object" ? json.data : {};
     const limits = Array.isArray(data.limits) ? data.limits : [];
     const quotas = {};
+    const unclassifiedLimits = [];
 
-    for (const limit of limits) {
-      if (!limit || limit.type !== "TOKENS_LIMIT") continue;
+    const toQuota = (limit) => {
       const usedPercent = Number(limit.percentage) || 0;
       const resetMs = Number(limit.nextResetTime) || 0;
       const remaining = Math.max(0, 100 - usedPercent);
 
-      quotas["session"] = {
+      return {
         used: usedPercent,
         total: 100,
         remaining,
         remainingPercentage: remaining,
         resetAt: resetMs > 0 ? new Date(resetMs).toISOString() : null,
         unlimited: false,
+        resetMs,
       };
+    };
+
+    for (const limit of limits) {
+      if (!limit || String(limit.type).toUpperCase() !== "TOKENS_LIMIT") continue;
+
+      // GLM identifies its quota window through `unit`: 3 is a 5-hour
+      // rolling window and 6 is the weekly window. Keeping them separate
+      // prevents the weekly entry from overwriting the 5-hour entry.
+      const quotaName = Number(limit.unit) === 3
+        ? "Session (5h)"
+        : Number(limit.unit) === 6
+          ? "Weekly (7d)"
+          : null;
+      const quota = toQuota(limit);
+
+      if (quotaName && !quotas[quotaName]) {
+        delete quota.resetMs;
+        quotas[quotaName] = quota;
+      } else {
+        unclassifiedLimits.push(quota);
+      }
     }
+
+    // Keep displaying legacy responses which omit `unit`. A missing reset is
+    // most likely the 5-hour bucket; otherwise use reset order as a fallback.
+    unclassifiedLimits
+      .sort((a, b) => (a.resetMs || Number.POSITIVE_INFINITY) - (b.resetMs || Number.POSITIVE_INFINITY))
+      .forEach((quota) => {
+        const quotaName = !quotas["Session (5h)"]
+          ? "Session (5h)"
+          : !quotas["Weekly (7d)"]
+            ? "Weekly (7d)"
+            : null;
+        if (!quotaName) return;
+        delete quota.resetMs;
+        quotas[quotaName] = quota;
+      });
 
     const levelRaw = typeof data.level === "string" ? data.level : "";
     const plan = levelRaw

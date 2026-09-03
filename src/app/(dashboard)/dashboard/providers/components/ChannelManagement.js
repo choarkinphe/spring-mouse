@@ -10,7 +10,7 @@ import {
   USAGE_APIKEY_PROVIDERS,
   USAGE_SUPPORTED_PROVIDERS,
 } from "@/shared/constants/providers";
-import { Badge, Button, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import { Badge, Button, ConfirmModal, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -417,15 +417,16 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated }) {
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, isFirst, isLast, reordering, onRefreshQuota, onToggle, onMoveUp, onMoveDown }) {
+function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown }) {
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
+  const isCodex = connection.provider === "codex";
   const status = getAccountStatus(connection);
   const canReorder = !(isFirst && isLast);
 
   return (
-    <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_5.5rem] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
+    <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
       <div className="flex min-w-0 items-center gap-3">
         {canReorder && (
           <div className="flex shrink-0 flex-col" aria-label="调整账号顺序">
@@ -475,15 +476,36 @@ function ChannelRow({ connection, quotas, quotaLoading, isFirst, isLast, reorder
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
-        {connection.lastError && connection.isActive !== false && (
-          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={connection.lastError}>
+        {(connection.lastError || resetError) && connection.isActive !== false && (
+          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={resetError || connection.lastError}>
             <span className="material-symbols-outlined shrink-0 text-[15px]">error</span>
-            <span className="truncate">{connection.lastError}</span>
+            <span className="truncate">{resetError || connection.lastError}</span>
           </div>
         )}
       </div>
 
       <div className="flex items-center justify-end gap-1 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
+        {isCodex && (
+          <Tooltip text={resetCreditCount > 0 ? `使用 1 张额度重置券（剩余 ${resetCreditCount} 张）` : "暂无可用的 Codex 重置券"}>
+            <button
+              type="button"
+              onClick={() => onResetCodexLimit(connection)}
+              disabled={resetCreditCount <= 0 || quotaLoading || resetting}
+              aria-label={resetCreditCount > 0 ? `使用 1 张 Codex 重置券，剩余 ${resetCreditCount} 张` : "暂无可用的 Codex 重置券"}
+              className={cn(
+                "flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                resetCreditCount > 0
+                  ? "border-[#38bdf8]/35 bg-[#38bdf8]/[0.08] text-[#7dd3fc] hover:bg-[#38bdf8]/[0.14]"
+                  : "border-white/[0.08] bg-white/[0.025] text-text-muted",
+              )}
+            >
+              <span className={cn("material-symbols-outlined text-[17px]", resetting && "animate-spin")}>
+                {resetting ? "progress_activity" : "restart_alt"}
+              </span>
+              <span>{resetCreditCount}</span>
+            </button>
+          </Tooltip>
+        )}
         {quotaAvailable && (
           <Tooltip text="刷新配额">
             <button type="button" onClick={() => onRefreshQuota(connection)} disabled={quotaLoading} aria-label="刷新配额" className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc] disabled:cursor-not-allowed disabled:opacity-50">
@@ -499,7 +521,7 @@ function ChannelRow({ connection, quotas, quotaLoading, isFirst, isLast, reorder
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, modelCounts, reordering, onRefreshQuota, onToggle, onMoveConnection, onOpen, onSetRoundRobin, onSetRoundRobinLimit }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpen, onSetRoundRobin, onSetRoundRobinLimit }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
@@ -576,7 +598,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, mode
           </Tooltip>
         </div>
       </div>
-      <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_5.5rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
+      <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
         <span>账号配置</span>
         <span className="border-l border-white/[0.065] pl-6">配额</span>
         <span className="text-center">操作</span>
@@ -588,10 +610,14 @@ function ChannelGroup({ group, quotaData, quotaLoading, providerStrategies, mode
             connection={connection}
             quotas={quotaData[connection.id]}
             quotaLoading={quotaLoading[connection.id]}
+            resetCreditCount={resetCreditsByConnection[connection.id] || 0}
+            resetting={resettingConnectionId === connection.id}
+            resetError={resetErrors[connection.id]}
             isFirst={index === 0}
             isLast={index === group.connections.length - 1}
             reordering={reordering}
             onRefreshQuota={onRefreshQuota}
+            onResetCodexLimit={onResetCodexLimit}
             onToggle={onToggle}
             onMoveUp={() => onMoveConnection(group.connections, index, index - 1)}
             onMoveDown={() => onMoveConnection(group.connections, index, index + 1)}
@@ -624,6 +650,10 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [modelCounts, setModelCounts] = useState({});
   const [quotaData, setQuotaData] = useState({});
   const [quotaLoading, setQuotaLoading] = useState({});
+  const [resetCreditsByConnection, setResetCreditsByConnection] = useState({});
+  const [resettingConnectionId, setResettingConnectionId] = useState(null);
+  const [resetConfirmConnection, setResetConfirmConnection] = useState(null);
+  const [resetErrors, setResetErrors] = useState({});
   const [loading, setLoading] = useState(true);
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -658,10 +688,33 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     if (!canTrackQuota(connection)) return;
     setQuotaLoading((current) => ({ ...current, [connection.id]: true }));
     try {
-      const response = await fetch(`/api/usage/${connection.id}${force ? "?force=1" : ""}`);
-      const data = await response.json();
+      const quotaRequest = fetch(`/api/usage/${connection.id}${force ? "?force=1" : ""}`);
+      // The Codex usage endpoint can return 429 after a window is exhausted,
+      // while reset credits remain available through their own endpoint.
+      const resetCreditsRequest = connection.provider === "codex"
+        ? fetch(`/api/usage/${connection.id}/codex-reset-credits`, { cache: "no-store" })
+        : null;
+      const [response, resetCreditsResponse] = await Promise.all([quotaRequest, resetCreditsRequest]);
+      const data = await response.json().catch(() => ({}));
       if (response.ok && !data.error) {
         setQuotaData((current) => ({ ...current, [connection.id]: parseQuotaData(connection.provider, data) }));
+      }
+
+      if (resetCreditsResponse) {
+        const resetCredits = await resetCreditsResponse.json().catch(() => ({}));
+        if (resetCreditsResponse.ok) {
+          const count = Number(resetCredits.availableCount);
+          setResetCreditsByConnection((current) => ({
+            ...current,
+            [connection.id]: Number.isFinite(count) ? Math.max(0, count) : 0,
+          }));
+          setResetErrors((current) => ({ ...current, [connection.id]: null }));
+        } else {
+          setResetErrors((current) => ({
+            ...current,
+            [connection.id]: resetCredits.error || resetCredits.message || "无法读取 Codex 重置券",
+          }));
+        }
       }
     } catch (error) {
       console.error("Failed to refresh quota:", error);
@@ -669,6 +722,24 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       setQuotaLoading((current) => ({ ...current, [connection.id]: false }));
     }
   }, []);
+
+  const handleResetCodexLimit = useCallback(async (connection) => {
+    if (connection.provider !== "codex" || resettingConnectionId) return;
+    setResettingConnectionId(connection.id);
+    setResetErrors((current) => ({ ...current, [connection.id]: null }));
+    try {
+      const response = await fetch(`/api/usage/${connection.id}/codex-reset-credits`, { method: "POST" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.message || result.error || "重置 Codex 额度失败");
+      }
+      await refreshQuota(connection, true);
+    } catch (error) {
+      setResetErrors((current) => ({ ...current, [connection.id]: error.message || "重置 Codex 额度失败" }));
+    } finally {
+      setResettingConnectionId(null);
+    }
+  }, [refreshQuota, resettingConnectionId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -830,10 +901,14 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               group={group}
               quotaData={quotaData}
               quotaLoading={quotaLoading}
+              resetCreditsByConnection={resetCreditsByConnection}
+              resettingConnectionId={resettingConnectionId}
+              resetErrors={resetErrors}
               providerStrategies={providerStrategies}
               modelCounts={modelCounts}
               reordering={Boolean(reorderingProviderId)}
               onRefreshQuota={(item) => refreshQuota(item, true)}
+              onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}
               onToggle={handleToggle}
               onMoveConnection={handleMoveConnection}
               onOpen={openChannelDetail}
@@ -843,6 +918,25 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        isOpen={Boolean(resetConfirmConnection)}
+        onClose={() => {
+          if (!resettingConnectionId) setResetConfirmConnection(null);
+        }}
+        onConfirm={async () => {
+          const connection = resetConfirmConnection;
+          if (!connection) return;
+          await handleResetCodexLimit(connection);
+          setResetConfirmConnection(null);
+        }}
+        title="使用 Codex 重置券？"
+        message={`将为 ${getConnectionName(resetConfirmConnection || {})} 使用 1 张额度重置券，同时恢复 5 小时和每周额度。此操作无法撤销。`}
+        confirmText="立即重置"
+        cancelText="取消"
+        variant="primary"
+        loading={Boolean(resettingConnectionId)}
+      />
 
       <ProviderPickerDrawer
         isOpen={pickerOpen}

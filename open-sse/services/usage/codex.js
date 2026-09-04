@@ -25,6 +25,14 @@ function getCodexAccountId(providerSpecificData) {
   return providerSpecificData?.workspaceId || providerSpecificData?.accountId || providerSpecificData?.chatgptAccountId || null;
 }
 
+function isAvailableResetCredit(credit, now = Date.now()) {
+  const status = String(credit?.status || "").trim().toLowerCase();
+  if (["redeemed", "consumed", "used", "expired", "cancelled", "revoked"].includes(status)) return false;
+
+  const expiresAt = credit?.expiresAt ? new Date(credit.expiresAt).getTime() : null;
+  return !Number.isFinite(expiresAt) || expiresAt > now;
+}
+
 function getCodexRateLimitBody(snapshot) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
   return snapshot.rate_limit && typeof snapshot.rate_limit === "object"
@@ -147,13 +155,20 @@ export async function getCodexRateLimitResetCredits(accessToken, proxyOptions = 
   }
 
   const credits = Array.isArray(data?.credits) ? data.credits : [];
+  const normalizedCredits = credits.map((credit) => ({
+    status: String(credit?.status || "unknown"),
+    grantedAt: toIsoDate(credit?.granted_at ?? credit?.grantedAt),
+    expiresAt: toIsoDate(credit?.expires_at ?? credit?.expiresAt),
+  }));
+  const reportedAvailableCount = Math.max(0, toFiniteNumber(data?.available_count ?? data?.availableCount, 0));
+  const inferredAvailableCount = normalizedCredits.filter(isAvailableResetCredit).length;
+
+  // The endpoint occasionally reports available_count as zero while returning
+  // an active, unexpired credit in its details. Prefer the larger value so an
+  // inconsistent summary cannot hide a usable reset card from the dashboard.
   return {
-    availableCount: Math.max(0, toFiniteNumber(data?.available_count ?? data?.availableCount, 0)),
-    credits: credits.map((credit) => ({
-      status: String(credit?.status || "unknown"),
-      grantedAt: toIsoDate(credit?.granted_at ?? credit?.grantedAt),
-      expiresAt: toIsoDate(credit?.expires_at ?? credit?.expiresAt),
-    })),
+    availableCount: Math.max(reportedAvailableCount, inferredAvailableCount),
+    credits: normalizedCredits,
   };
 }
 

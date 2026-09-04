@@ -91,6 +91,29 @@ describe("Codex reset credits", () => {
     });
   });
 
+  it("infers an available reset credit when the summary count is temporarily zero", async () => {
+    mocks.proxyAwareFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        available_count: 0,
+        credits: [
+          {
+            status: "available",
+            granted_at: "2026-09-01T00:00:00Z",
+            expires_at: "2099-09-21T00:00:00Z",
+          },
+        ],
+      }),
+    });
+
+    const { getCodexRateLimitResetCredits } = await import("../../open-sse/services/usage/codex.js");
+    const result = await getCodexRateLimitResetCredits("token");
+
+    expect(result.availableCount).toBe(1);
+    expect(result.credits).toHaveLength(1);
+  });
+
   it("GET refreshes OAuth credentials before returning reset credit details", async () => {
     const connection = {
       id: "conn_1",

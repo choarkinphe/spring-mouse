@@ -21,9 +21,9 @@ ARG APP_BUILD_VERSION=dev
 # or the official registry: https://registry.npmjs.org)
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-# CI-friendly apk repositories (Aliyun mirror; official CDN stalls from CN agents)
-RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories \
-  && apk --no-cache upgrade
+# Use the official Alpine CDN on hosted CI. The Aliyun mirror's stale index
+# can fail multi-arch builds with APK repository-format errors.
+RUN apk --no-cache upgrade
 
 # Copy package files - prefer package-lock.json for reproducible builds
 COPY package.json package-lock.json* ./
@@ -87,8 +87,7 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 
 # Redis is embedded in the application container. It binds only to loopback;
 # the existing /app/data mount persists its AOF beside SQLite.
-RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories \
-  && apk --no-cache upgrade && apk --no-cache add redis su-exec
+RUN apk --no-cache upgrade && apk --no-cache add redis su-exec
 
 COPY --from=builder /app/runtime ./runtime
 RUN chmod +x /app/runtime/entrypoint.sh \

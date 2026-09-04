@@ -73,6 +73,22 @@ function getQuotaTone(percentage) {
   return "bg-rose-400";
 }
 
+function getErrorMessage(value, fallback) {
+  if (typeof value === "string" && value.trim()) return value;
+  if (!value || typeof value !== "object") return fallback;
+
+  for (const candidate of [value.message, value.detail, value.error, value.description]) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+  }
+
+  return fallback;
+}
+
+function getResetCreditCount(resetCredits) {
+  const count = Number(resetCredits?.availableCount);
+  return Number.isFinite(count) ? Math.max(0, count) : 0;
+}
+
 function ChannelQuota({ quotas, loading }) {
   if (loading) {
     return <div className="h-10 w-full max-w-[32rem] animate-pulse rounded-lg bg-white/[0.045]" />;
@@ -688,36 +704,44 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     if (!canTrackQuota(connection)) return;
     setQuotaLoading((current) => ({ ...current, [connection.id]: true }));
     try {
-      const quotaRequest = fetch(`/api/usage/${connection.id}${force ? "?force=1" : ""}`);
-      // The Codex usage endpoint can return 429 after a window is exhausted,
-      // while reset credits remain available through their own endpoint.
-      const resetCreditsRequest = connection.provider === "codex"
-        ? fetch(`/api/usage/${connection.id}/codex-reset-credits`, { cache: "no-store" })
-        : null;
-      const [response, resetCreditsResponse] = await Promise.all([quotaRequest, resetCreditsRequest]);
+      const response = await fetch(`/api/usage/${connection.id}${force ? "?force=1" : ""}`);
       const data = await response.json().catch(() => ({}));
       if (response.ok && !data.error) {
         setQuotaData((current) => ({ ...current, [connection.id]: parseQuotaData(connection.provider, data) }));
       }
 
-      if (resetCreditsResponse) {
-        const resetCredits = await resetCreditsResponse.json().catch(() => ({}));
-        if (resetCreditsResponse.ok) {
-          const count = Number(resetCredits.availableCount);
-          setResetCreditsByConnection((current) => ({
-            ...current,
-            [connection.id]: Number.isFinite(count) ? Math.max(0, count) : 0,
-          }));
-          setResetErrors((current) => ({ ...current, [connection.id]: null }));
-        } else {
-          setResetErrors((current) => ({
-            ...current,
-            [connection.id]: resetCredits.error || resetCredits.message || "无法读取 Codex 重置券",
-          }));
+      if (connection.provider === "codex") {
+        // The usage route includes reset credits, but when an upstream usage
+        // request fails (for example, 429) use the dedicated endpoint only
+        // after the first request finishes. This prevents competing OAuth and
+        // upstream requests for the same account from making the UI flaky.
+        let resetCredits = data.resetCredits;
+        if (!resetCredits) {
+          const resetCreditsResponse = await fetch(
+            `/api/usage/${connection.id}/codex-reset-credits`,
+            { cache: "no-store" },
+          );
+          const resetCreditsData = await resetCreditsResponse.json().catch(() => ({}));
+          if (!resetCreditsResponse.ok) {
+            throw new Error(getErrorMessage(resetCreditsData.error || resetCreditsData.message, "无法读取 Codex 重置券"));
+          }
+          resetCredits = resetCreditsData;
         }
+
+        setResetCreditsByConnection((current) => ({
+          ...current,
+          [connection.id]: getResetCreditCount(resetCredits),
+        }));
+        setResetErrors((current) => ({ ...current, [connection.id]: null }));
       }
     } catch (error) {
       console.error("Failed to refresh quota:", error);
+      if (connection.provider === "codex") {
+        setResetErrors((current) => ({
+          ...current,
+          [connection.id]: getErrorMessage(error, "无法读取 Codex 用量或重置券"),
+        }));
+      }
     } finally {
       setQuotaLoading((current) => ({ ...current, [connection.id]: false }));
     }
@@ -731,11 +755,11 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       const response = await fetch(`/api/usage/${connection.id}/codex-reset-credits`, { method: "POST" });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(result.message || result.error || "重置 Codex 额度失败");
+        throw new Error(getErrorMessage(result.error || result.message, "重置 Codex 额度失败"));
       }
       await refreshQuota(connection, true);
     } catch (error) {
-      setResetErrors((current) => ({ ...current, [connection.id]: error.message || "重置 Codex 额度失败" }));
+      setResetErrors((current) => ({ ...current, [connection.id]: getErrorMessage(error, "重置 Codex 额度失败") }));
     } finally {
       setResettingConnectionId(null);
     }
@@ -743,8 +767,17 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      fetchConnections().then((items) => {
-        items.filter(canTrackQuota).forEach((connection) => refreshQuota(connection));
+      fetchConnections().then(async (items) => {
+        const trackedConnections = items.filter(canTrackQuota);
+        const nonCodexConnections = trackedConnections.filter((connection) => connection.provider !== "codex");
+        const codexConnections = trackedConnections.filter((connection) => connection.provider === "codex");
+
+        // Other providers remain concurrent. Codex is synchronized one account
+        // at a time to avoid competing OAuth token refreshes on initial load.
+        await Promise.all(nonCodexConnections.map((connection) => refreshQuota(connection)));
+        for (const connection of codexConnections) {
+          await refreshQuota(connection);
+        }
       });
     }, 0);
     return () => window.clearTimeout(timer);

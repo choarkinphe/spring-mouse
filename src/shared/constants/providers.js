@@ -86,6 +86,52 @@ export const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 export const ANTHROPIC_COMPATIBLE_PREFIX = "anthropic-compatible-";
 export const CUSTOM_EMBEDDING_PREFIX = "custom-embedding-";
 
+// Providers with an authenticated dashboard-side live model listing.
+// Providers carrying `modelCatalog` are handled separately because they add
+// capability metadata from an external catalog during synchronization.
+export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
+  "claude",
+  "gemini",
+  "codex",
+  "antigravity",
+  "github",
+  "openai",
+  "openrouter",
+  "anthropic",
+  "alicode",
+  "alicode-intl",
+  "alims-intl",
+  "volcengine-ark",
+  "byteplus",
+  "deepseek",
+  "groq",
+  "xai",
+  "mistral",
+  "perplexity",
+  "perplexity-agent",
+  "together",
+  "fireworks",
+  "cerebras",
+  "cohere",
+  "nebius",
+  "siliconflow",
+  "glm-cn",
+  "hyperbolic",
+  "ollama",
+  "kimchi",
+  "cursor",
+  "kiro",
+  "qoder",
+  "gemini-cli",
+  "grok-cli",
+  "ollama-local",
+  "nanobanana",
+  "chutes",
+  "nvidia",
+  "assemblyai",
+  "vercel-ai-gateway",
+]);
+
 export function isOpenAICompatibleProvider(providerId) {
   return typeof providerId === "string" && providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
 }
@@ -96,6 +142,12 @@ export function isAnthropicCompatibleProvider(providerId) {
 
 export function isCustomEmbeddingProvider(providerId) {
   return typeof providerId === "string" && providerId.startsWith(CUSTOM_EMBEDDING_PREFIX);
+}
+
+export function supportsLiveModelSync(providerId) {
+  return OFFICIAL_MODEL_SYNC_PROVIDERS.has(providerId)
+    || isOpenAICompatibleProvider(providerId)
+    || isAnthropicCompatibleProvider(providerId);
 }
 
 // All providers (combined)

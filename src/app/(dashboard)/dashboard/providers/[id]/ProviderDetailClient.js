@@ -7,7 +7,7 @@ import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal } from "@/shared/components";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -169,6 +169,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     return levels && levels.includes(thinkingMode) ? thinkingMode : null;
   };
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
+  const supportsModelSync = Boolean(providerInfo?.modelCatalog || supportsLiveModelSync(providerId));
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
   const providerThinkingLevels = (() => {
@@ -1554,7 +1555,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               </select>
             )}
           </div>
-          {!isCompatible && (() => {
+          {(!isCompatible || supportsModelSync) && (() => {
             const allIds = [
               ...models,
               ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
@@ -1562,7 +1563,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
               <div className="flex flex-wrap gap-2">
-                {providerInfo?.modelCatalog && (
+                {supportsModelSync && (
                   <Button
                     size="sm"
                     variant="secondary"
@@ -1573,15 +1574,19 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                     {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
                   </Button>
                 )}
-                {disabledModelIds.length > 0 && (
-                  <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
-                    Active All
-                  </Button>
-                )}
-                {activeIds.length > 0 && (
-                  <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
-                    Disable All
-                  </Button>
+                {!isCompatible && (
+                  <>
+                    {disabledModelIds.length > 0 && (
+                      <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
+                        Active All
+                      </Button>
+                    )}
+                    {activeIds.length > 0 && (
+                      <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
+                        Disable All
+                      </Button>
+                    )}
+                  </>
                 )}
               </div>
             );

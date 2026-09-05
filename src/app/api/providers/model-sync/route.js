@@ -35,15 +35,18 @@ export async function POST(request) {
       return NextResponse.json({ error: "This provider does not support model synchronization" }, { status: 400 });
     }
 
-    const response = await fetch(catalog.url, { cache: "no-store" });
-    if (!response.ok) {
-      return NextResponse.json({ error: `Failed to fetch model catalog: ${response.status}` }, { status: 502 });
-    }
+    let catalogModels = [];
+    if (catalog?.url) {
+      const response = await fetch(catalog.url, { cache: "no-store" });
+      if (!response.ok) {
+        return NextResponse.json({ error: `Failed to fetch model catalog: ${response.status}` }, { status: 502 });
+      }
 
-    const payload = await response.json();
-    const catalogModels = catalog.type === "models-dev"
-      ? parseModelsDevCatalog(payload, catalog.provider)
-      : [];
+      const payload = await response.json();
+      catalogModels = catalog.type === "models-dev"
+        ? parseModelsDevCatalog(payload, catalog.provider)
+        : [];
+    }
 
     const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
     const officialModels = Array.isArray(supportedModels)

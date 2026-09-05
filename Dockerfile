@@ -17,12 +17,11 @@ ARG APP_BUILD_VERSION=dev
 FROM base AS builder
 ARG APP_BUILD_VERSION=dev
 
-# CI-friendly npm registry (override with --build-arg to use another mirror
-# or the official registry: https://registry.npmjs.org)
-ARG NPM_REGISTRY=https://registry.npmmirror.com
+# Use the official npm registry by default. Deployments that need a private
+# registry can still override this with --build-arg NPM_REGISTRY=... .
+ARG NPM_REGISTRY=https://registry.npmjs.org
 
-# Use the official Alpine CDN on hosted CI. The Aliyun mirror's stale index
-# can fail multi-arch builds with APK repository-format errors.
+# Use the official Alpine CDN on hosted CI.
 RUN apk --no-cache upgrade
 
 # Copy package files - prefer package-lock.json for reproducible builds

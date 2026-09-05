@@ -1567,9 +1567,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   <Button
                     size="sm"
                     variant="secondary"
-                    icon={syncingModels ? "progress_activity" : "sync"}
+                    icon="sync"
                     onClick={handleSyncSupportedModels}
                     disabled={syncingModels}
+                    loading={syncingModels}
                   >
                     {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
                   </Button>

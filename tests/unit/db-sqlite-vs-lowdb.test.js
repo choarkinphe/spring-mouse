@@ -31,14 +31,17 @@ describe("DB SQLite layer — public API parity", () => {
     expect(s.requireLogin).toBe(true);
     expect(s.dashboardQuotaOrder).toEqual([]);
     expect(s.dashboardQuotaHidden).toEqual([]);
+    expect(s.providerChannelOrder).toEqual([]);
 
     const quotaOrder = ["connection-b", "connection-a"];
     const quotaHidden = ["connection-c"];
-    const updated = await sqliteDb.updateSettings({ cloudEnabled: true, customField: "x", dashboardQuotaOrder: quotaOrder, dashboardQuotaHidden: quotaHidden });
+    const providerChannelOrder = ["openai", "anthropic"];
+    const updated = await sqliteDb.updateSettings({ cloudEnabled: true, customField: "x", dashboardQuotaOrder: quotaOrder, dashboardQuotaHidden: quotaHidden, providerChannelOrder });
     expect(updated.cloudEnabled).toBe(true);
     expect(updated.customField).toBe("x");
     expect(updated.dashboardQuotaOrder).toEqual(quotaOrder);
     expect(updated.dashboardQuotaHidden).toEqual(quotaHidden);
+    expect(updated.providerChannelOrder).toEqual(providerChannelOrder);
     expect(updated.requireLogin).toBe(true); // default preserved
 
     const re = await sqliteDb.getSettings();
@@ -46,6 +49,7 @@ describe("DB SQLite layer — public API parity", () => {
     expect(re.customField).toBe("x");
     expect(re.dashboardQuotaOrder).toEqual(quotaOrder);
     expect(re.dashboardQuotaHidden).toEqual(quotaHidden);
+    expect(re.providerChannelOrder).toEqual(providerChannelOrder);
   });
 
   it("isCloudEnabled reflects settings", async () => {

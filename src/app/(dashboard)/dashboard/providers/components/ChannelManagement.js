@@ -10,7 +10,7 @@ import {
   USAGE_APIKEY_PROVIDERS,
   USAGE_SUPPORTED_PROVIDERS,
 } from "@/shared/constants/providers";
-import { Badge, Button, ConfirmModal, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import { Badge, Button, ConfirmModal, Modal, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -659,10 +659,106 @@ function ChannelDetailDrawer({ providerId, onClose, onUpdated }) {
   );
 }
 
+function ChannelOrderModal({ isOpen, groups, saving, error, onClose, onSave }) {
+  const [orderedProviderIds, setOrderedProviderIds] = useState([]);
+
+  useEffect(() => {
+    if (isOpen) setOrderedProviderIds(groups.map((group) => group.provider));
+  }, [isOpen, groups]);
+
+  const moveProvider = (index, offset) => {
+    const targetIndex = index + offset;
+    if (targetIndex < 0 || targetIndex >= orderedProviderIds.length) return;
+    setOrderedProviderIds((current) => {
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+  };
+
+  const groupsByProvider = new Map(groups.map((group) => [group.provider, group]));
+  const orderedGroups = orderedProviderIds.map((providerId) => groupsByProvider.get(providerId)).filter(Boolean);
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="自定义渠道排序" size="lg" closeOnOverlay={!saving}>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-start gap-3 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-4 py-3">
+          <span className="material-symbols-outlined mt-0.5 text-[19px] text-[#7dd3fc]">swap_vert</span>
+          <div>
+            <p className="text-sm font-medium text-text-main">调整渠道在管理列表中的展示顺序</p>
+            <p className="mt-1 text-xs leading-5 text-text-muted">使用右侧箭头移动渠道。新添加且尚未排序的渠道会按名称排列在已配置渠道之后。</p>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-xl border border-border-subtle bg-bg/25">
+          {orderedGroups.map((group, index) => {
+            const channelName = getChannelName(group.provider, group.connections);
+            const channelColor = getProviderColor(group.provider);
+            return (
+              <div key={group.provider} className="flex min-w-0 items-center gap-3 border-b border-white/[0.06] px-3 py-2.5 last:border-b-0">
+                <span className="w-7 shrink-0 text-center font-mono text-xs text-[#647688]">{String(index + 1).padStart(2, "0")}</span>
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${channelColor}20` }}>
+                  <ProviderIcon
+                    src={getChannelIconSrc(group.provider, group.connections)}
+                    alt={channelName}
+                    size={27}
+                    className="max-h-[27px] max-w-[27px] rounded-md object-contain"
+                    fallbackText={channelName.slice(0, 2).toUpperCase()}
+                    fallbackColor={channelColor}
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-text-main">{channelName}</span>
+                  <span className="mt-0.5 block truncate font-mono text-[10px] text-text-muted">{group.provider}</span>
+                </span>
+                <span className="rounded-md border border-white/[0.07] bg-black/[0.1] px-2 py-1 text-[10px] text-text-muted">{group.connections.length} 个账号</span>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => moveProvider(index, -1)}
+                    disabled={index === 0 || saving}
+                    aria-label={`上移 ${channelName}`}
+                    className={cn("flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]", (index === 0 || saving) && "cursor-not-allowed opacity-25 hover:bg-transparent hover:text-text-muted")}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">keyboard_arrow_up</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveProvider(index, 1)}
+                    disabled={index === orderedGroups.length - 1 || saving}
+                    aria-label={`下移 ${channelName}`}
+                    className={cn("flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]", (index === orderedGroups.length - 1 || saving) && "cursor-not-allowed opacity-25 hover:bg-transparent hover:text-text-muted")}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">keyboard_arrow_down</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {error && <p className="text-sm text-rose-400">{error}</p>}
+
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+          <Button variant="ghost" onClick={() => onSave([])} disabled={saving}>恢复名称排序</Button>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
+            <Button onClick={() => onSave(orderedProviderIds)} loading={saving}>保存排序</Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function ChannelManagement({ initialDetailProviderId = null }) {
   const router = useRouter();
   const [connections, setConnections] = useState([]);
   const [providerStrategies, setProviderStrategies] = useState({});
+  const [providerChannelOrder, setProviderChannelOrder] = useState([]);
+  const [channelOrderModalOpen, setChannelOrderModalOpen] = useState(false);
+  const [savingChannelOrder, setSavingChannelOrder] = useState(false);
+  const [channelOrderError, setChannelOrderError] = useState("");
   const [modelCounts, setModelCounts] = useState({});
   const [quotaData, setQuotaData] = useState({});
   const [quotaLoading, setQuotaLoading] = useState({});
@@ -689,6 +785,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       ]);
       setConnections(data.connections || []);
       setProviderStrategies(settingsData.providerStrategies || {});
+      setProviderChannelOrder(Array.isArray(settingsData.providerChannelOrder) ? settingsData.providerChannelOrder : []);
       setModelCounts(data.modelCounts || {});
       return data.connections || [];
     } catch (error) {
@@ -880,6 +977,31 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     saveProviderRouting(providerId, true, stickyLimit);
   };
 
+  const saveProviderChannelOrder = async (nextOrder) => {
+    const normalizedOrder = [...new Set(nextOrder.filter((providerId) => typeof providerId === "string" && providerId))];
+    const previousOrder = providerChannelOrder;
+    setProviderChannelOrder(normalizedOrder);
+    setSavingChannelOrder(true);
+    setChannelOrderError("");
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerChannelOrder: normalizedOrder }),
+      });
+      if (!response.ok) throw new Error("保存渠道排序失败");
+      setChannelOrderModalOpen(false);
+      return true;
+    } catch (error) {
+      console.error("Failed to save provider channel order:", error);
+      setProviderChannelOrder(previousOrder);
+      setChannelOrderError(error instanceof Error ? error.message : "保存渠道排序失败");
+      return false;
+    } finally {
+      setSavingChannelOrder(false);
+    }
+  };
+
   const channelGroups = useMemo(() => {
     const groups = new Map();
     connections.forEach((connection) => {
@@ -887,13 +1009,18 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       group.connections.push(connection);
       groups.set(connection.provider, group);
     });
+    const orderIndex = new Map(providerChannelOrder.map((providerId, index) => [providerId, index]));
     return Array.from(groups.values())
       .map((group) => ({
         ...group,
         connections: [...group.connections].sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999) || getConnectionName(a).localeCompare(getConnectionName(b))),
       }))
-      .sort((a, b) => getChannelName(a.provider, a.connections).localeCompare(getChannelName(b.provider, b.connections)));
-  }, [connections]);
+      .sort((a, b) => {
+        const aIndex = orderIndex.has(a.provider) ? orderIndex.get(a.provider) : Number.MAX_SAFE_INTEGER;
+        const bIndex = orderIndex.has(b.provider) ? orderIndex.get(b.provider) : Number.MAX_SAFE_INTEGER;
+        return aIndex - bIndex || getChannelName(a.provider, a.connections).localeCompare(getChannelName(b.provider, b.connections));
+      });
+  }, [connections, providerChannelOrder]);
 
   const activeConnectionCount = connections.filter((connection) => connection.isActive !== false).length;
 
@@ -904,7 +1031,22 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         title="渠道管理"
         description="集中查看每个渠道的连接状态、可用模型与配额信息。"
         icon="hub"
-        action={<Button icon="add" onClick={() => setPickerOpen(true)}>新增渠道</Button>}
+        action={(
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              icon="swap_vert"
+              onClick={() => {
+                setChannelOrderError("");
+                setChannelOrderModalOpen(true);
+              }}
+              disabled={loading || channelGroups.length < 2}
+            >
+              渠道排序
+            </Button>
+            <Button icon="add" onClick={() => setPickerOpen(true)}>新增渠道</Button>
+          </div>
+        )}
       >
         <Badge variant="primary" size="md" icon="hub">{channelGroups.length} 个渠道</Badge>
         <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
@@ -951,6 +1093,17 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
           ))}
         </div>
       )}
+
+      <ChannelOrderModal
+        isOpen={channelOrderModalOpen}
+        groups={channelGroups}
+        saving={savingChannelOrder}
+        error={channelOrderError}
+        onClose={() => {
+          if (!savingChannelOrder) setChannelOrderModalOpen(false);
+        }}
+        onSave={saveProviderChannelOrder}
+      />
 
       <ConfirmModal
         isOpen={Boolean(resetConfirmConnection)}

@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   tailscaleEnabled: false,
   tailscaleUrl: "",
   providerStrategies: {},
+  providerChannelOrder: [],
   quotaVisibility: {},
   dashboardQuotaOrder: [],
   dashboardQuotaHidden: [],

@@ -161,6 +161,16 @@ export async function PATCH(request) {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "providerChannelOrder")) {
+      const order = Array.isArray(body.providerChannelOrder) ? body.providerChannelOrder : [];
+      body.providerChannelOrder = [...new Set(
+        order
+          .filter((providerId) => typeof providerId === "string")
+          .map((providerId) => providerId.trim())
+          .filter(Boolean),
+      )].slice(0, 500);
+    }
+
     if (Object.prototype.hasOwnProperty.call(body, "apiKeyQuotaRules")) {
       body.apiKeyQuotaRules = normalizeApiKeyQuotaRules(body.apiKeyQuotaRules);
     }

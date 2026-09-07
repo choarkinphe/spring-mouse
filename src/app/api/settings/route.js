@@ -4,6 +4,7 @@ import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
+import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -159,6 +160,18 @@ export async function PATCH(request) {
           { status: 400 },
         );
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "modelAccessTags")) {
+      const source = body.modelAccessTags && typeof body.modelAccessTags === "object" && !Array.isArray(body.modelAccessTags)
+        ? body.modelAccessTags
+        : {};
+      body.modelAccessTags = Object.fromEntries(
+        Object.entries(source)
+          .filter(([modelId]) => typeof modelId === "string" && modelId.trim())
+          .map(([modelId, tags]) => [modelId.trim(), normalizeAccessTags(tags)])
+          .filter(([, tags]) => tags.length > 0),
+      );
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "providerChannelOrder")) {

@@ -1,5 +1,5 @@
 import {
-  extractApiKey, authorizeApiKey,
+  extractApiKey, authorizeApiKey, resolveApiKeyAccessTags,
   getProviderCredentials, markAccountUnavailable,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
@@ -33,6 +33,7 @@ export async function handleStt(request) {
   const settings = await getSettings();
   const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
   if (authFailure) return authFailure;
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
@@ -58,8 +59,9 @@ export async function handleStt(request) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
 
+    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const msg = lastError || credentials.lastError || "Unavailable";

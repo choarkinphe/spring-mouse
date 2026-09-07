@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { API_KEY_QUOTA_RESET_FIELDS, API_KEY_QUOTA_WINDOWS } from "@/lib/apiKeyQuota";
-import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { deleteApiKey, getApiKeyById, getSettings, updateApiKey, updateSettings } from "@/lib/localDb";
+import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 const QUOTA_MODES = new Set(["off", "limited", "unlimited"]);
 const RESET_FIELDS = API_KEY_QUOTA_RESET_FIELDS;
@@ -25,7 +26,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, quotaMode, resetQuota, resetQuotaWindow } = body;
+    const { isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -62,7 +63,18 @@ export async function PUT(request, { params }) {
     }
 
     const updated = await updateApiKey(id, updateData);
-    return NextResponse.json({ key: updated });
+    let normalizedAccessTags;
+    if (accessTags !== undefined) {
+      normalizedAccessTags = normalizeAccessTags(accessTags);
+      const settings = await getSettings();
+      await updateSettings({
+        apiKeyAccessTags: {
+          ...(settings.apiKeyAccessTags || {}),
+          [id]: normalizedAccessTags,
+        },
+      });
+    }
+    return NextResponse.json({ key: { ...updated, accessTags: normalizedAccessTags } });
   } catch (error) {
     console.log("Error updating key:", error);
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });
@@ -75,6 +87,12 @@ export async function DELETE(request, { params }) {
     const { id } = await params;
 
     const deleted = await deleteApiKey(id);
+    if (deleted) {
+      const settings = await getSettings();
+      const nextAccessTags = { ...(settings.apiKeyAccessTags || {}) };
+      delete nextAccessTags[id];
+      await updateSettings({ apiKeyAccessTags: nextAccessTags });
+    }
     if (!deleted) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }

@@ -1,5 +1,5 @@
 import {
-  extractApiKey, authorizeApiKey,
+  extractApiKey, authorizeApiKey, resolveApiKeyAccessTags,
   getProviderCredentials, markAccountUnavailable,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
@@ -38,6 +38,7 @@ export async function handleTts(request) {
   const settings = await getSettings();
   const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
   if (authFailure) return authFailure;
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
@@ -55,7 +56,7 @@ export async function handleTts(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style),
+      handleSingleModel: (b, m) => handleSingleModelTts(b, m, responseFormat, language, style, accessTags),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -63,10 +64,10 @@ export async function handleTts(request) {
     });
   }
 
-  return handleSingleModelTts(body, modelStr, responseFormat, language, style);
+  return handleSingleModelTts(body, modelStr, responseFormat, language, style, accessTags);
 }
 
-async function handleSingleModelTts(body, modelStr, responseFormat, language, style) {
+async function handleSingleModelTts(body, modelStr, responseFormat, language, style, accessTags = []) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -86,8 +87,9 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language, st
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
 
+    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const msg = lastError || credentials.lastError || "Unavailable";

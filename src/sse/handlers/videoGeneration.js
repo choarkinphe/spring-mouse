@@ -4,6 +4,7 @@ import {
   clearAccountError,
   extractApiKey,
   authorizeApiKey,
+  resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
@@ -27,10 +28,11 @@ const CREATE_ROTATION_STATUSES = new Set([
   HTTP_STATUS.RATE_LIMITED,
 ]);
 
-async function requireValidApiKey(request) {
+async function getRequestAccess(request) {
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  return authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+  const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+  return { error, accessTags: error ? [] : await resolveApiKeyAccessTags(apiKey) };
 }
 
 /**
@@ -88,8 +90,8 @@ function withConnectionHeader(response, connectionId) {
  * POST /v1/videos/{generations|edits|extensions} — async job creation proxy.
  */
 export async function handleVideoCreate(request, action) {
-  const authError = await requireValidApiKey(request);
-  if (authError) return authError;
+  const requestAccess = await getRequestAccess(request);
+  if (requestAccess.error) return requestAccess.error;
 
   const bodyInfo = await readForwardableBody(request);
   if (bodyInfo.error) return bodyInfo.error;
@@ -115,8 +117,9 @@ export async function handleVideoCreate(request, action) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags: requestAccess.accessTags });
 
+    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
@@ -178,8 +181,8 @@ export async function handleVideoCreate(request, action) {
  * caller pins the creating account via `x-connection-id` (returned on create).
  */
 export async function handleVideoGet(request, requestId) {
-  const authError = await requireValidApiKey(request);
-  if (authError) return authError;
+  const requestAccess = await getRequestAccess(request);
+  if (requestAccess.error) return requestAccess.error;
 
   if (!requestId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing video request id");
 
@@ -188,7 +191,8 @@ export async function handleVideoGet(request, requestId) {
   await recordIngressUsage(request, extractApiKey(request));
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
 
-  const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId });
+  const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId, accessTags: requestAccess.accessTags });
+  if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This provider account is not available for this API key");
   if (!credentials || credentials.allRateLimited) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
   }

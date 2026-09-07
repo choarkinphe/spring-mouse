@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Badge, Button, DashboardHero, Input, Modal, CardSkeleton, ConfirmModal, SegmentedControl, Toggle } from "@/shared/components";
+import { AccessTagsEditor, Badge, Button, DashboardHero, Input, Modal, CardSkeleton, ConfirmModal, SegmentedControl, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import EndpointRow from "./components/EndpointRow";
 import SecurityWarning from "./components/SecurityWarning";
@@ -145,6 +145,9 @@ export default function APIPageClient({ machineId }) {
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [resettingKeyQuotaId, setResettingKeyQuotaId] = useState(null);
+  const [taggingKey, setTaggingKey] = useState(null);
+  const [tagDraft, setTagDraft] = useState([]);
+  const [savingTags, setSavingTags] = useState(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -307,6 +310,24 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const handleSaveKeyTags = async () => {
+    if (!taggingKey) return;
+    setSavingTags(true);
+    try {
+      const res = await fetch(`/api/keys/${taggingKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessTags: tagDraft }),
+      });
+      if (res.ok) {
+        await fetchData();
+        setTaggingKey(null);
+      }
+    } finally {
+      setSavingTags(false);
+    }
+  };
+
   const requestResetKeyQuota = (key, window) => {
     setConfirmState({
       title: `重置${window.label}用量`,
@@ -460,6 +481,11 @@ export default function APIPageClient({ machineId }) {
                       <button onClick={() => copy(key.key, key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title="复制密钥" aria-label="复制密钥"><span className="material-symbols-outlined text-[15px]">{copied === key.id ? "check" : "content_copy"}</span></button>
                     </div>
                     <p className="mt-1 text-[11px] text-text-muted">创建于 {new Date(key.createdAt).toLocaleDateString("zh-CN")}</p>
+                    {key.accessTags?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {key.accessTags.map((tag) => <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{tag}</span>)}
+                      </div>
+                    )}
                   </div>
                   <div className="border-t border-white/[0.065] pt-3 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0"><QuotaCell
                     quota={key.quota}
@@ -483,6 +509,7 @@ export default function APIPageClient({ machineId }) {
                         { value: "unlimited", label: "无限制" },
                       ]}
                     />
+                    <button onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-violet-400/10 hover:text-violet-300" title="配置权限标签" aria-label="配置权限标签"><span className="material-symbols-outlined text-[18px]">sell</span></button>
                     <button onClick={() => handleDeleteKey(key.id)} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="删除密钥" aria-label="删除密钥"><span className="material-symbols-outlined text-[18px]">delete</span></button>
                   </div>
                 </div>
@@ -491,6 +518,16 @@ export default function APIPageClient({ machineId }) {
           </>
         )}
       </section>
+
+      <Modal isOpen={Boolean(taggingKey)} title={`配置密钥权限 · ${taggingKey?.name || ""}`} onClose={() => { if (!savingTags) setTaggingKey(null); }}>
+        <div className="flex flex-col gap-5">
+          <AccessTagsEditor value={tagDraft} onChange={setTagDraft} hint="密钥拥有的标签决定它可以使用哪些受限账号和模型。无标签密钥只能使用未设置标签的资源。" />
+          <div className="flex gap-2">
+            <Button onClick={handleSaveKeyTags} loading={savingTags} fullWidth>保存标签</Button>
+            <Button variant="ghost" onClick={() => setTaggingKey(null)} disabled={savingTags} fullWidth>取消</Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Add Key Modal */}
       <Modal

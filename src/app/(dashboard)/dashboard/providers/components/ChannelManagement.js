@@ -487,6 +487,11 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <span>{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
             {connection.email && <><span className="text-[#506070]">·</span><span className="truncate">{connection.email}</span></>}
           </span>
+          {connection.accessTags?.length > 0 && (
+            <span className="mt-1.5 flex flex-wrap gap-1">
+              {connection.accessTags.map((tag) => <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[9px] text-violet-200">{tag}</span>)}
+            </span>
+          )}
         </span>
       </div>
 

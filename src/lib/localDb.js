@@ -8,7 +8,7 @@ export {
   reorderProviderConnections, cleanupProviderConnections,
   getProviderNodes, getProviderNodeById,
   createProviderNode, updateProviderNode, deleteProviderNode,
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyByValue, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   getOpenPlatformApiKeys, getOpenPlatformApiKeyById, createOpenPlatformApiKey,
   updateOpenPlatformApiKey, deleteOpenPlatformApiKey, authenticateOpenPlatformApiKey,
   recordOpenPlatformApiCall, getOpenPlatformApiCallLogs,

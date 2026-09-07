@@ -35,7 +35,7 @@ function ModelCapabilityIcons({ caps }) {
   );
 }
 
-function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu }) {
+function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -99,6 +99,15 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
           <button
             type="button"
             role="menuitem"
+            onClick={() => { onCloseMenu(); onEditAccessTags(); }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main transition-colors hover:bg-sidebar"
+          >
+            <span className="material-symbols-outlined text-[16px] text-violet-300">sell</span>
+            权限标签{accessTags.length > 0 ? ` (${accessTags.length})` : ""}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             onClick={() => { onCopy(fullModel, `model-${modelId}`); onCloseMenu(); }}
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main transition-colors hover:bg-sidebar"
           >
@@ -125,7 +134,7 @@ ModelCapabilityIcons.propTypes = {
 };
 
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, isAnthropic }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, isAnthropic, modelAccessTags, onEditAccessTags }) {
   const [newModel, setNewModel] = useState("");
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -168,8 +177,8 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
 
     setAdding(true);
     try {
-      await onAddCustomModel(modelId);
-      setNewModel("");
+      const saved = await onAddCustomModel(modelId);
+      if (saved !== false) setNewModel("");
     } catch (error) {
       console.log("Error adding model:", error);
     } finally {
@@ -200,8 +209,8 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
         const modelId = model.id || model.name || model.model;
         if (!modelId) continue;
         if (allModels.some((entry) => entry.id === modelId)) continue;
-        await onAddCustomModel(modelId);
-        importedCount += 1;
+        const saved = await onAddCustomModel(modelId);
+        if (saved !== false) importedCount += 1;
       }
       if (importedCount === 0) {
         alert("No new models were added.");
@@ -267,6 +276,8 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               menuOpen={openModelMenuId === `${source}-${id}`}
               onToggleMenu={() => setOpenModelMenuId((current) => current === `${source}-${id}` ? null : `${source}-${id}`)}
               onCloseMenu={() => setOpenModelMenuId(null)}
+              accessTags={modelAccessTags[`${providerStorageAlias}/${id}`] || []}
+              onEditAccessTags={() => onEditAccessTags(`${providerStorageAlias}/${id}`)}
             />
           ))}
         </div>
@@ -294,4 +305,6 @@ CompatibleModelsSection.propTypes = {
   })).isRequired,
   getCaps: PropTypes.func.isRequired,
   isAnthropic: PropTypes.bool,
+  modelAccessTags: PropTypes.object.isRequired,
+  onEditAccessTags: PropTypes.func.isRequired,
 };

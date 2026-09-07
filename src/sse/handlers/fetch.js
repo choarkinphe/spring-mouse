@@ -4,6 +4,7 @@ import {
   clearAccountError,
   extractApiKey,
   authorizeApiKey,
+  resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
@@ -105,6 +106,7 @@ export async function handleFetch(request) {
 }
 
 async function handleSingleProviderFetch(body, providerInput, request, apiKey, settings) {
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
   const targetUrl = body.url;
   const format = body.format;
   const maxCharacters = body.max_characters;
@@ -154,8 +156,9 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(providerId, excludeConnectionIds);
+    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, null, { accessTags });
 
+    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";

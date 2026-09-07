@@ -4,6 +4,7 @@ import {
   clearAccountError,
   extractApiKey,
   authorizeApiKey,
+  resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
@@ -61,6 +62,7 @@ export async function handleEmbeddings(request) {
   const settings = await getSettings();
   const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
   if (authFailure) return authFailure;
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
 
   if (!modelStr) {
     log.warn("EMBEDDINGS", "Missing model");
@@ -92,7 +94,9 @@ export async function handleEmbeddings(request) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
+
+    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {

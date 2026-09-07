@@ -8,12 +8,14 @@ import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import Select from "@/shared/components/Select";
+import AccessTagsEditor from "@/shared/components/AccessTagsEditor";
 
 export default function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
     apiKey: "",
+    accessTags: [],
   });
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
@@ -35,6 +37,7 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
         name: connection.name || "",
         priority: connection.priority || 1,
         apiKey: "",
+        accessTags: connection.accessTags || [],
       });
       // Load Azure-specific data if present
       if (connection.provider === "azure" && connection.providerSpecificData) {
@@ -120,6 +123,7 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
       const updates = {
         name: formData.name,
         priority: formData.priority,
+        accessTags: formData.accessTags,
       };
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
@@ -200,6 +204,11 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
           type="number"
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
+        />
+        <AccessTagsEditor
+          value={formData.accessTags}
+          onChange={(accessTags) => setFormData({ ...formData, accessTags })}
+          hint="账号未设置标签时所有用户都可使用；设置后，仅拥有任一相同标签的 API 密钥可路由到此账号。"
         />
 
         {!isOAuth && (

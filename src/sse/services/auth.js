@@ -1,4 +1,4 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getApiKeyByValue, getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -7,6 +7,7 @@ import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
+import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 
 // Per-provider mutexes to prevent race conditions during account selection
 // 替代全局锁，让不同provider的请求可以并行处理
@@ -70,6 +71,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
 
     const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    const settings = await getSettings();
+    const requestAccessTags = Array.isArray(options?.accessTags) ? normalizeAccessTags(options.accessTags) : null;
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
@@ -77,8 +80,31 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+    if (requestAccessTags !== null && model) {
+      const requiredModelTags = getModelAccessTags(
+        settings.modelAccessTags,
+        `${providerId}/${model}`,
+        `${provider}/${model}`,
+        ...connections.map((connection) => connection.providerSpecificData?.prefix ? `${connection.providerSpecificData.prefix}/${model}` : ""),
+        model,
+      );
+      if (!canAccessWithTags(requestAccessTags, requiredModelTags)) {
+        log.warn("AUTH", `${provider}/${model} | denied by model access tags`);
+        return { accessDenied: true, resource: "model" };
+      }
+    }
+
+    const permittedConnections = requestAccessTags === null
+      ? connections
+      : connections.filter((connection) => canAccessWithTags(requestAccessTags, connection.accessTags));
+
+    if (permittedConnections.length === 0) {
+      log.warn("AUTH", `${provider} | no accounts match request access tags`);
+      return { accessDenied: true, resource: "connection" };
+    }
+
     // Filter out model-locked and excluded connections
-    const availableConnections = connections.filter(c => {
+    const availableConnections = permittedConnections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
@@ -114,7 +140,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
     // Account allocation belongs to the current provider/channel. A provider
     // without an explicit override always follows its connection priority.
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
@@ -346,6 +371,12 @@ export function extractApiKey(request) {
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
+}
+
+export async function resolveApiKeyAccessTags(apiKey) {
+  if (!apiKey) return [];
+  const [key, settings] = await Promise.all([getApiKeyByValue(apiKey), getSettings()]);
+  return normalizeAccessTags(settings.apiKeyAccessTags?.[key?.id]);
 }
 
 function quotaResponse(status) {

@@ -6,7 +6,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { AccessTagsEditor, Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -67,6 +67,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [liveModels, setLiveModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
+  const [modelAccessTags, setModelAccessTags] = useState({});
+  const [taggingModel, setTaggingModel] = useState(null);
+  const [modelTagDraft, setModelTagDraft] = useState([]);
+  const [savingModelTags, setSavingModelTags] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
   const [showAgRiskModal, setShowAgRiskModal] = useState(false);
   const [oneByOneRunning, setOneByOneRunning] = useState(false);
@@ -307,6 +311,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
+      setModelAccessTags(settingsData.modelAccessTags || {});
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
@@ -508,16 +513,18 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type }),
       });
+      const data = await res.json();
       if (res.ok) {
         await fetchCustomModels();
         if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
-      } else {
-        const data = await res.json();
-        alert(data.error || "Failed to add custom model");
+        return true;
       }
+      alert(data.error || "Failed to add custom model");
     } catch (error) {
       console.log("Error adding custom model:", error);
+      alert("Failed to add custom model");
     }
+    return false;
   };
 
   const handleDeleteCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias) => {
@@ -956,6 +963,32 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  const openModelTagEditor = (modelId) => {
+    setTaggingModel(modelId);
+    setModelTagDraft(modelAccessTags[modelId] || []);
+  };
+
+  const saveModelTags = async () => {
+    if (!taggingModel) return;
+    const next = { ...modelAccessTags };
+    if (modelTagDraft.length > 0) next[taggingModel] = modelTagDraft;
+    else delete next[taggingModel];
+    setSavingModelTags(true);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelAccessTags: next }),
+      });
+      if (response.ok) {
+        setModelAccessTags(next);
+        setTaggingModel(null);
+      }
+    } finally {
+      setSavingModelTags(false);
+    }
+  };
+
   const renderModelsSection = () => {
     if (isCompatible) {
       return (
@@ -976,6 +1009,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           connections={connections}
           getCaps={getCaps}
           isAnthropic={isAnthropicCompatible}
+          modelAccessTags={modelAccessTags}
+          onEditAccessTags={openModelTagEditor}
         />
       );
     }
@@ -997,7 +1032,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     });
 
     return (
-      <div className="flex flex-wrap gap-3">
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         {/* Custom models first */}
         {customModelRows.map((model) => (
           <ModelRow
@@ -1022,6 +1057,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             isFree={false}
             caps={model.capabilities || getCaps(`${providerId}/${model.id}`)}
             thinkingSuffix={resolveThinkingSuffix(model.id)}
+            accessTags={modelAccessTags[`${providerStorageAlias}/${model.id}`] || []}
+            onEditAccessTags={() => openModelTagEditor(`${providerStorageAlias}/${model.id}`)}
           />
         ))}
 
@@ -1048,6 +1085,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               onDisable={() => handleDisableModel(model.id)}
               caps={getCaps(`${providerId}/${model.id}`)}
               thinkingSuffix={resolveThinkingSuffix(model.id)}
+              accessTags={modelAccessTags[`${providerStorageAlias}/${model.id}`] || []}
+              onEditAccessTags={() => openModelTagEditor(`${providerStorageAlias}/${model.id}`)}
             />
           );
         })}
@@ -1055,9 +1094,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         {/* Add model button — inline, same style as model chips */}
         <button
           onClick={() => setShowAddCustomModel(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto"
+          className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary/[0.025] px-4 py-3 text-sm text-primary transition-colors hover:border-primary hover:bg-primary/[0.06]"
         >
-          <span className="material-symbols-outlined text-sm">add</span>
+          <span className="material-symbols-outlined text-[20px]">add</span>
           Add Model
         </button>
 
@@ -1066,7 +1105,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           <button
             onClick={handleImportQoderModels}
             disabled={importingQoderModels}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-blue-500/40 bg-blue-500/[0.025] px-4 py-3 text-sm text-blue-600 transition-colors hover:border-blue-500 hover:bg-blue-500/[0.06] disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400"
           >
             <span className="material-symbols-outlined text-sm" style={importingQoderModels ? { animation: "spin 1s linear infinite" } : undefined}>
               {importingQoderModels ? "progress_activity" : "download"}
@@ -1087,7 +1126,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           );
           if (notAdded.length === 0) return null;
           return (
-            <div className="w-full mt-2">
+            <div className="mt-2 w-full md:col-span-3">
               <p className="text-xs text-text-muted mb-2">Suggested free models (≥200k context):</p>
               <div className="flex flex-wrap gap-2">
                 {notAdded.map((m) => (
@@ -1110,7 +1149,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
         {/* Disabled models — restorable */}
         {disabledDisplayModels.length > 0 && (
-          <div className="w-full mt-2">
+          <div className="mt-2 w-full md:col-span-3">
             <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
             <div className="flex flex-wrap gap-2">
               {disabledDisplayModels.map((m) => (
@@ -1659,6 +1698,16 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           setShowAddApiKeyModal(false);
         }}
       />
+      <Modal isOpen={Boolean(taggingModel)} title={`配置模型权限 · ${taggingModel || ""}`} onClose={() => { if (!savingModelTags) setTaggingModel(null); }}>
+        <div className="flex flex-col gap-5">
+          <AccessTagsEditor value={modelTagDraft} onChange={setModelTagDraft} hint="模型未设置标签时所有用户都可使用；设置后，仅拥有任一相同标签的 API 密钥可调用。" />
+          <div className="flex gap-2">
+            <Button onClick={saveModelTags} loading={savingModelTags} fullWidth>保存标签</Button>
+            <Button variant="ghost" onClick={() => setTaggingModel(null)} disabled={savingModelTags} fullWidth>取消</Button>
+          </div>
+        </div>
+      </Modal>
+
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}
@@ -1688,8 +1737,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
           onSave={async (modelId) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias);
-            setShowAddCustomModel(false);
+            const saved = await handleAddCustomModel(modelId, "llm", providerStorageAlias);
+            if (saved) setShowAddCustomModel(false);
+            return saved;
           }}
           onClose={() => setShowAddCustomModel(false)}
         />

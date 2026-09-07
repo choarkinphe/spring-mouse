@@ -6,6 +6,7 @@ import {
   clearAccountError,
   extractApiKey,
   authorizeApiKey,
+  resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings, getComboByName } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
@@ -79,6 +80,7 @@ export async function handleChat(request, clientRawRequest = null) {
   const settings = await getSettings();
   const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
   if (authFailure) return authFailure;
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
 
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
@@ -120,7 +122,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags);
         },
         log,
         comboName: modelStr,
@@ -134,7 +136,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: routedModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -142,13 +144,13 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = []) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -177,7 +179,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags);
           },
           log,
           comboName: modelStr,
@@ -191,7 +193,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -216,9 +218,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
 
     // All accounts unavailable
+    if (credentials?.accessDenied) {
+      return errorResponse(HTTP_STATUS.FORBIDDEN, credentials.resource === "model" ? "Model is not available for this API key" : "No provider account is available for this API key");
+    }
+
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";

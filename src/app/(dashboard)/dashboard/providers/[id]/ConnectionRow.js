@@ -116,6 +116,9 @@ export default function ConnectionRow({ connection, isOAuth, isFirst, isLast, on
             <Badge variant="default" size="sm">
               {authLabel}
             </Badge>
+            {connection.accessTags?.map((tag) => (
+              <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{tag}</span>
+            ))}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
               <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
@@ -179,6 +182,7 @@ ConnectionRow.propTypes = {
     lastError: PropTypes.string,
     priority: PropTypes.number,
     globalPriority: PropTypes.number,
+    accessTags: PropTypes.arrayOf(PropTypes.string),
   }).isRequired,
   isOAuth: PropTypes.bool.isRequired,
   isFirst: PropTypes.bool.isRequired,

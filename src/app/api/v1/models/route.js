@@ -6,7 +6,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
+import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getSettings } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
@@ -19,6 +19,8 @@ import { resolveZedModels } from "open-sse/shared/zedAuth.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
+import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -246,10 +248,14 @@ export async function buildModelsList(kindFilter, options = {}) {
   // spring-mouse instance's fetchCompatibleModelIds — skip dynamic fetch to break
   // cross-instance recursive loops.
   const skipDynamicFetch = options.skipDynamicFetch === true;
+  const accessTags = Array.isArray(options.accessTags) ? normalizeAccessTags(options.accessTags) : null;
+  const accessSettings = accessTags === null ? null : await getSettings();
+  const modelAccessTags = accessSettings?.modelAccessTags || {};
+  const canExposeModel = (model) => accessTags === null || canAccessWithTags(accessTags, getModelAccessTags(modelAccessTags, model?.id));
   let connections = [];
   try {
     connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false);
+    connections = connections.filter(c => c.isActive !== false && (accessTags === null || canAccessWithTags(accessTags, c.accessTags)));
   } catch (e) {
     console.log("Could not fetch providers, returning all models");
   }
@@ -326,7 +332,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   if (options.includeProviderModels !== true) {
     const seenPublicModelIds = new Set();
     return models.filter((model) => {
-      if (!model?.id || seenPublicModelIds.has(model.id)) return false;
+      if (!model?.id || seenPublicModelIds.has(model.id) || !canExposeModel(model)) return false;
       seenPublicModelIds.add(model.id);
       return true;
     });
@@ -566,7 +572,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   const dedupedModels = [];
   const seenModelIds = new Set();
   for (const model of models) {
-    if (!model?.id || seenModelIds.has(model.id)) continue;
+    if (!model?.id || seenModelIds.has(model.id) || !canExposeModel(model)) continue;
     seenModelIds.add(model.id);
     dedupedModels.push(model);
   }
@@ -595,7 +601,12 @@ async function handleGET(request) {
   try {
     // Detect cross-instance recursive /models fetch (another spring-mouse fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
-    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
+    const apiKey = extractApiKey(request);
+    const settings = await getSettings();
+    const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+    if (authFailure) return authFailure;
+    const accessTags = await resolveApiKeyAccessTags(apiKey);
+    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch, accessTags });
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });

@@ -41,6 +41,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });
+  db.flush?.();
   return added;
 }
 
@@ -72,12 +73,15 @@ export async function syncCustomModels(models) {
       }
     }
   });
+  db.flush?.();
 
   return { added, updated, unchanged };
 }
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
-  await customKv.remove(customKey(providerAlias, id, type));
+  const db = await getAdapter();
+  db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [customKey(providerAlias, id, type)]);
+  db.flush?.();
 }
 
 // mitmAlias: key=toolName, value=mappings object

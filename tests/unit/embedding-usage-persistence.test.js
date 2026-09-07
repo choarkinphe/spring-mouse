@@ -16,6 +16,7 @@ vi.mock("../../src/sse/services/auth.js", () => ({
   extractApiKey: () => "client-key",
   isValidApiKey: vi.fn(),
   authorizeApiKey: vi.fn().mockResolvedValue(null),
+  resolveApiKeyAccessTags: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({ requireApiKey: false }) }));
 vi.mock("../../src/sse/services/model.js", () => ({

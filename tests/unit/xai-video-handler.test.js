@@ -20,6 +20,7 @@ const authMocks = vi.hoisted(() => ({
   extractApiKey: vi.fn(() => null),
   isValidApiKey: vi.fn(async () => true),
   authorizeApiKey: vi.fn(async () => null),
+  resolveApiKeyAccessTags: vi.fn(async () => []),
 }));
 const tokenMocks = vi.hoisted(() => ({
   checkAndRefreshToken: vi.fn(async (_p, creds) => creds),

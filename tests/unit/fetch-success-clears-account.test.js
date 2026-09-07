@@ -20,6 +20,7 @@ vi.mock("@/sse/services/auth.js", () => ({
   extractApiKey: mocks.extractApiKey,
   isValidApiKey: mocks.isValidApiKey,
   authorizeApiKey: mocks.authorizeApiKey,
+  resolveApiKeyAccessTags: vi.fn(async () => []),
 }));
 
 vi.mock("@/lib/localDb", () => ({

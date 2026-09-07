@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Request as UndiciRequest, Response as UndiciResponse } from "undici";
 
 const mocks = vi.hoisted(() => ({ saveNetworkTraffic: vi.fn() }));
 
@@ -45,6 +46,76 @@ describe("network traffic monitoring", () => {
       statusCode: 200,
       requestBytes: Buffer.byteLength(requestBody),
       responseBytes: Buffer.byteLength("第一段/second"),
+      aborted: false,
+    }));
+  });
+
+  it("supports a Request from another undici realm and preserves its body", async () => {
+    const requestBody = JSON.stringify({ prompt: "跨 realm" });
+    let internalRequestId = null;
+    let internalBody = null;
+    const response = await withNetworkTraffic(
+      new UndiciRequest("http://localhost/v1/embeddings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: requestBody,
+      }),
+      async (request) => {
+        internalRequestId = getTrafficRequestId(request);
+        internalBody = await request.text();
+        return new Response("ok");
+      },
+    );
+
+    expect(internalRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(internalBody).toBe(requestBody);
+    expect(await response.text()).toBe("ok");
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: internalRequestId,
+      requestBytes: Buffer.byteLength(requestBody),
+    }));
+  });
+
+  it("keeps attribution when the request constructor cannot clone", async () => {
+    const request = new Request("http://localhost/v1/embeddings", { method: "POST", body: "{}" });
+    Object.defineProperty(request, "constructor", { value: class UnsupportedRequest { constructor() { throw new Error("clone unsupported"); } } });
+    let internalRequestId = null;
+
+    const response = await withNetworkTraffic(request, async (monitoredRequest) => {
+      internalRequestId = getTrafficRequestId(monitoredRequest);
+      return new Response("ok");
+    });
+
+    expect(internalRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await response.text()).toBe("ok");
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestId: internalRequestId }));
+  });
+
+  it("meters a response from another realm without rejecting the business response", async () => {
+    const response = await withNetworkTraffic(
+      new Request("http://localhost/v1/models"),
+      async () => new UndiciResponse("跨 realm response", { status: 201 }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.text()).toBe("跨 realm response");
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 201,
+      responseBytes: Buffer.byteLength("跨 realm response"),
+    }));
+  });
+
+  it("does not turn an empty response body into a monitoring failure", async () => {
+    const response = await withNetworkTraffic(
+      new Request("http://localhost/v1/models"),
+      async () => new UndiciResponse(null, { status: 204 }),
+    );
+
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 204,
+      responseBytes: 0,
       aborted: false,
     }));
   });

@@ -30,14 +30,31 @@ async function getRequestBytes(request) {
 
 export function getTrafficRequestId(requestOrHeaders) {
   const headers = requestOrHeaders?.headers || requestOrHeaders;
-  if (typeof headers?.get === "function") return headers.get(TRAFFIC_REQUEST_ID_HEADER) || null;
+  if (typeof headers?.get === "function") {
+    return headers.get(TRAFFIC_REQUEST_ID_HEADER) || requestTrafficIds.get(requestOrHeaders) || null;
+  }
   return headers?.[TRAFFIC_REQUEST_ID_HEADER] || headers?.[TRAFFIC_REQUEST_ID_HEADER.toLowerCase()] || null;
 }
+
+// Fallback mapping for requests that could not be re-wrapped (see
+// cloneRequestWithTrafficId): handlers still need a way to resolve the id.
+const requestTrafficIds = new WeakMap();
 
 function cloneRequestWithTrafficId(request, requestId) {
   const headers = new Headers(request.headers);
   headers.set(TRAFFIC_REQUEST_ID_HEADER, requestId);
-  return new Request(request, { headers });
+  try {
+    // Clone with the request's own constructor. In Next.js dev the incoming
+    // NextRequest is built from Next's bundled undici Request class, while the
+    // global `Request` here can be a different class; a cross-realm copy
+    // constructor (`new Request(request, ...)`) then fails the private-field
+    // brand check ("Cannot read private member #state"). Using the same class
+    // guarantees the private fields match.
+    const RequestCtor = request.constructor;
+    return new RequestCtor(request, { headers });
+  } catch {
+    return request;
+  }
 }
 
 function cloneResponseWithBody(response, body) {
@@ -55,6 +72,7 @@ export async function withNetworkTraffic(request, handler) {
   const endpoint = new URL(request.url).pathname;
   const requestBytes = await getRequestBytes(request);
   const monitoredRequest = cloneRequestWithTrafficId(request, requestId);
+  requestTrafficIds.set(monitoredRequest, requestId);
   const sourceMeta = getRequestSourceMeta(monitoredRequest);
   let finalized = false;
 

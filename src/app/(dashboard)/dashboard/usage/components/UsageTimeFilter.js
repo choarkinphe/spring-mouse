@@ -70,7 +70,7 @@ function shiftAnchor(anchor, preset, direction) {
   return next;
 }
 
-function PersonFilterDropdown({ apiKeys, value, onChange }) {
+function PersonFilterDropdown({ apiKeys, value, onChange, scopeControl }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
   const selected = apiKeys.find((key) => key.id === value);
@@ -114,9 +114,12 @@ function PersonFilterDropdown({ apiKeys, value, onChange }) {
 
       {open ? (
         <div role="menu" className="absolute right-0 z-50 mt-2 w-full min-w-[280px] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-elev)]">
-          <div className="border-b border-border bg-bg-subtle/60 px-3 py-2.5">
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">API KEY PERSON</p>
-            <p className="mt-0.5 text-xs text-text-muted">选择一个 API Key 查看对应使用数据</p>
+          <div className="flex items-center justify-between gap-3 border-b border-border bg-bg-subtle/60 px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">API KEY PERSON</p>
+              <p className="mt-0.5 truncate text-xs text-text-muted">选择一个 API Key 查看对应使用数据</p>
+            </div>
+            {scopeControl}
           </div>
           <div className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
             <button
@@ -161,6 +164,7 @@ PersonFilterDropdown.propTypes = {
   apiKeys: PropTypes.array.isRequired,
   value: PropTypes.string,
   onChange: PropTypes.func,
+  scopeControl: PropTypes.node,
 };
 
 export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyChange, onScopeChanged }) {
@@ -300,8 +304,12 @@ export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyCha
           </label>
         </div>
 
-        <UsageScopeManager apiKeys={apiKeys} onSaved={onScopeChanged} />
-        <PersonFilterDropdown apiKeys={scopedApiKeys} value={apiKeyId} onChange={onApiKeyChange} />
+        <PersonFilterDropdown
+          apiKeys={scopedApiKeys}
+          value={apiKeyId}
+          onChange={onApiKeyChange}
+          scopeControl={<UsageScopeManager apiKeys={apiKeys} onSaved={onScopeChanged} compact />}
+        />
       </div>
 
       <p className="sr-only">当前统计范围：{toChineseDate(range.start)} 至 {toChineseDate(range.end)}</p>

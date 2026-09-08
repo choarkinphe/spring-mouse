@@ -22,7 +22,7 @@ ScopeStatus.propTypes = {
   matchedUserCount: PropTypes.number.isRequired,
 };
 
-export default function UsageScopeManager({ apiKeys, onSaved }) {
+export default function UsageScopeManager({ apiKeys, onSaved, compact = false }) {
   const settings = useSettingsStore((state) => state.settings);
   const fetchSettings = useSettingsStore((state) => state.fetchSettings);
   const patchSettings = useSettingsStore((state) => state.patchSettings);
@@ -82,14 +82,12 @@ export default function UsageScopeManager({ apiKeys, onSaved }) {
       <button
         type="button"
         onClick={openManager}
-        className="group flex h-10 min-w-[218px] items-center gap-2 rounded-lg border border-border bg-bg px-3 text-left transition-all hover:border-primary/45 hover:bg-bg-subtle"
+        title={`统计范围设置：${scopeTags.length === 0 ? "全部使用人" : `${scopeTags.length} 个标签 · ${matchedUserCount} 人`}`}
+        aria-label="统计范围设置"
+        className={`group inline-flex h-9 items-center rounded-lg border border-border bg-surface text-sm font-semibold text-text-main transition-all hover:border-primary/45 hover:bg-primary/[0.06] hover:text-primary ${compact ? "w-9 justify-center px-0" : "gap-2 px-3"}`}
       >
-        <span className="material-symbols-outlined grid size-7 shrink-0 place-items-center rounded-md bg-surface-2 text-[17px] text-primary group-hover:bg-primary group-hover:text-white">manage_accounts</span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-text-muted">统计范围</span>
-          <ScopeStatus tags={scopeTags} matchedUserCount={matchedUserCount} />
-        </span>
-        <span className="material-symbols-outlined text-[17px] text-text-muted">edit</span>
+        <span className="material-symbols-outlined text-[17px] text-text-muted transition-colors group-hover:text-primary">settings</span>
+        {!compact ? "统计范围设置" : null}
       </button>
 
       <Modal
@@ -164,4 +162,5 @@ export default function UsageScopeManager({ apiKeys, onSaved }) {
 UsageScopeManager.propTypes = {
   apiKeys: PropTypes.arrayOf(PropTypes.object).isRequired,
   onSaved: PropTypes.func,
+  compact: PropTypes.bool,
 };

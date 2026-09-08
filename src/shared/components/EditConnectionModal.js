@@ -208,7 +208,8 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
         <AccessTagsEditor
           value={formData.accessTags}
           onChange={(accessTags) => setFormData({ ...formData, accessTags })}
-          hint="账号未设置标签时所有用户都可使用；设置后，仅拥有任一相同标签的 API 密钥可路由到此账号。"
+          label="分流标签"
+          hint="拥有相同标签的 API 密钥会优先使用此账号；没有可用的匹配账号时，将按渠道原有顺序回退到其他账号。"
         />
 
         {!isOAuth && (

@@ -255,7 +255,9 @@ export async function buildModelsList(kindFilter, options = {}) {
   let connections = [];
   try {
     connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false && (accessTags === null || canAccessWithTags(accessTags, c.accessTags)));
+    // Connection tags influence account selection priority, not model visibility.
+    // Model-level tags remain the strict permission boundary via canExposeModel.
+    connections = connections.filter(c => c.isActive !== false);
   } catch (e) {
     console.log("Could not fetch providers, returning all models");
   }

@@ -509,7 +509,7 @@ export default function APIPageClient({ machineId }) {
                         { value: "unlimited", label: "无限制" },
                       ]}
                     />
-                    <button onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-violet-400/10 hover:text-violet-300" title="配置权限标签" aria-label="配置权限标签"><span className="material-symbols-outlined text-[18px]">sell</span></button>
+                    <button onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-violet-400/10 hover:text-violet-300" title="配置密钥标签" aria-label="配置密钥标签"><span className="material-symbols-outlined text-[18px]">sell</span></button>
                     <button onClick={() => handleDeleteKey(key.id)} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="删除密钥" aria-label="删除密钥"><span className="material-symbols-outlined text-[18px]">delete</span></button>
                   </div>
                 </div>
@@ -521,7 +521,7 @@ export default function APIPageClient({ machineId }) {
 
       <Modal isOpen={Boolean(taggingKey)} title={`配置密钥权限 · ${taggingKey?.name || ""}`} onClose={() => { if (!savingTags) setTaggingKey(null); }}>
         <div className="flex flex-col gap-5">
-          <AccessTagsEditor value={tagDraft} onChange={setTagDraft} hint="密钥拥有的标签决定它可以使用哪些受限账号和模型。无标签密钥只能使用未设置标签的资源。" />
+          <AccessTagsEditor value={tagDraft} onChange={setTagDraft} hint="密钥标签会优先匹配同标签账号，并决定它可以调用哪些受限模型；没有匹配账号时会按渠道原有顺序回退。" />
           <div className="flex gap-2">
             <Button onClick={handleSaveKeyTags} loading={savingTags} fullWidth>保存标签</Button>
             <Button variant="ghost" onClick={() => setTaggingKey(null)} disabled={savingTags} fullWidth>取消</Button>

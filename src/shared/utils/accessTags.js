@@ -16,11 +16,16 @@ export function normalizeAccessTags(value) {
     .slice(0, MAX_ACCESS_TAGS);
 }
 
+export function hasAccessTagOverlap(leftTags, rightTags) {
+  const left = new Set(normalizeAccessTags(leftTags));
+  if (left.size === 0) return false;
+  return normalizeAccessTags(rightTags).some((tag) => left.has(tag));
+}
+
 export function canAccessWithTags(subjectTags, resourceTags) {
   const required = normalizeAccessTags(resourceTags);
   if (required.length === 0) return true;
-  const granted = new Set(normalizeAccessTags(subjectTags));
-  return required.some((tag) => granted.has(tag));
+  return hasAccessTagOverlap(subjectTags, required);
 }
 
 export function getModelAccessTags(modelAccessTags, ...modelIds) {

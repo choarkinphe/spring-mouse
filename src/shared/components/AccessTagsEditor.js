@@ -4,7 +4,7 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
-export default function AccessTagsEditor({ value, onChange, label = "权限标签", hint = "不设置标签表示所有用户均可使用。资源设置标签后，用户密钥至少匹配一个标签才可使用。" }) {
+export default function AccessTagsEditor({ value, onChange, label = "权限标签", hint = "标签用于控制资源权限或优先级，具体行为以当前资源说明为准。" }) {
   const [draft, setDraft] = useState("");
   const tags = normalizeAccessTags(value);
 

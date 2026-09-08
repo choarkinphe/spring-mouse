@@ -7,7 +7,7 @@ import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
-import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
+import { canAccessWithTags, getModelAccessTags, hasAccessTagOverlap, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 
 // Per-provider mutexes to prevent race conditions during account selection
 // 替代全局锁，让不同provider的请求可以并行处理
@@ -94,23 +94,25 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     }
 
-    const permittedConnections = requestAccessTags === null
-      ? connections
-      : connections.filter((connection) => canAccessWithTags(requestAccessTags, connection.accessTags));
-
-    if (permittedConnections.length === 0) {
-      log.warn("AUTH", `${provider} | no accounts match request access tags`);
-      return { accessDenied: true, resource: "connection" };
-    }
-
-    // Filter out model-locked and excluded connections
-    const availableConnections = permittedConnections.filter(c => {
+    // Account tags are routing preferences rather than a hard permission wall.
+    // Prefer accounts sharing at least one API-key tag; if that pool is empty
+    // (or exhausted by retries/locks), fall back to the provider's normal order.
+    // Model tags above remain strict permissions.
+    const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
     });
 
-    log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
+    const matchedConnections = requestAccessTags?.length > 0
+      ? availableConnections.filter((connection) => hasAccessTagOverlap(requestAccessTags, connection.accessTags))
+      : [];
+    const candidateConnections = matchedConnections.length > 0 ? matchedConnections : availableConnections;
+
+    log.debug(
+      "AUTH",
+      `${provider} | available: ${availableConnections.length}/${connections.length}, tagMatched: ${matchedConnections.length}, pool: ${matchedConnections.length > 0 ? "tag-preferred" : "fallback"}`,
+    );
     connections.forEach(c => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
@@ -159,7 +161,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const stickyLimit = providerOverride.stickyRoundRobinLimit || 1;
 
       // Sort by lastUsed (most recent first) to find current candidate
-      const byRecency = [...availableConnections].sort((a, b) => {
+      const byRecency = [...candidateConnections].sort((a, b) => {
         if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
         if (!a.lastUsedAt) return 1;
         if (!b.lastUsedAt) return -1;
@@ -179,7 +181,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         });
       } else {
         // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...availableConnections].sort((a, b) => {
+        const sortedByOldest = [...candidateConnections].sort((a, b) => {
           if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
           if (!a.lastUsedAt) return -1;
           if (!b.lastUsedAt) return 1;
@@ -196,7 +198,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)
-      connection = availableConnections[0];
+      connection = candidateConnections[0];
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});

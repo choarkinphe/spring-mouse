@@ -22,6 +22,7 @@ vi.mock("@/shared/constants/config", () => ({
     pingLeadMs: 5000,
     refreshAheadMs: 300000,
     failureCooldownMs: 900000,
+    requestTimeoutMs: 30,
     providers: {
       claude: {
         settingsKey: "claudeAutoPing",
@@ -302,6 +303,7 @@ describe("quota auto-ping", () => {
         connectionId: "codex-1",
         providerSpecificData: { workspaceId: "ws-1" },
       }),
+      signal: expect.any(AbortSignal),
       body: {
         model: "gpt-5.5",
         input: [{
@@ -320,6 +322,34 @@ describe("quota auto-ping", () => {
       lastPingedResetAt: "2026-01-01T17:01:00.000Z",
       lastPingedResetKey: "2026-01-01T17:01:00.000Z",
     }));
+  });
+
+  it("releases the scheduler when a Codex response body never completes", async () => {
+    deps.getSettings.mockResolvedValue({ codexAutoPing: { connections: { "codex-1": true } } });
+    deps.getProviderConnections.mockImplementation(async ({ provider }) => (
+      provider === "codex" ? [{ id: "codex-1", provider: "codex", authType: "oauth", accessToken: "token" }] : []
+    ));
+    state.resetCache["codex:codex-1"] = "2026-01-01T17:00:00.000Z";
+    getCodexUsage.mockResolvedValue({
+      quotas: { session: { used: 1, total: 100, remaining: 99, resetAt: "2026-01-01T17:01:00.000Z" } },
+    });
+
+    const execute = vi.fn(async ({ signal }) => ({
+      response: {
+        ok: true,
+        text: () => new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      },
+    }));
+    deps.getExecutor.mockReturnValue({ execute });
+
+    await runQuotaAutoPingTick(deps, state);
+
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(state.running).toBe(false);
+    expect(state.failureCache["codex:codex-1"]).toBeDefined();
+    expect(deps.updateProviderConnection).not.toHaveBeenCalled();
   });
 
   it("does not ping same Codex reset twice when seconds drift", async () => {

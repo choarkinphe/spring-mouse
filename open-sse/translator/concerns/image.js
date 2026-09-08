@@ -85,8 +85,15 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
   if (!pinnedIps) return null;
 
   const controller = new AbortController();
-  const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
-  const fetchSignal = signal || controller.signal;
+  const onExternalAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) onExternalAbort();
+  else signal?.addEventListener("abort", onExternalAbort, { once: true });
+  // Client cancellation and the fetch deadline are independent constraints.
+  // Supplying a client signal must not disable the timeout for a server that
+  // accepts the request but never returns image bytes.
+  const timeout = setTimeout(() => controller.abort(new Error("remote image fetch timeout")), timeoutMs);
+  timeout.unref?.();
+  const fetchSignal = controller.signal;
 
   // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
   const dispatcher = new Agent({
@@ -118,7 +125,8 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
   } catch {
     return null;
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onExternalAbort);
     dispatcher.close().catch(() => {});
   }
 }

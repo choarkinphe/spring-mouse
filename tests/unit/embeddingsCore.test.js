@@ -627,6 +627,18 @@ describe("handleEmbeddingsCore — token refresh on 401/403", () => {
     expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("returns 499 when the client disconnects before the provider responds", async () => {
+    const client = new AbortController();
+    vi.mocked(fetch).mockImplementationOnce((_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+
+    const pending = handleEmbeddingsCore(makeOptions({ signal: client.signal }));
+    client.abort("client disconnected");
+
+    await expect(pending).resolves.toMatchObject({ success: false, status: 499 });
+  });
+
   it("on 401 with no refresh token, falls back gracefully (no crash)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response(JSON.stringify({ error: "unauthorized" }), {

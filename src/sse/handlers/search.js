@@ -141,6 +141,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       provider: resolvedProvider,
       providerConfig,
       credentials: null,
+      signal: request.signal,
       log
     });
     if (result.success) return result.response;
@@ -180,6 +181,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       provider: resolvedProvider,
       providerConfig,
       credentials: refreshedCredentials,
+      signal: request.signal,
       log,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {

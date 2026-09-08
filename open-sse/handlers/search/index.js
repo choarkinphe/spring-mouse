@@ -10,6 +10,7 @@
 import { buildSearchRequest } from "./callers.js";
 import { normalizeSearchResponse } from "./normalizers.js";
 import { handleChatSearch } from "./chatSearch.js";
+import { combineWithTimeout } from "../../utils/abortable.js";
 
 const GLOBAL_TIMEOUT_MS = 15000;
 const NON_RETRIABLE = new Set([400, 401, 403, 404]);
@@ -61,7 +62,7 @@ function successResult(data) {
  * Run a single dedicated search provider attempt.
  * @returns {Promise<{success:boolean, status?:number, error?:string, data?:object}>}
  */
-async function tryDedicatedProvider({ provider, providerConfig, body, credentials, log, globalStartTime }) {
+async function tryDedicatedProvider({ provider, providerConfig, body, credentials, log, globalStartTime, signal }) {
   const startTime = Date.now();
   const token = credentials?.apiKey || credentials?.accessToken || undefined;
 
@@ -94,14 +95,12 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
   // Timeout = min(provider timeout, remaining global)
   const remaining = GLOBAL_TIMEOUT_MS - (Date.now() - globalStartTime);
   const timeout = Math.min(providerConfig.timeoutMs || 10000, Math.max(remaining, 1000));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+  const fetchSignal = combineWithTimeout(signal, timeout);
 
   log?.info?.("SEARCH", `${provider.id} | "${params.query.slice(0, 80)}" | type=${params.searchType}`);
 
   try {
-    const resp = await fetch(url, { ...init, headers: sanitizeHeaders(init.headers), signal: controller.signal });
-    clearTimeout(timer);
+    const resp = await fetch(url, { ...init, headers: sanitizeHeaders(init.headers), signal: fetchSignal });
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
       log?.error?.("SEARCH", `${provider.id} ${resp.status}: ${errText.slice(0, 200)}`);
@@ -125,11 +124,12 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
       }
     };
   } catch (err) {
-    clearTimeout(timer);
-    const isTimeout = err.name === "AbortError";
-    const status = isTimeout ? 504 : 502;
-    log?.error?.("SEARCH", `${provider.id} ${isTimeout ? "timeout" : "error"}: ${err.message}`);
-    return { success: false, status, error: `${provider.id} ${isTimeout ? "timeout" : "error"}: ${err.message}` };
+    const cancelled = signal?.aborted === true;
+    const isTimeout = !cancelled && (fetchSignal?.aborted === true || err?.name === "TimeoutError");
+    const status = cancelled ? 499 : isTimeout ? 504 : 502;
+    const kind = cancelled ? "cancelled" : isTimeout ? "timeout" : "error";
+    log?.error?.("SEARCH", `${provider.id} ${kind}: ${err.message}`);
+    return { success: false, status, error: `${provider.id} ${kind}: ${err.message}` };
   }
 }
 
@@ -144,7 +144,7 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
  * @param {object|null} options.credentials  Provider credentials
  * @param {object}   [options.log]           Logger
  */
-export async function handleSearchCore({ body, provider, providerConfig, credentials, log }) {
+export async function handleSearchCore({ body, provider, providerConfig, credentials, log, signal }) {
   const globalStartTime = Date.now();
 
   // 1. Sanitize query
@@ -161,7 +161,8 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
       body: normalizedBody,
       credentials,
       log,
-      globalStartTime
+      globalStartTime,
+      signal
     });
   } else if (provider.searchViaChat) {
     result = await handleChatSearch({
@@ -170,7 +171,8 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
       maxResults: normalizedBody.max_results,
       model: provider.searchViaChat.defaultModel,
       credentials,
-      log
+      log,
+      signal
     });
   } else {
     return errorResult(400, `Provider ${provider.id} does not support web search`);
@@ -192,7 +194,8 @@ export async function handleSearchCore({ body, provider, providerConfig, credent
       maxResults: normalizedBody.max_results,
       model: provider.searchViaChat.defaultModel,
       credentials,
-      log
+      log,
+      signal
     });
     if (fallback.success) return successResult(fallback.data);
   }

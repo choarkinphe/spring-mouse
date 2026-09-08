@@ -6,7 +6,9 @@ import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 
 function abortError(reason) {
-  const error = reason instanceof Error ? reason : new Error(reason ? String(reason) : "The operation was aborted");
+  if (reason?.name === "AbortError") return reason;
+  const message = reason instanceof Error ? reason.message : (reason ? String(reason) : "The operation was aborted");
+  const error = new Error(message, reason instanceof Error ? { cause: reason } : undefined);
   error.name = "AbortError";
   return error;
 }

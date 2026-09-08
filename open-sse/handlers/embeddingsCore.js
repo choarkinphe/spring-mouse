@@ -3,6 +3,7 @@ import { HTTP_STATUS, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.j
 import { getExecutor } from "../executors/index.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getEmbeddingAdapter } from "./embeddingProviders/index.js";
+import { combineWithTimeout } from "../utils/abortable.js";
 
 /**
  * Core embeddings handler — orchestrator only. Provider-specific URL/headers/body/normalize
@@ -17,6 +18,7 @@ export async function handleEmbeddingsCore({
   log,
   onCredentialsRefreshed,
   onRequestSuccess,
+  signal,
 }) {
   const { provider, model } = modelInfo;
 
@@ -59,20 +61,29 @@ export async function handleEmbeddingsCore({
 
   log?.debug?.("EMBEDDINGS", `${provider.toUpperCase()} | ${model} | input_type=${Array.isArray(input) ? `array[${input.length}]` : "string"}`);
 
+  const fetchSignal = combineWithTimeout(signal, FETCH_CONNECT_TIMEOUT_MS);
+  const fetchFailure = (error) => {
+    const status = signal?.aborted ? 499
+      : fetchSignal?.aborted ? HTTP_STATUS.GATEWAY_TIMEOUT
+        : HTTP_STATUS.BAD_GATEWAY;
+    const message = status === 499 ? "Request aborted"
+      : status === HTTP_STATUS.GATEWAY_TIMEOUT ? `[${provider}/${model}] embeddings request timed out`
+        : formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
+    return createErrorResult(status, message);
+  };
+
   let providerResponse;
   try {
     providerResponse = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(requestBody),
-      ...(typeof AbortSignal?.timeout === "function"
-        ? { signal: AbortSignal.timeout(FETCH_CONNECT_TIMEOUT_MS) }
-        : {}),
+      signal: fetchSignal,
     });
   } catch (error) {
-    const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
-    log?.debug?.("EMBEDDINGS", `Fetch error: ${errMsg}`);
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    const failure = fetchFailure(error);
+    log?.debug?.("EMBEDDINGS", `Fetch error: ${failure.error || error.message}`);
+    return failure;
   }
 
   // Handle 401/403 — try token refresh (skip for noAuth providers)
@@ -100,6 +111,7 @@ export async function handleEmbeddingsCore({
           method: "POST",
           headers: retryHeaders,
           body: JSON.stringify(requestBody),
+          signal: fetchSignal,
         });
       } catch {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
@@ -119,7 +131,8 @@ export async function handleEmbeddingsCore({
   let responseBody;
   try {
     responseBody = await providerResponse.json();
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || fetchSignal?.aborted) return fetchFailure(error);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
   }
 

@@ -23,7 +23,7 @@ function mockFetchOnce(bytes, ok = true) {
 
 beforeEach(() => {
   lookupMock.mockReset();
-  lookupMock.mockResolvedValue({ address: "93.184.216.34" }); // public by default
+  lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]); // public by default
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -34,12 +34,12 @@ describe("fetchImageAsBase64 hardening", () => {
   });
 
   it("SSRF: rejects private IP (10.x)", async () => {
-    lookupMock.mockResolvedValue({ address: "10.0.0.5" });
+    lookupMock.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
     expect(await fetchImageAsBase64("http://internal.example/x.png")).toBeNull();
   });
 
   it("SSRF: rejects cloud metadata 169.254.169.254", async () => {
-    lookupMock.mockResolvedValue({ address: "169.254.169.254" });
+    lookupMock.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
     expect(await fetchImageAsBase64("http://metadata/x.png")).toBeNull();
   });
 
@@ -48,7 +48,7 @@ describe("fetchImageAsBase64 hardening", () => {
   });
 
   it("SSRF: rejects IPv6 loopback", async () => {
-    lookupMock.mockResolvedValue({ address: "::1" });
+    lookupMock.mockResolvedValue([{ address: "::1", family: 6 }]);
     expect(await fetchImageAsBase64("http://x/y.png")).toBeNull();
   });
 
@@ -68,6 +68,23 @@ describe("fetchImageAsBase64 hardening", () => {
   it("rejects payload over size cap", async () => {
     mockFetchOnce(Buffer.alloc(1024));
     expect(await fetchImageAsBase64("https://example.com/big.png", { maxBytes: 100 })).toBeNull();
+  });
+
+  it("keeps the fetch timeout when an external client signal is supplied", async () => {
+    globalThis.fetch = vi.fn((_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const client = new AbortController();
+    const startedAt = Date.now();
+
+    const result = await fetchImageAsBase64("https://example.com/stalled.png", {
+      signal: client.signal,
+      timeoutMs: 20,
+    });
+
+    expect(result).toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(client.signal.aborted).toBe(false);
   });
 
   it("returns null when fetch not ok", async () => {

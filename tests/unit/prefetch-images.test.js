@@ -23,6 +23,15 @@ describe("prefetchRemoteImages", () => {
     expect(body.messages[0].content[0].image_url.url).toBe("https://x/a.png");
   });
 
+  it("forwards the client cancellation signal to image downloads", async () => {
+    const client = new AbortController();
+    const body = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/a.png" } }] }] };
+
+    await prefetchRemoteImages(body, FORMATS.OPENAI, FORMATS.OLLAMA, { signal: client.signal });
+
+    expect(fetchImageAsBase64).toHaveBeenCalledWith("https://x/a.png", { signal: client.signal });
+  });
+
   it("openai source -> ollama target: converts remote URL to base64", async () => {
     const body = { messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x/a.png" } }] }] };
     const n = await prefetchRemoteImages(body, FORMATS.OPENAI, FORMATS.OLLAMA);

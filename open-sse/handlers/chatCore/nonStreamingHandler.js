@@ -4,7 +4,8 @@ import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
 import { filterUsageForFormat } from "../../utils/usageTracking.js";
 import { createErrorResult } from "../../utils/error.js";
-import { HTTP_STATUS } from "../../config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -281,31 +282,47 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
-  trackDone();
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log, streamController }) {
   const saveFailure = () => saveUsageStats({ provider, model, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
 
-  if (contentType.includes("text/event-stream")) {
-    const sseText = await providerResponse.text();
-    const parsed = parseSSEToOpenAIResponse(sseText, model);
-    if (!parsed) {
-      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
-      saveFailure();
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
+  try {
+    const readBody = (operation) => runWithAbortDeadline(operation, {
+      signal: streamController?.signal,
+      timeoutMs: NON_STREAM_RESPONSE_TIMEOUT_MS,
+      timeoutMessage: `Non-streaming response body timed out after ${NON_STREAM_RESPONSE_TIMEOUT_MS}ms`,
+      onTimeout: () => streamController?.abort?.("response_body_timeout"),
+    });
+
+    if (contentType.includes("text/event-stream")) {
+      const sseText = await readBody(() => providerResponse.text());
+      const parsed = parseSSEToOpenAIResponse(sseText, model);
+      if (!parsed) {
+        trackDone();
+        appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+        saveFailure();
+        return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
+      }
+      responseBody = parsed;
+    } else {
+      responseBody = await readBody(() => providerResponse.json());
     }
-    responseBody = parsed;
-  } else {
-    try {
-      responseBody = await providerResponse.json();
-    } catch (err) {
-      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
-      saveFailure();
-      console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
-    }
+  } catch (err) {
+    trackDone();
+    const status = err?.name === "AbortError" ? 499
+      : err?.name === "TimeoutError" ? HTTP_STATUS.GATEWAY_TIMEOUT
+        : HTTP_STATUS.BAD_GATEWAY;
+    appendLog({ status: `FAILED ${status}` });
+    saveFailure();
+    console.error(`[ChatCore] Failed to read response body from ${provider}:`, err.message);
+    const message = status === 499 ? "Request aborted"
+      : status === HTTP_STATUS.GATEWAY_TIMEOUT ? `Response body timeout from ${provider}`
+        : `Invalid JSON response from ${provider}`;
+    return createErrorResult(status, message);
   }
+
+  trackDone();
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
   if (onRequestSuccess) {

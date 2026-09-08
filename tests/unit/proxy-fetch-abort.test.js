@@ -25,6 +25,17 @@ function close(server) {
 }
 
 describe("MITM DNS-bypass request cancellation", () => {
+  it("accepts the native DOMException from an already-aborted signal", async () => {
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(createBypassRequest(
+      new URL("https://upstream.test/v1/chat/completions"),
+      "127.0.0.1",
+      { signal: abort.signal },
+    )).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("aborts a raw TLS handshake when the caller disconnects", async () => {
     const server = net.createServer((socket) => {
       socket.on("error", () => {});

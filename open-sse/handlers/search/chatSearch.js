@@ -3,6 +3,7 @@
  * /v1/search response format. Supports gemini, openai, xai, kimi, minimax, perplexity.
  */
 import { PROVIDER_MEDIA } from "../../providers/index.js";
+import { combineWithTimeout } from "../../utils/abortable.js";
 
 // Default search model + endpoint derive from registry searchViaChat (single source)
 const searchModel = (id) => PROVIDER_MEDIA[id]?.searchViaChat?.defaultModel;
@@ -340,7 +341,8 @@ export async function handleChatSearch({
   maxResults,
   model,
   credentials,
-  log
+  log,
+  signal
 }) {
   const startTime = Date.now();
   const cfg = CHAT_SEARCH_CONFIG[provider];
@@ -375,8 +377,7 @@ export async function handleChatSearch({
   const body = cfg.buildBody(query, useModel);
   const headers = cfg.buildHeaders(token);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const fetchSignal = combineWithTimeout(signal, REQUEST_TIMEOUT_MS);
 
   let upstreamStart = Date.now();
   let resp;
@@ -385,11 +386,14 @@ export async function handleChatSearch({
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: controller.signal
+      signal: fetchSignal
     });
   } catch (err) {
-    clearTimeout(timer);
-    if (err?.name === "AbortError") {
+    if (signal?.aborted) {
+      log?.warn?.(`[chatSearch] cancelled provider=${provider}`);
+      return { success: false, status: 499, error: "Request aborted" };
+    }
+    if (fetchSignal?.aborted || err?.name === "TimeoutError") {
       log?.warn?.(`[chatSearch] timeout provider=${provider}`);
       return { success: false, status: 504, error: "Upstream timeout" };
     }
@@ -400,13 +404,16 @@ export async function handleChatSearch({
       error: `Network error: ${err?.message || "unknown"}`
     };
   }
-  clearTimeout(timer);
   const upstreamLatency = Date.now() - upstreamStart;
 
   let data;
   try {
     data = await resp.json();
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) return { success: false, status: 499, error: "Request aborted" };
+    if (fetchSignal?.aborted || err?.name === "TimeoutError") {
+      return { success: false, status: 504, error: "Upstream timeout" };
+    }
     return {
       success: false,
       status: 502,

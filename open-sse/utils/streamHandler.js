@@ -195,17 +195,19 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {object} streamController - Stream controller from createStreamController
  */
 export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
-  let stallTimer = null;
+  let stallCheckTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
   let lastChunkAt = Date.now();
   const t0 = Date.now();
   const tag = "STREAM";
   const clearStall = () => {
-    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    if (stallCheckTimer) {
+      clearTimeout(stallCheckTimer);
+      stallCheckTimer = null;
+    }
   };
   // 优化：使用单一定时器进行低频检查，而非每 chunk 重置定时器
-  let stallCheckTimer = null;
   const checkStall = () => {
     const now = Date.now();
     const gap = now - lastChunkAt;

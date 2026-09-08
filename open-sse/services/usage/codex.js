@@ -88,7 +88,7 @@ function getCodexReviewRateLimit(data) {
   }) || null;
 }
 
-export async function getCodexUsage(accessToken, proxyOptions = null) {
+export async function getCodexUsage(accessToken, proxyOptions = null, options = {}) {
   try {
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
@@ -96,6 +96,7 @@ export async function getCodexUsage(accessToken, proxyOptions = null) {
         "Authorization": `Bearer ${accessToken}`,
         "Accept": "application/json",
       },
+      signal: options?.signal,
     }, proxyOptions);
 
     if (!response.ok) {

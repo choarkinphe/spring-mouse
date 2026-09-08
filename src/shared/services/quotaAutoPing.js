@@ -102,7 +102,7 @@ function buildProxyOptions(cfg) {
   };
 }
 
-async function sendClaudePing(connection, providerConfig, proxyOptions, deps) {
+async function sendClaudePing(connection, providerConfig, proxyOptions, deps, signal) {
   const res = await deps.proxyAwareFetch(CLAUDE_PING_URL, {
     method: "POST",
     headers: {
@@ -115,8 +115,13 @@ async function sendClaudePing(connection, providerConfig, proxyOptions, deps) {
       max_tokens: providerConfig.pingMaxTokens,
       messages: [{ role: "user", content: providerConfig.pingText }],
     }),
+    signal,
   }, proxyOptions);
-  return res.ok;
+  const ok = res.ok;
+  // Only the acceptance status matters for Claude's non-streaming warmup.
+  // Cancel any unread body so the connection cannot remain leased indefinitely.
+  try { await res.body?.cancel?.(); } catch { /* best-effort cleanup */ }
+  return ok;
 }
 
 function buildCodexPingInput(text) {
@@ -146,7 +151,7 @@ async function drainResponseBody(response) {
   }
 }
 
-async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
+async function sendCodexPing(connection, providerConfig, proxyOptions, deps, signal) {
   const executor = deps.getExecutor("codex");
   const { response } = await executor.execute({
     model: providerConfig.pingModel,
@@ -157,6 +162,7 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
       providerSpecificData: connection.providerSpecificData,
     },
     proxyOptions,
+    signal,
     log: console,
     body: {
       model: providerConfig.pingModel,
@@ -179,6 +185,27 @@ async function sendCodexPing(connection, providerConfig, proxyOptions, deps) {
   return true;
 }
 
+async function withAutoPingDeadline(label, operation) {
+  const controller = new AbortController();
+  const timeoutMs = Number(C.requestTimeoutMs) > 0 ? Number(C.requestTimeoutMs) : 60000;
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.name = "AbortError";
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([Promise.resolve().then(() => operation(controller.signal)), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function shouldSkipAfterFailure(state, key, nowMs = Date.now()) {
   const failedAt = state.failureCache[key];
   return failedAt && nowMs - failedAt < C.failureCooldownMs;
@@ -199,7 +226,10 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
 
   let connection = conn;
   try {
-    const r = await deps.refreshAndUpdateCredentials(connection, false, proxyOptions);
+    const r = await withAutoPingDeadline(
+      `${provider}:${conn.id} credential refresh`,
+      () => deps.refreshAndUpdateCredentials(connection, false, proxyOptions),
+    );
     connection = r.connection;
   } catch (e) {
     state.failureCache[key] = Date.now();
@@ -207,7 +237,10 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
     return;
   }
 
-  const usage = await handler.getUsage(connection.accessToken, proxyOptions);
+  const usage = await withAutoPingDeadline(
+    `${provider}:${connection.id} usage`,
+    (signal) => handler.getUsage(connection.accessToken, proxyOptions, { signal }),
+  );
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
   const resetAt = quota?.resetAt;
@@ -227,7 +260,10 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
   if (wasPingedRecently(connection, providerConfig.minPingIntervalMs, now)) return;
   if (lastPingedResetKey === resetKey) return;
 
-  const ok = await handler.sendPing(connection, providerConfig, proxyOptions, deps);
+  const ok = await withAutoPingDeadline(
+    `${provider}:${connection.id} ping`,
+    (signal) => handler.sendPing(connection, providerConfig, proxyOptions, deps, signal),
+  );
   if (!ok) {
     // Do not mark reset as pinged unless upstream accepted the tiny request.
     state.failureCache[key] = Date.now();

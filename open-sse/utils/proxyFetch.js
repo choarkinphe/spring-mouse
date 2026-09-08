@@ -236,7 +236,9 @@ async function getDispatcher(proxyUrl) {
  * Create HTTPS request with manual socket connection (bypass DNS)
  */
 function abortError(reason) {
-  const error = reason instanceof Error ? reason : new Error(reason ? String(reason) : "The operation was aborted");
+  if (reason?.name === "AbortError") return reason;
+  const message = reason instanceof Error ? reason.message : (reason ? String(reason) : "The operation was aborted");
+  const error = new Error(message, reason instanceof Error ? { cause: reason } : undefined);
   error.name = "AbortError";
   return error;
 }

@@ -44,6 +44,49 @@ describe("Jina Reader fetch", () => {
     expect(JSON.parse(init.body)).toEqual({ url: "https://example.com/article" });
   });
 
+  it("cancels the upstream fetch when the client disconnects", async () => {
+    const client = new AbortController();
+    global.fetch.mockImplementationOnce((_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+
+    const pending = handleFetchCore({
+      url: "https://example.com/article",
+      provider: "jina-reader",
+      providerConfig: { timeoutMs: 30000 },
+      credentials: { apiKey: "jina-test-key" },
+      signal: client.signal,
+    });
+    client.abort("client disconnected");
+
+    await expect(pending).resolves.toMatchObject({ success: false, status: 499 });
+  });
+
+  it("cancels a stalled response body after headers arrive", async () => {
+    const client = new AbortController();
+    global.fetch.mockImplementationOnce(async (_url, { signal }) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "text/plain" }),
+      text: () => new Promise((_, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    }));
+
+    const pending = handleFetchCore({
+      url: "https://example.com/article",
+      provider: "jina-reader",
+      providerConfig: { timeoutMs: 30000 },
+      credentials: { apiKey: "jina-test-key" },
+      signal: client.signal,
+    });
+    await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    client.abort("client disconnected");
+
+    await expect(pending).resolves.toMatchObject({ success: false, status: 499 });
+  });
+
   it("returns the upstream status and error body", async () => {
     global.fetch.mockResolvedValueOnce(new Response(
       JSON.stringify({ detail: "Payment required" }),

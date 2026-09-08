@@ -1,3 +1,4 @@
+import { recordRoutingDuration } from "@/lib/system/concurrency.js";
 import { getApiKeyByValue, getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
@@ -9,7 +10,7 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
-import { getConnectionConcurrencyLimit, reserveConnectionSlot, releaseConnectionSlot } from "@/lib/redis/connectionSlots.js";
+import { getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
 // every request wait behind a SQLite read and a lastUsedAt write. Assignment
@@ -58,6 +59,7 @@ export async function authorizeModelAccess(provider, model, accessTags) {
  * @param {string|null} model - Model name for per-model rate limit filtering
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
+  const routingStarted = performance.now();
   // Normalize to Set for consistent handling
   const excludeSet = excludeConnectionIds instanceof Set
     ? excludeConnectionIds
@@ -98,8 +100,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
-    const settings = await getSettings();
+    const [connections, settings] = await Promise.all([
+      getProviderConnections({ provider: providerId, isActive: true }), getSettings(),
+    ]);
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
@@ -213,29 +216,26 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    // Reserve an upstream-account slot before issuing the request. This keeps
-    // 100 concurrent callers from stampeding a single account; Redis outages
-    // fail open so cached routing never becomes an availability dependency.
-    const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
-    const candidates = preferredIndex > 0
-      ? [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)]
-      : availableConnections;
-    let reservedConnection = null;
-    let slotReserved = false;
-    for (const candidate of candidates) {
-      const limit = getConnectionConcurrencyLimit(candidate, providerOverride);
-      const reservation = await reserveConnectionSlot(candidate.id, limit);
-      if (reservation === false) continue;
-      reservedConnection = candidate;
-      slotReserved = reservation === true;
-      break;
+    // Only chat callers that own the full response lifecycle request a lease.
+    // Media/model-list callers must not allocate slots they cannot release.
+    let lease = null;
+    if (options.reserveSlot === true) {
+      const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
+      const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
+      lease = await reserveConnectionSlot(candidates.map((candidate) => ({
+        id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, providerOverride),
+      })));
+      connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
-    // Saturation is a soft signal by default. If every account is at its
-    // configured hint, keep the request available rather than returning a
-    // synthetic 503; the upstream provider remains the final authority.
-    connection = reservedConnection || connection;
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    let resolvedProxy;
+    try {
+      resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    } catch (error) {
+      await lease?.release();
+      throw error;
+    }
 
+    recordRoutingDuration(performance.now() - routingStarted);
     return {
       authType: connection.authType,
       apiKey: connection.apiKey,
@@ -260,7 +260,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       lastError: connection.lastError,
       // Pass full connection for clearAccountError to read modelLock_* keys
       _connection: connection,
-      releaseRouteSlot: slotReserved ? () => releaseConnectionSlot(connection.id) : null,
+      releaseRouteSlot: lease?.release || null,
     };
 }
 

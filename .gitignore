@@ -55,6 +55,7 @@ source/*
 docs/*
 !docs/ARCHITECTURE.md
 !docs/PERFORMANCE-2026-09-08-memory-latency.md
+!docs/PERFORMANCE-MULTIWINDOW.md
 test/*
 open-sse/test/*
 RM.vn.md

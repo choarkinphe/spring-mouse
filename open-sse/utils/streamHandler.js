@@ -1,5 +1,5 @@
 // Stream handler with disconnect detection - shared for all providers
-import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { STREAM_STALL_TIMEOUT_MS, STREAM_STALL_CHECK_INTERVAL_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 // Get HH:MM:SS timestamp
@@ -69,6 +69,7 @@ export function createStreamController({ onDisconnect, onError, onComplete, log,
       cleanupClientAbortListener();
       if (error?.name === "AbortError") {
         logStream("⚡", "ABORTED");
+        onError?.(error);
         return;
       }
       logStream("✗", `ERROR: ${error?.message || error}${error?.stack ? `\n    ${error.stack}` : ""}`, true);
@@ -172,8 +173,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       streamController.handleDisconnect(reason || "cancelled");
-      reader.cancel();
-      writer.abort();
+      return Promise.allSettled([reader.cancel(reason), writer.abort(reason)]);
     }
   });
 }
@@ -187,7 +187,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * Measuring stall on the transform output caused false stalls and the
  * "failed to pipe response" error in Next.
  *
- * Any upstream chunk resets the timer. If no bytes arrive for
+ * Any upstream chunk updates the last-activity timestamp. If no bytes arrive for
  * STREAM_STALL_TIMEOUT_MS, abort the underlying fetch via the controller.
  *
  * @param {Response} providerResponse - Response from provider
@@ -206,27 +206,30 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       clearTimeout(stallCheckTimer);
       stallCheckTimer = null;
     }
+    streamController.signal?.removeEventListener("abort", clearStall);
   };
   // 优化：使用单一定时器进行低频检查，而非每 chunk 重置定时器
   const checkStall = () => {
+    stallCheckTimer = null;
     const now = Date.now();
     const gap = now - lastChunkAt;
     if (gap > stallTimeoutMs) {
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms`);
+      clearStall();
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
       stallCheckTimer = null;
-    } else if (chunkCount > 0) {
-      // 如果还有活跃 chunk，继续检查
-      stallCheckTimer = setTimeout(checkStall, 1000); // 每秒检查一次
+    } else {
+      stallCheckTimer = setTimeout(checkStall, STREAM_STALL_CHECK_INTERVAL_MS);
+      stallCheckTimer.unref?.();
     }
   };
 
   const armStall = () => {
-    clearStall();
-    // 启动低频检查（每秒）而非每 chunk 重置
+    // One watchdog for the entire stream, not one allocation per token.
     if (!stallCheckTimer) {
-      stallCheckTimer = setTimeout(checkStall, 1000);
+      stallCheckTimer = setTimeout(checkStall, STREAM_STALL_CHECK_INTERVAL_MS);
+      stallCheckTimer.unref?.();
     }
   };
 
@@ -243,7 +246,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     abort: () => { clearStall(); streamController.abort(); }
   };
 
-  armStall();
+  if (!streamController.signal?.aborted) {
+    armStall();
+    streamController.signal?.addEventListener("abort", clearStall, { once: true });
+  }
   dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
 
   const upstreamTap = new TransformStream({
@@ -257,7 +263,6 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       if (isDebugEnabled && (chunkCount <= 5 || chunkCount % 20 === 0 || gap > 5000)) {
         dbg(tag, `chunk #${chunkCount} | size=${sz}B | gap=${gap}ms | total=${totalBytes}B`);
       }
-      armStall();
       controller.enqueue(chunk);
     },
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }

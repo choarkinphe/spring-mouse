@@ -1,4 +1,5 @@
 import os from "node:os";
+import { getConcurrencyStatus } from "./concurrency.js";
 import { getAppVersion } from "@/lib/db/version";
 
 function roundToOneDecimal(value) {
@@ -62,6 +63,8 @@ export function createSystemStatusCollector({
   };
 }
 
-const getSystemStatus = createSystemStatusCollector();
+const collect = createSystemStatusCollector();
 
-export { getSystemStatus };
+export function getSystemStatus() {
+  return { ...collect(), concurrency: getConcurrencyStatus() };
+}

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateProviderConnection: vi.fn(),
   routeLine: vi.fn(),
+  reserve: vi.fn(), release: vi.fn(), proxy: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -14,8 +15,9 @@ vi.mock("@/lib/localDb", () => ({
   updateProviderConnection: mocks.updateProviderConnection,
   getSettings: mocks.getSettings,
 }));
-vi.mock("@/lib/network/connectionProxy", () => ({
-  resolveConnectionProxyConfig: vi.fn(async () => ({ connectionProxyEnabled: false, connectionProxyUrl: "", connectionNoProxy: "" })),
+vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: mocks.proxy }));
+vi.mock("@/lib/redis/connectionSlots.js", () => ({
+  reserveConnectionSlot: mocks.reserve, getConnectionConcurrencyLimit: () => 16, getLocalSlotStatus: () => ({ active: 0, redis: 0 }),
 }));
 vi.mock("@/lib/apiKeyQuota.js", () => ({ checkApiKeyQuota: vi.fn() }));
 vi.mock("@/sse/utils/logger.js", () => ({
@@ -35,6 +37,9 @@ describe("provider account load balancing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetProviderUserAssignments();
+    mocks.proxy.mockResolvedValue({ connectionProxyEnabled: false });
+    mocks.reserve.mockImplementation(async (candidates) => ({ connectionId: candidates[0].id, release: mocks.release }));
+    mocks.release.mockResolvedValue(undefined);
     mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: {} });
     mocks.updateProviderConnection.mockResolvedValue({});
   });
@@ -48,6 +53,7 @@ describe("provider account load balancing", () => {
     const credentials = await getProviderCredentials("openai", null, "gpt-5", { accessTags: ["team-a"] });
 
     expect(credentials.connectionId).toBe("first");
+    expect(mocks.reserve).not.toHaveBeenCalled();
   });
 
   it("keeps the same API key on its assigned account and rotates new users", async () => {
@@ -89,4 +95,20 @@ describe("provider account load balancing", () => {
 
     expect(credentials).toEqual({ accessDenied: true, resource: "model" });
   });
+
+it("reserves once with only eligible accounts and returns the lifecycle release", async () => {
+  mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: {} });
+  mocks.getProviderConnections.mockResolvedValue([connection("first"), connection("second"), connection("third")]);
+  mocks.reserve.mockResolvedValue({ connectionId: "third", release: mocks.release });
+  const credentials = await getProviderCredentials("openai", new Set(["first"]), "gpt-5", { reserveSlot: true });
+  expect(mocks.reserve).toHaveBeenLastCalledWith([{ id: "second", limit: 16 }, { id: "third", limit: 16 }]);
+  expect(credentials.connectionId).toBe("third"); expect(credentials.releaseRouteSlot).toBe(mocks.release);
+});
+it("releases a reservation when proxy resolution throws", async () => {
+  mocks.getProviderConnections.mockResolvedValue([connection("first")]);
+  mocks.reserve.mockResolvedValue({ connectionId: "first", release: mocks.release });
+  mocks.proxy.mockRejectedValueOnce(new Error("bad proxy"));
+  await expect(getProviderCredentials("openai", null, "gpt-5", { reserveSlot: true })).rejects.toThrow("bad proxy");
+  expect(mocks.release).toHaveBeenCalled();
+});
 });

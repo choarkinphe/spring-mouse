@@ -1,45 +1,45 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const client = {
-  eval: vi.fn(async () => 1),
-  mGet: vi.fn(async () => ["2", null]),
-};
-
-vi.mock("../../src/lib/redis/client.js", () => ({
-  getRedisClient: vi.fn(async () => client),
-}));
-
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const mocks = vi.hoisted(() => ({ eval: vi.fn(), zRem: vi.fn(async () => 1), offline: false }));
+vi.mock("../../src/lib/redis/routingClient.js", () => ({ routingRedis: async (fn) => mocks.offline ? null : fn(mocks) }));
 const slots = await import("../../src/lib/redis/connectionSlots.js");
-
-describe("connection slot reservations", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("uses a safe default and allows a per-connection override", () => {
-    expect(slots.getConnectionConcurrencyLimit({ providerSpecificData: { maxConcurrentStreams: 2 } })).toBe(2);
-    expect(slots.getConnectionConcurrencyLimit({}, { maxConcurrentStreams: 3 })).toBe(3);
-    expect(slots.getConnectionConcurrencyLimit({})).toBeGreaterThan(0);
+const candidates = [{ id: "a", limit: 2 }, { id: "b", limit: 2 }];
+let leases = [];
+afterEach(async () => { for (const lease of leases) await lease.release(); leases = []; });
+beforeEach(() => { vi.clearAllMocks(); mocks.offline = false; mocks.eval.mockResolvedValue(1); });
+describe("unique account leases", () => {
+  it("chooses and reserves in one command even with many accounts", async () => {
+    mocks.eval.mockResolvedValue(2);
+    const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);
+    expect(lease.connectionId).toBe("b"); expect(mocks.eval).toHaveBeenCalledOnce();
+    expect(mocks.eval.mock.calls[0][1].keys).toHaveLength(2);
+    await lease.release(); await lease.release();
+    expect(mocks.zRem).toHaveBeenCalledOnce();
+    expect(slots.getLocalSlotStatus().active).toBe(0);
   });
-
-  it("atomically reserves and releases a connection slot", async () => {
-    await expect(slots.reserveConnectionSlot("conn-1", 4)).resolves.toBe(true);
-    await expect(slots.releaseConnectionSlot("conn-1")).resolves.toBe(true);
-    expect(client.eval).toHaveBeenCalledTimes(2);
-    expect(client.eval.mock.calls[0][1].keys).toEqual(["spring-mouse:routing:connection:conn-1:active"]);
-    expect(client.eval.mock.calls[0][1].arguments[0]).toBe("4");
+  it("uses different release tokens for overlapping requests", async () => {
+    leases = await Promise.all(Array.from({length: 100}, () => slots.reserveConnectionSlot(candidates)));
+    const tokens = mocks.eval.mock.calls.map(([, opts]) => opts.arguments[0]);
+    expect(new Set(tokens).size).toBe(100);
+    expect(slots.getLocalSlotStatus().active).toBe(100);
   });
-
-  it("returns false when Redis reports a full account and fails open on Redis outage", async () => {
-    client.eval.mockResolvedValueOnce(0);
-    await expect(slots.reserveConnectionSlot("conn-1", 1)).resolves.toBe(false);
-    client.eval.mockRejectedValueOnce(new Error("redis unavailable"));
-    await expect(slots.reserveConnectionSlot("conn-1", 1)).resolves.toBeNull();
+  it("balances AND counts overflow during Redis outage", async () => {
+    mocks.offline = true;
+    leases = await Promise.all(Array.from({length: 20}, () => slots.reserveConnectionSlot(candidates)));
+    expect(leases.filter((l) => l.connectionId === "a")).toHaveLength(10);
+    expect(leases.filter((l) => l.connectionId === "b")).toHaveLength(10);
+    expect(slots.getLocalSlotStatus()).toEqual({active: 20, redis: 0});
   });
-
-  it("reads account load in one Redis round trip", async () => {
-    await expect(slots.getConnectionSlotUsage(["a", "b"])).resolves.toEqual({ a: 2, b: 0 });
-    expect(client.mGet).toHaveBeenCalledWith([
-      "spring-mouse:routing:connection:a:active",
-      "spring-mouse:routing:connection:b:active",
-    ]);
+  it("shares live accounting across module reloads / route bundles", async () => {
+    const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);
+    vi.resetModules();
+    const reloaded = await import("../../src/lib/redis/connectionSlots.js");
+    expect(reloaded.getLocalSlotStatus().active).toBe(1);
+    await lease.release();
+    expect(reloaded.getLocalSlotStatus().active).toBe(0);
+  });
+  it("uses account/provider overrides and a consistent default", () => {
+    expect(slots.getConnectionConcurrencyLimit({providerSpecificData: {maxConcurrentStreams: 2}})).toBe(2);
+    expect(slots.getConnectionConcurrencyLimit({}, {maxConcurrentStreams: 3})).toBe(3);
+    expect(slots.getConnectionConcurrencyLimit({})).toBe(16);
   });
 });

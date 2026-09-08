@@ -5,6 +5,37 @@ import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 
+function abortError(reason) {
+  const error = reason instanceof Error ? reason : new Error(reason ? String(reason) : "The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Wait for a retry delay without retaining the request after its client has
+ * disconnected. `setTimeout` alone leaves retries pending until the full
+ * backoff expires, even though no caller can consume the result.
+ */
+function waitForRetry(delayMs, signal) {
+  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+  if (!signal) return new Promise(resolve => setTimeout(resolve, delayMs));
+
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(abortError(signal.reason));
+    };
+
+    timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * BaseExecutor - Base class for provider executors
  */
@@ -120,7 +151,7 @@ export class BaseExecutor {
       }
       retryAttemptsByUrl[urlIndex]++;
       log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${waitMs / 1000}s`);
-      await new Promise(resolve => setTimeout(resolve, waitMs));
+      await waitForRetry(waitMs, signal);
       return true;
     };
 

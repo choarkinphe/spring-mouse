@@ -14,12 +14,20 @@ function getTimeString() {
  * @param {object} options.log - Logger instance
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
+ * @param {AbortSignal|null} options.clientSignal - Incoming request signal; aborts upstream work when the client disconnects
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", clientSignal = null } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
-  let abortTimeout = null;
+  let removeClientAbortListener = null;
+
+  const cleanupClientAbortListener = () => {
+    if (removeClientAbortListener) {
+      removeClientAbortListener();
+      removeClientAbortListener = null;
+    }
+  };
 
   // Only abnormal terminations are logged; normal completion is covered by "📊 done".
   // isError uses errorLine (always shown, ignores LOG_LEVEL) so failures survive quiet levels.
@@ -30,60 +38,57 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     else console.log(`[${getTimeString()}] ${symbol} ${provider}/${model} · ${status} · ${duration}ms`);
   };
 
-  return {
+  const handleDisconnect = (reason = "client_closed") => {
+    if (disconnected) return;
+    disconnected = true;
+    logStream("⚡", `DISCONNECT: ${reason}`);
+    dbg("CTRL", `${provider}/${model} | disconnect=${reason} | dur=${Date.now() - startTime}ms`);
+    cleanupClientAbortListener();
+    // A disconnected client cannot consume a response. Abort upstream work
+    // immediately so hung channels cannot accumulate pending fetches.
+    abortController.abort(reason);
+    onDisconnect?.({ reason, duration: Date.now() - startTime });
+  };
+
+  const controller = {
     signal: abortController.signal,
     startTime,
-
     isConnected: () => !disconnected,
-
-    // Call when client disconnects
-    handleDisconnect: (reason = "client_closed") => {
-      if (disconnected) return;
-      disconnected = true;
-
-      logStream("⚡", `DISCONNECT: ${reason}`);
-      dbg("CTRL", `${provider}/${model} | disconnect=${reason} | dur=${Date.now() - startTime}ms`);
-
-      // Delay abort to allow cleanup
-      abortTimeout = setTimeout(() => {
-        abortController.abort();
-      }, 500);
-
-      onDisconnect?.({ reason, duration: Date.now() - startTime });
-    },
-
+    handleDisconnect,
     // Call when stream completes normally (no line here — "📊 done" is authoritative)
     handleComplete: () => {
       if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
+      cleanupClientAbortListener();
     },
-
     // Call on error
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
-
-      if (abortTimeout) {
-        clearTimeout(abortTimeout);
-        abortTimeout = null;
-      }
-
-      if (error.name === "AbortError") {
+      cleanupClientAbortListener();
+      if (error?.name === "AbortError") {
         logStream("⚡", "ABORTED");
         return;
       }
-
-      logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
+      logStream("✗", `ERROR: ${error?.message || error}${error?.stack ? `\n    ${error.stack}` : ""}`, true);
       onError?.(error);
     },
-
-    abort: () => abortController.abort()
+    abort: (reason = "aborted") => {
+      cleanupClientAbortListener();
+      abortController.abort(reason);
+    }
   };
+
+  if (clientSignal) {
+    const handleClientAbort = () => handleDisconnect(clientSignal.reason || "client_aborted");
+    if (clientSignal.aborted) handleClientAbort();
+    else {
+      clientSignal.addEventListener("abort", handleClientAbort, { once: true });
+      removeClientAbortListener = () => clientSignal.removeEventListener("abort", handleClientAbort);
+    }
+  }
+
+  return controller;
 }
 
 /**

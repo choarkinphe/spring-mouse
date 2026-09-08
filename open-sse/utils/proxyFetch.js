@@ -235,17 +235,73 @@ async function getDispatcher(proxyUrl) {
 /**
  * Create HTTPS request with manual socket connection (bypass DNS)
  */
-async function createBypassRequest(parsedUrl, realIP, options) {
+function abortError(reason) {
+  const error = reason instanceof Error ? reason : new Error(reason ? String(reason) : "The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Create an HTTPS request with manual socket connection (bypass DNS).
+ *
+ * This path cannot rely on fetch's built-in abort handling: it owns the raw
+ * socket. Keep the supplied signal attached until the response stream closes,
+ * so both client disconnects and upstream timeouts destroy a hung handshake or
+ * a stalled response body.
+ */
+export async function createBypassRequest(parsedUrl, realIP, options = {}) {
   const httpsModule = await import("https");
   const netModule = await import("net");
   // CJS modules expose exports via .default in ESM dynamic import context
   const https = httpsModule.default ?? httpsModule;
   const net = netModule.default ?? netModule;
+  const port = Number.parseInt(parsedUrl.port, 10) || HTTPS_PORT;
+
+  if (options.signal?.aborted) throw abortError(options.signal.reason);
 
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let request = null;
+    let response = null;
+    let settled = false;
+    let cleanupAbort = () => {};
 
-    socket.connect(HTTPS_PORT, realIP, () => {
+    const cleanup = () => {
+      cleanupAbort();
+      cleanupAbort = () => {};
+    };
+
+    const rejectBeforeResponse = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const destroy = (error) => {
+      try { response?.destroy?.(error); } catch {}
+      try { request?.destroy?.(error); } catch {}
+      try { socket.destroy(error); } catch {}
+    };
+
+    const handleAbort = () => {
+      const error = abortError(options.signal?.reason);
+      destroy(error);
+      rejectBeforeResponse(error);
+    };
+
+    if (options.signal) {
+      options.signal.addEventListener("abort", handleAbort, { once: true });
+      cleanupAbort = () => options.signal.removeEventListener("abort", handleAbort);
+    }
+
+    socket.once("error", rejectBeforeResponse);
+    socket.connect(port, realIP, () => {
+      if (options.signal?.aborted) {
+        handleAbort();
+        return;
+      }
+
       const reqOptions = {
         socket,
         // SNI + cert hostname are validated against the hostname the caller
@@ -263,8 +319,18 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         },
       };
 
-      const req = https.request(reqOptions, (res) => {
-        const response = {
+      request = https.request(reqOptions, (res) => {
+        response = res;
+        if (settled) {
+          destroy(abortError(options.signal?.reason));
+          return;
+        }
+        settled = true;
+        const release = () => cleanup();
+        res.once("end", release);
+        res.once("close", release);
+        res.once("error", release);
+        resolve({
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
           statusText: res.statusMessage,
@@ -276,18 +342,15 @@ async function createBypassRequest(parsedUrl, realIP, options) {
             return Buffer.concat(chunks).toString();
           },
           json: async () => JSON.parse(await response.text()),
-        };
-        resolve(response);
+        });
       });
 
-      req.on("error", reject);
+      request.once("error", rejectBeforeResponse);
       if (options.body) {
-        req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
+        request.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
       }
-      req.end();
+      request.end();
     });
-
-    socket.on("error", reject);
   });
 }
 

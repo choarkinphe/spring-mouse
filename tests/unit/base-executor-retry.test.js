@@ -84,6 +84,26 @@ describe("BaseExecutor.execute — network error retry/fallback", () => {
   });
 });
 
+describe("BaseExecutor.execute — cancellation during retry backoff", () => {
+  it("stops retrying immediately when the client disconnects during backoff", async () => {
+    const ex = makeExec({ baseUrl: "https://x/api", retry: { 502: { attempts: 1, delayMs: 1000 } } });
+    const client = new AbortController();
+    fetchMock
+      .mockResolvedValueOnce(res(502))
+      .mockResolvedValueOnce(res(200));
+
+    const pending = ex.execute({ model: "m", body: {}, stream: false, credentials: creds, signal: client.signal });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const abortStartedAt = Date.now();
+    client.abort("client disconnected");
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(Date.now() - abortStartedAt).toBeLessThan(250);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("BaseExecutor.execute — computeRetryDelay hook veto", () => {
   it("only invokes computeRetryDelay when status has retry config", async () => {
     const ex = makeExec({ baseUrl: "https://x/api", retry: { 503: { attempts: 1, delayMs: 0 } } });

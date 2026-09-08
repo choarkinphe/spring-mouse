@@ -286,3 +286,33 @@ Tests       30 passed
 本次事故不是单个 Provider 凭证或网络线路的局部故障，而是一个横切请求入口的基础设施兼容性缺陷。根本教训是：
 
 > 跨 realm 的 Web API 对象不能使用全局构造器做品牌相关的复制；监控和审计逻辑必须 fail-open；横切基础设施改动必须在真实运行时完成入口级灰度验证。
+
+## 11. 2026 年 9 月 8 日发布门禁修正
+
+事故修复后的首版发布门禁在 GitHub Actions 中使用了：
+
+```text
+npm --prefix tests exec vitest run -- --config vitest.config.js ...
+```
+
+`--prefix` 会改变 npm 使用的项目目录，但不会改变 Vitest 解析相对配置文件时的当前工作目录。GitHub Actions 因此从仓库根目录查找 `vitest.config.js`，触发：
+
+```text
+[UNRESOLVED_ENTRY] Cannot resolve entry module vitest.config.js
+```
+
+该问题不会影响生产服务，但会导致发布门禁在测试启动阶段失败。2026 年 9 月 8 日已修正为在 `tests` 工作目录执行：
+
+```text
+working-directory: tests
+npm exec vitest run -- --config vitest.config.js ...
+```
+
+本地按修正后的命令验证结果为：
+
+```text
+Test Files  5 passed
+Tests       30 passed
+```
+
+本次问题的教训是：CI 命令必须在与本地测试相同的工作目录下验证，不能只验证依赖安装成功；发布门禁还应增加“配置文件存在性”和“命令实际启动”检查。

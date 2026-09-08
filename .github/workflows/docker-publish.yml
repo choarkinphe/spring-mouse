@@ -23,8 +23,9 @@ jobs:
           npm install --ignore-scripts
           npm --prefix tests install --ignore-scripts
       - name: Run critical request-path regression tests
+        working-directory: tests
         run: >-
-          npm --prefix tests exec vitest run --
+          npm exec vitest run --
           --config vitest.config.js
           unit/network-traffic.test.js
           unit/ingress-usage.test.js

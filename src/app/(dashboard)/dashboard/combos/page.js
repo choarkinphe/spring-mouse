@@ -6,9 +6,9 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, v
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
 import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle } from "@/shared/components";
-import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -161,7 +161,6 @@ export default function CombosPage() {
   const [comboStrategies, setComboStrategies] = useState({});
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
-  const { copied, copy } = useCopyToClipboard();
 
   useEffect(() => {
     fetchData();
@@ -248,16 +247,38 @@ export default function CombosPage() {
     }
   };
 
+  const handleUpdateComboAccessTags = async (id, accessTags) => {
+    try {
+      const res = await fetch(`/api/combos/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessTags }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setCombos((current) => current.map((combo) => combo.id === id ? updated : combo));
+        return true;
+      }
+      const err = await res.json();
+      alert(err.error || "更新权限标签失败");
+    } catch (error) {
+      console.log("Error updating combo access tags:", error);
+      alert("更新权限标签失败");
+    }
+    return false;
+  };
+
   const handleDelete = async (id) => {
     setConfirmState({
-      title: "Delete Combo",
-      message: "Delete this combo?",
+      title: "删除组合",
+      message: "确定删除这个模型组合吗？删除后无法恢复。",
       onConfirm: async () => {
         setConfirmState(null);
         try {
           const res = await fetch(`/api/combos/${id}`, { method: "DELETE" });
           if (res.ok) {
-            setCombos(combos.filter(c => c.id !== id));
+            setCombos((current) => current.filter((combo) => combo.id !== id));
+            setEditingCombo((current) => current?.id === id ? null : current);
           }
         } catch (error) {
           console.log("Error deleting combo:", error);
@@ -375,11 +396,9 @@ export default function CombosPage() {
                       combo={combo}
                       getCaps={getCaps}
                       activeProviders={activeProviders}
-                      copied={copied}
-                      onCopy={copy}
                       onEdit={() => setEditingCombo(combo)}
-                      onDelete={() => handleDelete(combo.id)}
                       onToggleActive={(isActive) => handleToggleComboActive(combo.id, isActive)}
+                      onUpdateAccessTags={(accessTags) => handleUpdateComboAccessTags(combo.id, accessTags)}
                       strategy={comboStrategies[combo.name] || {}}
                       onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
                     />
@@ -411,6 +430,7 @@ export default function CombosPage() {
           combo={editingCombo}
           onClose={() => setEditingCombo(null)}
           onSave={(data) => handleUpdate(editingCombo.id, data)}
+          onDelete={() => handleDelete(editingCombo.id)}
           activeProviders={activeProviders}
           getCaps={getCaps}
           groupOptions={groupOptions}
@@ -431,133 +451,245 @@ export default function CombosPage() {
 }
 
 const STRATEGY_OPTIONS = [
-  { value: "fallback", label: "回退", description: "按模型顺序尝试，失败后切换到下一个", icon: "format_list_numbered" },
+  { value: "fallback", label: "回退", description: "按模型顺序尝试，失败后切换到下一个", icon: "arrow_right_alt" },
   { value: "round-robin", label: "轮询", description: "在模型之间轮换请求以分摊负载", icon: "sync" },
-  { value: "fusion", label: "融合", description: "并行调用面板模型，并由裁判模型综合结果", icon: "account_tree" },
+  { value: "fusion", label: "融合", description: "并行调用面板模型，并由裁判模型综合结果", icon: "merge_type" },
 ];
 
-function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdit, onDelete, onToggleActive, strategy = {}, onSetStrategy }) {
+function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, strategy = {}, onSetStrategy }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [addingAccessTag, setAddingAccessTag] = useState(false);
+  const [newAccessTag, setNewAccessTag] = useState("");
+  const [savingAccessTags, setSavingAccessTags] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
   const isFusion = current === "fusion";
   const isActive = combo.isActive !== false;
   const roundRobinLimit = strategy.stickyRoundRobinLimit || 1;
   const exposedCapabilities = getComboCapabilities(combo.capabilities);
+  const accessTags = Array.isArray(combo.accessTags) ? combo.accessTags : [];
 
   const handleRoundRobinLimitChange = (value) => {
     const next = Number.parseInt(value, 10);
     if (Number.isFinite(next) && next > 0) onSetStrategy({ stickyRoundRobinLimit: next });
   };
 
-  const activeStrategy = STRATEGY_OPTIONS.find((option) => option.value === current) || STRATEGY_OPTIONS[0];
+  const persistAccessTags = async (nextTags) => {
+    setSavingAccessTags(true);
+    const saved = await onUpdateAccessTags(nextTags);
+    setSavingAccessTags(false);
+    return saved;
+  };
+
+  const handleAddAccessTag = async () => {
+    const nextTags = normalizeAccessTags([...accessTags, ...newAccessTag.split(/[,，\n]/)]);
+    if (nextTags.length === accessTags.length) {
+      setNewAccessTag("");
+      setAddingAccessTag(false);
+      return;
+    }
+    const saved = await persistAccessTags(nextTags);
+    if (saved) {
+      setNewAccessTag("");
+      setAddingAccessTag(false);
+    }
+  };
+
+  const handleRemoveAccessTag = async (tag) => {
+    await persistAccessTags(accessTags.filter((item) => item !== tag));
+  };
+
+  const nodeRole = (index) => {
+    if (current === "fusion") return "并行";
+    if (current === "round-robin") return "轮询";
+    return index === 0 ? "首选" : `备选 ${index}`;
+  };
 
   return (
-    <section className="rounded-xl border border-border-subtle bg-surface/35">
-      <div className="flex flex-col gap-3 border-b border-white/[0.065] bg-white/[0.018] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
-            <span className="material-symbols-outlined text-[19px]">layers</span>
+    <section className={`overflow-hidden rounded-xl border bg-surface/40 transition-colors ${isActive ? "border-border-subtle" : "border-white/[0.055] opacity-75"}`}>
+      <header className="flex flex-col gap-3 border-b border-white/[0.065] bg-white/[0.018] px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3.5">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/10 text-[#7dd3fc]">
+            <span className="material-symbols-outlined text-[20px]">layers</span>
           </span>
           <div className="min-w-0">
-            <h2 className="truncate font-mono text-sm font-semibold text-text-main">{combo.name}</h2>
-            <p className="mt-0.5 text-xs text-text-muted">{combo.models.length} 个模型 · {isActive ? `当前使用${activeStrategy.label}策略` : "已禁用，不参与路由"}</p>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h2 className="truncate font-mono text-[15px] font-semibold text-text-main">{combo.name}</h2>
+              <span className="rounded-md border border-white/[0.08] bg-black/[0.12] px-1.5 py-0.5 text-[10px] text-text-muted" title="数值越小越靠前">排序 {combo.sortOrder ?? 0}</span>
+            </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
-          <span className="rounded-md border border-white/[0.08] bg-black/[0.12] px-2 py-1">{combo.models.length} 个节点</span>
-          <span className="rounded-md border border-white/[0.08] bg-black/[0.12] px-2 py-1" title="数值越小越靠前">排序 {combo.sortOrder ?? 0}</span>
-          <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/[0.12] px-2 py-1" title={isActive ? "禁用组合" : "启用组合"}>
-            <span className={`text-[11px] ${isActive ? "text-emerald-200" : "text-text-muted"}`}>{isActive ? "已启用" : "已禁用"}</span>
+
+        <div className="inline-flex h-8 shrink-0 items-stretch overflow-hidden rounded-lg border border-white/[0.08] bg-black/[0.12]">
+          <div className="flex items-center gap-2 border-r border-white/[0.08] px-2.5" title={isActive ? "禁用组合" : "启用组合"}>
+            <span className={`size-1.5 rounded-full ${isActive ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.55)]" : "bg-slate-500"}`} />
+            <span className={`text-[11px] font-medium ${isActive ? "text-emerald-200" : "text-text-muted"}`}>{isActive ? "路由中" : "已停用"}</span>
             <Toggle checked={isActive} onChange={onToggleActive} size="sm" />
           </div>
-          <span className="rounded-md border border-[#38bdf8]/15 bg-[#38bdf8]/[0.06] px-2 py-1 text-[#bae6fd]">{activeStrategy.label}</span>
-          {isFusion && <span className="rounded-md border border-violet-400/15 bg-violet-400/[0.06] px-2 py-1 text-violet-200">裁判已配置</span>}
+          <button type="button" onClick={onEdit} className="flex w-8 items-center justify-center text-text-muted transition-colors hover:bg-[#38bdf8]/[0.07] hover:text-[#7dd3fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#38bdf8]/60" title="组合设置" aria-label="组合设置">
+            <span className="material-symbols-outlined text-[16px]">settings</span>
+          </button>
         </div>
-      </div>
+      </header>
 
-      <div className="hidden grid-cols-[minmax(20rem,1.4fr)_minmax(17rem,0.9fr)_7rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
-        <span>模型节点</span>
-        <span className="border-l border-white/[0.065] pl-6">调度策略</span>
-        <span className="text-center">操作</span>
-      </div>
+      <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_16rem]">
+        <div className="min-w-0 px-5 py-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold text-text-main">路由节点</h3>
+              <p className="mt-0.5 text-[11px] text-text-muted">{current === "fallback" ? "按以下顺序依次尝试" : current === "round-robin" ? "请求在以下节点间轮换" : "以下节点将被并行调用"}</p>
+            </div>
+            <span className="rounded-full border border-white/[0.08] bg-black/[0.12] px-2 py-0.5 font-mono text-[10px] text-text-muted">{combo.models.length} 个</span>
+          </div>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(20rem,1.4fr)_minmax(17rem,0.9fr)_7rem] lg:items-center lg:gap-6">
-        <div className="min-w-0">
-          <div className="flex min-w-0 flex-wrap items-start gap-1.5">
-            {combo.models.length === 0 ? (
-              <span className="text-xs italic text-text-muted">尚未添加模型</span>
-            ) : (
-              combo.models.map((entry, index) => {
+          {combo.models.length === 0 ? (
+            <div className="flex min-h-20 items-center justify-center rounded-lg border border-dashed border-white/[0.09] bg-black/[0.06] text-xs italic text-text-muted">尚未添加模型</div>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-white/[0.075] bg-black/[0.07]">
+              {combo.models.map((entry, index) => {
                 const model = getComboModelValue(entry);
                 const schedule = getComboModelSchedule(entry);
                 const summary = schedule ? formatModelScheduleSummary(schedule) : null;
                 return (
-                  <span
-                    key={`${model}-${index}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-white/[0.05] bg-black/[0.04] px-2 py-1 dark:bg-white/[0.03]"
-                    title={summary ? `已配置 ${summary}` : undefined}
-                  >
-                    <code className="truncate font-mono text-[11px] text-[#c5d4e2]">{model}</code>
-                    <CapacityBadges caps={getCaps?.(model)} />
-                    {summary && (
-                      <Tooltip text={formatModelScheduleDetail(schedule)} position="top">
-                        <span
-                          className="shrink-0 rounded-full border border-[#38bdf8]/25 bg-[#38bdf8]/10 px-1.5 py-0 text-[9px] font-medium text-[#7dd3fc]"
-                          aria-label={`时段明细：${formatModelScheduleDetail(schedule).replace("\n", "，")}`}
-                        >
-                          {summary}
-                        </span>
-                      </Tooltip>
-                    )}
-                  </span>
+                  <div key={`${model}-${index}`} className={`flex min-w-0 items-center gap-3 px-3 py-2.5 ${index > 0 ? "border-t border-white/[0.065]" : ""}`}>
+                    <span className={`flex size-6 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-semibold ${index === 0 && current === "fallback" ? "bg-[#38bdf8]/15 text-[#7dd3fc]" : "bg-white/[0.055] text-text-muted"}`}>{index + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <code className="truncate font-mono text-[12px] font-medium text-[#c5d4e2]">{model}</code>
+                        <CapacityBadges caps={getCaps?.(model)} />
+                        {summary && (
+                          <Tooltip text={formatModelScheduleDetail(schedule)} position="top">
+                            <span className="shrink-0 rounded-full border border-[#38bdf8]/25 bg-[#38bdf8]/10 px-1.5 py-0 text-[9px] font-medium text-[#7dd3fc]" aria-label={`时段明细：${formatModelScheduleDetail(schedule).replace("\n", "，")}`}>{summary}</span>
+                          </Tooltip>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-[10px] text-text-muted">{summary ? "按配置时段参与路由" : "全天参与路由"}</p>
+                    </div>
+                    <span className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-medium ${current === "fusion" ? "bg-violet-400/[0.08] text-violet-200" : current === "round-robin" ? "bg-cyan-400/[0.08] text-cyan-200" : index === 0 ? "bg-emerald-400/[0.08] text-emerald-200" : "bg-white/[0.045] text-text-muted"}`}>{nodeRole(index)}</span>
+                  </div>
                 );
-              })
-            )}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
-            <span className="font-medium text-text-muted">对外声明</span>
-            {exposedCapabilities.contextWindow && <span className="rounded border border-white/[0.08] bg-black/[0.12] px-1.5 py-0.5 font-mono text-[#c5d4e2]">{formatContextWindowK(exposedCapabilities.contextWindow)} ctx</span>}
-            {exposedCapabilities.vision && <span className="inline-flex items-center gap-0.5 rounded border border-[#38bdf8]/20 bg-[#38bdf8]/[0.06] px-1.5 py-0.5 text-[#7dd3fc]"><span className="material-symbols-outlined text-[12px]">visibility</span>视觉</span>}
-            {exposedCapabilities.audioInput && <span className="inline-flex items-center gap-0.5 rounded border border-violet-400/20 bg-violet-400/[0.06] px-1.5 py-0.5 text-violet-200"><span className="material-symbols-outlined text-[12px]">graphic_eq</span>音频</span>}
-            {!exposedCapabilities.contextWindow && !exposedCapabilities.vision && !exposedCapabilities.audioInput && <span className="text-text-muted">未声明</span>}
-          </div>
-          {isFusion && (
-            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-medium text-text-muted">裁判模型</span>
-              <button onClick={() => setShowJudgeSelect(true)} className="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary hover:bg-primary/5" title="选择用于汇总结果的裁判模型">
-                <span className="material-symbols-outlined text-[13px]">gavel</span>
-                <span className="truncate">{judge || "自动 · 第一个当前可用模型"}</span>
-              </button>
-              {judge && <button onClick={() => onSetStrategy({ judgeModel: "" })} className="rounded p-0.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500" title="恢复自动选择"><span className="material-symbols-outlined text-[13px]">close</span></button>}
+              })}
             </div>
           )}
         </div>
 
-        <div className="min-w-0 border-t border-white/[0.065] pt-3 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
-          <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label={`${combo.name} routing strategy`}>
+        <aside className="border-t border-white/[0.065] bg-black/[0.045] px-3 py-3 lg:border-l lg:border-t-0">
+          <div className="flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-[15px] text-[#7dd3fc]">tune</span>
+            <h3 className="text-[11px] font-semibold text-text-main">调度策略</h3>
+          </div>
+
+          <div className="mt-2 flex flex-col gap-1" role="radiogroup" aria-label={`${combo.name} 调度策略`}>
             {STRATEGY_OPTIONS.map((option) => {
               const selected = current === option.value;
               return (
-                <button key={option.value} type="button" role="radio" aria-checked={selected} onClick={() => onSetStrategy({ fallbackStrategy: option.value })} title={option.description} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${selected ? "border-[#38bdf8]/35 bg-[#38bdf8]/[0.09] text-[#7dd3fc]" : "border-white/[0.08] bg-black/[0.1] text-text-muted hover:border-[#38bdf8]/30 hover:text-text-main"}`}>
-                  <span className="material-symbols-outlined text-[14px]">{option.icon}</span>{option.label}
-                </button>
+                <div key={option.value} className={`overflow-hidden rounded-md border transition-colors ${selected ? "border-[#38bdf8]/30 bg-[#38bdf8]/[0.07]" : "border-white/[0.07] bg-black/[0.08]"}`}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => onSetStrategy({ fallbackStrategy: option.value })}
+                    className={`flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors ${selected ? "text-[#7dd3fc]" : "text-text-muted hover:bg-white/[0.035] hover:text-text-main"}`}
+                  >
+                    <span className={`flex size-6 shrink-0 items-center justify-center rounded-md ${selected ? "bg-[#38bdf8]/12" : "bg-white/[0.04]"}`}>
+                      <span className="material-symbols-outlined text-[14px]">{option.icon}</span>
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block text-[10px] font-medium ${selected ? "text-[#bae6fd]" : "text-text-main"}`}>{option.label}</span>
+                      <span className="mt-0.5 block text-[8px] leading-3 text-text-muted">{option.description}</span>
+                    </span>
+                    <span className={`size-1 shrink-0 rounded-full ${selected ? "bg-[#38bdf8]" : "bg-transparent"}`} />
+                  </button>
+
+                  {selected && option.value === "round-robin" && (
+                    <label className="flex items-center justify-between gap-3 border-t border-[#38bdf8]/15 px-2 py-1.5 text-[9px] text-text-muted" title="每个节点连续处理多少次请求后，再轮换到下一个节点">
+                      <span>每个节点连续请求</span>
+                      <span className="inline-flex items-center gap-1">
+                        <input type="number" min="1" value={roundRobinLimit} onChange={(event) => handleRoundRobinLimitChange(event.target.value)} className="h-6 w-8 rounded-md border border-[#38bdf8]/25 bg-black/[0.12] text-center font-mono text-[11px] text-[#bae6fd] outline-none focus:border-[#38bdf8]/50" aria-label={`${combo.name} 每个模型的轮询次数`} />
+                        <span>次</span>
+                      </span>
+                    </label>
+                  )}
+
+                  {selected && option.value === "fusion" && (
+                    <div className="border-t border-[#38bdf8]/15 px-2 py-1.5">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="shrink-0 text-[9px] text-text-muted">裁判模型</span>
+                        <button type="button" onClick={() => setShowJudgeSelect(true)} className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md border border-violet-400/20 bg-violet-400/[0.05] px-2 font-mono text-[9px] text-violet-200 transition-colors hover:border-violet-400/40 hover:bg-violet-400/[0.09]" title="选择用于汇总结果的裁判模型">
+                          <span className="material-symbols-outlined shrink-0 text-[12px]">gavel</span>
+                          <span className="truncate">{judge || "自动选择"}</span>
+                        </button>
+                        {judge && <button type="button" onClick={() => onSetStrategy({ judgeModel: "" })} className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="恢复自动选择" aria-label="恢复自动选择"><span className="material-symbols-outlined text-[13px]">close</span></button>}
+                      </div>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
-          {current === "round-robin" && (
-            <label className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/[0.12] px-2 py-1 text-[11px] text-text-muted">
-              <span>每模型</span><input type="number" min="1" value={roundRobinLimit} onChange={(event) => handleRoundRobinLimitChange(event.target.value)} className="w-7 bg-transparent text-center font-mono text-[11px] text-text-main outline-none" aria-label={`${combo.name} 每个模型的轮询次数`} /><span>次</span>
-            </label>
-          )}
+        </aside>
+      </div>
+
+      <footer className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-2 border-t border-white/[0.065] bg-white/[0.012] px-5 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="material-symbols-outlined text-[15px] text-[#7dd3fc]">deployed_code</span>
+          <span className="shrink-0 text-[10px] font-medium text-text-muted">对外能力</span>
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+            {exposedCapabilities.contextWindow && <span className="rounded border border-white/[0.08] bg-black/[0.12] px-1.5 py-0.5 font-mono text-[#c5d4e2]">{formatContextWindowK(exposedCapabilities.contextWindow)} ctx</span>}
+            {exposedCapabilities.vision && <span className="inline-flex items-center gap-0.5 rounded border border-[#38bdf8]/20 bg-[#38bdf8]/[0.06] px-1.5 py-0.5 text-[#7dd3fc]"><span className="material-symbols-outlined text-[12px]">visibility</span>视觉</span>}
+            {exposedCapabilities.audioInput && <span className="inline-flex items-center gap-0.5 rounded border border-violet-400/20 bg-violet-400/[0.06] px-1.5 py-0.5 text-violet-200"><span className="material-symbols-outlined text-[12px]">graphic_eq</span>音频</span>}
+            {!exposedCapabilities.contextWindow && !exposedCapabilities.vision && !exposedCapabilities.audioInput && <span className="text-[11px] text-text-muted">未声明</span>}
+          </div>
         </div>
 
-        <div className="flex items-center justify-end gap-1 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
-          <button onClick={(event) => { event.stopPropagation(); onCopy(combo.name, `combo-${combo.id}`); }} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]" title="复制组合名称" aria-label="复制组合名称"><span className="material-symbols-outlined text-[18px]">{copied === `combo-${combo.id}` ? "check" : "content_copy"}</span></button>
-          <button onClick={onEdit} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]" title="编辑组合" aria-label="编辑组合"><span className="material-symbols-outlined text-[18px]">edit</span></button>
-          <button onClick={onDelete} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="删除组合" aria-label="删除组合"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-auto" title={accessTags.length ? `拥有任一标签即可访问：${accessTags.join("、")}` : "未设置权限标签，所有 API 密钥均可访问"}>
+          <span className="hidden h-4 w-px bg-white/[0.08] sm:mr-1 sm:block" />
+          <span className="material-symbols-outlined text-[15px] text-violet-300">shield_lock</span>
+          <span className="shrink-0 text-[10px] font-medium text-text-muted">访问范围</span>
+          {savingAccessTags && <span className="text-[10px] text-text-muted">保存中...</span>}
+
+          {accessTags.length ? accessTags.map((tag) => (
+            <span key={tag} className="inline-flex h-7 items-center gap-1 rounded-md border border-violet-400/20 bg-violet-400/[0.08] pl-2 pr-1 font-mono text-[10px] text-violet-200">
+              {tag}
+              <button type="button" onClick={() => handleRemoveAccessTag(tag)} disabled={savingAccessTags} className="flex size-5 items-center justify-center rounded text-violet-300/60 transition-colors hover:bg-violet-400/10 hover:text-violet-100 disabled:cursor-wait disabled:opacity-40" title={`移除标签 ${tag}`} aria-label={`移除标签 ${tag}`}>
+                <span className="material-symbols-outlined text-[12px]">close</span>
+              </button>
+            </span>
+          )) : (
+            <span className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-400/15 bg-emerald-400/[0.06] px-2 text-[10px] text-emerald-200"><span className="material-symbols-outlined text-[13px]">public</span>公开访问</span>
+          )}
+
+          {addingAccessTag ? (
+            <span className="inline-flex h-7 items-center overflow-hidden rounded-md border border-violet-400/25 bg-black/[0.12] focus-within:border-violet-400/50">
+              <input
+                autoFocus
+                value={newAccessTag}
+                onChange={(event) => setNewAccessTag(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    handleAddAccessTag();
+                  }
+                  if (event.key === "Escape") {
+                    setNewAccessTag("");
+                    setAddingAccessTag(false);
+                  }
+                }}
+                placeholder="输入标签"
+                className="h-full w-24 bg-transparent px-2 text-[11px] text-text-main outline-none placeholder:text-text-muted"
+                aria-label="新增权限标签"
+              />
+              <button type="button" onClick={handleAddAccessTag} disabled={!newAccessTag.trim() || savingAccessTags} className="flex size-7 items-center justify-center border-l border-white/[0.08] text-violet-200 transition-colors hover:bg-violet-400/10 disabled:opacity-35" title="添加标签" aria-label="添加标签"><span className="material-symbols-outlined text-[14px]">check</span></button>
+              <button type="button" onClick={() => { setNewAccessTag(""); setAddingAccessTag(false); }} disabled={savingAccessTags} className="flex size-7 items-center justify-center border-l border-white/[0.08] text-text-muted transition-colors hover:bg-white/[0.05] hover:text-text-main disabled:opacity-35" title="取消添加" aria-label="取消添加"><span className="material-symbols-outlined text-[14px]">close</span></button>
+            </span>
+          ) : (
+            <button type="button" onClick={() => setAddingAccessTag(true)} disabled={savingAccessTags} className="inline-flex h-7 items-center gap-1 rounded-md border border-dashed border-white/[0.1] px-2 text-[10px] text-text-muted transition-colors hover:border-violet-400/30 hover:bg-violet-400/[0.045] hover:text-violet-200 disabled:cursor-wait disabled:opacity-40" title="添加权限标签">
+              <span className="material-symbols-outlined text-[13px]">add</span>
+              添加标签
+            </button>
+          )}
         </div>
-      </div>
+      </footer>
 
       {showJudgeSelect && (
         <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect />
@@ -883,7 +1015,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
   );
 }
 
-function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCaps, groupOptions = [], kindFilter = null }) {
+function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProviders, getCaps, groupOptions = [], kindFilter = null }) {
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
@@ -1032,7 +1164,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCa
       <Drawer
         isOpen={isOpen}
         onClose={onClose}
-        title={isEdit ? "Edit Combo" : "Create Combo"}
+        title={isEdit ? "组合设置" : "创建组合"}
         width="lg"
       >
         <div className="flex flex-col gap-3">
@@ -1153,18 +1285,35 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCa
           </div>
 
           {/* Actions */}
-          <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-            <Button onClick={onClose} variant="ghost" fullWidth size="sm">
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSave}
-              fullWidth
-              size="sm"
-              disabled={!name.trim() || !!nameError || saving}
-            >
-              {saving ? "Saving..." : isEdit ? "Save" : "Create"}
-            </Button>
+          <div className="mt-1 flex flex-col gap-2 border-t border-black/5 pt-3 dark:border-white/[0.07] sm:flex-row sm:items-center">
+            {isEdit && (
+              <Button
+                type="button"
+                onClick={onDelete}
+                variant="outline"
+                icon="delete"
+                size="md"
+                fullWidth
+                className="border-red-400/20 bg-red-500/[0.035] text-red-300 hover:border-red-400/40 hover:bg-red-500/[0.08] sm:w-auto sm:min-w-28"
+              >
+                删除
+              </Button>
+            )}
+            <div className="flex flex-1 gap-2 sm:ml-auto sm:flex-initial">
+              <Button type="button" onClick={onClose} variant="secondary" fullWidth size="md" className="sm:w-auto sm:min-w-24">
+                取消
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSave}
+                fullWidth
+                size="md"
+                className="sm:w-auto sm:min-w-28"
+                disabled={!name.trim() || !!nameError || saving}
+              >
+                {saving ? "保存中..." : isEdit ? "保存" : "创建"}
+              </Button>
+            </div>
           </div>
         </div>
       </Drawer>

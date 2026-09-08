@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { createTrafficWriter } from "./networkTrafficWriter.js";
 import { saveNetworkTraffic } from "@/lib/db/repos/trafficRepo.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource.js";
+
+const trafficWriter = createTrafficWriter(saveNetworkTraffic);
 
 export const TRAFFIC_REQUEST_ID_HEADER = "x-sm-traffic-request-id";
 
 // A request can cross Next.js/Turbopack package boundaries without retaining
-// the same Request prototype. Keep the correlation id out-of-band as a
-// fail-open fallback when a request cannot be re-wrapped.
+// the same Request prototype. Retain a header for adapters that rebuild the
+// request and a WeakMap fallback when the runtime cannot re-wrap it.
 const requestTrafficIds = new WeakMap();
 let requestCloneFallbackWarned = false;
 
@@ -23,12 +26,13 @@ function chunkByteLength(chunk) {
   return Buffer.byteLength(String(chunk));
 }
 
-async function getRequestBytes(request) {
+function getRequestBytes(request) {
   try {
     if (request.method === "GET" || request.method === "HEAD" || !request.body) return 0;
-    const declared = normalizeByteLength(request.headers.get("content-length"));
-    if (declared !== null) return declared;
-    return (await request.clone().arrayBuffer()).byteLength;
+    // Do not clone and fully buffer an unknown-length body just for metrics.
+    // That creates a second consumer of long prompts, increases GC pressure, and
+    // can retain the resulting ArrayBuffer after the business handler is done.
+    return normalizeByteLength(request.headers.get("content-length")) ?? 0;
   } catch {
     // Traffic accounting must never block the actual request.
     return 0;
@@ -38,7 +42,7 @@ async function getRequestBytes(request) {
 export function getTrafficRequestId(requestOrHeaders) {
   const headers = requestOrHeaders?.headers || requestOrHeaders;
   if (typeof headers?.get === "function") {
-    return headers.get(TRAFFIC_REQUEST_ID_HEADER) || requestTrafficIds.get(requestOrHeaders) || null;
+    return requestTrafficIds.get(requestOrHeaders) || headers.get(TRAFFIC_REQUEST_ID_HEADER) || null;
   }
   return headers?.[TRAFFIC_REQUEST_ID_HEADER] || headers?.[TRAFFIC_REQUEST_ID_HEADER.toLowerCase()] || null;
 }
@@ -107,13 +111,13 @@ export async function withNetworkTraffic(request, handler) {
       return "unknown";
     }
   })();
-  // Start unknown-length accounting in parallel. Waiting for a cloned body before
-  // routing makes large/chunked prompts delay the upstream request's TTFT.
-  const requestBytesPromise = getRequestBytes(request);
-  const monitoredRequest = cloneRequestWithTrafficId(request, requestId);
-  if (monitoredRequest && (typeof monitoredRequest === "object" || typeof monitoredRequest === "function")) {
-    requestTrafficIds.set(monitoredRequest, requestId);
+  const requestBytes = getRequestBytes(request);
+  if (request && (typeof request === "object" || typeof request === "function")) {
+    requestTrafficIds.set(request, requestId);
   }
+
+  const monitoredRequest = cloneRequestWithTrafficId(request, requestId);
+  requestTrafficIds.set(monitoredRequest, requestId);
 
   let sourceMeta = {};
   try {
@@ -123,13 +127,12 @@ export async function withNetworkTraffic(request, handler) {
   }
   let finalized = false;
 
-  const finalize = async ({ responseBytes = 0, statusCode = 0, aborted = false } = {}) => {
+  const finalize = ({ responseBytes = 0, statusCode = 0, aborted = false } = {}) => {
     if (finalized) return;
     finalized = true;
     const completedAtMs = Date.now();
     try {
-      const requestBytes = await requestBytesPromise;
-      await saveNetworkTraffic({
+      trafficWriter.enqueue({
         requestId,
         timestamp,
         completedAt: new Date(completedAtMs).toISOString(),
@@ -151,17 +154,17 @@ export async function withNetworkTraffic(request, handler) {
   try {
     response = await handler(monitoredRequest);
   } catch (error) {
-    await finalize({ statusCode: 500 });
+    finalize({ statusCode: 500 });
     throw error;
   }
 
   if (!isResponseLike(response)) {
-    await finalize({ statusCode: 500 });
+    finalize({ statusCode: 500 });
     return response;
   }
 
   if (!response.body) {
-    await finalize({ responseBytes: 0, statusCode: response.status });
+    finalize({ responseBytes: 0, statusCode: response.status });
     return response;
   }
 
@@ -172,14 +175,14 @@ export async function withNetworkTraffic(request, handler) {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          await finalize({ responseBytes, statusCode: response.status });
+          finalize({ responseBytes, statusCode: response.status });
           controller.close();
           return;
         }
         responseBytes += chunkByteLength(value);
         controller.enqueue(value);
       } catch (error) {
-        await finalize({ responseBytes, statusCode: response.status, aborted: true });
+        finalize({ responseBytes, statusCode: response.status, aborted: true });
         controller.error(error);
       }
     },
@@ -187,7 +190,7 @@ export async function withNetworkTraffic(request, handler) {
       try {
         await reader.cancel(reason);
       } finally {
-        await finalize({ responseBytes, statusCode: response.status, aborted: true });
+        finalize({ responseBytes, statusCode: response.status, aborted: true });
       }
     },
   });

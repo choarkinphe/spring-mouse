@@ -4,6 +4,7 @@ import { dbg } from "./debugLog.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
+let proxyAgentModulePromise = null;
 
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
 // Disabled: not in use. Kept commented for future re-enable.
@@ -220,13 +221,30 @@ async function getDispatcher(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
 
+  if (proxyDispatchers.has(normalized)) return proxyDispatchers.get(normalized);
+
+  // Import before the check-and-create section: concurrent first requests must
+  // not all pass the cache check and each allocate an orphaned connection pool.
+  const { ProxyAgent } = await (proxyAgentModulePromise ||= import("undici").catch((error) => {
+    proxyAgentModulePromise = null;
+    throw error;
+  }));
   if (!proxyDispatchers.has(normalized)) {
-    // Evict oldest entry if max size reached
+    const dispatcher = new ProxyAgent({ uri: normalized });
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const evicted = proxyDispatchers.get(oldestKey);
+      proxyDispatchers.delete(oldestKey);
+      // Let callers that just acquired the old pool dispatch this turn first.
+      // Graceful close drains active responses; destroy would abort user work.
+      const retirement = setImmediate(() => {
+        Promise.resolve().then(() => evicted.close()).catch(() => {
+          console.warn("[ProxyFetch] Retired proxy pool failed to close");
+        });
+      });
+      retirement.unref?.();
     }
-    const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    proxyDispatchers.set(normalized, dispatcher);
   }
 
   return proxyDispatchers.get(normalized);

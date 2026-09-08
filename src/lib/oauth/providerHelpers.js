@@ -50,10 +50,11 @@ function extractEmailFromAccessToken(accessToken) {
   return payload.email || payload.preferred_username || payload.sub || undefined;
 }
 
-export async function fetchKiroProfileArn(accessToken) {
+export async function fetchKiroProfileArn(accessToken, signal) {
   if (!accessToken) return null;
   try {
     const response = await fetch("https://codewhisperer.us-east-1.amazonaws.com/ListAvailableProfiles", {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -62,7 +63,10 @@ export async function fetchKiroProfileArn(accessToken) {
       },
       body: JSON.stringify({ maxResults: 10 }),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      try { await response.body?.cancel(); } catch {}
+      return null;
+    }
     const data = await response.json();
     return data.profiles?.find((p) => p.arn?.trim())?.arn?.trim() || null;
   } catch {

@@ -7,13 +7,13 @@ import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExtern
 let _xaiServiceSingleton = null;
 export async function refreshXaiToken(refreshToken, log) {
   if (!refreshToken) return null;
-  return dedupRefresh("xai", refreshToken, async () => {
+  return dedupRefresh("xai", refreshToken, async (signal) => {
     try {
       if (!_xaiServiceSingleton) {
         const mod = await import("../../../src/lib/oauth/services/xai.js");
         _xaiServiceSingleton = new mod.XaiService();
       }
-      const tokens = await _xaiServiceSingleton.refreshAccessToken(refreshToken);
+      const tokens = await _xaiServiceSingleton.refreshAccessToken(refreshToken, signal);
       return {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || refreshToken,
@@ -99,7 +99,7 @@ export async function refreshAccessToken(provider, refreshToken, credentials, lo
 
   const dedupKey = profile.dedupKey || provider;
 
-  return dedupRefresh(dedupKey, refreshToken, async () => {
+  return dedupRefresh(dedupKey, refreshToken, async (signal) => {
   try {
     const { format: bodyFormat, body } = buildRefreshBody(profile, config, refreshToken);
     const headers = {
@@ -107,7 +107,7 @@ export async function refreshAccessToken(provider, refreshToken, credentials, lo
       Accept: "application/json",
       ...(profile.extraHeaders ? (profile.extraHeaders(credentials, config) || {}) : {}),
     };
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetch(url, { signal, method: "POST", headers, body });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -154,9 +154,10 @@ export async function refreshClaudeOAuthToken(refreshToken, log) {
 
 export async function refreshGoogleToken(refreshToken, clientId, clientSecret, log) {
   if (!refreshToken) return null;
-  return dedupRefresh(`google:${clientId}`, refreshToken, async () => {
+  return dedupRefresh(`google:${clientId}`, refreshToken, async (signal) => {
   try {
     const response = await fetch(OAUTH_ENDPOINTS.google.token, {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -209,9 +210,10 @@ export function classifyOAuthRefreshError(errorText = "", status = 0) {
 
 export async function refreshCodexToken(refreshToken, log) {
   if (!refreshToken) return null;
-  return dedupRefresh("codex", refreshToken, async () => {
+  return dedupRefresh("codex", refreshToken, async (signal) => {
     try {
       const response = await fetch(OAUTH_ENDPOINTS.openai.token, {
+        signal,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -266,19 +268,21 @@ export async function refreshCodexToken(refreshToken, log) {
   }, log);
 }
 
-async function resolveKiroProfileArnPatch(providerSpecificData, accessToken, refreshedArn) {
+async function resolveKiroProfileArnPatch(providerSpecificData, accessToken, refreshedArn, log) {
   if (providerSpecificData?.profileArn) return {};
   let profileArn = refreshedArn?.trim?.() || null;
   if (!profileArn) {
-    const { fetchKiroProfileArn } = await import("../../../src/lib/oauth/providers.js");
-    profileArn = await fetchKiroProfileArn(accessToken);
+    profileArn = await dedupRefresh("kiro-profile", accessToken, async (signal) => {
+      const { fetchKiroProfileArn } = await import("../../../src/lib/oauth/providerHelpers.js");
+      return fetchKiroProfileArn(accessToken, signal);
+    }, log, { timeoutMs: 5000 });
   }
   return profileArn ? { providerSpecificData: { profileArn } } : {};
 }
 
 export async function refreshKiroToken(refreshToken, providerSpecificData, log, proxyOptions = null) {
   if (!refreshToken) return null;
-  return dedupRefresh("kiro", refreshToken, async () => {
+  const result = await dedupRefresh("kiro", refreshToken, async (signal) => {
   const authMethod = providerSpecificData?.authMethod;
   const clientId = providerSpecificData?.clientId;
   const clientSecret = providerSpecificData?.clientSecret;
@@ -294,6 +298,7 @@ export async function refreshKiroToken(refreshToken, providerSpecificData, log, 
     }
 
     const response = await proxyAwareFetch(refreshRequest.tokenEndpoint, {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -334,6 +339,7 @@ export async function refreshKiroToken(refreshToken, providerSpecificData, log, 
       : "https://oidc.us-east-1.amazonaws.com/token";
 
     const response = await proxyAwareFetch(endpoint, {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -367,11 +373,12 @@ export async function refreshKiroToken(refreshToken, providerSpecificData, log, 
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken || refreshToken,
       expiresIn: tokens.expiresIn,
-      ...(await resolveKiroProfileArnPatch(providerSpecificData, tokens.accessToken, tokens.profileArn)),
+      ...(tokens.profileArn ? { providerSpecificData: { profileArn: tokens.profileArn } } : {}),
     };
   }
 
   const response = await proxyAwareFetch(PROVIDERS.kiro.tokenUrl, {
+    signal,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -403,9 +410,14 @@ export async function refreshKiroToken(refreshToken, providerSpecificData, log, 
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken || refreshToken,
     expiresIn: tokens.expiresIn,
-    ...(await resolveKiroProfileArnPatch(providerSpecificData, tokens.accessToken, tokens.profileArn)),
+    ...(tokens.profileArn ? { providerSpecificData: { profileArn: tokens.profileArn } } : {}),
   };
   }, log);
+  // Cache/retain the rotated tokens BEFORE optional enrichment. A slow profile
+  // lookup must not discard a successfully rotated refresh token.
+  if (!result?.accessToken || result.providerSpecificData?.profileArn || providerSpecificData?.profileArn || providerSpecificData?.authMethod === "external_idp") return result;
+  const patch = await resolveKiroProfileArnPatch(providerSpecificData, result.accessToken, null, log);
+  return { ...result, ...patch };
 }
 
 // iFlow: Basic Auth + client_id+client_secret in body. Delegate to refreshAccessToken("iflow", ...).
@@ -420,9 +432,10 @@ export async function refreshGitHubToken(refreshToken, log) {
 
 export async function refreshCopilotToken(githubAccessToken, log) {
   if (!githubAccessToken) return null;
-  return dedupRefresh("copilot", githubAccessToken, async () => {
+  return dedupRefresh("copilot", githubAccessToken, async (signal) => {
   try {
     const response = await fetch(PROVIDER_OAUTH["github"]?.copilotTokenUrl, {
+      signal,
       headers: {
         "Authorization": `token ${githubAccessToken}`,
         "User-Agent": GITHUB_COPILOT.USER_AGENT,
@@ -467,9 +480,10 @@ export async function refreshCopilotToken(githubAccessToken, log) {
 // matching the official CodeBuddy CLI. Response: { code: 0, data: <token> }.
 export async function refreshCodebuddyToken(refreshToken, log) {
   if (!refreshToken) return null;
-  return dedupRefresh("codebuddy-cn", refreshToken, async () => {
+  return dedupRefresh("codebuddy-cn", refreshToken, async (signal) => {
     const oauth = PROVIDER_OAUTH["codebuddy-cn"] || {};
     const response = await fetch(oauth.refreshUrl, {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -518,9 +532,10 @@ export async function refreshCodebuddyToken(refreshToken, log) {
 
 export async function refreshCodebuddyIntlToken(refreshToken, log) {
   if (!refreshToken) return null;
-  return dedupRefresh("codebuddy-intl", refreshToken, async () => {
+  return dedupRefresh("codebuddy-intl", refreshToken, async (signal) => {
     const oauth = PROVIDER_OAUTH["codebuddy-intl"] || {};
     const response = await fetch(oauth.refreshUrl, {
+      signal,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -578,9 +593,10 @@ export async function refreshTraeToken(refreshToken, credentials, log) {
     return null;
   }
 
-  return dedupRefresh("trae", refreshToken, async () => {
+  return dedupRefresh("trae", refreshToken, async (signal) => {
     try {
       const response = await fetch(url, {
+        signal,
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -45,6 +45,8 @@ async function getObservabilityConfig() {
 let writeBuffer = [];
 let flushTimer = null;
 let isFlushing = false;
+let lastBufferDropWarningAt = 0;
+const BUFFER_DROP_WARNING_INTERVAL_MS = 60 * 1000;
 
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== "object") return {};
@@ -85,7 +87,15 @@ function prepareRecord(item, config) {
   };
 }
 
-export const __test__ = { sanitizeHeaders, prepareRecord };
+function appendBounded(buffer, record, maxRecords) {
+  const limit = Math.max(1, Number(maxRecords) || DEFAULT_MAX_RECORDS);
+  const overflow = Math.max(0, buffer.length - limit + 1);
+  if (overflow > 0) buffer.splice(0, overflow);
+  buffer.push(record);
+  return overflow;
+}
+
+export const __test__ = { sanitizeHeaders, prepareRecord, appendBounded };
 
 async function flushToDatabase() {
   if (isFlushing) return;
@@ -128,7 +138,14 @@ export async function saveRequestDetail(detail) {
 
   // Bound large payloads before they enter the delayed write queue. Otherwise
   // long-context requests remain strongly referenced until the next flush.
-  writeBuffer.push(prepareRecord(detail, config));
+  // A slow/unavailable observability database must not retain an unbounded
+  // number of records. Keeping more queued rows than the configured rolling
+  // history cannot improve the eventual dashboard result, so discard oldest.
+  const dropped = appendBounded(writeBuffer, prepareRecord(detail, config), Math.max(config.maxRecords, config.batchSize));
+  if (dropped > 0 && Date.now() - lastBufferDropWarningAt >= BUFFER_DROP_WARNING_INTERVAL_MS) {
+    lastBufferDropWarningAt = Date.now();
+    console.warn(`[requestDetailsRepo] Dropped ${dropped} oldest buffered observability record(s)`);
+  }
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
@@ -140,6 +157,7 @@ export async function saveRequestDetail(detail) {
       flushTimer = null;
       flushToDatabase().catch(() => {});
     }, config.flushIntervalMs);
+    flushTimer.unref?.();
   }
 }
 

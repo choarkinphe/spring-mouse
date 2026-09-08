@@ -29,6 +29,9 @@ export const MEMORY_CONFIG = {
   sessionCleanupIntervalMs: 30 * 60 * 1000,
   dnsCacheTtlMs: 5 * 60 * 1000,
   proxyDispatchersMaxSize: 20,
+  // Retained serialized Kiro replay payload budget, independent of entry count.
+  kiroSessionMaxBytes: 32 * 1024 * 1024,
+  kiroSessionMaxEntryBytes: 2 * 1024 * 1024,
 };
 
 // Parse a positive integer env override, falling back to a default.
@@ -57,6 +60,9 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// Shared OAuth refresh lifetime, including headers and body consumption.
+export const TOKEN_REFRESH_TIMEOUT_MS = envMs("TOKEN_REFRESH_TIMEOUT_MS", 60 * 1000);
 
 // Hard deadline for buffering a non-streaming response body after headers arrive.
 // This also bounds forced-SSE-to-JSON aggregation. Env: NON_STREAM_RESPONSE_TIMEOUT_MS.

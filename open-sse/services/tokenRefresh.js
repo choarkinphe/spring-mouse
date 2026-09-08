@@ -1,3 +1,4 @@
+import { dedupRefresh } from "./tokenRefresh/dedup.js";
 import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, REFRESH_LEAD_MS } from "../config/appConstants.js";
 import {
@@ -82,46 +83,50 @@ export async function refreshVertexToken(saJson, log) {
     return { accessToken: cached.token, expiresAt: cached.expiresAt };
   }
 
-  try {
-    const { SignJWT, importPKCS8 } = await import("jose");
-    log?.debug?.("TOKEN_REFRESH", `Vertex minting token for ${saJson.client_email}`);
-    const privateKey = await importPKCS8(saJson.private_key.replace(/\\n/g, "\n"), "RS256");
-    const now = Math.floor(Date.now() / 1000);
+  return dedupRefresh("vertex", cacheKey, async (signal) => {
+    try {
+      const { SignJWT, importPKCS8 } = await import("jose");
+      log?.debug?.("TOKEN_REFRESH", `Vertex minting token for ${saJson.client_email}`);
+      const privateKey = await importPKCS8(saJson.private_key.replace(/\\n/g, "\n"), "RS256");
+      const now = Math.floor(Date.now() / 1000);
 
-    const jwt = await new SignJWT({ scope: "https://www.googleapis.com/auth/cloud-platform" })
-      .setProtectedHeader({ alg: "RS256" })
-      .setIssuer(saJson.client_email)
-      .setAudience(OAUTH_ENDPOINTS.google.token)
-      .setIssuedAt(now)
-      .setExpirationTime(now + 3600)
-      .sign(privateKey);
+      const jwt = await new SignJWT({ scope: "https://www.googleapis.com/auth/cloud-platform" })
+        .setProtectedHeader({ alg: "RS256" })
+        .setIssuer(saJson.client_email)
+        .setAudience(OAUTH_ENDPOINTS.google.token)
+        .setIssuedAt(now)
+        .setExpirationTime(now + 3600)
+        .sign(privateKey);
 
-    const res = await fetch(OAUTH_ENDPOINTS.google.token, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: jwt,
-      }),
-    });
+      const res = await fetch(OAUTH_ENDPOINTS.google.token, {
+        signal,
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion: jwt,
+        }),
+      });
 
-    if (!res.ok) {
-      const err = await res.text();
-      log?.error?.("TOKEN_REFRESH", `Vertex token mint failed: ${err}`);
+      if (!res.ok) {
+        const err = await res.text();
+        log?.error?.("TOKEN_REFRESH", `Vertex token mint failed: ${err}`);
+        return null;
+      }
+
+      const { access_token, expires_in } = await res.json();
+      const expiresAt = Date.now() + (expires_in ?? 3600) * 1000;
+
+      if (signal.aborted) return null;
+      vertexTokenCache.set(cacheKey, { token: access_token, expiresAt });
+      log?.info?.("TOKEN_REFRESH", `Vertex token minted for ${saJson.client_email}`);
+
+      return { accessToken: access_token, expiresAt };
+    } catch (error) {
+      log?.error?.("TOKEN_REFRESH", `Vertex token error: ${error.message}`);
       return null;
     }
-
-    const { access_token, expires_in } = await res.json();
-    const expiresAt = Date.now() + (expires_in ?? 3600) * 1000;
-
-    vertexTokenCache.set(cacheKey, { token: access_token, expiresAt });
-    log?.info?.("TOKEN_REFRESH", `Vertex token minted for ${saJson.client_email}`);
-
-    return { accessToken: access_token, expiresAt };
-  } catch (error) {
-    log?.error?.("TOKEN_REFRESH", `Vertex token error: ${error.message}`);
-    return null;
-  }
+  }, log);
 }
 
 function vertexRefreshHandler(c, log) {

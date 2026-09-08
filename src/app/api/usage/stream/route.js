@@ -20,6 +20,9 @@ export async function GET(request) {
     send: null,
     sendPending: null,
     cachedStats: null,
+    pendingSnapshot: null,
+    pendingPatch: null,
+    controller: null,
     refreshRunning: false,
     refreshQueued: false,
     pendingRunning: false,
@@ -31,6 +34,10 @@ export async function GET(request) {
     state.closed = true;
     state.refreshQueued = false;
     state.cachedStats = null;
+    state.pendingSnapshot = null;
+    state.pendingPatch = null;
+    try { state.controller?.close(); } catch {}
+    state.controller = null;
     if (state.send) statsEmitter.off("update", state.send);
     if (state.sendPending) statsEmitter.off("pending", state.sendPending);
     if (state.keepalive) clearInterval(state.keepalive);
@@ -40,17 +47,34 @@ export async function GET(request) {
 
   request.signal.addEventListener("abort", cleanup, { once: true });
 
+  const write = (controller, data) => {
+    try {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      return true;
+    } catch {
+      cleanup();
+      return false;
+    }
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
+      state.controller = controller;
+      if (request.signal.aborted) { cleanup(); return; }
       const enqueue = (data) => {
         if (state.closed) return false;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        // Dashboard events are replaceable snapshots, not a lossless event
+        // log. A slow reader gets the latest full snapshot and live patch,
+        // instead of an unbounded queue of serialized historical updates.
+        if (controller.desiredSize <= 0) {
+          if (data.streamPatch) state.pendingPatch = data;
+          else {
+            state.pendingSnapshot = data;
+            state.pendingPatch = null;
+          }
           return true;
-        } catch {
-          cleanup();
-          return false;
         }
+        return write(controller, data);
       };
 
       const sendLivePatch = async () => {
@@ -127,6 +151,7 @@ export async function GET(request) {
 
       state.keepalive = setInterval(() => {
         if (state.closed) { clearInterval(state.keepalive); return; }
+        if (controller.desiredSize <= 0) return;
         try {
           controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
@@ -134,6 +159,19 @@ export async function GET(request) {
         }
       }, 25000);
       state.keepalive.unref?.();
+    },
+
+    pull(controller) {
+      if (state.closed) return;
+      if (state.pendingSnapshot) {
+        const data = state.pendingSnapshot;
+        state.pendingSnapshot = null;
+        write(controller, data);
+      } else if (state.pendingPatch) {
+        const data = state.pendingPatch;
+        state.pendingPatch = null;
+        write(controller, data);
+      }
     },
 
     cancel() {

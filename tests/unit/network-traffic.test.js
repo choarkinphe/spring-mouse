@@ -22,11 +22,11 @@ describe("network traffic monitoring", () => {
     const response = await withNetworkTraffic(
       new Request("http://localhost/api/v1/chat/completions", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(requestBody)) },
         body: requestBody,
       }),
       async (request) => {
-        internalRequestId = request.headers.get(TRAFFIC_REQUEST_ID_HEADER);
+        internalRequestId = getTrafficRequestId(request);
         return new Response(new ReadableStream({
           start(controller) {
             controller.enqueue(new TextEncoder().encode("第一段"));
@@ -39,6 +39,7 @@ describe("network traffic monitoring", () => {
 
     expect(await response.text()).toBe("第一段/second");
     expect(internalRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
       requestId: internalRequestId,
       method: "POST",
@@ -50,7 +51,7 @@ describe("network traffic monitoring", () => {
     }));
   });
 
-  it("counts a chunked request without delaying the handler", async () => {
+  it("does not clone or buffer an unknown-length request for traffic accounting", async () => {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode("chunked"));
@@ -62,13 +63,17 @@ describe("network traffic monitoring", () => {
       body: stream,
       duplex: "half",
     });
+    const cloneSpy = vi.spyOn(request, "clone");
     const response = await withNetworkTraffic(request, async (monitoredRequest) => {
+      expect(monitoredRequest.signal.aborted).toBe(request.signal.aborted);
       expect(await monitoredRequest.text()).toBe("chunked");
       return new Response("ok");
     });
 
     expect(await response.text()).toBe("ok");
-    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestBytes: Buffer.byteLength("chunked") }));
+    expect(cloneSpy).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestBytes: 0 }));
   });
 
   it("supports a Request from another undici realm and preserves its body", async () => {
@@ -78,7 +83,7 @@ describe("network traffic monitoring", () => {
     const response = await withNetworkTraffic(
       new UndiciRequest("http://localhost/v1/embeddings", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(requestBody)) },
         body: requestBody,
       }),
       async (request) => {
@@ -91,6 +96,7 @@ describe("network traffic monitoring", () => {
     expect(internalRequestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(internalBody).toBe(requestBody);
     expect(await response.text()).toBe("ok");
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
       requestId: internalRequestId,
       requestBytes: Buffer.byteLength(requestBody),
@@ -103,12 +109,14 @@ describe("network traffic monitoring", () => {
     let internalRequestId = null;
 
     const response = await withNetworkTraffic(request, async (monitoredRequest) => {
+      expect(monitoredRequest).toBe(request);
       internalRequestId = getTrafficRequestId(monitoredRequest);
       return new Response("ok");
     });
 
     expect(internalRequestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await response.text()).toBe("ok");
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestId: internalRequestId }));
   });
 
@@ -120,6 +128,7 @@ describe("network traffic monitoring", () => {
 
     expect(response.status).toBe(201);
     expect(await response.text()).toBe("跨 realm response");
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
       statusCode: 201,
       responseBytes: Buffer.byteLength("跨 realm response"),
@@ -134,6 +143,7 @@ describe("network traffic monitoring", () => {
 
     expect(response.status).toBe(204);
     expect(await response.text()).toBe("");
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
       statusCode: 204,
       responseBytes: 0,
@@ -148,11 +158,68 @@ describe("network traffic monitoring", () => {
     );
 
     expect(await response.text()).toBe("models");
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
     expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({
       endpoint: "/api/v1/models",
       requestBytes: 0,
       responseBytes: 6,
     }));
+  });
+
+  it("propagates the generated ID through serialized headers and adapter Requests", async () => {
+    const request = new Request("http://localhost/v1/responses", {
+      method: "POST", body: "{}", headers: { [TRAFFIC_REQUEST_ID_HEADER]: "caller-supplied" },
+    });
+    let id;
+    const response = await withNetworkTraffic(request, async (r) => {
+      id = getTrafficRequestId(r);
+      expect(id).not.toBe("caller-supplied");
+      const raw = { headers: Object.fromEntries(r.headers.entries()) };
+      expect(raw.headers[TRAFFIC_REQUEST_ID_HEADER]).toBe(id);
+      const adapted = new Request(r.url, { method: "POST", body: await r.text(), headers: r.headers, signal: r.signal });
+      expect(getTrafficRequestId(adapted)).toBe(id);
+      return new Response("ok");
+    });
+    await response.text();
+    await vi.waitFor(() => expect(mocks.saveNetworkTraffic).toHaveBeenCalled());
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestId: id }));
+  });
+
+  it("preserves cancellation through same-realm metadata wrapping", async () => {
+    const abort = new AbortController();
+    const response = await withNetworkTraffic(new UndiciRequest("http://localhost/v1/responses", {
+      method: "POST", body: "{}", signal: abort.signal,
+    }), async (r) => {
+      abort.abort("client-gone");
+      expect(r.signal.aborted).toBe(true);
+      expect(r.signal.reason).toBe("client-gone");
+      return new Response(null, { status: 204 });
+    });
+    expect(response.status).toBe(204);
+  });
+
+  it("can reject an unfinished upload without waiting for metrics to drain it", async () => {
+    let source;
+    const request = new Request("http://localhost/v1/responses", {
+      method: "POST", duplex: "half", body: new ReadableStream({ start(c) { source = c; } }),
+    });
+    try {
+      const response = await withNetworkTraffic(request, async () => new Response("denied", { status: 401 }));
+      expect(await response.text()).toBe("denied");
+    } finally { source.close(); }
+  });
+
+  it("finishes a response without waiting for a hung traffic write", async () => {
+    let release;
+    mocks.saveNetworkTraffic.mockImplementationOnce(() => new Promise(r => { release = r; }));
+    try {
+      const response = await withNetworkTraffic(new Request("http://localhost/v1/models"), async () => new Response("ok"));
+      let completed = false;
+      const body = response.text().then(text => { completed = true; return text; });
+      await vi.waitFor(() => expect(completed).toBe(true), { timeout: 200 });
+      expect(await body).toBe("ok");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    } finally { release?.(); }
   });
 
   it("reads the internal traffic id from Request and plain header objects", () => {

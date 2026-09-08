@@ -23,6 +23,10 @@ vi.mock("@/lib/usageDb", () => ({
   getActiveRequests,
 }));
 
+vi.mock("@/lib/usageDashboardScope", () => ({
+  resolveUsageDashboardScope: vi.fn(async () => ({ apiKeyIds: null })),
+}));
+
 const { GET } = await import("../../src/app/api/usage/stream/route.js");
 
 async function createEventReader(response) {
@@ -63,6 +67,7 @@ describe("usage stats stream filtering", () => {
       startDate: "2026-08-01T00:00:00.000Z",
       endDate: "2026-08-19T23:59:59.999Z",
       apiKeyId: "key-1",
+      apiKeyIds: null,
     });
     expect(getActiveRequests).not.toHaveBeenCalled();
     expect(event.aggregateMarker).toBe("filtered-stats");
@@ -93,6 +98,63 @@ describe("usage stats stream filtering", () => {
     expect(statsEmitter.listenerCount("update")).toBe(0);
     expect(statsEmitter.listenerCount("pending")).toBe(0);
     await reader.cancel();
+  });
+
+  it("coalesces live patches for a client that is not reading", async () => {
+    const response = await GET(new Request("http://localhost/api/usage/stream"));
+    // Allow async start to finish, but leave the initial snapshot unread.
+    await vi.waitFor(() => expect(statsEmitter.listenerCount("pending")).toBe(1));
+    for (let i = 1; i <= 100; i++) {
+      getActiveRequests.mockResolvedValueOnce({ activeRequests: [], recentRequests: [{ seq: i }], errorProvider: "" });
+      statsEmitter.emit("pending");
+      await Promise.resolve(); await Promise.resolve();
+    }
+    const { reader, nextEvent } = await createEventReader(response);
+    await nextEvent(); // initial full snapshot
+    expect((await nextEvent()).recentRequests).toEqual([{ seq: 100 }]);
+    await reader.cancel();
+  });
+
+  it("closes a pending read on abort and does not start an already-aborted stream", async () => {
+    const abort = new AbortController();
+    const response = await GET(new Request("http://localhost/api/usage/stream", { signal: abort.signal }));
+    const { reader, nextEvent } = await createEventReader(response);
+    await nextEvent();
+    const pending = reader.read();
+    abort.abort();
+    expect(await pending).toEqual({ value: undefined, done: true });
+    getUsageStats.mockClear();
+    const closed = await GET(new Request("http://localhost/api/usage/stream", { signal: abort.signal }));
+    expect(await closed.body.getReader().read()).toEqual({ value: undefined, done: true });
+    expect(getUsageStats).not.toHaveBeenCalled();
+    expect(statsEmitter.listenerCount("update")).toBe(0);
+  });
+
+  it("keeps the latest full snapshot before the latest patch, without queued heartbeats", async () => {
+    vi.useFakeTimers();
+    let reader;
+    try {
+      const response = await GET(new Request("http://localhost/api/usage/stream"));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let seq = 1; seq <= 3; seq++) {
+        getUsageStats.mockResolvedValueOnce({ totalRequests: 42 + seq, activeRequests: [], recentRequests: [] });
+        statsEmitter.emit("update");
+        await vi.advanceTimersByTimeAsync(5_000);
+      }
+      getActiveRequests.mockResolvedValueOnce({ activeRequests: [], recentRequests: [{ seq: 999 }], errorProvider: "" });
+      statsEmitter.emit("pending");
+      await vi.advanceTimersByTimeAsync(100_000); // several heartbeat ticks, still no reads
+      const events = await createEventReader(response);
+      reader = events.reader;
+      expect((await events.nextEvent()).totalRequests).toBe(42);
+      expect((await events.nextEvent()).totalRequests).toBe(45);
+      expect((await events.nextEvent()).recentRequests).toEqual([{ seq: 999 }]);
+      await reader.cancel();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await reader?.cancel();
+      vi.useRealTimers();
+    }
   });
 
   it("coalesces aggregate refreshes during request bursts", async () => {

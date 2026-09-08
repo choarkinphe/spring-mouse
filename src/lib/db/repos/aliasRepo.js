@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { deleteHotJson } from "@/lib/redis/hotCache.js";
 
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
@@ -42,6 +43,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
     added = true;
   });
   db.flush?.();
+  if (added) deleteHotJson("kv:customModels").catch(() => {});
   return added;
 }
 
@@ -74,6 +76,7 @@ export async function syncCustomModels(models) {
     }
   });
   db.flush?.();
+  if (added > 0 || updated > 0) deleteHotJson("kv:customModels").catch(() => {});
 
   return { added, updated, unchanged };
 }
@@ -82,6 +85,7 @@ export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   const db = await getAdapter();
   db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [customKey(providerAlias, id, type)]);
   db.flush?.();
+  deleteHotJson("kv:customModels").catch(() => {});
 }
 
 // mitmAlias: key=toolName, value=mappings object

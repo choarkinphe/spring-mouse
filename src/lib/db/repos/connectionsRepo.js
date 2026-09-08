@@ -203,7 +203,7 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
-  if (result?.provider) deleteHotJson(connectionCacheKey(result.provider)).catch(() => {});
+  if (result?.provider) await deleteHotJson(connectionCacheKey(result.provider));
   return result;
 }
 
@@ -220,7 +220,7 @@ export async function updateProviderConnection(id, data) {
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
-  if (result?.provider) deleteHotJson(connectionCacheKey(result.provider)).catch(() => {});
+  if (result?.provider) await deleteHotJson(connectionCacheKey(result.provider));
   return result;
 }
 
@@ -236,7 +236,7 @@ export async function deleteProviderConnection(id) {
     reorderInTx(db, row.provider);
     ok = true;
   });
-  if (provider) deleteHotJson(connectionCacheKey(provider)).catch(() => {});
+  if (provider) await deleteHotJson(connectionCacheKey(provider));
   return ok;
 }
 
@@ -244,14 +244,14 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
-  deleteHotJson(connectionCacheKey(providerId)).catch(() => {});
+  await deleteHotJson(connectionCacheKey(providerId));
   return before?.n || 0;
 }
 
 export async function reorderProviderConnections(providerId) {
   const db = await getAdapter();
   db.transaction(() => reorderInTx(db, providerId));
-  deleteHotJson(connectionCacheKey(providerId)).catch(() => {});
+  await deleteHotJson(connectionCacheKey(providerId));
 }
 
 export async function cleanupProviderConnections() {

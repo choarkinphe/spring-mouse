@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 function rowToNode(row) {
   if (!row) return null;
@@ -38,13 +39,16 @@ function upsert(db, n) {
   );
 }
 
+const PROVIDER_NODES_CACHE_KEY = "provider-nodes";
+const PROVIDER_NODES_CACHE_TTL_SECONDS = 120;
+
 export async function getProviderNodes(filter = {}) {
+  const cached = await getHotJson(PROVIDER_NODES_CACHE_KEY);
+  if (Array.isArray(cached)) return filter.type ? cached.filter((node) => node.type === filter.type) : cached;
   const db = await getAdapter();
-  const where = [];
-  const params = [];
-  if (filter.type) { where.push("type = ?"); params.push(filter.type); }
-  const sql = `SELECT * FROM providerNodes${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
-  return db.all(sql, params).map(rowToNode);
+  const nodes = db.all(`SELECT * FROM providerNodes`).map(rowToNode);
+  setHotJson(PROVIDER_NODES_CACHE_KEY, nodes, PROVIDER_NODES_CACHE_TTL_SECONDS).catch(() => {});
+  return filter.type ? nodes.filter((node) => node.type === filter.type) : nodes;
 }
 
 export async function getProviderNodeById(id) {
@@ -67,6 +71,7 @@ export async function createProviderNode(data) {
     updatedAt: now,
   };
   upsert(db, node);
+  deleteHotJson(PROVIDER_NODES_CACHE_KEY).catch(() => {});
   return node;
 }
 
@@ -80,6 +85,7 @@ export async function updateProviderNode(id, data) {
     upsert(db, merged);
     result = merged;
   });
+  if (result) deleteHotJson(PROVIDER_NODES_CACHE_KEY).catch(() => {});
   return result;
 }
 
@@ -92,5 +98,6 @@ export async function deleteProviderNode(id) {
     removed = rowToNode(row);
     db.run(`DELETE FROM providerNodes WHERE id = ?`, [id]);
   });
+  if (removed) deleteHotJson(PROVIDER_NODES_CACHE_KEY).catch(() => {});
   return removed;
 }

@@ -1,6 +1,6 @@
 # Spring Mouse Docker 快速参考
 
-完整的 Docker Hub 发布、首次部署、版本固定、升级和回滚请阅读 [docs/DOCKERHUB.md](docs/DOCKERHUB.md)。完整的部署、安全、反向代理、Jenkins 和故障排查请阅读 [DEPLOY.md](DEPLOY.md)。本页只保留常用 Docker 命令。
+完整的 Docker Hub 发布、首次部署、版本固定、升级和回滚请阅读 [docs/DOCKERHUB.md](docs/DOCKERHUB.md)。生产发布、灰度、回滚与事故响应的强制要求见 [docs/RELEASE-AND-INCIDENT-RESPONSE-STANDARD.md](docs/RELEASE-AND-INCIDENT-RESPONSE-STANDARD.md)。完整的部署、安全、反向代理、Jenkins 和故障排查请阅读 [DEPLOY.md](DEPLOY.md)。本页只保留常用 Docker 命令。
 
 ## 本地构建与运行
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUsageDetails } from "@/lib/usageDb";
+import { resolveUsageDashboardScope } from "@/lib/usageDashboardScope";
 
 const FILTER_KEYS = ["provider", "model", "connectionId", "apiKeyId", "status", "appName", "sourceIp"];
 
@@ -26,7 +27,8 @@ export async function GET(request) {
       if (value) filter[key] = value.slice(0, 256);
     }
 
-    return NextResponse.json(await getUsageDetails(filter));
+    const { apiKeyIds } = await resolveUsageDashboardScope(filter.apiKeyId || null);
+    return NextResponse.json(await getUsageDetails({ ...filter, apiKeyIds }));
   } catch (error) {
     console.error("[API] Failed to get usage details:", error);
     return NextResponse.json({ error: "Failed to fetch usage details" }, { status: 500 });

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -25,6 +26,18 @@ function rowToConn(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+const CONNECTION_CACHE_TTL_SECONDS = 120;
+
+function connectionCacheKey(provider) {
+  return `connections:${provider}`;
+}
+
+function filterConnections(list, filter) {
+  return list
+    .filter((connection) => filter.isActive === undefined || connection.isActive === Boolean(filter.isActive))
+    .sort((a, b) => (a.priority || 999) - (b.priority || 999));
 }
 
 function connToRow(c) {
@@ -68,16 +81,21 @@ function deriveConnectionName(data, fallbackName) {
 }
 
 export async function getProviderConnections(filter = {}) {
+  const provider = filter.provider || null;
+  if (provider) {
+    const cacheKey = connectionCacheKey(provider);
+    const cached = await getHotJson(cacheKey);
+    if (Array.isArray(cached)) return filterConnections(cached, filter);
+  }
+
   const db = await getAdapter();
   const where = [];
   const params = [];
-  if (filter.provider) { where.push("provider = ?"); params.push(filter.provider); }
-  if (filter.isActive !== undefined) { where.push("isActive = ?"); params.push(filter.isActive ? 1 : 0); }
+  if (provider) { where.push("provider = ?"); params.push(provider); }
   const sql = `SELECT * FROM providerConnections${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`;
-  const rows = db.all(sql, params);
-  const list = rows.map(rowToConn);
-  list.sort((a, b) => (a.priority || 999) - (b.priority || 999));
-  return list;
+  const list = db.all(sql, params).map(rowToConn);
+  if (provider) setHotJson(connectionCacheKey(provider), list, CONNECTION_CACHE_TTL_SECONDS).catch(() => {});
+  return filterConnections(list, filter);
 }
 
 export async function getProviderConnectionById(id) {
@@ -185,6 +203,7 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
+  if (result?.provider) deleteHotJson(connectionCacheKey(result.provider)).catch(() => {});
   return result;
 }
 
@@ -201,19 +220,23 @@ export async function updateProviderConnection(id, data) {
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
+  if (result?.provider) deleteHotJson(connectionCacheKey(result.provider)).catch(() => {});
   return result;
 }
 
 export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
+  let provider = null;
   db.transaction(() => {
     const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
+    provider = row.provider;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
   });
+  if (provider) deleteHotJson(connectionCacheKey(provider)).catch(() => {});
   return ok;
 }
 
@@ -221,12 +244,14 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  deleteHotJson(connectionCacheKey(providerId)).catch(() => {});
   return before?.n || 0;
 }
 
 export async function reorderProviderConnections(providerId) {
   const db = await getAdapter();
   db.transaction(() => reorderInTx(db, providerId));
+  deleteHotJson(connectionCacheKey(providerId)).catch(() => {});
 }
 
 export async function cleanupProviderConnections() {
@@ -257,5 +282,11 @@ export async function cleanupProviderConnections() {
       if (dirty) upsert(db, conn);
     }
   });
+  if (cleaned > 0) {
+    const providers = new Set();
+    const rows = db.all(`SELECT DISTINCT provider FROM providerConnections`);
+    for (const row of rows) providers.add(row.provider);
+    for (const provider of providers) deleteHotJson(connectionCacheKey(provider)).catch(() => {});
+  }
   return cleaned;
 }

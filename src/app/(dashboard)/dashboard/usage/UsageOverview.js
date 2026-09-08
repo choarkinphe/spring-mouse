@@ -29,14 +29,21 @@ export default function UsageOverview({ showOverview = true, showBreakdowns = fa
 function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatus }) {
   const [timeRange, setTimeRange] = useState(currentDayRange);
   const [apiKeyId, setApiKeyId] = useState("");
-  const rangeKey = useMemo(() => `${timeRange.startDate}:${timeRange.endDate}:${apiKeyId}`, [timeRange, apiKeyId]);
+  const [scopeRevision, setScopeRevision] = useState(0);
+  const rangeKey = useMemo(() => `${timeRange.startDate}:${timeRange.endDate}:${apiKeyId}:${scopeRevision}`, [timeRange, apiKeyId, scopeRevision]);
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       {showOverview ? (
         <DashboardUsageHeader initialSystemStatus={initialSystemStatus} />
       ) : (
-        <UsageTimeFilter value={timeRange} onChange={setTimeRange} apiKeyId={apiKeyId} onApiKeyChange={setApiKeyId} />
+        <UsageTimeFilter
+          value={timeRange}
+          onChange={setTimeRange}
+          apiKeyId={apiKeyId}
+          onApiKeyChange={setApiKeyId}
+          onScopeChanged={() => setScopeRevision((current) => current + 1)}
+        />
       )}
 
       <Suspense fallback={<CardSkeleton />}>

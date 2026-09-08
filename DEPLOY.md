@@ -526,3 +526,30 @@ Spring Mouse 镜像内置 Redis 热数据层和 SQLite 异步写入进程。Redi
 - [项目说明与路由策略](README.md)
 - [技术架构](docs/ARCHITECTURE.md)
 - [Docker 快速参考](DOCKER.md)
+
+### 100 人并发建议
+
+Spring Mouse 的路由热读、API Key 校验、Provider 账号快照和模型配置会优先使用 Redis；SQLite 仍保留为配置事实源。账号选择不再依赖同一 Provider 的进程内串行锁，并使用 Redis 记录账号活跃请求数。
+
+部署 100 人同时使用时，建议：
+
+- 至少准备多个可用账号或上游通道，不要让 100 个请求全部压到一个账号；
+- 根据上游额度设置 `SPRING_MOUSE_CONNECTION_MAX_CONCURRENCY`，默认软上限为 16；
+- 默认不会因为账号达到软上限直接返回 503，仍会把请求交给上游决定；
+- 观察 CPU、event-loop 延迟、上游首包时间和代理出口连接数；
+- 如果需要强制保护单账号，可在环境变量中降低并发值，并在压测后确认不会误伤正常请求。
+
+使用同一模型对生产入口做阶梯并发验证（会消耗模型额度）：
+
+```bash
+for n in 1 2 4 8 16 32 64 100; do
+  node scripts/load-test.mjs \
+    --base-url https://your-gateway.example \
+    --api-key "$SPRING_MOUSE_LOAD_TEST_API_KEY" \
+    --model provider/model \
+    --concurrency "$n" \
+    --requests "$((n * 2))"
+done
+```
+
+重点对比每一档的 `headers.p95Ms`、`firstByte.p95Ms`、失败率和生产主机 CPU。若网关入口稳定而 `headers/firstByte` 随并发同时升高，优先排查统一出网代理或上游；若 CPU 和入口 API P95 同步升高，则考虑扩容网关实例或降低流事件转换开销。

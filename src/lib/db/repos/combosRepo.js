@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 function rowToCombo(row) {
   if (!row) return null;
@@ -19,10 +20,20 @@ function rowToCombo(row) {
   };
 }
 
+const COMBOS_CACHE_KEY = "combos";
+const COMBOS_CACHE_TTL_SECONDS = 120;
+
+function comboCacheKey(name) {
+  return `combo:${name}`;
+}
+
 export async function getCombos() {
+  const cached = await getHotJson(COMBOS_CACHE_KEY);
+  if (Array.isArray(cached)) return cached;
   const db = await getAdapter();
-  const rows = db.all(`SELECT * FROM combos ORDER BY COALESCE(groupName, '') ASC, sortOrder ASC, createdAt ASC`);
-  return rows.map(rowToCombo);
+  const combos = db.all(`SELECT * FROM combos ORDER BY COALESCE(groupName, '') ASC, sortOrder ASC, createdAt ASC`).map(rowToCombo);
+  setHotJson(COMBOS_CACHE_KEY, combos, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+  return combos;
 }
 
 export async function getComboById(id) {
@@ -32,9 +43,18 @@ export async function getComboById(id) {
 }
 
 export async function getComboByName(name) {
+  const cachedCombo = await getHotJson(comboCacheKey(name));
+  if (cachedCombo && typeof cachedCombo === "object") return cachedCombo;
+  const cached = await getHotJson(COMBOS_CACHE_KEY);
+  if (Array.isArray(cached)) {
+    const result = cached.find((combo) => combo.name === name) || null;
+    if (result) setHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+    return result;
+  }
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM combos WHERE name = ?`, [name]);
-  return rowToCombo(row);
+  const result = rowToCombo(db.get(`SELECT * FROM combos WHERE name = ?`, [name]));
+  if (result) setHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+  return result;
 }
 
 export async function createCombo(data) {
@@ -57,6 +77,8 @@ export async function createCombo(data) {
     `INSERT INTO combos(id, name, kind, models, isActive, groupName, sortOrder, capabilities, accessTags, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.isActive ? 1 : 0, combo.groupName, combo.sortOrder, stringifyJson(combo.capabilities), stringifyJson(combo.accessTags), combo.createdAt, combo.updatedAt]
   );
+  deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
+  deleteHotJson(comboCacheKey(combo.name)).catch(() => {});
   return combo;
 }
 
@@ -73,11 +95,16 @@ export async function updateCombo(id, data) {
     );
     result = merged;
   });
+  if (result) {
+    deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
+    deleteHotJson(comboCacheKey(result.name)).catch(() => {});
+  }
   return result;
 }
 
 export async function deleteCombo(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
+  if ((res?.changes ?? 0) > 0) deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
   return (res?.changes ?? 0) > 0;
 }

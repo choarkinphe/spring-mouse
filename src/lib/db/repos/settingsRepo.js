@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
+import { getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:8008";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -8,7 +9,9 @@ const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787"
 // Settings cache with TTL to reduce frequent DB reads
 let settingsCache = null;
 let settingsCacheExpire = 0;
-const SETTINGS_TTL_MS = 5000; // 5秒缓存，可按需调整
+const SETTINGS_TTL_MS = 5000; // 5秒本地缓存；跨实例共享缓存放 Redis
+const SETTINGS_REDIS_TTL_SECONDS = 120;
+const SETTINGS_CACHE_KEY = "settings";
 
 const DEFAULT_SETTINGS = {
   cloudEnabled: false,
@@ -23,6 +26,7 @@ const DEFAULT_SETTINGS = {
   providerStrategies: {},
   providerChannelOrder: [],
   apiKeyAccessTags: {},
+  usageDashboardScopeTags: [],
   modelAccessTags: {},
   quotaVisibility: {},
   dashboardQuotaOrder: [],
@@ -106,10 +110,18 @@ export async function getSettings() {
     return settingsCache;
   }
 
-  // 缓存过期或不存在，从数据库读取
+  // 本地缓存失效后优先读 Redis，避免每个请求重新触发 SQLite I/O。
+  const cached = await getHotJson(SETTINGS_CACHE_KEY);
+  if (cached && typeof cached === "object" && !Array.isArray(cached)) {
+    settingsCache = mergeWithDefaults(cached);
+    settingsCacheExpire = now + SETTINGS_TTL_MS;
+    return settingsCache;
+  }
+
   const raw = await readRaw();
   settingsCache = mergeWithDefaults(raw);
   settingsCacheExpire = now + SETTINGS_TTL_MS;
+  setHotJson(SETTINGS_CACHE_KEY, settingsCache, SETTINGS_REDIS_TTL_SECONDS).catch(() => {});
   return settingsCache;
 }
 
@@ -130,6 +142,7 @@ export async function updateSettings(updates) {
   // 主动失效缓存，确保下次读取获取最新数据
   settingsCache = null;
   settingsCacheExpire = 0;
+  setHotJson(SETTINGS_CACHE_KEY, mergeWithDefaults(next), SETTINGS_REDIS_TTL_SECONDS).catch(() => {});
   if (Object.prototype.hasOwnProperty.call(updates || {}, "apiKeyQuotaRules")) {
     invalidateQuotaCache();
   }

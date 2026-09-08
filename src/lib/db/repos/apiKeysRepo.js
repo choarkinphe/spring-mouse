@@ -1,11 +1,30 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
+import { createHash } from "node:crypto";
+import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 // lastUsedAt写节流缓存，避免每请求写数据库
 const lastUsedAtCache = new Map();
 const LASTUSEDAT_THROTTLE_MS = 60000; // 60秒节流
 const LASTUSEDAT_CACHE_MAX_SIZE = 1000; // 最大缓存条目数
+const API_KEY_CACHE_TTL_SECONDS = 120;
+
+function apiKeyCacheKey(key) {
+  return `api-key:${createHash("sha256").update(String(key)).digest("hex")}`;
+}
+
+function cacheApiKey(key, apiKey) {
+  if (!apiKey) return Promise.resolve(false);
+  // Redis keys and values never contain the raw ingress credential. The caller
+  // already has it and can reattach it after a cache hit when needed.
+  const { key: _rawKey, ...safeValue } = apiKey;
+  return setHotJson(apiKeyCacheKey(key), safeValue, API_KEY_CACHE_TTL_SECONDS);
+}
+
+function restoreApiKey(cached, key) {
+  return cached && typeof cached === "object" ? { ...cached, key } : null;
+}
 
 function trimLastUsedAtCache() {
   if (lastUsedAtCache.size > LASTUSEDAT_CACHE_MAX_SIZE) {
@@ -52,8 +71,13 @@ export async function getApiKeyById(id) {
 
 export async function getApiKeyByValue(key) {
   if (!key) return null;
+  const cacheKey = apiKeyCacheKey(key);
+  const cached = await getHotJson(cacheKey);
+  if (cached && typeof cached === "object") return restoreApiKey(cached, key);
   const db = await getAdapter();
-  return rowToKey(db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]));
+  const result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]));
+  if (result) cacheApiKey(key, result).catch(() => {});
+  return result;
 }
 
 export async function createApiKey(name, machineId) {
@@ -81,6 +105,7 @@ export async function createApiKey(name, machineId) {
     `INSERT INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, createdAt, lastUsedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.quotaMode, apiKey.quotaResetAt, apiKey.fiveHourQuotaResetAt, apiKey.weeklyQuotaResetAt, apiKey.createdAt, apiKey.lastUsedAt]
   );
+  cacheApiKey(apiKey.key, apiKey).catch(() => {});
   return apiKey;
 }
 
@@ -103,8 +128,14 @@ export async function updateApiKey(id, data) {
     );
     result = { ...merged, quotaMode, isActive };
   });
-  if (result?.key) invalidateQuotaCache(result.key);
-  if (previousKey && previousKey !== result?.key) invalidateQuotaCache(previousKey);
+  if (result?.key) {
+    invalidateQuotaCache(result.key);
+    await cacheApiKey(result.key, result);
+  }
+  if (previousKey && previousKey !== result?.key) {
+    invalidateQuotaCache(previousKey);
+    await deleteHotJson(apiKeyCacheKey(previousKey));
+  }
   return result;
 }
 
@@ -112,15 +143,18 @@ export async function deleteApiKey(id) {
   const db = await getAdapter();
   const existing = db.get(`SELECT key FROM apiKeys WHERE id = ?`, [id]);
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
-  if ((res?.changes ?? 0) > 0 && existing?.key) invalidateQuotaCache(existing.key);
+  if ((res?.changes ?? 0) > 0 && existing?.key) {
+    invalidateQuotaCache(existing.key);
+    await deleteHotJson(apiKeyCacheKey(existing.key));
+  }
   return (res?.changes ?? 0) > 0;
 }
 
 export async function validateApiKey(key) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT id, isActive, quotaMode FROM apiKeys WHERE key = ?`, [key]);
-  const isActive = row?.isActive === 1 || row?.isActive === true;
-  if (!isActive || normalizeQuotaMode(row.quotaMode) === "off") return false;
+  const cached = await getApiKeyByValue(key);
+  const isActive = cached?.isActive === true;
+  if (!isActive || normalizeQuotaMode(cached.quotaMode) === "off") return false;
+  const row = cached;
 
   // `validateApiKey` is the common successful-auth path, so it doubles as the
   // lightweight audit point for the credentials page. Keep the value in UTC
@@ -132,7 +166,10 @@ export async function validateApiKey(key) {
 
   if (now - lastUpdate > LASTUSEDAT_THROTTLE_MS) {
     // 超过节流时间，更新数据库
-    db.run(`UPDATE apiKeys SET lastUsedAt = ? WHERE id = ?`, [new Date().toISOString(), row.id]);
+    const lastUsedAt = new Date().toISOString();
+    const db = await getAdapter();
+    db.run(`UPDATE apiKeys SET lastUsedAt = ? WHERE id = ?`, [lastUsedAt, row.id]);
+    cacheApiKey(key, { ...cached, lastUsedAt }).catch(() => {});
     lastUsedAtCache.set(key, now);
     trimLastUsedAtCache();
   }

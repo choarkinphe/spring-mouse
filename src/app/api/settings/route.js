@@ -162,6 +162,10 @@ export async function PATCH(request) {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "usageDashboardScopeTags")) {
+      body.usageDashboardScopeTags = normalizeAccessTags(body.usageDashboardScopeTags);
+    }
+
     if (Object.prototype.hasOwnProperty.call(body, "modelAccessTags")) {
       const source = body.modelAccessTags && typeof body.modelAccessTags === "object" && !Array.isArray(body.modelAccessTags)
         ? body.modelAccessTags
@@ -197,6 +201,14 @@ export async function PATCH(request) {
     }
 
     const settings = await updateSettings(body);
+
+    if (Object.prototype.hasOwnProperty.call(body, "usageDashboardScopeTags")) {
+      // Refresh every open usage-dashboard SSE stream so the persisted scope
+      // takes effect outside the page that initiated the change as well.
+      import("@/lib/usageDb")
+        .then(({ notifyUsageCommitted }) => notifyUsageCommitted())
+        .catch(() => {});
+    }
 
     // Apply outbound proxy settings immediately (no restart required)
     if (

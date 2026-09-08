@@ -262,6 +262,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     }
 
+    // A Redis account slot is held from routing until the upstream response is
+    // fully consumed. Release it exactly once on completion, cancellation, or
+    // a synchronous routing/upstream error before fallback.
+    let routeSlotReleased = false;
+    const releaseRouteSlot = () => {
+      if (routeSlotReleased) return;
+      routeSlotReleased = true;
+      Promise.resolve(credentials.releaseRouteSlot?.()).catch(() => {});
+    };
+
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
@@ -309,10 +319,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-      }
+      },
+      onRequestFinished: releaseRouteSlot,
     });
 
     if (result.success) return result.response;
+    releaseRouteSlot();
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs);

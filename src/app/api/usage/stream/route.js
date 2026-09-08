@@ -1,4 +1,5 @@
 import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { resolveUsageDashboardScope } from "@/lib/usageDashboardScope";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export async function GET(request) {
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
   const apiKeyId = searchParams.get("apiKeyId") || null;
-  const statsRange = { startDate, endDate, apiKeyId };
+  let apiKeyIds = null;
   const state = {
     closed: false,
     keepalive: null,
@@ -56,7 +57,8 @@ export async function GET(request) {
         if (state.closed || !state.cachedStats || state.pendingRunning) return;
         state.pendingRunning = true;
         try {
-          const { activeRequests, recentRequests, errorProvider } = await getActiveRequests(apiKeyId);
+          const liveApiKeyFilter = Array.isArray(apiKeyIds) ? apiKeyIds : apiKeyId;
+          const { activeRequests, recentRequests, errorProvider } = await getActiveRequests(liveApiKeyFilter);
           if (state.closed) return;
           enqueue({ streamPatch: true, activeRequests, recentRequests, errorProvider });
         } catch {
@@ -71,6 +73,8 @@ export async function GET(request) {
         state.refreshRunning = true;
         state.refreshQueued = false;
         try {
+          ({ apiKeyIds } = await resolveUsageDashboardScope(apiKeyId));
+          const statsRange = { startDate, endDate, apiKeyId, apiKeyIds };
           const stats = { ...(await getUsageStats(period, statsRange)), streamUpdatedAt: Date.now() };
           if (state.closed) return;
           state.cachedStats = stats;

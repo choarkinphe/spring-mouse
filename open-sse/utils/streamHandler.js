@@ -16,7 +16,7 @@ function getTimeString() {
  * @param {string} options.model - Model name
  * @param {AbortSignal|null} options.clientSignal - Incoming request signal; aborts upstream work when the client disconnects
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", clientSignal = null } = {}) {
+export function createStreamController({ onDisconnect, onError, onComplete, log, provider, model, reqTag = "", clientSignal = null } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
@@ -60,6 +60,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       if (disconnected) return;
       disconnected = true;
       cleanupClientAbortListener();
+      onComplete?.();
     },
     // Call on error
     handleError: (error) => {

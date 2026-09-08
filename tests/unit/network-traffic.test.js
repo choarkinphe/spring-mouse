@@ -50,6 +50,27 @@ describe("network traffic monitoring", () => {
     }));
   });
 
+  it("counts a chunked request without delaying the handler", async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("chunked"));
+        controller.close();
+      },
+    });
+    const request = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    });
+    const response = await withNetworkTraffic(request, async (monitoredRequest) => {
+      expect(await monitoredRequest.text()).toBe("chunked");
+      return new Response("ok");
+    });
+
+    expect(await response.text()).toBe("ok");
+    expect(mocks.saveNetworkTraffic).toHaveBeenCalledWith(expect.objectContaining({ requestBytes: Buffer.byteLength("chunked") }));
+  });
+
   it("supports a Request from another undici realm and preserves its body", async () => {
     const requestBody = JSON.stringify({ prompt: "跨 realm" });
     let internalRequestId = null;

@@ -64,7 +64,29 @@ const statsEmitTimers = global._statsEmitTimers;
 const usageStatsCache = global._usageStatsCache;
 
 function usageStatsCacheKey(period, range = {}) {
-  return JSON.stringify([period, range.startDate || "", range.endDate || "", range.apiKeyId || ""]);
+  return JSON.stringify([period, range.startDate || "", range.endDate || "", range.apiKeyId || "", range.apiKeyIds || null]);
+}
+
+function getUsageApiKeyFilter(range = {}, column = "apiKeyId") {
+  const scopedApiKeyIds = Array.isArray(range.apiKeyIds)
+    ? [...new Set(range.apiKeyIds.filter((id) => typeof id === "string" && id))]
+    : null;
+  const apiKeyIds = range.apiKeyId
+    ? (scopedApiKeyIds === null || scopedApiKeyIds.includes(range.apiKeyId) ? [range.apiKeyId] : [])
+    : scopedApiKeyIds;
+
+  if (apiKeyIds === null) return { clause: "", params: [] };
+  if (apiKeyIds.length === 0) return { clause: "0 = 1", params: [] };
+  return { clause: `${column} IN (${apiKeyIds.map(() => "?").join(", ")})`, params: apiKeyIds };
+}
+
+function appendUsageApiKeyFilter(conditions, params, range = {}, column = "apiKeyId") {
+  const filter = getUsageApiKeyFilter(range, column);
+  if (filter.clause) {
+    conditions.push(filter.clause);
+    params.push(...filter.params);
+  }
+  return filter;
 }
 
 function clearUsageStatsCache() {
@@ -457,12 +479,13 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
 
 export async function getActiveRequests(apiKeyId = null) {
   const activeRequests = [];
+  const scopedApiKeyIds = Array.isArray(apiKeyId) ? new Set(apiKeyId) : null;
   const [connectionMap, apiKeyMaps] = await Promise.all([getConnectionMapCached(), getApiKeyMapCached()]);
 
   for (const flow of Object.values(pendingRequests.byFlow || {})) {
     if (!flow?.count) continue;
     const client = flow.apiKey ? apiKeyMaps.byKey?.[flow.apiKey] : null;
-    if (apiKeyId && client?.id !== apiKeyId) continue;
+    if (scopedApiKeyIds ? !scopedApiKeyIds.has(client?.id) : apiKeyId && client?.id !== apiKeyId) continue;
     const accountName = flow.connectionId
       ? connectionMap[flow.connectionId] || `Account ${flow.connectionId.slice(0, 8)}...`
       : "Unassigned account";
@@ -486,7 +509,10 @@ export async function getActiveRequests(apiKeyId = null) {
     : recentRing.items;
   const seen = new Set();
   const recentRequests = recentEntries
-    .filter((e) => !apiKeyId || (e.apiKeyId || e.apiKey) === apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id === apiKeyId)
+    .filter((e) => {
+      if (scopedApiKeyIds) return scopedApiKeyIds.has(e.apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id);
+      return !apiKeyId || (e.apiKeyId || e.apiKey) === apiKeyId || apiKeyMaps.byKey?.[e.apiKey]?.id === apiKeyId;
+    })
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .map((e) => toRecentRequest(e, apiKeyMaps))
     .filter((e) => {
@@ -656,6 +682,7 @@ export async function getUsageDetails(filter = {}) {
   if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
   if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
   if (filter.status) { conds.push("status = ?"); params.push(filter.status); }
+  appendUsageApiKeyFilter(conds, params, filter);
   if (filter.apiKeyId === "local-no-key") {
     conds.push("apiKeyId IS NULL");
   } else if (filter.apiKeyId) {
@@ -786,7 +813,7 @@ function loadDaysInRange(adapter, maxDays) {
   return Object.values(result);
 }
 
-function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, providerNodeNameMap) {
+function getRecentCallDetails(db, period, range, apiKeyMap, providerNodeNameMap) {
   const conditions = [];
   const params = [];
 
@@ -806,10 +833,7 @@ function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, provid
     params.push(new Date(Date.now() - PERIOD_MS[period]).toISOString());
   }
 
-  if (apiKeyFilter) {
-    conditions.push("apiKeyId = ?");
-    params.push(apiKeyFilter);
-  }
+  appendUsageApiKeyFilter(conditions, params, range);
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = db.all(
@@ -852,15 +876,15 @@ function getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, provid
 }
 
 function getTrafficRange(period, range = {}) {
-  if (range.startDate && range.endDate) return { startDate: range.startDate, endDate: range.endDate, apiKeyId: range.apiKeyId || null };
+  if (range.startDate && range.endDate) return { startDate: range.startDate, endDate: range.endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
   const endDate = new Date().toISOString();
   if (period === "today") {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    return { startDate: start.toISOString(), endDate, apiKeyId: range.apiKeyId || null };
+    return { startDate: start.toISOString(), endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
   }
-  if (PERIOD_MS[period]) return { startDate: new Date(Date.now() - PERIOD_MS[period]).toISOString(), endDate, apiKeyId: range.apiKeyId || null };
-  return { apiKeyId: range.apiKeyId || null };
+  if (PERIOD_MS[period]) return { startDate: new Date(Date.now() - PERIOD_MS[period]).toISOString(), endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
+  return { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
 }
 
 async function calculateUsageStats(period = "all", range = {}) {
@@ -887,15 +911,14 @@ async function calculateUsageStats(period = "all", range = {}) {
   try { allApiKeys = await getApiKeys(); } catch {}
   const apiKeyMap = {};
   for (const k of allApiKeys) apiKeyMap[k.id] = { name: k.name, id: k.id, createdAt: k.createdAt };
-  const apiKeyFilter = range.apiKeyId || null;
+  const usageApiKeyFilter = getUsageApiKeyFilter(range);
+  const scopedWhere = usageApiKeyFilter.clause ? ` WHERE ${usageApiKeyFilter.clause}` : "";
 
   // recentRequests from live history (last 100 entries enough for 50 deduped)
-  const recentRows = range.apiKeyId && !apiKeyFilter
-    ? []
-    : db.all(
-      `SELECT timestamp, provider, model, apiKeyId, tokens, status FROM usageHistory${apiKeyFilter ? " WHERE apiKeyId = ?" : ""} ORDER BY id DESC LIMIT 100`,
-      apiKeyFilter ? [apiKeyFilter] : [],
-    );
+  const recentRows = db.all(
+    `SELECT timestamp, provider, model, apiKeyId, tokens, status FROM usageHistory${scopedWhere} ORDER BY id DESC LIMIT 100`,
+    usageApiKeyFilter.params,
+  );
   const seen = new Set();
   const recentRequests = recentRows
     .map((r) => {
@@ -946,7 +969,7 @@ async function calculateUsageStats(period = "all", range = {}) {
   };
 
   // Active requests
-  if (!range.apiKeyId) {
+  if (!range.apiKeyId && !Array.isArray(range.apiKeyIds)) {
     for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
       for (const [modelKey, count] of Object.entries(models)) {
         if (count > 0) {
@@ -972,12 +995,13 @@ async function calculateUsageStats(period = "all", range = {}) {
     bucketMap[ts] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0 };
     stats.last10Minutes.push(bucketMap[ts]);
   }
-  const recent10 = range.apiKeyId && !apiKeyFilter
-    ? []
-    : db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}`,
-      apiKeyFilter ? [tenMinutesAgo.toISOString(), now.toISOString(), apiKeyFilter] : [tenMinutesAgo.toISOString(), now.toISOString()],
-    );
+  const recent10Conditions = ["timestamp >= ?", "timestamp <= ?"];
+  const recent10Params = [tenMinutesAgo.toISOString(), now.toISOString()];
+  appendUsageApiKeyFilter(recent10Conditions, recent10Params, range);
+  const recent10 = db.all(
+    `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE ${recent10Conditions.join(" AND ")}`,
+    recent10Params,
+  );
   for (const r of recent10) {
     const tt = new Date(r.timestamp).getTime();
     const minuteStart = Math.floor(tt / 60000) * 60000;
@@ -993,7 +1017,8 @@ async function calculateUsageStats(period = "all", range = {}) {
     endTime: now.getTime(),
     bucketMs: 60 * 1000,
     bucketCount: 10,
-    apiKeyId: apiKeyFilter,
+    apiKeyId: range.apiKeyId || null,
+    apiKeyIds: range.apiKeyIds || null,
   });
   stats.last10Minutes.forEach((bucket, index) => Object.assign(bucket, recentTraffic[index] || {
     requestBytes: 0,
@@ -1001,10 +1026,8 @@ async function calculateUsageStats(period = "all", range = {}) {
     trafficBytes: 0,
   }));
 
-  if (range.apiKeyId && !apiKeyFilter) return stats;
-
   const hasDateRange = Boolean(range.startDate && range.endDate);
-  stats.recentCallDetails = getRecentCallDetails(db, period, range, apiKeyFilter, apiKeyMap, providerNodeNameMap);
+  stats.recentCallDetails = getRecentCallDetails(db, period, range, apiKeyMap, providerNodeNameMap);
   const useDailySummary = false; // Revert to false until usageDaily schema is migrated to flat structure
 
   if (useDailySummary) {
@@ -1223,12 +1246,12 @@ async function calculateUsageStats(period = "all", range = {}) {
     } else {
       cutoff = new Date(0).toISOString();
     }
-    const where = `${endDate ? "WHERE timestamp >= ? AND timestamp <= ?" : "WHERE timestamp >= ?"}${apiKeyFilter ? " AND apiKeyId = ?" : ""}`;
+    const historyConditions = endDate ? ["timestamp >= ?", "timestamp <= ?"] : ["timestamp >= ?"];
+    const historyParams = endDate ? [cutoff, endDate] : [cutoff];
+    appendUsageApiKeyFilter(historyConditions, historyParams, range);
     const filtered = db.iterate(
-      `SELECT timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta FROM usageHistory ${where}`,
-      endDate
-        ? (apiKeyFilter ? [cutoff, endDate, apiKeyFilter] : [cutoff, endDate])
-        : (apiKeyFilter ? [cutoff, apiKeyFilter] : [cutoff])
+      `SELECT timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta FROM usageHistory WHERE ${historyConditions.join(" AND ")}`,
+      historyParams,
     );
 
     const personEvents = new Map();
@@ -1374,7 +1397,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 
   const [trafficTotals, trafficSummary] = await Promise.all([
     getTrafficTotals(getTrafficRange(period, range)),
-    getTrafficSummary({ apiKeyId: range.apiKeyId || null }),
+    getTrafficSummary({ apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null }),
   ]);
   stats.totalRequestBytes = trafficTotals.requestBytes;
   stats.totalResponseBytes = trafficTotals.responseBytes;
@@ -1438,9 +1461,10 @@ export async function getUsageStats(period = "all", range = {}) {
   return promise;
 }
 
-function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn }) {
+function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, apiKeyIds, labelFn }) {
   const startIso = new Date(startTime).toISOString();
   const endIso = new Date(endTime).toISOString();
+  const scopeFilter = getUsageApiKeyFilter({ apiKeyId: apiKeyFilter, apiKeyIds });
   const rows = db.all(
     `SELECT
       CAST(((julianday(timestamp) - julianday(?)) * 86400000.0) / ? AS INTEGER) AS bucketIndex,
@@ -1448,12 +1472,10 @@ function getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKey
       SUM(cost) AS cost,
       COUNT(*) AS requests
     FROM usageHistory
-    WHERE timestamp >= ? AND timestamp <= ?${apiKeyFilter ? " AND apiKeyId = ?" : ""}
+    WHERE timestamp >= ? AND timestamp <= ?${scopeFilter.clause ? ` AND ${scopeFilter.clause}` : ""}
     GROUP BY bucketIndex
     ORDER BY bucketIndex`,
-    apiKeyFilter
-      ? [startIso, bucketMs, startIso, endIso, apiKeyFilter]
-      : [startIso, bucketMs, startIso, endIso],
+    [startIso, bucketMs, startIso, endIso, ...scopeFilter.params],
   );
 
   const buckets = Array.from({ length: bucketCount }, (_, index) => ({
@@ -1485,6 +1507,7 @@ export async function getChartData(period = "7d", range = {}) {
   const db = await getAdapter();
   const now = Date.now();
   const apiKeyFilter = range.apiKeyId || null;
+  const apiKeyIds = range.apiKeyIds || null;
 
   if (range.startDate && range.endDate) {
     const startTime = new Date(range.startDate).getTime();
@@ -1497,7 +1520,7 @@ export async function getChartData(period = "7d", range = {}) {
       ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
       : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, labelFn }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
+    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, apiKeyIds, labelFn }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter, apiKeyIds });
   }
 
   if (period === "today") {
@@ -1515,8 +1538,9 @@ export async function getChartData(period = "7d", range = {}) {
       bucketMs,
       bucketCount,
       apiKeyFilter,
+      apiKeyIds,
       labelFn,
-    }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
+    }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter, apiKeyIds });
   }
 
   if (period === "24h") {
@@ -1525,7 +1549,7 @@ export async function getChartData(period = "7d", range = {}) {
     const startTime = now - bucketCount * bucketMs;
     const labelFn = (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 
-    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime: now, bucketMs, bucketCount, apiKeyFilter, labelFn }), { startTime, endTime: now, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
+    return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime: now, bucketMs, bucketCount, apiKeyFilter, apiKeyIds, labelFn }), { startTime, endTime: now, bucketMs, bucketCount, apiKeyId: apiKeyFilter, apiKeyIds });
   }
 
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
@@ -1543,8 +1567,9 @@ export async function getChartData(period = "7d", range = {}) {
     bucketMs,
     bucketCount,
     apiKeyFilter,
+    apiKeyIds,
     labelFn,
-  }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter });
+  }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter, apiKeyIds });
 }
 
 function formatLogDate(date = new Date()) {

@@ -6,7 +6,7 @@ function normalizeBytes(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
 }
 
-function buildTrafficFilter({ startDate, endDate, apiKeyId } = {}, alias = "nt") {
+function buildTrafficFilter({ startDate, endDate, apiKeyId, apiKeyIds } = {}, alias = "nt") {
   const conditions = [];
   const params = [];
 
@@ -18,7 +18,17 @@ function buildTrafficFilter({ startDate, endDate, apiKeyId } = {}, alias = "nt")
     conditions.push(`${alias}.timestamp <= ?`);
     params.push(new Date(endDate).toISOString());
   }
-  if (apiKeyId) {
+  const scopedApiKeyIds = Array.isArray(apiKeyIds)
+    ? [...new Set(apiKeyIds.filter((id) => typeof id === "string" && id))]
+    : null;
+  if (scopedApiKeyIds) {
+    if (scopedApiKeyIds.length === 0) {
+      conditions.push("0 = 1");
+    } else {
+      conditions.push(`EXISTS (SELECT 1 FROM usageHistory uh WHERE uh.trafficRequestId = ${alias}.requestId AND uh.apiKeyId IN (${scopedApiKeyIds.map(() => "?").join(", ")}))`);
+      params.push(...scopedApiKeyIds);
+    }
+  } else if (apiKeyId) {
     conditions.push(`EXISTS (SELECT 1 FROM usageHistory uh WHERE uh.trafficRequestId = ${alias}.requestId AND uh.apiKeyId = ?)`);
     params.push(apiKeyId);
   }
@@ -103,18 +113,18 @@ export async function getTrafficTotals(range = {}) {
   return mapTotals(row);
 }
 
-export async function getTrafficSummary({ apiKeyId = null, recentLimit = 12 } = {}) {
+export async function getTrafficSummary({ apiKeyId = null, apiKeyIds = null, recentLimit = 12 } = {}) {
   const db = await getAdapter();
   const { today, week, month, now } = currentTrafficRanges();
   const endDate = now.toISOString();
 
   const [todayTotals, weekTotals, monthTotals] = await Promise.all([
-    getTrafficTotals({ startDate: today.toISOString(), endDate, apiKeyId }),
-    getTrafficTotals({ startDate: week.toISOString(), endDate, apiKeyId }),
-    getTrafficTotals({ startDate: month.toISOString(), endDate, apiKeyId }),
+    getTrafficTotals({ startDate: today.toISOString(), endDate, apiKeyId, apiKeyIds }),
+    getTrafficTotals({ startDate: week.toISOString(), endDate, apiKeyId, apiKeyIds }),
+    getTrafficTotals({ startDate: month.toISOString(), endDate, apiKeyId, apiKeyIds }),
   ]);
 
-  const { where, params } = buildTrafficFilter({ apiKeyId });
+  const { where, params } = buildTrafficFilter({ apiKeyId, apiKeyIds });
   const recent = db.all(
     `SELECT requestId, timestamp, completedAt, method, endpoint, statusCode, requestBytes, responseBytes, durationMs, aborted, meta
        FROM networkTraffic nt ${where}
@@ -144,11 +154,11 @@ export async function getTrafficSummary({ apiKeyId = null, recentLimit = 12 } = 
   return { today: todayTotals, week: weekTotals, month: monthTotals, recent };
 }
 
-export async function getTrafficBuckets({ startTime, endTime, bucketMs, bucketCount, apiKeyId = null }) {
+export async function getTrafficBuckets({ startTime, endTime, bucketMs, bucketCount, apiKeyId = null, apiKeyIds = null }) {
   const db = await getAdapter();
   const startIso = new Date(startTime).toISOString();
   const endIso = new Date(endTime).toISOString();
-  const { where: extraWhere, params: extraParams } = buildTrafficFilter({ apiKeyId });
+  const { where: extraWhere, params: extraParams } = buildTrafficFilter({ apiKeyId, apiKeyIds });
   const apiKeyCondition = extraWhere ? extraWhere.replace(/^WHERE\s+/, " AND ") : "";
   const rows = db.all(
     `SELECT

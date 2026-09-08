@@ -8,23 +8,20 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
+import { incrementHotCounter } from "@/lib/redis/hotCache.js";
+import { getConnectionConcurrencyLimit, reserveConnectionSlot, releaseConnectionSlot } from "@/lib/redis/connectionSlots.js";
 
-// Per-provider mutexes to prevent race conditions during account selection
-// 替代全局锁，让不同provider的请求可以并行处理
-const providerMutexes = new Map();
+// Account selection is deliberately lock-free. The old per-provider mutex made
+// every request wait behind a SQLite read and a lastUsedAt write. Assignment
+// state is now kept in memory for sticky sessions, while non-sticky rotation
+// uses a Redis counter when available.
 const providerUserAssignments = new Map();
+const providerLocalCursors = new Map();
 const MAX_USER_ASSIGNMENTS_PER_PROVIDER = 1000;
 
 export function resetProviderUserAssignments(providerId = null) {
   if (providerId) providerUserAssignments.delete(providerId);
   else providerUserAssignments.clear();
-}
-
-function getProviderMutex(providerId) {
-  if (!providerMutexes.has(providerId)) {
-    providerMutexes.set(providerId, Promise.resolve());
-  }
-  return providerMutexes.get(providerId);
 }
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
@@ -70,14 +67,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
   const providerId = resolveProviderId(provider);
-
-  // Acquire per-provider mutex to prevent race conditions
-  const currentMutex = getProviderMutex(providerId);
-  let resolveMutex;
-  providerMutexes.set(providerId, new Promise(resolve => { resolveMutex = resolve; }));
-
-  try {
-    await currentMutex;
 
     // Inject a virtual connection for no-auth free providers. Model tags still
     // apply even though there is no account record to authorize.
@@ -189,9 +178,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (connection) {
       // skip strategy
     } else if (strategy === "round-robin") {
-      const stickyLimit = providerOverride.stickyRoundRobinLimit || 1;
-
-      // Sort by lastUsed (most recent first) to find current candidate
+      // Sticky assignments remain in memory; non-sticky rotation uses Redis.
+      // No SQLite lastUsedAt write is needed on the request hot path.
       const requesterId = typeof options?.requesterId === "string" && options.requesterId ? options.requesterId : null;
       if (requesterId) {
         const state = providerUserAssignments.get(providerId) || { lastConnectionId: null, assignments: new Map() };
@@ -209,51 +197,43 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         }
         state.lastConnectionId = connection.id;
         providerUserAssignments.set(providerId, state);
-        await updateProviderConnection(connection.id, { lastUsedAt: new Date().toISOString(), consecutiveUseCount: 1 });
         const userLabel = requesterId === "local" ? "local" : log.maskKey(requesterId);
         log.routeLine(log.tagForSession(requesterId), "⚖️", `${provider} | user=${userLabel} | ${outcome} → ${connection.connectionName || connection.displayName || connection.name || connection.id.slice(0, 8)} | accounts=${availableConnections.length}`);
       } else {
-        const byRecency = [...availableConnections].sort((a, b) => {
-        if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-        if (!a.lastUsedAt) return 1;
-        if (!b.lastUsedAt) return -1;
-        return new Date(b.lastUsedAt) - new Date(a.lastUsedAt);
-      });
-
-      const current = byRecency[0];
-      const currentCount = current?.consecutiveUseCount || 0;
-
-      if (current && current.lastUsedAt && currentCount < stickyLimit) {
-        // Stay with current account
-        connection = current;
-        // Update lastUsedAt and increment count (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
-        });
-      } else {
-        // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...availableConnections].sort((a, b) => {
-          if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-          if (!a.lastUsedAt) return -1;
-          if (!b.lastUsedAt) return 1;
-          return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
-        });
-
-        connection = sortedByOldest[0];
-
-        // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: 1
-        });
-      }
+        // Redis-backed cursor spreads anonymous callers across accounts without
+        // writing lastUsedAt to SQLite on every request. Fall back to a local
+        // cursor for development when Redis is unavailable.
+        const redisCursor = await incrementHotCounter(`route-cursor:${providerId}`, 3600);
+        const next = redisCursor ?? ((providerLocalCursors.get(providerId) || 0) + 1);
+        providerLocalCursors.set(providerId, next);
+        connection = availableConnections[(next - 1) % availableConnections.length];
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)
       connection = availableConnections[0];
     }
 
+    // Reserve an upstream-account slot before issuing the request. This keeps
+    // 100 concurrent callers from stampeding a single account; Redis outages
+    // fail open so cached routing never becomes an availability dependency.
+    const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
+    const candidates = preferredIndex > 0
+      ? [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)]
+      : availableConnections;
+    let reservedConnection = null;
+    let slotReserved = false;
+    for (const candidate of candidates) {
+      const limit = getConnectionConcurrencyLimit(candidate, providerOverride);
+      const reservation = await reserveConnectionSlot(candidate.id, limit);
+      if (reservation === false) continue;
+      reservedConnection = candidate;
+      slotReserved = reservation === true;
+      break;
+    }
+    // Saturation is a soft signal by default. If every account is at its
+    // configured hint, keep the request available rather than returning a
+    // synthetic 503; the upstream provider remains the final authority.
+    connection = reservedConnection || connection;
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
     return {
@@ -279,11 +259,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       testStatus: connection.testStatus,
       lastError: connection.lastError,
       // Pass full connection for clearAccountError to read modelLock_* keys
-      _connection: connection
+      _connection: connection,
+      releaseRouteSlot: slotReserved ? () => releaseConnectionSlot(connection.id) : null,
     };
-  } finally {
-    if (resolveMutex) resolveMutex();
-  }
 }
 
 /**

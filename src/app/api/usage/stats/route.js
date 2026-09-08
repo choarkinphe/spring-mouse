@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUsageStats } from "@/lib/usageDb";
+import { resolveUsageDashboardScope } from "@/lib/usageDashboardScope";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store, max-age=0" };
 
@@ -25,7 +26,8 @@ export async function GET(request) {
       return NextResponse.json({ error: "Invalid API key filter" }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
-    const stats = await getUsageStats(period, { startDate, endDate, apiKeyId });
+    const { apiKeyIds } = await resolveUsageDashboardScope(apiKeyId);
+    const stats = await getUsageStats(period, { startDate, endDate, apiKeyId, apiKeyIds });
     return NextResponse.json(stats, { headers: NO_STORE_HEADERS });
   } catch (error) {
     console.error("[API] Failed to get usage stats:", error);

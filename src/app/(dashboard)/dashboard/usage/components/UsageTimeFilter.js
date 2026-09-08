@@ -2,6 +2,9 @@
 
 import PropTypes from "prop-types";
 import { useEffect, useMemo, useRef, useState } from "react";
+import UsageScopeManager from "./UsageScopeManager";
+import useSettingsStore from "@/store/settingsStore";
+import { hasAccessTagOverlap, normalizeAccessTags } from "@/shared/utils/accessTags";
 
 const PRESETS = [
   { value: "today", label: "今天" },
@@ -160,12 +163,17 @@ PersonFilterDropdown.propTypes = {
   onChange: PropTypes.func,
 };
 
-export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyChange }) {
+export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyChange, onScopeChanged }) {
   const [preset, setPreset] = useState(value?.preset || "today");
   const [anchor, setAnchor] = useState(() => new Date());
   const [customStart, setCustomStart] = useState(value?.startDate ? new Date(value.startDate) : new Date());
   const [customEnd, setCustomEnd] = useState(value?.endDate ? new Date(value.endDate) : new Date());
   const [apiKeys, setApiKeys] = useState([]);
+  const usageDashboardScopeTags = useSettingsStore((state) => state.settings?.usageDashboardScopeTags || []);
+  const scopedApiKeys = useMemo(() => {
+    const tags = normalizeAccessTags(usageDashboardScopeTags);
+    return tags.length === 0 ? apiKeys : apiKeys.filter((apiKey) => hasAccessTagOverlap(apiKey.accessTags, tags));
+  }, [apiKeys, usageDashboardScopeTags]);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +185,10 @@ export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyCha
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (apiKeyId && !scopedApiKeys.some((apiKey) => apiKey.id === apiKeyId)) onApiKeyChange?.("");
+  }, [apiKeyId, onApiKeyChange, scopedApiKeys]);
 
   const range = useMemo(
     () => (preset === "custom" ? { start: atStartOfDay(customStart), end: atEndOfDay(customEnd) } : getRange(preset, anchor)),
@@ -288,7 +300,8 @@ export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyCha
           </label>
         </div>
 
-        <PersonFilterDropdown apiKeys={apiKeys} value={apiKeyId} onChange={onApiKeyChange} />
+        <UsageScopeManager apiKeys={apiKeys} onSaved={onScopeChanged} />
+        <PersonFilterDropdown apiKeys={scopedApiKeys} value={apiKeyId} onChange={onApiKeyChange} />
       </div>
 
       <p className="sr-only">当前统计范围：{toChineseDate(range.start)} 至 {toChineseDate(range.end)}</p>
@@ -305,4 +318,5 @@ UsageTimeFilter.propTypes = {
   onChange: PropTypes.func.isRequired,
   apiKeyId: PropTypes.string,
   onApiKeyChange: PropTypes.func,
+  onScopeChanged: PropTypes.func,
 };

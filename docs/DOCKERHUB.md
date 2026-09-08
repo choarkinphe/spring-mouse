@@ -4,6 +4,8 @@
 
 默认镜像名：`choarkinphe/spring-mouse`。
 
+> **生产发布约束**：镜像构建成功不等于获准部署。所有 R2/R3 变更必须遵守 [发布与事故响应规范](./RELEASE-AND-INCIDENT-RESPONSE-STANDARD.md)，完成不可变构建、容器级冒烟、灰度和回滚准备后，才能在生产环境更新镜像。生产环境必须固定到已验证的版本标签或 digest，不能跟随 `latest`。
+
 ## 一次性发布配置（只需做一次）
 
 ### 1. 创建 Docker Hub 公开仓库
@@ -76,7 +78,7 @@ choarkinphe/spring-mouse:v0.1.0
 choarkinphe/spring-mouse:0.1
 ```
 
-`latest` 始终跟随 GitHub `main` 的最新成功构建；生产环境建议在验证后固定使用版本标签。
+`latest` 始终跟随 GitHub `main` 的最新成功构建，但它仅表示构建产物，不表示生产批准。生产环境**必须**在灰度验证后固定使用版本标签或 digest。
 
 ## 使用者：Docker Compose 一键部署
 
@@ -97,12 +99,14 @@ API_KEY_SECRET=替换为稳定的长随机字符串
 MACHINE_ID_SALT=替换为稳定的长随机字符串
 ```
 
-可选：指定镜像版本。未设置时会使用 `latest`。
+生产环境必须指定已验证镜像版本；未设置时 Compose 会使用 `latest`，仅适用于本地体验或非生产环境。
 
 ```dotenv
-SPRING_MOUSE_IMAGE=choarkinphe/spring-mouse:latest
-# 生产环境验证后建议固定版本，例如：
-# SPRING_MOUSE_IMAGE=choarkinphe/spring-mouse:v0.1.0
+# 生产环境：固定到已经完成灰度验证的版本或 digest
+SPRING_MOUSE_IMAGE=choarkinphe/spring-mouse:v0.1.0
+
+# 本地体验或非生产环境才可跟随 latest：
+# SPRING_MOUSE_IMAGE=choarkinphe/spring-mouse:latest
 ```
 
 然后执行：

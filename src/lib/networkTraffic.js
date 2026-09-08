@@ -107,7 +107,9 @@ export async function withNetworkTraffic(request, handler) {
       return "unknown";
     }
   })();
-  const requestBytes = await getRequestBytes(request);
+  // Start unknown-length accounting in parallel. Waiting for a cloned body before
+  // routing makes large/chunked prompts delay the upstream request's TTFT.
+  const requestBytesPromise = getRequestBytes(request);
   const monitoredRequest = cloneRequestWithTrafficId(request, requestId);
   if (monitoredRequest && (typeof monitoredRequest === "object" || typeof monitoredRequest === "function")) {
     requestTrafficIds.set(monitoredRequest, requestId);
@@ -126,6 +128,7 @@ export async function withNetworkTraffic(request, handler) {
     finalized = true;
     const completedAtMs = Date.now();
     try {
+      const requestBytes = await requestBytesPromise;
       await saveNetworkTraffic({
         requestId,
         timestamp,

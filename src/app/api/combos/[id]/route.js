@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError, resetComboRotation } from "open-sse/services/combo.js";
 import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
+import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -88,6 +89,7 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }
     updateData = { ...updateData, models: normalizedModels, capabilities: normalizedCapabilities };
+    if (body.accessTags !== undefined) updateData.accessTags = normalizeAccessTags(body.accessTags);
 
     if (body.groupName !== undefined) updateData = { ...updateData, groupName: body.groupName?.trim() || null };
 

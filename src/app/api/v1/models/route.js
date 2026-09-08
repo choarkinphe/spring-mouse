@@ -255,9 +255,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   let connections = [];
   try {
     connections = await getProviderConnections();
-    // Connection tags influence account selection priority, not model visibility.
-    // Model-level tags remain the strict permission boundary via canExposeModel.
-    connections = connections.filter(c => c.isActive !== false);
+    connections = connections.filter((connection) => connection.isActive !== false);
   } catch (e) {
     console.log("Could not fetch providers, returning all models");
   }
@@ -304,6 +302,7 @@ export async function buildModelsList(kindFilter, options = {}) {
   for (const combo of combos) {
     if (combo.isActive === false || !Array.isArray(combo.models) || combo.models.length === 0) continue;
     if (!comboMatchesKinds(combo, kindFilter)) continue;
+    if (accessTags !== null && !canAccessWithTags(accessTags, combo.accessTags)) continue;
     const groupName = combo.groupName?.trim() || null;
     const entry = {
       id: combo.name,

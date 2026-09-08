@@ -32,7 +32,7 @@ async function getRequestAccess(request) {
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
   const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
-  return { error, accessTags: error ? [] : await resolveApiKeyAccessTags(apiKey) };
+  return { error, apiKey, accessTags: error ? [] : await resolveApiKeyAccessTags(apiKey) };
 }
 
 /**
@@ -117,7 +117,7 @@ export async function handleVideoCreate(request, action) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags: requestAccess.accessTags });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags: requestAccess.accessTags, requesterId: requestAccess.apiKey || "local" });
 
     if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
@@ -191,7 +191,7 @@ export async function handleVideoGet(request, requestId) {
   await recordIngressUsage(request, extractApiKey(request));
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
 
-  const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId, accessTags: requestAccess.accessTags });
+  const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId, accessTags: requestAccess.accessTags, requesterId: requestAccess.apiKey || "local" });
   if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This provider account is not available for this API key");
   if (!credentials || credentials.allRateLimited) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);

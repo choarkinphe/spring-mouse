@@ -521,7 +521,7 @@ export default function APIPageClient({ machineId }) {
 
       <Modal isOpen={Boolean(taggingKey)} title={`配置密钥权限 · ${taggingKey?.name || ""}`} onClose={() => { if (!savingTags) setTaggingKey(null); }}>
         <div className="flex flex-col gap-5">
-          <AccessTagsEditor value={tagDraft} onChange={setTagDraft} hint="密钥标签会优先匹配同标签账号，并决定它可以调用哪些受限模型；没有匹配账号时会按渠道原有顺序回退。" />
+          <AccessTagsEditor value={tagDraft} onChange={setTagDraft} hint="密钥标签仅决定它可以看到和调用哪些受限模型与模型组合；未设置标签的模型和组合对所有密钥开放。" />
           <div className="flex gap-2">
             <Button onClick={handleSaveKeyTags} loading={savingTags} fullWidth>保存标签</Button>
             <Button variant="ghost" onClick={() => setTaggingKey(null)} disabled={savingTags} fullWidth>取消</Button>

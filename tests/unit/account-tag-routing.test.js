@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   getSettings: vi.fn(),
   updateProviderConnection: vi.fn(),
+  routeLine: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -13,59 +14,35 @@ vi.mock("@/lib/localDb", () => ({
   updateProviderConnection: mocks.updateProviderConnection,
   getSettings: mocks.getSettings,
 }));
-
 vi.mock("@/lib/network/connectionProxy", () => ({
-  resolveConnectionProxyConfig: vi.fn(async () => ({
-    connectionProxyEnabled: false,
-    connectionProxyUrl: "",
-    connectionNoProxy: "",
-  })),
+  resolveConnectionProxyConfig: vi.fn(async () => ({ connectionProxyEnabled: false, connectionProxyUrl: "", connectionNoProxy: "" })),
 }));
-
 vi.mock("@/lib/apiKeyQuota.js", () => ({ checkApiKeyQuota: vi.fn() }));
 vi.mock("@/sse/utils/logger.js", () => ({
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
+  debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+  routeLine: mocks.routeLine,
+  tagForSession: vi.fn(() => "🟢"),
+  maskKey: vi.fn((key) => `masked:${key}`),
 }));
 
-const { getProviderCredentials } = await import("../../src/sse/services/auth.js");
+const { getProviderCredentials, resetProviderUserAssignments } = await import("../../src/sse/services/auth.js");
 
-const connection = (id, accessTags = [], extra = {}) => ({
-  id,
-  provider: "openai",
-  apiKey: `upstream-${id}`,
-  isActive: true,
-  priority: 1,
-  accessTags,
-  providerSpecificData: {},
-  ...extra,
+const connection = (id, extra = {}) => ({
+  id, provider: "openai", apiKey: `upstream-${id}`, isActive: true, priority: 1, providerSpecificData: {}, ...extra,
 });
 
-describe("provider account tag routing", () => {
+describe("provider account load balancing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetProviderUserAssignments();
     mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: {} });
     mocks.updateProviderConnection.mockResolvedValue({});
   });
 
-  it("prefers an account sharing an API-key tag over an earlier account", async () => {
+  it("ignores legacy account tags when using the default account order", async () => {
     mocks.getProviderConnections.mockResolvedValue([
-      connection("default"),
-      connection("other", ["team-b"]),
-      connection("matched", ["team-a"]),
-    ]);
-
-    const credentials = await getProviderCredentials("openai", null, "gpt-5", { accessTags: ["team-a"] });
-
-    expect(credentials.connectionId).toBe("matched");
-  });
-
-  it("falls back to the provider order when no account tag matches", async () => {
-    mocks.getProviderConnections.mockResolvedValue([
-      connection("first", ["team-b"]),
-      connection("second", ["team-c"]),
+      connection("first", { accessTags: ["team-b"] }),
+      connection("second", { accessTags: ["team-a"] }),
     ]);
 
     const credentials = await getProviderCredentials("openai", null, "gpt-5", { accessTags: ["team-a"] });
@@ -73,43 +50,43 @@ describe("provider account tag routing", () => {
     expect(credentials.connectionId).toBe("first");
   });
 
-  it("falls back to an unmatched account after matched accounts are exhausted", async () => {
-    mocks.getProviderConnections.mockResolvedValue([
-      connection("fallback"),
-      connection("matched", ["team-a"]),
-    ]);
+  it("keeps the same API key on its assigned account and rotates new users", async () => {
+    mocks.getSettings.mockResolvedValue({
+      providerStrategies: { openai: { fallbackStrategy: "round-robin" } },
+      modelAccessTags: {},
+    });
+    mocks.getProviderConnections.mockResolvedValue([connection("first"), connection("second")]);
 
-    const credentials = await getProviderCredentials("openai", new Set(["matched"]), "gpt-5", { accessTags: ["team-a"] });
+    const firstA = await getProviderCredentials("openai", null, "gpt-5", { requesterId: "key-a", accessTags: [] });
+    const secondA = await getProviderCredentials("openai", null, "gpt-5", { requesterId: "key-a", accessTags: [] });
+    const firstB = await getProviderCredentials("openai", null, "gpt-5", { requesterId: "key-b", accessTags: [] });
 
-    expect(credentials.connectionId).toBe("fallback");
+    expect(firstA.connectionId).toBe("first");
+    expect(secondA.connectionId).toBe("first");
+    expect(firstB.connectionId).toBe("second");
+    expect(mocks.routeLine).toHaveBeenCalledWith("🟢", "⚖️", expect.stringContaining("sticky-hit → first"));
+    expect(mocks.routeLine).toHaveBeenCalledWith("🟢", "⚖️", expect.stringContaining("rotated → second"));
+  });
+
+  it("reassigns a user when its sticky account is excluded during retry", async () => {
+    mocks.getSettings.mockResolvedValue({
+      providerStrategies: { openai: { fallbackStrategy: "round-robin" } },
+      modelAccessTags: {},
+    });
+    mocks.getProviderConnections.mockResolvedValue([connection("first"), connection("second")]);
+
+    await getProviderCredentials("openai", null, "gpt-5", { requesterId: "key-a", accessTags: [] });
+    const retry = await getProviderCredentials("openai", new Set(["first"]), "gpt-5", { requesterId: "key-a", accessTags: [] });
+
+    expect(retry.connectionId).toBe("second");
   });
 
   it("keeps model access tags as a strict permission boundary", async () => {
-    mocks.getProviderConnections.mockResolvedValue([connection("matched", ["team-a"])]);
-    mocks.getSettings.mockResolvedValue({
-      providerStrategies: {},
-      modelAccessTags: { "openai/gpt-5": ["premium"] },
-    });
+    mocks.getProviderConnections.mockResolvedValue([connection("first")]);
+    mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: { "openai/gpt-5": ["premium"] } });
 
     const credentials = await getProviderCredentials("openai", null, "gpt-5", { accessTags: ["team-a"] });
 
     expect(credentials).toEqual({ accessDenied: true, resource: "model" });
-  });
-
-  it("round-robins only inside the matching account pool", async () => {
-    mocks.getSettings.mockResolvedValue({
-      providerStrategies: { openai: { fallbackStrategy: "round-robin", stickyRoundRobinLimit: 1 } },
-      modelAccessTags: {},
-    });
-    mocks.getProviderConnections.mockResolvedValue([
-      connection("unmatched", [], { lastUsedAt: null }),
-      connection("matched-old", ["team-a"], { lastUsedAt: "2026-09-01T00:00:00.000Z", consecutiveUseCount: 1 }),
-      connection("matched-new", ["team-a"], { lastUsedAt: "2026-09-02T00:00:00.000Z", consecutiveUseCount: 1 }),
-    ]);
-
-    const credentials = await getProviderCredentials("openai", null, "gpt-5", { accessTags: ["team-a"] });
-
-    expect(credentials.connectionId).toBe("matched-old");
-    expect(mocks.updateProviderConnection).toHaveBeenCalledWith("matched-old", expect.objectContaining({ consecutiveUseCount: 1 }));
   });
 });

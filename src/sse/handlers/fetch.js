@@ -12,6 +12,7 @@ import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
+import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { recordIngressUsage } from "../services/ingressUsage.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
@@ -53,6 +54,7 @@ export async function handleFetch(request) {
   const settings = await getSettings();
   const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
   if (authFailure) return authFailure;
+  const accessTags = await resolveApiKeyAccessTags(apiKey);
 
   if (!providerInput || typeof providerInput !== "string") {
     log.warn("FETCH", "Missing provider/model");
@@ -86,6 +88,11 @@ export async function handleFetch(request) {
   const combos = await getCombos();
   const comboModels = getComboModelsFromData(providerInput, combos);
   if (comboModels) {
+    const combo = combos.find((item) => item.name === providerInput);
+    if (!canAccessWithTags(accessTags, combo?.accessTags)) {
+      log.warn("AUTH", `${providerInput} | denied by combo access tags`);
+      return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+    }
     const comboStrategies = settings.comboStrategies || {};
     const comboConfig = comboStrategies[providerInput] || {};
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
@@ -156,7 +163,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, null, { accessTags });
+    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, null, { accessTags, requesterId: apiKey || "local" });
 
     if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {

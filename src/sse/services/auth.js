@@ -7,11 +7,18 @@ import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
-import { canAccessWithTags, getModelAccessTags, hasAccessTagOverlap, normalizeAccessTags } from "@/shared/utils/accessTags.js";
+import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 
 // Per-provider mutexes to prevent race conditions during account selection
 // 替代全局锁，让不同provider的请求可以并行处理
 const providerMutexes = new Map();
+const providerUserAssignments = new Map();
+const MAX_USER_ASSIGNMENTS_PER_PROVIDER = 1000;
+
+export function resetProviderUserAssignments(providerId = null) {
+  if (providerId) providerUserAssignments.delete(providerId);
+  else providerUserAssignments.clear();
+}
 
 function getProviderMutex(providerId) {
   if (!providerMutexes.has(providerId)) {
@@ -29,6 +36,23 @@ function githubMonthlyResetMs(status, errorText, provider) {
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
+export async function authorizeModelAccess(provider, model, accessTags) {
+  const requestAccessTags = Array.isArray(accessTags) ? normalizeAccessTags(accessTags) : null;
+  if (requestAccessTags === null || !model) return null;
+
+  const providerId = resolveProviderId(provider);
+  const settings = await getSettings();
+  const requiredModelTags = getModelAccessTags(
+    settings.modelAccessTags,
+    `${providerId}/${model}`,
+    `${provider}/${model}`,
+    model,
+  );
+  return canAccessWithTags(requestAccessTags, requiredModelTags)
+    ? null
+    : { accessDenied: true, resource: "model" };
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
@@ -42,6 +66,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const requestAccessTags = Array.isArray(options?.accessTags) ? normalizeAccessTags(options.accessTags) : null;
 
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
   const providerId = resolveProviderId(provider);
@@ -54,9 +79,23 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
   try {
     await currentMutex;
 
-    // Inject a virtual connection for no-auth free providers. Proxy pools and
-    // provider relay acceleration were retired; this connection is direct.
+    // Inject a virtual connection for no-auth free providers. Model tags still
+    // apply even though there is no account record to authorize.
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (requestAccessTags !== null && model) {
+        const settings = await getSettings();
+        const requiredModelTags = getModelAccessTags(
+          settings.modelAccessTags,
+          `${providerId}/${model}`,
+          `${provider}/${model}`,
+          model,
+        );
+        if (!canAccessWithTags(requestAccessTags, requiredModelTags)) {
+          log.warn("AUTH", `${provider}/${model} | denied by model access tags`);
+          return { accessDenied: true, resource: "model" };
+        }
+      }
+
       return {
         id: "noauth",
         connectionName: "Public",
@@ -72,7 +111,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const connections = await getProviderConnections({ provider: providerId, isActive: true });
     const settings = await getSettings();
-    const requestAccessTags = Array.isArray(options?.accessTags) ? normalizeAccessTags(options.accessTags) : null;
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
@@ -94,25 +132,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     }
 
-    // Account tags are routing preferences rather than a hard permission wall.
-    // Prefer accounts sharing at least one API-key tag; if that pool is empty
-    // (or exhausted by retries/locks), fall back to the provider's normal order.
-    // Model tags above remain strict permissions.
+    // Account tags do not participate in authorization or routing. Account
+    // selection only excludes failed/locked connections; API-key tags above
+    // remain the permission boundary for models.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
     });
 
-    const matchedConnections = requestAccessTags?.length > 0
-      ? availableConnections.filter((connection) => hasAccessTagOverlap(requestAccessTags, connection.accessTags))
-      : [];
-    const candidateConnections = matchedConnections.length > 0 ? matchedConnections : availableConnections;
-
-    log.debug(
-      "AUTH",
-      `${provider} | available: ${availableConnections.length}/${connections.length}, tagMatched: ${matchedConnections.length}, pool: ${matchedConnections.length > 0 ? "tag-preferred" : "fallback"}`,
-    );
+    log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
     connections.forEach(c => {
       const excluded = excludeSet.has(c.id);
       const locked = isModelLockActive(c, model);
@@ -148,11 +177,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const strategy = providerOverride.fallbackStrategy || "fill-first";
 
     let connection;
-    // Pin to preferred connection if specified and available
+    // Pinning may bypass routing order, but never account permissions.
     if (preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
+      } else if (connections.some((candidate) => candidate.id === preferredConnectionId)) {
+        log.warn("AUTH", `${provider} | preferred account unavailable; using the routing strategy`);
       }
     }
     if (connection) {
@@ -161,7 +192,28 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const stickyLimit = providerOverride.stickyRoundRobinLimit || 1;
 
       // Sort by lastUsed (most recent first) to find current candidate
-      const byRecency = [...candidateConnections].sort((a, b) => {
+      const requesterId = typeof options?.requesterId === "string" && options.requesterId ? options.requesterId : null;
+      if (requesterId) {
+        const state = providerUserAssignments.get(providerId) || { lastConnectionId: null, assignments: new Map() };
+        const assignedId = state.assignments.get(requesterId);
+        connection = availableConnections.find((candidate) => candidate.id === assignedId);
+        const outcome = connection ? "sticky-hit" : "rotated";
+
+        if (!connection) {
+          const lastIndex = availableConnections.findIndex((candidate) => candidate.id === state.lastConnectionId);
+          connection = availableConnections[(lastIndex + 1 + availableConnections.length) % availableConnections.length];
+          state.assignments.set(requesterId, connection.id);
+          if (state.assignments.size > MAX_USER_ASSIGNMENTS_PER_PROVIDER) {
+            state.assignments.delete(state.assignments.keys().next().value);
+          }
+        }
+        state.lastConnectionId = connection.id;
+        providerUserAssignments.set(providerId, state);
+        await updateProviderConnection(connection.id, { lastUsedAt: new Date().toISOString(), consecutiveUseCount: 1 });
+        const userLabel = requesterId === "local" ? "local" : log.maskKey(requesterId);
+        log.routeLine(log.tagForSession(requesterId), "⚖️", `${provider} | user=${userLabel} | ${outcome} → ${connection.connectionName || connection.displayName || connection.name || connection.id.slice(0, 8)} | accounts=${availableConnections.length}`);
+      } else {
+        const byRecency = [...availableConnections].sort((a, b) => {
         if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
         if (!a.lastUsedAt) return 1;
         if (!b.lastUsedAt) return -1;
@@ -181,7 +233,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         });
       } else {
         // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...candidateConnections].sort((a, b) => {
+        const sortedByOldest = [...availableConnections].sort((a, b) => {
           if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
           if (!a.lastUsedAt) return -1;
           if (!b.lastUsedAt) return 1;
@@ -196,9 +248,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           consecutiveUseCount: 1
         });
       }
+      }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)
-      connection = candidateConnections[0];
+      connection = availableConnections[0];
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});

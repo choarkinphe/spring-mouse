@@ -5,7 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle } from "@/shared/components";
+import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
@@ -889,6 +889,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCa
   const [models, setModels] = useState(combo?.models || []);
   const [groupName, setGroupName] = useState(combo?.groupName || "");
   const [sortOrder, setSortOrder] = useState(String(combo?.sortOrder ?? 0));
+  const [accessTags, setAccessTags] = useState(combo?.accessTags || []);
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1019,6 +1020,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCa
       groupName: groupName.trim() || null,
       sortOrder: normalizedSortOrder,
       capabilities: { contextWindow, vision: capabilities.vision, audioInput: capabilities.audioInput },
+      accessTags,
     });
     setSaving(false);
   };
@@ -1069,6 +1071,15 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, getCa
                 </div>
                 <span className="text-[10px] text-text-muted">1K = 1,000 tokens；留空表示不声明。</span>
               </label>
+            </div>
+
+            <div className="mt-3 border-t border-[#38bdf8]/10 pt-3">
+              <AccessTagsEditor
+                value={accessTags}
+                onChange={setAccessTags}
+                label="模型权限标签"
+                hint="设置后，只有拥有任一相同标签的 API 密钥可以看到和调用此模型组合；不设置则对所有密钥开放。"
+              />
             </div>
 
             <div className="mt-3 flex items-center gap-1.5 border-t border-[#38bdf8]/10 pt-3">

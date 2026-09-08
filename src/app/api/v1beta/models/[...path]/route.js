@@ -5,6 +5,7 @@ import {
   getProviderCredentials,
   isValidApiKey,
   markAccountUnavailable,
+  resolveApiKeyAccessTags,
 } from "@/sse/services/auth.js";
 import { getSettings } from "@/lib/localDb";
 import { PROVIDER_MODELS } from "@/shared/constants/models";
@@ -178,21 +179,21 @@ function buildGeminiNativeUrl(requestUrl, model, action) {
   return upstreamUrl.toString();
 }
 
-async function validateGeminiNativeClientKey(request) {
+async function resolveGeminiNativeClientAccess(request) {
   const settings = await getSettings();
-  if (!settings.requireApiKey) return null;
-
   const apiKey = extractGeminiClientApiKey(request);
   if (!apiKey) {
-    return Response.json({ error: { message: "Missing API key" } }, { status: 401 });
+    return settings.requireApiKey
+      ? { error: Response.json({ error: { message: "Missing API key" } }, { status: 401 }) }
+      : { accessTags: [], apiKey: null };
   }
 
   const valid = await isValidApiKey(apiKey);
   if (!valid) {
-    return Response.json({ error: { message: "Invalid API key" } }, { status: 401 });
+    return { error: Response.json({ error: { message: "Invalid API key" } }, { status: 401 }) };
   }
 
-  return null;
+  return { accessTags: await resolveApiKeyAccessTags(apiKey), apiKey };
 }
 
 function buildGeminiNativeAuthHeaders(credentials) {
@@ -237,8 +238,8 @@ function getSafeGeminiNativeErrorText(error) {
 }
 
 async function forwardGeminiNativeRequest(request, body, model, action) {
-  const authError = await validateGeminiNativeClientKey(request);
-  if (authError) return authError;
+  const clientAccess = await resolveGeminiNativeClientAccess(request);
+  if (clientAccess.error) return clientAccess.error;
 
   const modelId = normalizeGeminiNativeModel(model);
   if (!GEMINI_NATIVE_MODEL_PATTERN.test(modelId)) {
@@ -250,7 +251,10 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials("gemini", excludeConnectionIds, modelId);
+    const credentials = await getProviderCredentials("gemini", excludeConnectionIds, modelId, { accessTags: clientAccess.accessTags, requesterId: clientAccess.apiKey || "local" });
+    if (credentials?.accessDenied) {
+      return Response.json({ error: { message: "This model or provider account is not available for this API key" } }, { status: 403 });
+    }
     if (!credentials || credentials.allRateLimited) {
       console.log(`[GEMINI_NATIVE] exhausted model=${modelId} status=${lastStatus || Number(credentials?.lastErrorCode) || 503} error=${lastError || credentials?.lastError || "No active credentials for provider: gemini"}`);
       return Response.json(

@@ -1,12 +1,13 @@
 import {
   getProviderCredentials,
   markAccountUnavailable,
+  authorizeModelAccess,
   clearAccountError,
   extractApiKey,
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getComboByName } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -14,6 +15,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { recordIngressUsage } from "../services/ingressUsage.js";
 
 // Providers that don't require credentials (noAuth)
@@ -51,6 +53,11 @@ export async function handleImageGeneration(request) {
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
+    const combo = await getComboByName(modelStr);
+    if (!canAccessWithTags(accessTags, combo?.accessTags)) {
+      log.warn("AUTH", `${modelStr} | denied by combo access tags`);
+      return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+    }
     const comboStrategies = settings.comboStrategies || {};
     const comboConfig = comboStrategies[modelStr] || {};
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
@@ -59,7 +66,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, accessTags }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, accessTags, requesterId: apiKey || "local" }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -67,10 +74,10 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags, requesterId: apiKey || "local" });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags = [] } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags = [], requesterId = null } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -78,6 +85,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
+    const accessFailure = await authorizeModelAccess(provider, model, accessTags);
+    if (accessFailure) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+
     const result = await handleImageGenerationCore({
       body,
       modelInfo: { provider, model },
@@ -94,7 +104,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags, requesterId });
 
     if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {

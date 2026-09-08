@@ -1,5 +1,7 @@
 import { withNetworkTraffic } from "@/lib/networkTraffic.js";
-import { getCombos } from "@/lib/localDb";
+import { getCombos, getSettings } from "@/lib/localDb";
+import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
+import { canAccessWithTags } from "@/shared/utils/accessTags";
 
 /**
  * Handle CORS preflight
@@ -18,13 +20,18 @@ export async function OPTIONS() {
  * GET /v1beta/models - Gemini compatible models list
  * Exposes configured combo routing entrypoints only.
  */
-async function handleGET() {
+async function handleGET(request) {
   try {
+    const apiKey = extractApiKey(request);
+    const settings = await getSettings();
+    const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+    if (authFailure) return authFailure;
+    const accessTags = await resolveApiKeyAccessTags(apiKey);
     const combos = await getCombos();
 
     return Response.json({
       models: combos
-        .filter((combo) => combo.isActive !== false && Array.isArray(combo.models) && combo.models.length > 0)
+        .filter((combo) => combo.isActive !== false && Array.isArray(combo.models) && combo.models.length > 0 && canAccessWithTags(accessTags, combo.accessTags))
         .map((combo) => ({
         name: `models/${combo.name}`,
         displayName: combo.name,
@@ -41,5 +48,5 @@ async function handleGET() {
 
 
 export async function GET(request = new Request("http://localhost/api/v1beta/models")) {
-  return withNetworkTraffic(request, () => handleGET());
+  return withNetworkTraffic(request, () => handleGET(request));
 }

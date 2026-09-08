@@ -581,34 +581,17 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
 
           {group.connections.length > 1 && (
             <div className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/[0.12] px-2 py-1.5">
-              <span className="text-[11px] font-medium text-[#b9c7d5]">账号轮询</span>
-              <Tooltip text="同一渠道的多个账号按顺序轮换使用">
+              <span className="text-[11px] font-medium text-[#b9c7d5]">用户粘滞均衡</span>
+              <Tooltip text="同一 API Key 会优先复用上次命中的账号；新 API Key 自动分配到下一个账号。">
                 <span>
                   <Toggle
                     size="sm"
                     checked={roundRobinEnabled}
                     onChange={(enabled) => onSetRoundRobin(group.provider, enabled, stickyLimit)}
-                    aria-label={`${channelName} 账号轮询`}
+                    aria-label={`${channelName} 用户粘滞均衡`}
                   />
                 </span>
               </Tooltip>
-              {roundRobinEnabled && (
-                <label className="flex items-center gap-1 border-l border-white/[0.08] pl-2 text-[11px] text-text-muted">
-                  <span>每账号</span>
-                  <input
-                    type="number"
-                    min="1"
-                    value={stickyLimit}
-                    onChange={(event) => {
-                      const next = Number.parseInt(event.target.value, 10);
-                      if (Number.isFinite(next) && next > 0) onSetRoundRobinLimit(group.provider, next);
-                    }}
-                    className="w-7 bg-transparent text-center font-mono text-[11px] text-text-main outline-none"
-                    aria-label={`${channelName} 每个账号连续调用次数`}
-                  />
-                  <span>次</span>
-                </label>
-              )}
             </div>
           )}
 

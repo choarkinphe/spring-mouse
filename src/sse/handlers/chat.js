@@ -25,6 +25,7 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
+import { canAccessWithTags } from "@/shared/utils/accessTags";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -103,6 +104,10 @@ export async function handleChat(request, clientRawRequest = null) {
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
     const combo = await getComboByName(modelStr);
+    if (!canAccessWithTags(accessTags, combo?.accessTags)) {
+      log.warn("AUTH", `${modelStr} | denied by combo access tags`);
+      return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+    }
     const resolved = resolveComboRequestModels(comboModels, requiredCapabilities, combo?.capabilities);
     if (resolved.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
 
@@ -158,6 +163,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
       const combo = await getComboByName(modelStr);
+      if (!canAccessWithTags(accessTags, combo?.accessTags)) {
+        log.warn("AUTH", `${modelStr} | denied by combo access tags`);
+        return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+      }
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
       const resolved = resolveComboRequestModels(comboModels, requiredCapabilities, combo?.capabilities);
@@ -218,7 +227,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags, requesterId: apiKey || "local" });
 
     // All accounts unavailable
     if (credentials?.accessDenied) {
@@ -262,6 +271,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       credentials: refreshedCredentials,
       log,
       clientRawRequest,
+      // Propagate client disconnects all the way to the upstream executor.
+      // Without this, a channel that never responds can retain fetches after
+      // the caller has gone away and exhaust the process under concurrency.
+      clientSignal: request.signal,
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,

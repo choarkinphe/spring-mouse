@@ -4,7 +4,6 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
-import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -77,7 +76,6 @@ export async function PUT(request, { params }) {
       lastError,
       lastErrorAt,
       providerSpecificData,
-      accessTags,
     } = body;
 
     const existing = await getProviderConnectionById(id);
@@ -100,7 +98,6 @@ export async function PUT(request, { params }) {
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;
     if (lastErrorAt !== undefined) updateData.lastErrorAt = lastErrorAt;
-    if (accessTags !== undefined) updateData.accessTags = normalizeAccessTags(accessTags);
 
     if (
       shouldMergeProviderSpecificData(

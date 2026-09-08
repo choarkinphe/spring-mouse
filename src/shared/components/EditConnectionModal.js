@@ -8,14 +8,12 @@ import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import Select from "@/shared/components/Select";
-import AccessTagsEditor from "@/shared/components/AccessTagsEditor";
 
 export default function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
     apiKey: "",
-    accessTags: [],
   });
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
@@ -37,7 +35,6 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
         name: connection.name || "",
         priority: connection.priority || 1,
         apiKey: "",
-        accessTags: connection.accessTags || [],
       });
       // Load Azure-specific data if present
       if (connection.provider === "azure" && connection.providerSpecificData) {
@@ -123,7 +120,6 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
       const updates = {
         name: formData.name,
         priority: formData.priority,
-        accessTags: formData.accessTags,
       };
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
@@ -205,13 +201,6 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
         />
-        <AccessTagsEditor
-          value={formData.accessTags}
-          onChange={(accessTags) => setFormData({ ...formData, accessTags })}
-          label="分流标签"
-          hint="拥有相同标签的 API 密钥会优先使用此账号；没有可用的匹配账号时，将按渠道原有顺序回退到其他账号。"
-        />
-
         {!isOAuth && (
           <>
             <div className="flex gap-2">

@@ -3,10 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handleChat: vi.fn(),
   getSettings: vi.fn(),
+  getCombos: vi.fn(),
+  authorizeApiKey: vi.fn(),
+  extractApiKey: vi.fn(),
   isValidApiKey: vi.fn(),
   getProviderCredentials: vi.fn(),
   markAccountUnavailable: vi.fn(),
   clearAccountError: vi.fn(),
+  resolveApiKeyAccessTags: vi.fn(),
 }));
 
 vi.mock("@/sse/handlers/chat.js", () => ({
@@ -18,10 +22,14 @@ vi.mock("@/sse/services/auth.js", () => ({
   isValidApiKey: mocks.isValidApiKey,
   markAccountUnavailable: mocks.markAccountUnavailable,
   clearAccountError: mocks.clearAccountError,
+  resolveApiKeyAccessTags: mocks.resolveApiKeyAccessTags,
+  authorizeApiKey: mocks.authorizeApiKey,
+  extractApiKey: mocks.extractApiKey,
 }));
 
 vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
+  getCombos: mocks.getCombos,
 }));
 
 const { GET } = await import("../../src/app/api/v1beta/models/route.js");
@@ -60,7 +68,15 @@ describe("Gemini native v1beta endpoint", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSettings.mockResolvedValue({ requireApiKey: true });
+    mocks.authorizeApiKey.mockResolvedValue(null);
+    mocks.extractApiKey.mockReturnValue("router-client-key");
+    mocks.getCombos.mockResolvedValue([
+      { name: "gemini-3.1-flash-tts-preview", models: ["gemini/gemini-3.1-flash-tts-preview"] },
+      { name: "gemini-2.5-flash-preview-tts", models: ["gemini/gemini-2.5-flash-preview-tts"] },
+      { name: "gemini-2.5-pro-preview-tts", models: ["gemini/gemini-2.5-pro-preview-tts"] },
+    ]);
     mocks.isValidApiKey.mockResolvedValue(true);
+    mocks.resolveApiKeyAccessTags.mockResolvedValue(["team-a", "team-b"]);
     mocks.getProviderCredentials.mockResolvedValue({
       apiKey: "real-gemini-key",
       connectionId: "gemini-conn",
@@ -107,6 +123,23 @@ describe("Gemini native v1beta endpoint", () => {
     expect(JSON.parse(options.body)).toEqual(body);
     expect(options.headers["x-goog-api-key"]).toBe("real-gemini-key");
     expect(options.headers.Authorization).toBeUndefined();
+    expect(mocks.getProviderCredentials).toHaveBeenCalledWith(
+      "gemini",
+      expect.any(Set),
+      "gemini-3.1-flash-tts-preview",
+      { accessTags: ["team-a", "team-b"], requesterId: "router-client-key" },
+    );
+  });
+
+  it("rejects a native request when model access is denied", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce({ accessDenied: true, resource: "model" });
+
+    const response = await POST(makeGeminiRequest("gemini-3.1-flash-tts-preview:generateContent", audioBody()), {
+      params: Promise.resolve({ path: ["gemini-3.1-flash-tts-preview:generateContent"] }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("accepts Google-style client keys without forwarding them upstream", async () => {

@@ -94,7 +94,7 @@ export async function handleEmbeddings(request) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags, requesterId: apiKey || "local" });
 
     if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError } from "open-sse/services/combo.js";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
+import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { name, models, kind, isActive, groupName, sortOrder, capabilities } = body;
+    const { name, models, kind, isActive, groupName, sortOrder, capabilities, accessTags } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -75,7 +76,7 @@ export async function POST(request) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: normalizedModels, kind: kind || null, isActive, groupName: groupName?.trim() || null, sortOrder, capabilities: normalizedCapabilities });
+    const combo = await createCombo({ name, models: normalizedModels, kind: kind || null, isActive, groupName: groupName?.trim() || null, sortOrder, capabilities: normalizedCapabilities, accessTags: normalizeAccessTags(accessTags) });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {

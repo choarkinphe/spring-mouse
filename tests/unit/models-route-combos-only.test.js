@@ -29,6 +29,16 @@ describe("public models list", () => {
     ]);
   });
 
+  it("hides tagged combos from API keys without matching tags", async () => {
+    await createCombo({ name: "restricted-route", models: ["cx/gpt-5"], kind: null, accessTags: ["team-a"] });
+
+    const deniedModels = await buildModelsList(["llm"], { accessTags: ["team-b"] });
+    const allowedModels = await buildModelsList(["llm"], { accessTags: ["team-a"] });
+
+    expect(deniedModels.some((model) => model.id === "restricted-route")).toBe(false);
+    expect(allowedModels.some((model) => model.id === "restricted-route")).toBe(true);
+  });
+
   it("exposes a combo's declared context and input capabilities", async () => {
     await createCombo({
       name: "media-route",

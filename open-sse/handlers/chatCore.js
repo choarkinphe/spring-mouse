@@ -207,7 +207,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   } else {
     translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
     if (!translatedBody) {
-      trackPendingRequest(model, provider, connectionId, false, true, apiKey);
+      trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);
     }
     toolNameMap = translatedBody._toolNameMap;
@@ -369,7 +369,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
 
   const executor = getExecutor(provider);
-  trackPendingRequest(model, provider, connectionId, true, false, apiKey);
+  trackPendingRequest(model, provider, connectionId, true, false, apiKey, requestId);
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
 
   const msgCount = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || translatedBody.request?.contents?.length || 0;
@@ -383,13 +383,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   };
   const streamController = createStreamController({
     onDisconnect: (reason) => {
-      trackPendingRequest(model, provider, connectionId, false, false, apiKey);
+      trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       saveFailedUsage("cancelled");
       finishRequest();
       if (onDisconnect) onDisconnect(reason);
     },
     onError: (error) => {
-      trackPendingRequest(model, provider, connectionId, false, false, apiKey);
+      trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       finishRequest();
     },
@@ -439,7 +439,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
-    trackPendingRequest(model, provider, connectionId, false, true, apiKey);
+    trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error");
     saveRequestDetail(buildRequestDetail({
@@ -503,7 +503,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Provider returned error
   if (!providerResponse.ok) {
-    trackPendingRequest(model, provider, connectionId, false, true, apiKey);
+    trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveFailedUsage("error");
@@ -529,7 +529,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled, observabilityMaxJsonChars };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
-  const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey);
+  const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {

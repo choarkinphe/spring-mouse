@@ -526,11 +526,6 @@ button:disabled,
       inset 0 0 14px rgba(255, 255, 255, 0.25);
   }
 }
-@keyframes topology-router-icon-shake {
-  0%, 100% { transform: rotate(0deg) scale(1); filter: drop-shadow(0 0 2px #fde047); }
-  25% { transform: rotate(-5deg) scale(1.08); filter: drop-shadow(0 0 6px #facc15); }
-  75% { transform: rotate(5deg) scale(1.08); filter: drop-shadow(0 0 6px #22d3ee); }
-}
 @keyframes topology-router-label-flicker {
   0%, 100% { text-shadow: 0 0 6px #fde047, 0 0 12px #22d3ee; }
   50% { text-shadow: 0 0 10px #fff, 0 0 18px #facc15; }
@@ -549,7 +544,7 @@ button:disabled,
   border-color: #fde047 !important;
 }
 .topology-router-icon {
-  animation: topology-router-icon-shake 0.45s ease-in-out infinite;
+  animation: topology-router-breathe 2.4s ease-in-out infinite;
 }
 .topology-router-label {
   animation: topology-router-label-flicker 0.7s ease-in-out infinite;
@@ -567,6 +562,25 @@ button:disabled,
 .topology-edge-plasma {
   stroke-dasharray: 14 10;
   animation: topology-edge-dash 0.18s linear infinite, topology-edge-flicker 0.22s steps(3) infinite;
+}
+
+@keyframes topology-router-breathe {
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 3px rgba(34, 211, 238, 0.45)); }
+  50% { transform: scale(1.045); filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.65)); }
+}
+
+/* Token lanes: bounded particles, round in pixel space, no per-frame React work. */
+@keyframes topology-token-travel {
+  0% { offset-distance: 0%; opacity: 0; }
+  10%, 88% { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+.topology-token-particle {
+  animation: topology-token-travel var(--flow-duration, 2s) linear var(--flow-delay, 0s) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topology-token-particle { display: none; animation: none; }
+  .topology-router-icon { animation: none; }
 }
 
 /* Topology idle state: Mouse scans softly while no route is active. */

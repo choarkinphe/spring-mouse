@@ -217,6 +217,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
             <OverviewCards stats={stats} />
             <ProviderTopology
               activeRequests={stats.activeRequests || []}
+              recentRequests={stats.recentRequests || []}
               className="xl:h-auto xl:min-h-0 xl:flex-1"
             />
           </div>

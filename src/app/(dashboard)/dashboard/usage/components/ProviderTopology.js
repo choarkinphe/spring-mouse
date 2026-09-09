@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import PropTypes from "prop-types";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
+import { getTokenMotion, getTopologyRequests, makeTokenPath, tokenCount, INPUT_FLOW_COLOR, OUTPUT_FLOW_COLOR } from "@/shared/utils/topologyTraffic";
 
-const FE_ACTIVE_TIMEOUT_MS = 60000;
 const FE_ACTIVE_TICK_MS = 1000;
-const STABLE_CALLER_TTL_MS = 60000;
+const EMPTY_REQUESTS = [];
 const NODE_FADE_MS = 280;
 const LINE_FADE_MS = 360;
 
@@ -17,20 +17,6 @@ function getProviderConfig(providerId) {
 
 function getProviderImageUrl(providerId) {
   return getProviderIconSrc(providerId);
-}
-
-function getRequestKey(request) {
-  return [
-    request.provider || "unknown",
-    request.account || "",
-    request.apiKey?.id || "local",
-    request.apiKey?.name || "",
-    request.model || "",
-  ].join("|");
-}
-
-function getCallerRouteKey(request) {
-  return [request.provider || "unknown", request.account || "", request.model || ""].join("|");
 }
 
 function getCallerLabel(apiKey) {
@@ -46,7 +32,7 @@ function ProjectedProvider({ provider, compact }) {
     <div
       className={`flex items-center rounded-lg border-2 bg-bg shadow-sm ${compact ? "gap-1.5 px-2 py-1.5" : "gap-2.5 px-3 py-2"}`}
       style={{ borderColor: provider.color, boxShadow: `0 0 16px ${provider.color}30`, minWidth: compact ? 104 : 150 }}
-      title={`${provider.label}${provider.count > 1 ? ` · ${provider.count} active requests` : ""}`}
+      title={`${provider.label} · ${provider.count} active requests · ${tokenSummary(provider)}`}
     >
       <div className={`${compact ? "h-6 w-6" : "h-8 w-8"} flex shrink-0 items-center justify-center rounded-md`} style={{ backgroundColor: `${provider.color}18` }}>
         {provider.imageUrl && !imgError ? (
@@ -84,7 +70,7 @@ function ProjectedApiKey({ caller, compact }) {
     <div
       className={`flex items-center rounded-lg border border-border bg-bg shadow-sm ${compact ? "gap-1.5 px-2 py-1.5" : "gap-2 px-3 py-2"}`}
       style={{ minWidth: compact ? 108 : 156 }}
-      title={`${caller.label}${caller.count > 1 ? ` · ${caller.count} active requests` : ""}`}
+      title={`${caller.label} · ${caller.count} active requests · ${tokenSummary(caller)}`}
     >
       <span className={`${compact ? "text-[16px]" : "text-[19px]"} material-symbols-outlined shrink-0 text-primary`} aria-hidden="true">key</span>
       <span className={`${compact ? "max-w-[86px] text-xs" : "max-w-[135px] text-sm"} truncate font-medium text-text`}>{caller.label}</span>
@@ -114,25 +100,9 @@ function getProjectedPositions(count) {
   return Array.from({ length: count }, (_, index) => 50 - span / 2 + (span * index) / (count - 1));
 }
 
-function makePath(x, y, direction = "outbound") {
-  const middleY = 50;
-  const verticalDirection = y < middleY ? -1 : 1;
-  const bendY = middleY + verticalDirection * 10;
-  const endBendY = y - verticalDirection * 8;
-
-  // Providers receive traffic from Mouse (outbound); API keys send traffic
-  // into Mouse (inbound), so particles always follow the real request path.
-  if (direction === "inbound") {
-    return `M ${x} ${y} C ${x} ${endBendY}, 50 ${bendY}, 50 ${middleY}`;
-  }
-  return `M 50 ${middleY} C 50 ${bendY}, ${x} ${endBendY}, ${x} ${y}`;
-}
-
 function buildProjection(requests, nodeMap = {}) {
   const providerMap = new Map();
   const callerMap = new Map();
-  const callerFlows = [];
-  const callerFlowKeys = new Set();
 
   requests.forEach((request) => {
     const providerId = request.provider?.toLowerCase() || "unknown";
@@ -147,21 +117,25 @@ function buildProjection(requests, nodeMap = {}) {
       builtinIcon: !node?.icon && isBuiltin,
       textIcon: config.textIcon || (node?.name || providerId).slice(0, 2).toUpperCase(),
       count: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimated: false,
     };
-    provider.count += request.count || 1;
+    provider.count += request.count ?? 1;
+    provider.inputTokens += tokenCount(request.inputTokens);
+    provider.outputTokens += tokenCount(request.outputTokens);
+    provider.estimated ||= request.tokensEstimated === true;
     providerMap.set(providerId, provider);
 
     const callerId = request.apiKey?.id || "local";
     const callerLabel = getCallerLabel(request.apiKey);
     const callerKey = `${callerId}:${callerLabel}`;
-    const caller = callerMap.get(callerKey) || { id: callerKey, label: callerLabel, count: 0 };
-    caller.count += request.count || 1;
+    const caller = callerMap.get(callerKey) || { id: callerKey, label: callerLabel, count: 0, inputTokens: 0, outputTokens: 0, estimated: false };
+    caller.count += request.count ?? 1;
+    caller.inputTokens += tokenCount(request.inputTokens);
+    caller.outputTokens += tokenCount(request.outputTokens);
+    caller.estimated ||= request.tokensEstimated === true;
     callerMap.set(callerKey, caller);
-    const flowKey = `${callerKey}|${providerId}`;
-    if (!callerFlowKeys.has(flowKey)) {
-      callerFlowKeys.add(flowKey);
-      callerFlows.push({ callerKey, providerId, color: provider.color });
-    }
   });
 
   const providers = [...providerMap.values()];
@@ -171,61 +145,68 @@ function buildProjection(requests, nodeMap = {}) {
   const providerPositions = new Map(providers.map((provider, index) => [provider.id, providerX[index]]));
   const callerPositions = new Map(callers.map((caller, index) => [caller.id, callerX[index]]));
 
-  return { providers, callers, providerPositions, callerPositions, callerFlows };
+  return { providers, callers, providerPositions, callerPositions };
 }
 
-function ProjectionFlow({ id, x, y, color, direction = "outbound" }) {
-  const path = makePath(x, y, direction);
-  const startX = direction === "inbound" ? x : 50;
-  const startY = direction === "inbound" ? y : 50;
-  const endX = direction === "inbound" ? 50 : x;
-  const endY = direction === "inbound" ? 50 : y;
-  const gradientId = `topology-gradient-${id}`;
-  const glowId = `topology-glow-${id}`;
-
+function ProjectionFlow({ x, y, width, height, inputTokens, outputTokens, caller = false }) {
   return (
     <g>
-      <defs>
-        <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
-          <stop offset="0%" stopColor={color} stopOpacity="0.95" />
-          <stop offset="28%" stopColor={color} stopOpacity="0.62" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.16" />
-        </linearGradient>
-        <filter id={glowId} x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="0.55" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
-      <path d={path} fill="none" stroke={color} strokeWidth="1.65" strokeOpacity="0.08" strokeLinecap="round" />
-      <path d={path} fill="none" stroke={`url(#${gradientId})`} strokeWidth="0.4" strokeLinecap="round" />
-      <circle r="0.62" fill={color} filter={`url(#${glowId})`}>
-        <animateMotion dur="1.35s" repeatCount="indefinite" path={path} />
-        <animate attributeName="opacity" values="0;1;1;0" dur="1.35s" repeatCount="indefinite" />
-      </circle>
-      <circle r="0.38" fill="#f8fafc" opacity="0.92">
-        <animateMotion dur="1.35s" repeatCount="indefinite" path={path} begin="0.42s" />
-        <animate attributeName="opacity" values="0;1;1;0" dur="1.35s" begin="0.42s" repeatCount="indefinite" />
-      </circle>
+      {[
+        { name: "input", tokens: inputTokens, color: INPUT_FLOW_COLOR, inbound: caller, offset: -4 },
+        { name: "output", tokens: outputTokens, color: OUTPUT_FLOW_COLOR, inbound: !caller, offset: 4 },
+      ].map((lane) => {
+        const path = makeTokenPath(x, y, width, height, lane.inbound, lane.offset);
+        const motion = getTokenMotion(lane.tokens);
+        return (
+          <g key={lane.name} data-token-lane={lane.name}>
+            <path d={path} fill="none" stroke={lane.color} strokeWidth="7" strokeOpacity={motion.count ? "0.045" : "0.02"} />
+            <path d={path} fill="none" stroke={lane.color} strokeWidth="1.25" strokeOpacity={motion.count ? "0.48" : "0.16"} />
+            {Array.from({ length: motion.count }, (_, index) => (
+              <g
+                key={index}
+                className="topology-token-particle"
+                style={{ offsetPath: `path('${path}')`, offsetRotate: "0deg", "--flow-duration": `${motion.duration}s`, "--flow-delay": `${-index * motion.duration / motion.count}s` }}
+              >
+                <circle r="5" fill={lane.color} opacity="0.14" />
+                <circle r="2.2" fill={lane.color} />
+                <circle r="0.85" fill="#f8fafc" opacity="0.95" />
+              </g>
+            ))}
+          </g>
+        );
+      })}
     </g>
   );
 }
 
 ProjectionFlow.propTypes = {
-  id: PropTypes.string.isRequired,
   x: PropTypes.number.isRequired,
   y: PropTypes.number.isRequired,
-  color: PropTypes.string.isRequired,
-  direction: PropTypes.oneOf(["inbound", "outbound"]),
+  width: PropTypes.number.isRequired,
+  height: PropTypes.number.isRequired,
+  inputTokens: PropTypes.number,
+  outputTokens: PropTypes.number,
+  caller: PropTypes.bool,
 };
 
 function ProjectionLines({ projection, visible }) {
+  const svgRef = useRef(null);
+  const [size, setSize] = useState({ width: 1000, height: 640 });
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) setSize({ width, height });
+    });
+    observer.observe(svgRef.current);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <svg className={`pointer-events-none absolute inset-0 z-0 h-full w-full overflow-visible transition-opacity ease-out ${visible ? "opacity-100" : "opacity-0"}`} style={{ transitionDuration: `${LINE_FADE_MS}ms` }} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+    <svg ref={svgRef} className={`pointer-events-none absolute inset-0 z-0 h-full w-full overflow-visible transition-opacity ease-out ${visible ? "opacity-100" : "opacity-0"}`} style={{ transitionDuration: `${LINE_FADE_MS}ms` }} viewBox={`0 0 ${size.width} ${size.height}`} aria-hidden="true">
       {projection.providers.map((provider) => (
-        <ProjectionFlow key={`provider-line-${provider.id}`} id={`provider-${provider.id}`} x={projection.providerPositions.get(provider.id)} y={18} color={provider.color} />
+        <ProjectionFlow key={`provider-line-${provider.id}`} x={projection.providerPositions.get(provider.id) * size.width / 100} y={size.height * 0.18} {...size} inputTokens={provider.inputTokens} outputTokens={provider.outputTokens} />
       ))}
-      {projection.callerFlows.map((flow, index) => (
-        <ProjectionFlow key={`caller-line-${flow.callerKey}-${flow.providerId}`} id={`caller-${index}`} x={projection.callerPositions.get(flow.callerKey)} y={82} color={flow.color} direction="inbound" />
+      {projection.callers.map((flow) => (
+        <ProjectionFlow key={`caller-line-${flow.id}`} x={projection.callerPositions.get(flow.id) * size.width / 100} y={size.height * 0.82} {...size} inputTokens={flow.inputTokens} outputTokens={flow.outputTokens} caller />
       ))}
     </svg>
   );
@@ -236,12 +217,13 @@ ProjectionLines.propTypes = {
   visible: PropTypes.bool.isRequired,
 };
 
-export default function ProviderTopology({ activeRequests = [], className = "" }) {
-  const rawRequests = useMemo(() => activeRequests.filter((request) => request?.provider), [activeRequests]);
-  const requestKey = useMemo(() => rawRequests.map(getRequestKey).sort().join(","), [rawRequests]);
-  const firstSeenRef = useRef({});
-  const callerMemoryRef = useRef({});
-  const [tick, setTick] = useState(0);
+function tokenSummary(item) {
+  return `${item.estimated ? "≈ " : ""}输入 ${Math.round(item.inputTokens).toLocaleString()} · 输出 ${Math.round(item.outputTokens).toLocaleString()} Token`;
+}
+
+export default function ProviderTopology({ activeRequests = EMPTY_REQUESTS, recentRequests = EMPTY_REQUESTS, className = "" }) {
+  const [now, setNow] = useState(() => Date.now());
+  const rawRequests = useMemo(() => getTopologyRequests(activeRequests, recentRequests, now), [activeRequests, recentRequests, now]);
 
   // Custom compatible nodes (openai-compatible-*, anthropic-compatible-*, ...)
   // are not in the AI_PROVIDERS constant — resolve their display name/icon
@@ -268,45 +250,22 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
   }, []);
 
   useEffect(() => {
-    const now = Date.now();
-    const nextKeys = new Set(rawRequests.map(getRequestKey));
-    for (const request of rawRequests) {
-      const key = getRequestKey(request);
-      if (!firstSeenRef.current[key]) firstSeenRef.current[key] = now;
+    // Refresh the clock on an incoming snapshot too: a completed-only request
+    // arriving after a long idle period must not be rejected as "in the future".
+    const frame = requestAnimationFrame(() => setNow(Date.now()));
+    const timer = rawRequests.length ? setInterval(() => setNow(Date.now()), FE_ACTIVE_TICK_MS) : null;
+    return () => {
+      cancelAnimationFrame(frame);
+      if (timer) clearInterval(timer);
+    };
+  }, [activeRequests, recentRequests, rawRequests.length]);
 
-      // Keep a known key attached to the same provider/account/model route while
-      // a stream sends a transient request update without its authorization data.
-      if (request.apiKey?.id && request.apiKey.id !== "local") {
-        callerMemoryRef.current[getCallerRouteKey(request)] = { apiKey: request.apiKey, seenAt: now };
-      }
-    }
-    for (const key of Object.keys(firstSeenRef.current)) {
-      if (!nextKeys.has(key)) delete firstSeenRef.current[key];
-    }
-    for (const [key, value] of Object.entries(callerMemoryRef.current)) {
-      if (now - value.seenAt > STABLE_CALLER_TTL_MS) delete callerMemoryRef.current[key];
-    }
-  }, [rawRequests, requestKey]);
-
-  useEffect(() => {
-    if (!rawRequests.length) return undefined;
-    const timer = setInterval(() => setTick((value) => value + 1), FE_ACTIVE_TICK_MS);
-    return () => clearInterval(timer);
-  }, [rawRequests.length]);
-
-  const visibleRequests = useMemo(() => {
-    const now = Date.now();
-    return rawRequests
-      .filter((request) => now - (firstSeenRef.current[getRequestKey(request)] || now) < FE_ACTIVE_TIMEOUT_MS)
-      .map((request) => {
-        if (request.apiKey?.id && request.apiKey.id !== "local") return request;
-        const remembered = callerMemoryRef.current[getCallerRouteKey(request)];
-        return remembered ? { ...request, apiKey: remembered.apiKey } : request;
-      });
-  }, [rawRequests, requestKey, tick]);
-
+  const visibleRequests = rawRequests;
   const projection = useMemo(() => buildProjection(visibleRequests, nodeMap), [visibleRequests, nodeMap]);
-  const [renderedProjection, setRenderedProjection] = useState(() => buildProjection([]));
+  const [renderedProjection, setRenderedProjection] = useState(projection);
+  // Retain the last non-empty layout for the exit fade. Adjust it when input
+  // changes, rather than cascading a second render from a synchronous effect.
+  if (visibleRequests.length > 0 && renderedProjection !== projection) setRenderedProjection(projection);
   const compactProviders = renderedProjection.providers.length > 4;
   const compactCallers = renderedProjection.callers.length > 4;
   const [transitionPhase, setTransitionPhase] = useState("idle");
@@ -327,7 +286,6 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
     const currentPhase = transitionPhaseRef.current;
 
     if (hasActiveRoutes) {
-      setRenderedProjection(projection);
       if (currentPhase === "idle" || currentPhase === "exit-lines" || currentPhase === "exit-nodes") {
         clearTransitionTimers();
         setPhase("enter-nodes");
@@ -358,7 +316,12 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
 
   return (
     <div className={`relative h-[427px] w-full min-w-0 overflow-hidden rounded-lg border border-border bg-bg-subtle/30 sm:h-[640px] ${className}`}>
-      <div className="pointer-events-none absolute left-4 top-3 z-30 text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">Responding providers</div>
+      <div className="pointer-events-none absolute left-4 top-3 z-30 text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted"><span className="sm:hidden">Providers</span><span className="hidden sm:inline">Responding providers</span></div>
+      <div className="absolute right-4 top-3 z-30 flex items-center gap-3 rounded-full border border-border/60 bg-bg/80 px-3 py-1.5 text-[10px] text-text-muted" title="光点数量和速度随活跃请求与最近 6 秒已完成请求的 Token 量变化；上游 usage 优先，缺失时按已接收内容估算，不表示精确 Token/s。悬停节点查看输入/输出量。">
+        <span className="flex items-center gap-1.5"><i className="h-1.5 w-1.5 rounded-full bg-blue-500" />↑ 输入</span>
+        <span className="flex items-center gap-1.5"><i className="h-1.5 w-1.5 rounded-full bg-emerald-500" />↓ 输出</span>
+        <span className="hidden border-l border-border pl-3 sm:inline">Token 流量 · 含估算</span>
+      </div>
       <div className="pointer-events-none absolute bottom-3 left-4 z-30 text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">Calling API keys</div>
 
       {!showProjection ? (
@@ -407,11 +370,15 @@ export default function ProviderTopology({ activeRequests = [], className = "" }
 
 ProviderTopology.propTypes = {
   className: PropTypes.string,
+  recentRequests: PropTypes.array,
   activeRequests: PropTypes.arrayOf(PropTypes.shape({
     provider: PropTypes.string,
     model: PropTypes.string,
     account: PropTypes.string,
     count: PropTypes.number,
+    inputTokens: PropTypes.number,
+    outputTokens: PropTypes.number,
+    tokensEstimated: PropTypes.bool,
     apiKey: PropTypes.shape({ id: PropTypes.string, name: PropTypes.string }),
   })),
 };

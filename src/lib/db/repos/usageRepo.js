@@ -334,6 +334,7 @@ function toRecentRequest(entry, apiKeyMaps) {
     promptTokens: Number(entry.promptTokens ?? t.prompt_tokens ?? t.input_tokens) || 0,
     completionTokens: Number(entry.completionTokens ?? t.completion_tokens ?? t.output_tokens) || 0,
     status: entry.status || "ok",
+    tokensEstimated: t.estimated === true,
   };
 }
 
@@ -422,16 +423,57 @@ function updatePendingAggregate(modelKey, connectionId, delta) {
   else pendingRequests.byAccount[connectionId] = account;
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false, apiKey = null) {
+function getPendingFlowKey(model, provider, connectionId, apiKey) {
   const modelKey = provider ? `${model} (${provider})` : model;
+  return {
+    modelKey,
+    flowKey: JSON.stringify([connectionId || "", modelKey, apiKey || ""]),
+  };
+}
+
+function finiteTokenCount(value) {
+  if (value == null) return null;
+  const tokenCount = Number(value);
+  return Number.isFinite(tokenCount) ? Math.max(0, Math.round(tokenCount)) : null;
+}
+
+// Per-request counters avoid one stream overwriting another on the same route.
+// These are dashboard telemetry only; billing continues to use final usage.
+export function updatePendingRequestTokens(model, provider, connectionId, apiKey, requestId, tokens = {}) {
+  const { flowKey } = getPendingFlowKey(model, provider, connectionId, apiKey);
+  const flow = pendingRequests.byFlow[flowKey];
+  const progress = flow?.requests?.[requestId];
+  if (!progress) return;
+
+  for (const field of ["inputTokens", "outputTokens"]) {
+    const value = finiteTokenCount(tokens[field]);
+    if (value !== null) progress[field] = value;
+  }
+  progress.estimated = tokens.estimated !== false;
+  pendingTimers[flowKey]?.refresh?.();
+  // Share the existing coalesced live SSE patch, never trigger aggregate scans.
+  scheduleStatsEvent("pending", 250);
+}
+
+function getFlowTokens(flow) {
+  const values = Object.values(flow.requests || {});
+  return {
+    inputTokens: values.reduce((total, item) => total + item.inputTokens, 0),
+    outputTokens: values.reduce((total, item) => total + item.outputTokens, 0),
+    tokensEstimated: !values.length || values.some((item) => item.estimated),
+  };
+}
+
+export function trackPendingRequest(model, provider, connectionId, started, error = false, apiKey = null, requestId = null) {
+  const { modelKey, flowKey } = getPendingFlowKey(model, provider, connectionId, apiKey);
   // A flow identifies one caller → provider account route. Keep the raw API key
   // only in process memory until the request completes; the dashboard receives
   // the resolved key name or a masked fallback, never the credential itself.
-  const flowKey = JSON.stringify([connectionId || "", modelKey, apiKey || ""]);
   const redisFlowId = createHash("sha256").update(flowKey).digest("hex").slice(0, 32);
   const existingFlow = pendingRequests.byFlow[flowKey];
 
   if (started) {
+    if (requestId && existingFlow?.requests?.[requestId]) return;
     updatePendingAggregate(modelKey, connectionId, 1);
     const flow = existingFlow || {
       model,
@@ -439,7 +481,13 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
       connectionId: connectionId || "",
       apiKey,
       count: 0,
+      requests: {},
     };
+    if (requestId) {
+      flow.requests ||= {};
+      if (flow.requests[requestId]) return;
+      flow.requests[requestId] = { inputTokens: 0, outputTokens: 0, estimated: true };
+    }
     flow.count += 1;
     pendingRequests.byFlow[flowKey] = flow;
 
@@ -458,6 +506,9 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
     }, PENDING_TIMEOUT_MS);
     updateActiveFlow(redisFlowId, flow, 1).catch(() => {});
   } else if (existingFlow) {
+    // Completion and disconnect may both fire. Remove only this request once.
+    if (requestId && !existingFlow.requests?.[requestId]) return;
+    if (requestId) delete existingFlow.requests[requestId];
     updatePendingAggregate(modelKey, connectionId, -1);
     existingFlow.count = Math.max(0, existingFlow.count - 1);
     updateActiveFlow(redisFlowId, existingFlow, -1).catch(() => {});
@@ -495,6 +546,7 @@ export async function getActiveRequests(apiKeyId = null) {
       provider: flow.provider || "unknown",
       account: accountName,
       count: flow.count,
+      ...getFlowTokens(flow),
       apiKey: {
         id: client?.id || (flow.apiKey ? "external" : "local"),
         name: client?.name || (flow.apiKey ? `API Key ${maskApiKey(flow.apiKey)}` : "Local client"),
@@ -1415,6 +1467,12 @@ async function calculateUsageStats(period = "all", range = {}) {
  * background; the follow-up SSE event carries the exact new aggregate.
  */
 export async function getUsageStats(period = "all", range = {}) {
+  const stats = await getCachedUsageStats(period, range);
+  const live = await getActiveRequests(Array.isArray(range.apiKeyIds) ? range.apiKeyIds : range.apiKeyId);
+  return { ...stats, ...live };
+}
+
+async function getCachedUsageStats(period = "all", range = {}) {
   const key = usageStatsCacheKey(period, range);
   const now = Date.now();
   const cached = usageStatsCache.get(key);

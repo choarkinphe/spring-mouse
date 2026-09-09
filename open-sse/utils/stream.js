@@ -1,9 +1,10 @@
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
-import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
+import { trackPendingRequest, updatePendingRequestTokens, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateInputTokens, estimateUsageFromInputTokens, logUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
+import { createLiveTokenProgress } from "./liveTokenProgress.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
@@ -52,6 +53,7 @@ export function createSSEStream(options = {}) {
     apiKey = null,
     completedContentMaxChars = Infinity,
     inputTokenEstimate = null,
+    requestId = null,
   } = options;
 
   let buffer = "";
@@ -68,6 +70,17 @@ export function createSSEStream(options = {}) {
   const resolvedInputTokenEstimate = Number.isFinite(inputTokenEstimate)
     ? Math.max(0, inputTokenEstimate)
     : estimateInputTokens(body);
+  const liveProgress = requestId ? createLiveTokenProgress(resolvedInputTokenEstimate) : null;
+  let lastLiveUpdateAt = 0;
+  function reportLiveUsage(parsed) {
+    if (!liveProgress) return;
+    const progress = liveProgress(parsed);
+    const now = Date.now();
+    if (now - lastLiveUpdateAt < 250) return;
+    lastLiveUpdateAt = now;
+    updatePendingRequestTokens(model, provider, connectionId, apiKey, requestId, progress);
+  }
+  reportLiveUsage(null);
   const captureLimit = Number.isFinite(completedContentMaxChars)
     ? Math.max(0, completedContentMaxChars)
     : Infinity;
@@ -195,6 +208,7 @@ export function createSSEStream(options = {}) {
 
               // Extract before the valuable-content filter: OpenAI sends exact
               // stream usage in a terminal choices: [] chunk with no text delta.
+              reportLiveUsage(parsed);
               const extracted = extractUsage(parsed);
               if (extracted) usage = mergeUsage(usage, extracted);
 
@@ -331,6 +345,7 @@ export function createSSEStream(options = {}) {
         }
 
         // Extract usage
+        reportLiveUsage(parsed);
         const extracted = extractUsage(parsed);
         if (extracted) state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
 
@@ -388,7 +403,7 @@ export function createSSEStream(options = {}) {
     flush(controller) {
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
-      trackPendingRequest(model, provider, connectionId, false, false, apiKey);
+      trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
@@ -511,7 +526,7 @@ export function createSSEStream(options = {}) {
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -527,10 +542,11 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     apiKey,
     completedContentMaxChars,
     inputTokenEstimate,
+    requestId,
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -542,5 +558,6 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     apiKey,
     completedContentMaxChars,
     inputTokenEstimate,
+    requestId,
   });
 }

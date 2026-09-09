@@ -25,6 +25,7 @@ vi.mock("../../open-sse/utils/requestLogger.js", () => ({
 
 vi.mock("@/lib/usageDb.js", () => ({
   trackPendingRequest: vi.fn(),
+  updatePendingRequestTokens: vi.fn(),
   appendRequestLog: vi.fn(async () => {}),
   saveRequestDetail: vi.fn(async () => {}),
 }));

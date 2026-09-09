@@ -16,6 +16,7 @@ ARG APP_BUILD_VERSION=dev
 
 FROM base AS builder
 ARG APP_BUILD_VERSION=dev
+ARG TARGETARCH
 
 # Use the official npm registry by default. Deployments that need a private
 # registry can still override this with --build-arg NPM_REGISTRY=... .

@@ -21,17 +21,15 @@ ARG APP_BUILD_VERSION=dev
 # registry can still override this with --build-arg NPM_REGISTRY=... .
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
-# Use the official Alpine CDN on hosted CI.
-RUN apk --no-cache upgrade
-
 # Copy package files - prefer package-lock.json for reproducible builds
 COPY package.json package-lock.json* ./
 # Use npm ci if package-lock.json exists, otherwise fallback to npm install
-RUN if [ -f package-lock.json ]; then \
-      npm ci --registry=${NPM_REGISTRY}; \
+RUN --mount=type=cache,target=/root/.npm,id=spring-mouse-npm-${TARGETARCH} \
+    if [ -f package-lock.json ]; then \
+      npm ci --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     else \
       echo "Warning: package-lock.json not found, using npm install instead"; \
-      npm install --registry=${NPM_REGISTRY}; \
+      npm install --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     fi
 
 COPY . ./

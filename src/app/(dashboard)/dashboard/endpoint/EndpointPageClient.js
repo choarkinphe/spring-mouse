@@ -6,6 +6,7 @@ import { AccessTagsEditor, Badge, Button, DashboardHero, Input, Modal, CardSkele
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import EndpointRow from "./components/EndpointRow";
 import SecurityWarning from "./components/SecurityWarning";
+import styles from "./credentials.module.css";
 
 const QUOTA_REFRESH_INTERVAL_MS = 60_000;
 
@@ -90,7 +91,7 @@ function QuotaWindow({ window, onReset, resetting = false }) {
         aria-label={`重置${window.label}用量`}
         className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-sky-400/10 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <span className={`material-symbols-outlined text-[15px] ${resetting ? "animate-spin" : ""}`}>
+        <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon} ${resetting ? "animate-spin" : ""}`}>
           {resetting ? "progress_activity" : "restart_alt"}
         </span>
       </button>
@@ -143,11 +144,19 @@ export default function APIPageClient({ machineId }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
+  const [createdKeyKind, setCreatedKeyKind] = useState("created");
+  const [rotationKey, setRotationKey] = useState(null);
+  const [rotatingKey, setRotatingKey] = useState(false);
+  const [rotationError, setRotationError] = useState("");
   const [confirmState, setConfirmState] = useState(null);
   const [resettingKeyQuotaId, setResettingKeyQuotaId] = useState(null);
   const [taggingKey, setTaggingKey] = useState(null);
   const [tagDraft, setTagDraft] = useState([]);
   const [savingTags, setSavingTags] = useState(false);
+  const [editingKey, setEditingKey] = useState(null);
+  const [keyNameDraft, setKeyNameDraft] = useState("");
+  const [savingKeyName, setSavingKeyName] = useState(false);
+  const [keyNameError, setKeyNameError] = useState("");
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -264,6 +273,7 @@ export default function APIPageClient({ machineId }) {
       const data = await res.json();
 
       if (res.ok) {
+        setCreatedKeyKind("created");
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
@@ -271,6 +281,58 @@ export default function APIPageClient({ machineId }) {
       }
     } catch (error) {
       console.log("Error creating key:", error);
+    }
+  };
+
+  const handleSaveKeyName = async (event) => {
+    event.preventDefault();
+    const name = keyNameDraft.trim();
+    if (!editingKey || !name || savingKeyName) return;
+
+    setSavingKeyName(true);
+    setKeyNameError("");
+    try {
+      const res = await fetch(`/api/keys/${editingKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error("Failed to update key name");
+      const data = await res.json();
+      setKeys((current) => current.map((key) => (
+        key.id === editingKey.id ? { ...key, name: data.key.name } : key
+      )));
+      setEditingKey(null);
+    } catch {
+      setKeyNameError("保存失败，请稍后重试");
+    } finally {
+      setSavingKeyName(false);
+    }
+  };
+
+  const handleRotateKey = async () => {
+    if (!rotationKey || rotatingKey) return;
+    setRotatingKey(true);
+    setRotationError("");
+    try {
+      const res = await fetch(`/api/keys/${rotationKey.id}/rotate`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to rotate key");
+      const data = await res.json();
+      setKeys((current) => current.map((key) => (
+        key.id === rotationKey.id ? { ...key, key: data.key.key } : key
+      )));
+      setVisibleKeys((current) => {
+        const next = new Set(current);
+        next.delete(rotationKey.id);
+        return next;
+      });
+      setRotationKey(null);
+      setCreatedKeyKind("rotated");
+      setCreatedKey(data.key.key);
+    } catch {
+      setRotationError("轮换未确认成功。请先刷新列表核对当前密钥，再决定是否重试。");
+    } finally {
+      setRotatingKey(false);
     }
   };
 
@@ -405,7 +467,7 @@ export default function APIPageClient({ machineId }) {
         <Badge variant={limitedKeyCount > 0 ? "primary" : "default"} size="md" icon="data_usage">{limitedKeyCount} 把限额密钥</Badge>
       </DashboardHero>
 
-      <section aria-labelledby="integration-heading" className="overflow-hidden rounded-xl border border-border-subtle bg-surface/35">
+      <section aria-labelledby="integration-heading" className={`${styles.credentials} overflow-hidden rounded-xl border border-border-subtle bg-surface/35`}>
         <div className="flex flex-col gap-3 border-b border-white/[0.065] bg-white/[0.018] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]"><span className="material-symbols-outlined text-[19px]">api</span></span>
@@ -433,7 +495,7 @@ export default function APIPageClient({ machineId }) {
         </div>
       </section>
 
-      <section id="require-api-key" aria-labelledby="credentials-heading" className="overflow-hidden rounded-xl border border-border-subtle bg-surface/35">
+      <section id="require-api-key" aria-labelledby="credentials-heading" className={`${styles.credentials} overflow-hidden rounded-xl border border-border-subtle bg-surface/35`}>
         <div className="flex flex-col gap-3 border-b border-white/[0.065] bg-white/[0.018] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-violet-400/10 text-violet-300"><span className="material-symbols-outlined text-[19px]">key</span></span>
@@ -465,20 +527,38 @@ export default function APIPageClient({ machineId }) {
           </div>
         ) : (
           <>
-            <div className="hidden grid-cols-[minmax(16rem,1fr)_minmax(18rem,1.2fr)_minmax(11rem,0.75fr)_12.5rem] gap-5 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid"><span>密钥信息</span><span className="border-l border-white/[0.065] pl-5">额度使用</span><span className="border-l border-white/[0.065] pl-5">最近访问</span><span className="text-center">状态与操作</span></div>
+            <div className={`${styles.header} border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688]`}>
+              <span>密钥信息</span>
+              <span>额度使用</span>
+              <span>最近访问</span>
+              <span className="text-right">状态与操作</span>
+            </div>
             <div className="divide-y divide-white/[0.065]">
               {keys.map((key) => (
-                <div key={key.id} className={`group grid min-w-0 grid-cols-1 gap-3 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(16rem,1fr)_minmax(18rem,1.2fr)_minmax(11rem,0.75fr)_12.5rem] lg:items-center lg:gap-5 ${key.isActive === false ? "opacity-55" : ""}`}>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                <div key={key.id} className={`${styles.row} px-4 py-3 transition-colors hover:bg-[#38bdf8]/[0.035] ${key.isActive === false ? "opacity-55" : ""}`}>
+                  <div className={styles.info}>
+                    <div className="flex min-w-0 items-center gap-1.5">
                       <p className="truncate text-sm font-semibold text-text-main">{key.name}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingKey(key);
+                          setKeyNameDraft(key.name || "");
+                          setKeyNameError("");
+                        }}
+                        title="编辑用户名"
+                        aria-label={`编辑用户名：${key.name}`}
+                        className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                      >
+                        <span className={`material-symbols-outlined ${styles.icon}`} aria-hidden="true">edit</span>
+                      </button>
                       {key.isActive === false && <span className="rounded border border-amber-400/20 bg-amber-400/[.08] px-1.5 py-0.5 text-[10px] text-amber-200">已暂停</span>}
                       {key.quota?.exceededWindow && <span className="rounded border border-rose-400/25 bg-rose-400/10 px-1.5 py-0.5 text-[10px] text-rose-200">额度已满</span>}
                     </div>
-                    <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                    <div className="mt-0.5 flex min-w-0 items-center gap-1">
                       <code className="truncate font-mono text-[11px] text-text-muted">{visibleKeys.has(key.id) ? key.key : maskKey(key.key)}</code>
-                      <button onClick={() => toggleKeyVisibility(key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"} aria-label={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"}><span className="material-symbols-outlined text-[15px]">{visibleKeys.has(key.id) ? "visibility_off" : "visibility"}</span></button>
-                      <button onClick={() => copy(key.key, key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title="复制密钥" aria-label="复制密钥"><span className="material-symbols-outlined text-[15px]">{copied === key.id ? "check" : "content_copy"}</span></button>
+                      <button onClick={() => toggleKeyVisibility(key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"} aria-label={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"}><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>{visibleKeys.has(key.id) ? "visibility_off" : "visibility"}</span></button>
+                      <button onClick={() => copy(key.key, key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title="复制密钥" aria-label="复制密钥"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>{copied === key.id ? "check" : "content_copy"}</span></button>
                     </div>
                     <p className="mt-1 text-[11px] text-text-muted">创建于 {new Date(key.createdAt).toLocaleDateString("zh-CN")}</p>
                     {key.accessTags?.length > 0 && (
@@ -487,19 +567,34 @@ export default function APIPageClient({ machineId }) {
                       </div>
                     )}
                   </div>
-                  <div className="border-t border-white/[0.065] pt-3 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0"><QuotaCell
+                  <div className={styles.quota}><QuotaCell
                     quota={key.quota}
                     resettingWindow={resettingKeyQuotaId?.startsWith(`${key.id}:`)
                       ? resettingKeyQuotaId.split(":").pop()
                       : null}
                     onReset={(window) => requestResetKeyQuota(key, window)}
                   /></div>
-                  <div className="border-t border-white/[0.065] pt-3 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-                    <p className="text-sm font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>
-                    <p className="mt-0.5 text-[11px] text-text-muted">{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "首次成功验证后开始记录"}</p>
+                  <div className={styles.lastAccess}>
+                    <span className={styles.mobileLabel}>最近访问</span>
+                    <p className="truncate text-xs font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>
+                    <p className="mt-0.5 truncate text-[10px] text-text-muted">{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "首次成功验证后开始记录"}</p>
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-3 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
+                  <div className={styles.actions}>
+                    <div className={styles.actionButtons}>
+                      <button
+                        type="button"
+                        onClick={() => { setRotationKey(key); setRotationError(""); }}
+                        className={`${styles.actionButton} hover:bg-sky-400/10 hover:text-sky-300`}
+                        title="轮换密钥"
+                        aria-label={`轮换密钥：${key.name}`}
+                      >
+                        <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sync</span>
+                      </button>
+                      <button type="button" onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className={`${styles.actionButton} hover:bg-violet-400/10 hover:text-violet-300`} title="配置密钥标签" aria-label="配置密钥标签"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sell</span></button>
+                      <button type="button" onClick={() => handleDeleteKey(key.id)} className={`${styles.actionButton} hover:bg-red-500/10 hover:text-red-400`} title="删除密钥" aria-label="删除密钥"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span></button>
+                    </div>
                     <SegmentedControl
+                      className={styles.statusControl}
                       size="xs"
                       value={key.quotaMode || "unlimited"}
                       onChange={(mode) => handleSetKeyQuotaMode(key.id, mode)}
@@ -509,8 +604,6 @@ export default function APIPageClient({ machineId }) {
                         { value: "unlimited", label: "无限制" },
                       ]}
                     />
-                    <button onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-violet-400/10 hover:text-violet-300" title="配置密钥标签" aria-label="配置密钥标签"><span className="material-symbols-outlined text-[18px]">sell</span></button>
-                    <button onClick={() => handleDeleteKey(key.id)} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="删除密钥" aria-label="删除密钥"><span className="material-symbols-outlined text-[18px]">delete</span></button>
                   </div>
                 </div>
               ))}
@@ -563,10 +656,63 @@ export default function APIPageClient({ machineId }) {
         </div>
       </Modal>
 
-      {/* Created Key Modal */}
+      <Modal
+        isOpen={!!editingKey}
+        title="编辑用户名"
+        size="sm"
+        onClose={() => { if (!savingKeyName) setEditingKey(null); }}
+        closeOnOverlay={!savingKeyName}
+      >
+        <form onSubmit={handleSaveKeyName} className="flex flex-col gap-4">
+          <Input
+            label="用户名"
+            aria-label="用户名"
+            value={keyNameDraft}
+            onChange={(event) => {
+              setKeyNameDraft(event.target.value);
+              setKeyNameError("");
+            }}
+            autoFocus
+            disabled={savingKeyName}
+            placeholder="请输入用户名"
+            hint="仅修改显示名称，不影响现有密钥的使用。"
+          />
+          {keyNameError && <p role="alert" className="text-xs text-red-500">{keyNameError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" disabled={savingKeyName} onClick={() => setEditingKey(null)}>
+              取消
+            </Button>
+            <Button type="submit" loading={savingKeyName} disabled={!keyNameDraft.trim() || savingKeyName}>
+              保存
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!rotationKey}
+        title="轮换 API 密钥"
+        size="sm"
+        onClose={() => { if (!rotatingKey) setRotationKey(null); }}
+        closeOnOverlay={!rotatingKey}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="break-words text-sm text-text-muted">确定要为「{rotationKey?.name}」重新生成密钥吗？</p>
+          <div className="rounded-lg border border-amber-400/20 bg-amber-400/[.08] p-3 text-xs leading-6 text-amber-600 dark:text-amber-200">
+            旧密钥将立即失效，使用它的应用需要更换为新密钥。用户名、标签、额度设置和已有用量保持不变。
+          </div>
+          {rotationError && <p role="alert" className="text-xs text-red-500">{rotationError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={rotatingKey} onClick={() => setRotationKey(null)}>取消</Button>
+            <Button variant="danger" loading={rotatingKey} onClick={handleRotateKey}>确认轮换</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Created / Rotated Key Modal */}
       <Modal
         isOpen={!!createdKey}
-        title="API 密钥已创建"
+        title={createdKeyKind === "rotated" ? "API 密钥已轮换" : "API 密钥已创建"}
         onClose={() => setCreatedKey(null)}
       >
         <div className="flex flex-col gap-4">
@@ -575,7 +721,9 @@ export default function APIPageClient({ machineId }) {
               请立即保存此密钥
             </p>
             <p className="text-sm text-yellow-700 dark:text-yellow-300">
-              完成此窗口后无法再次完整查看。请存放在安全的位置。
+              {createdKeyKind === "rotated"
+                ? "旧密钥已失效，请复制新密钥并更新所有使用它的应用。"
+                : "请将密钥存放在安全的位置，不要分享给无关人员。"}
             </p>
           </div>
           <div className="flex gap-2">

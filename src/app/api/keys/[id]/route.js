@@ -26,7 +26,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags } = body;
+    const { name, isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -36,7 +36,12 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Invalid quota mode" }, { status: 400 });
     }
 
+    if (name !== undefined && (typeof name !== "string" || !name.trim())) {
+      return NextResponse.json({ error: "Name must be a non-empty string" }, { status: 400 });
+    }
+
     const updateData = {};
+    if (name !== undefined) updateData.name = name.trim();
     if (isActive !== undefined) updateData.isActive = isActive === true;
     if (quotaMode !== undefined) updateData.quotaMode = quotaMode;
 

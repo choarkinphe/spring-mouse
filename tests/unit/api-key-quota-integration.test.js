@@ -248,3 +248,47 @@ describe("API key quota window resets", () => {
     expect(await validateApiKey(key.key)).toBe(true);
   });
 });
+
+
+describe("API key name editing", () => {
+  const renameKey = (id, body) => keysRoute.PUT(
+    new Request(`http://localhost/api/keys/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ id }) },
+  );
+
+  it("persists a trimmed name without changing the credential or quota", async () => {
+    const key = await createApiKey("original-name", "machine");
+    const before = db.get("SELECT * FROM apiKeys WHERE id = ?", [key.id]);
+    const response = await renameKey(key.id, { name: "  新用户名  " });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ key: { id: key.id, name: "新用户名", key: key.key } });
+    expect(db.get("SELECT * FROM apiKeys WHERE id = ?", [key.id])).toEqual({ ...before, name: "新用户名" });
+    expect(await validateApiKey(key.key)).toBe(true);
+    const fetched = await keysRoute.GET(null, { params: Promise.resolve({ id: key.id }) });
+    expect(await fetched.json()).toMatchObject({ key: { name: "新用户名" } });
+  });
+
+  it.each(["", "   ", null, 123, false, [], {}].map((name) => ({ name })))("rejects invalid names ($name) without updating other fields", async ({ name }) => {
+    const key = await createApiKey("keep-name", "machine");
+    const before = db.get("SELECT * FROM apiKeys WHERE id = ?", [key.id]);
+    const response = await renameKey(key.id, { name, isActive: false });
+    expect(response.status).toBe(400);
+    expect(db.get("SELECT * FROM apiKeys WHERE id = ?", [key.id])).toEqual(before);
+  });
+
+  it("preserves the name when updating other fields", async () => {
+    const key = await createApiKey("unchanged-name", "machine");
+    const response = await renameKey(key.id, { quotaMode: "limited" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ key: { name: "unchanged-name", quotaMode: "limited" } });
+  });
+
+  it("returns 404 when the credential no longer exists", async () => {
+    const response = await renameKey("missing-credential", { name: "new-name" });
+    expect(response.status).toBe(404);
+  });
+});

@@ -12,7 +12,8 @@ export async function GET(request) {
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
   const apiKeyId = searchParams.get("apiKeyId") || null;
-  let apiKeyIds = null;
+  const scope = searchParams.get("scope");
+  let apiKeyIds = apiKeyId ? [apiKeyId] : null;
   const state = {
     closed: false,
     keepalive: null,
@@ -97,7 +98,7 @@ export async function GET(request) {
         state.refreshRunning = true;
         state.refreshQueued = false;
         try {
-          ({ apiKeyIds } = await resolveUsageDashboardScope(apiKeyId));
+          if (scope === "dashboard") ({ apiKeyIds } = await resolveUsageDashboardScope(apiKeyId));
           const statsRange = { startDate, endDate, apiKeyId, apiKeyIds };
           const stats = { ...(await getUsageStats(period, statsRange)), streamUpdatedAt: Date.now() };
           if (state.closed) return;

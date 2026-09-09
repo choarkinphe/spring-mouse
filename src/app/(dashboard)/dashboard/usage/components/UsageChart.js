@@ -73,7 +73,7 @@ function UsageChartSkeleton() {
   );
 }
 
-export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, title = "使用趋势", className = "" }) {
+export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = null, title = "使用趋势", className = "" }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedMetrics, setSelectedMetrics] = useState(["tokens", "trafficBytes", "requests"]);
@@ -89,6 +89,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
           if (timeRange?.startDate) params.set("startDate", timeRange.startDate);
           if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
           if (apiKeyId) params.set("apiKeyId", apiKeyId);
+          if (scope) params.set("scope", scope);
           const res = await fetch(`/api/usage/chart?${params.toString()}`, { cache: "no-store" });
           if (res.ok && !cancelled) setData(normalizeChartData(await res.json()));
         } catch (error) {
@@ -104,7 +105,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [apiKeyId, refreshToken, timeRange?.endDate, timeRange?.startDate]);
+  }, [apiKeyId, refreshToken, scope, timeRange?.endDate, timeRange?.startDate]);
 
   const toggleMetric = (metric) => {
     setSelectedMetrics((previous) => {
@@ -247,6 +248,7 @@ export default function UsageChart({ timeRange, apiKeyId, refreshToken = null, t
 UsageChart.propTypes = {
   timeRange: PropTypes.shape({ startDate: PropTypes.string, endDate: PropTypes.string }),
   apiKeyId: PropTypes.string,
+  scope: PropTypes.string,
   refreshToken: PropTypes.number,
   title: PropTypes.string,
   className: PropTypes.string,

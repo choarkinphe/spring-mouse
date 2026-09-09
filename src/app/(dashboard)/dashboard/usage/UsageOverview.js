@@ -53,6 +53,7 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
           apiKeyId={apiKeyId || undefined}
           showOverview={showOverview}
           showBreakdowns={showBreakdowns}
+          scope={showOverview ? undefined : "dashboard"}
         />
       </Suspense>
     </div>

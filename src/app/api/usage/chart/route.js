@@ -15,6 +15,7 @@ export async function GET(request) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const apiKeyId = searchParams.get("apiKeyId") || null;
+    const scope = searchParams.get("scope");
 
     if (!VALID_PERIODS.has(period)) {
       return NextResponse.json({ error: "Invalid period" }, { status: 400, headers: NO_STORE_HEADERS });
@@ -26,7 +27,12 @@ export async function GET(request) {
       return NextResponse.json({ error: "Invalid API key filter" }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
-    const { apiKeyIds } = await resolveUsageDashboardScope(apiKeyId);
+    // The persisted tag scope is an opt-in view filter for the usage page.
+    // The dashboard home page intentionally omits it so its live overview always
+    // reflects all real connections.
+    const { apiKeyIds } = scope === "dashboard"
+      ? await resolveUsageDashboardScope(apiKeyId)
+      : { apiKeyIds: apiKeyId ? [apiKeyId] : null };
     const data = await getChartData(period, { startDate, endDate, apiKeyId, apiKeyIds });
     return NextResponse.json(data, { headers: NO_STORE_HEADERS });
   } catch (error) {

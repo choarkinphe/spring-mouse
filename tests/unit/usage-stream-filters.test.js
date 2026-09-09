@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const statsEmitter = new EventEmitter();
+const resolveUsageDashboardScope = vi.fn(async () => ({ apiKeyIds: null }));
 
 const getUsageStats = vi.fn(async () => ({
   totalRequests: 42,
@@ -24,7 +25,7 @@ vi.mock("@/lib/usageDb", () => ({
 }));
 
 vi.mock("@/lib/usageDashboardScope", () => ({
-  resolveUsageDashboardScope: vi.fn(async () => ({ apiKeyIds: null })),
+  resolveUsageDashboardScope,
 }));
 
 const { GET } = await import("../../src/app/api/usage/stream/route.js");
@@ -56,8 +57,8 @@ describe("usage stats stream filtering", () => {
     vi.clearAllMocks();
   });
 
-  it("uses period, date range, and API key filters for initial stats", async () => {
-    const response = await GET(new Request("http://localhost/api/usage/stream?period=7d&startDate=2026-08-01T00%3A00%3A00.000Z&endDate=2026-08-19T23%3A59%3A59.999Z&apiKeyId=key-1"));
+  it("uses period, date range, API key, and dashboard scope filters for initial stats", async () => {
+    const response = await GET(new Request("http://localhost/api/usage/stream?period=7d&startDate=2026-08-01T00%3A00%3A00.000Z&endDate=2026-08-19T23%3A59%3A59.999Z&apiKeyId=key-1&scope=dashboard"));
 
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     const { reader, nextEvent } = await createEventReader(response);
@@ -78,6 +79,22 @@ describe("usage stats stream filtering", () => {
     expect(quickEvent.streamPatch).toBe(true);
     expect(quickEvent.aggregateMarker).toBeUndefined();
     expect(quickEvent.recentRequests).toEqual([{ model: "filtered-model" }]);
+
+    await reader.cancel();
+  });
+
+  it("does not apply the persisted tag scope to an unscoped stream", async () => {
+    const response = await GET(new Request("http://localhost/api/usage/stream?period=today"));
+    const { reader, nextEvent } = await createEventReader(response);
+    await nextEvent();
+
+    expect(getUsageStats).toHaveBeenCalledWith("today", {
+      startDate: null,
+      endDate: null,
+      apiKeyId: null,
+      apiKeyIds: null,
+    });
+    expect(resolveUsageDashboardScope).not.toHaveBeenCalled();
 
     await reader.cancel();
   });

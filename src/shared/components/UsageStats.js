@@ -141,7 +141,7 @@ function RecentRequests({ requests = [], className = "" }) {
   );
 }
 
-export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false } = {}) {
+export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false, scope } = {}) {
   const [stats, setStats] = useState(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -158,6 +158,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     if (timeRange?.startDate) params.set("startDate", timeRange.startDate);
     if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
     if (apiKeyId) params.set("apiKeyId", apiKeyId);
+    if (scope) params.set("scope", scope);
 
     fetch(`/api/usage/stats?${params.toString()}`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
@@ -170,7 +171,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [apiKeyId, timeRange?.endDate, timeRange?.startDate]);
+  }, [apiKeyId, scope, timeRange?.endDate, timeRange?.startDate]);
 
   // SSE uses the same period/date/key filters as the initial stats request.
   // Full refreshes update aggregate cards; pending refreshes update live fields.
@@ -179,6 +180,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     if (timeRange?.startDate) params.set("startDate", timeRange.startDate);
     if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
     if (apiKeyId) params.set("apiKeyId", apiKeyId);
+    if (scope) params.set("scope", scope);
     const eventSource = new EventSource(`/api/usage/stream?${params.toString()}`);
 
     eventSource.onmessage = (event) => {
@@ -203,7 +205,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
 
     eventSource.onerror = () => setLoading(false);
     return () => eventSource.close();
-  }, [apiKeyId, timeRange?.endDate, timeRange?.startDate]);
+  }, [apiKeyId, scope, timeRange?.endDate, timeRange?.startDate]);
 
   if (!stats && !loading) return <div className="text-text-muted">Failed to load usage statistics.</div>;
 
@@ -228,8 +230,8 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
         </div>
       )}
 
-      {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} refreshToken={chartRefreshToken} />}
-      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} chartRefreshToken={chartRefreshToken} />}
+      {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} refreshToken={chartRefreshToken} />}
+      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} />}
     </div>
   );
 }

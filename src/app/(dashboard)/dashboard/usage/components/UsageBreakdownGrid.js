@@ -364,7 +364,7 @@ CaptureStatus.propTypes = {
   hasAppData: PropTypes.bool.isRequired,
 };
 
-export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, chartRefreshToken = null }) {
+export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null }) {
   const [detailsSelection, setDetailsSelection] = useState(null);
   const providers = getRows(stats.byProvider, Number.MAX_SAFE_INTEGER, "totalTokens");
   const models = getRows(stats.byModel, Number.MAX_SAFE_INTEGER, "totalTokens");
@@ -432,6 +432,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, chartRe
           <UsageChart
             timeRange={timeRange}
             apiKeyId={apiKeyId}
+            scope={scope}
             refreshToken={chartRefreshToken}
             title="Token 与成本趋势"
             className="xl:h-[500px]"
@@ -537,5 +538,6 @@ UsageBreakdownGrid.propTypes = {
   stats: PropTypes.object.isRequired,
   timeRange: PropTypes.shape({ startDate: PropTypes.string, endDate: PropTypes.string }),
   apiKeyId: PropTypes.string,
+  scope: PropTypes.string,
   chartRefreshToken: PropTypes.number,
 };

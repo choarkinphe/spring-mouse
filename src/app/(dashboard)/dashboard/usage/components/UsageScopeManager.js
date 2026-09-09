@@ -108,7 +108,7 @@ export default function UsageScopeManager({ apiKeys, onSaved, compact = false })
               <span className="material-symbols-outlined mt-0.5 text-[20px] text-primary">analytics</span>
               <div>
                 <p className="text-sm font-semibold text-text-main">默认统计所有使用人</p>
-                <p className="mt-1 text-sm leading-6 text-text-muted">选择标签后，使用看板只统计命中任一已选标签的 API Key 使用人；未选择标签时不做范围限制。</p>
+                <p className="mt-1 text-sm leading-6 text-text-muted">选择标签后，仅使用看板会统计命中任一已选标签的 API Key 使用人；首页概览和调用记录不受影响。未选择标签时看板不做范围限制。</p>
               </div>
             </div>
           </div>
@@ -149,7 +149,7 @@ export default function UsageScopeManager({ apiKeys, onSaved, compact = false })
           )}
 
           <div className="flex items-center justify-between rounded-lg border border-border bg-bg/35 px-3 py-2.5">
-            <span className="text-xs text-text-muted">保存后，当前看板会立即按新范围刷新。</span>
+            <span className="text-xs text-text-muted">保存后，使用看板会立即按新范围刷新；首页概览和调用记录保持完整数据。</span>
             <ScopeStatus tags={draftTags} matchedUserCount={draftTags.length === 0 ? apiKeys.length : apiKeys.filter((apiKey) => hasAccessTagOverlap(apiKey.accessTags, draftTags)).length} />
           </div>
           {error ? <p role="alert" className="text-sm text-red-500">{error}</p> : null}

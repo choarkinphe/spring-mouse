@@ -20,7 +20,7 @@ ARG TARGETARCH
 
 # Use the official npm registry by default. Deployments that need a private
 # registry can still override this with --build-arg NPM_REGISTRY=... .
-ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 # Copy package files - prefer package-lock.json for reproducible builds
 COPY package.json package-lock.json* ./
@@ -31,6 +31,9 @@ RUN --mount=type=cache,target=/root/.npm,id=spring-mouse-npm-${TARGETARCH} \
     npm config set fetch-retry-maxtimeout 120000 && \
     npm config set fetch-timeout 300000 && \
     if [ -f package-lock.json ]; then \
+      if [ "${NPM_REGISTRY%/}" != "https://registry.npmjs.org" ]; then \
+        sed -i "s#https://registry.npmjs.org/#${NPM_REGISTRY%/}/#g" package-lock.json; \
+      fi; \
       timeout 20m npm ci --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     else \
       echo "Warning: package-lock.json not found, using npm install instead"; \

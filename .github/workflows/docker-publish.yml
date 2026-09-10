@@ -67,5 +67,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_BUILD_VERSION=${{ github.sha }}
+            NPM_REGISTRY=https://registry.npmmirror.com
           cache-from: type=gha,scope=spring-mouse-${{ github.ref_name }}
           cache-to: type=gha,mode=max,scope=spring-mouse-${{ github.ref_name }}

@@ -24,6 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
+import { clearProviderModelBreaker, recordProviderModelFailure } from "../services/providerBreaker.js";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
@@ -229,7 +230,21 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   while (true) {
     if (request?.signal?.aborted) return errorResponse(499, "Request aborted");
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { accessTags, requesterId: apiKey || "local", reserveSlot: true });
+    let credentials;
+    try {
+      credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+        accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: request?.signal,
+      });
+    } catch (error) {
+      if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
+      log.warn("CONCURRENCY", `${provider}/${model} | queue timeout after ${error.retryAfterMs}ms`);
+      return unavailableResponse(
+        HTTP_STATUS.RATE_LIMITED,
+        `${provider}/${model} is at the configured concurrency limit`,
+        new Date(Date.now() + error.retryAfterMs).toISOString(),
+        "retry after 1s",
+      );
+    }
 
     // All accounts unavailable
     if (credentials?.accessDenied) {
@@ -311,7 +326,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           });
         },
         onRequestSuccess: async () => {
-          await clearAccountError(credentials.connectionId, credentials, model);
+          await Promise.all([
+            clearAccountError(credentials.connectionId, credentials, model),
+            clearProviderModelBreaker(provider, model),
+          ]);
         },
       });
 
@@ -323,6 +341,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
+      const breaker = await recordProviderModelFailure(provider, model);
+      if (breaker.open) {
+        const retryAt = new Date(Date.now() + (breaker.retryAfterMs || 60_000)).toISOString();
+        log.warn("BREAKER", `${provider}/${model} | opened provider/model breaker (${result.status})`);
+        return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
+          result.error || "Provider model is temporarily unavailable", retryAt, "retry after 60s");
+      }
+
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;

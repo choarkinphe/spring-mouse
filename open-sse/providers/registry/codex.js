@@ -34,6 +34,12 @@ export default {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
+    // Codex OAuth capacity is much tighter than generic OpenAI-compatible
+    // upstreams. Long-context agent traffic must wait instead of overflowing.
+    providerMaxConcurrentStreams: 3,
+    maxConcurrentStreams: 1,
+    queueTimeoutMs: 60_000,
+    maxQueueSize: 50,
     headers: {
       originator: "codex_cli_rs",
       "User-Agent": "codex_cli_rs/0.136.0",

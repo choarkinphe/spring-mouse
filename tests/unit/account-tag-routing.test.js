@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   getProviderConnectionById: vi.fn(),
   getSettings: vi.fn(),
+  getMouses: vi.fn(async () => []),
+  getMouseExecutionDetails: vi.fn(async () => null),
   updateProviderConnection: vi.fn(),
   routeLine: vi.fn(),
   reserve: vi.fn(), release: vi.fn(), proxy: vi.fn(),
@@ -15,6 +17,8 @@ vi.mock("@/lib/localDb", () => ({
   validateApiKey: vi.fn(),
   updateProviderConnection: mocks.updateProviderConnection,
   getSettings: mocks.getSettings,
+  getMouses: mocks.getMouses,
+  getMouseExecutionDetails: mocks.getMouseExecutionDetails,
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: mocks.proxy }));
 vi.mock("@/lib/redis/connectionSlots.js", () => ({
@@ -118,7 +122,7 @@ it("reserves once with only eligible accounts and returns the lifecycle release"
   mocks.getProviderConnections.mockResolvedValue([connection("first"), connection("second"), connection("third")]);
   mocks.reserve.mockResolvedValue({ connectionId: "third", release: mocks.release });
   const credentials = await getProviderCredentials("openai", new Set(["first"]), "gpt-5", { reserveSlot: true });
-  expect(mocks.reserve).toHaveBeenLastCalledWith([{ id: "second", limit: 16 }, { id: "third", limit: 16 }]);
+  expect(mocks.reserve).toHaveBeenLastCalledWith([{ id: "second", limit: 16 }, { id: "third", limit: 16 }], {});
   expect(credentials.connectionId).toBe("third"); expect(credentials.releaseRouteSlot).toBe(mocks.release);
 });
 it("releases a reservation when proxy resolution throws", async () => {

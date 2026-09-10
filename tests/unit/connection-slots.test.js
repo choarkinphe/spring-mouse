@@ -27,7 +27,7 @@ describe("unique account leases", () => {
     leases = await Promise.all(Array.from({length: 20}, () => slots.reserveConnectionSlot(candidates)));
     expect(leases.filter((l) => l.connectionId === "a")).toHaveLength(10);
     expect(leases.filter((l) => l.connectionId === "b")).toHaveLength(10);
-    expect(slots.getLocalSlotStatus()).toEqual({active: 20, redis: 0});
+    expect(slots.getLocalSlotStatus()).toEqual({active: 20, redis: 0, queued: 0});
   });
   it("shares live accounting across module reloads / route bundles", async () => {
     const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);
@@ -41,5 +41,55 @@ describe("unique account leases", () => {
     expect(slots.getConnectionConcurrencyLimit({providerSpecificData: {maxConcurrentStreams: 2}})).toBe(2);
     expect(slots.getConnectionConcurrencyLimit({}, {maxConcurrentStreams: 3})).toBe(3);
     expect(slots.getConnectionConcurrencyLimit({})).toBe(16);
+  });
+});
+
+describe("hard provider and account gates", () => {
+  it("queues once either cap is exhausted and admits after release", async () => {
+    mocks.offline = true;
+    const first = await slots.reserveConnectionSlot(candidates, {
+      providerId: "hard-test", providerLimit: 2, weight: 1, queueTimeoutMs: 500,
+    });
+    const second = await slots.reserveConnectionSlot(candidates, {
+      providerId: "hard-test", providerLimit: 2, weight: 1, queueTimeoutMs: 500,
+    });
+    expect(first.connectionId).toBe("a");
+    // Candidate order preserves sticky affinity while capacity remains.
+    expect(second.connectionId).toBe("a");
+    const queuedPromise = slots.reserveConnectionSlot(candidates, {
+      providerId: "hard-test", providerLimit: 2, weight: 1, queueTimeoutMs: 50,
+    });
+    await expect(queuedPromise).rejects.toMatchObject({ code: "ROUTING_QUEUE_TIMEOUT" });
+    expect(slots.getLocalSlotStatus().active).toBe(2);
+
+    await first.release();
+    const third = await slots.reserveConnectionSlot(candidates, {
+      providerId: "hard-test", providerLimit: 2, weight: 1, queueTimeoutMs: 100,
+    });
+    leases.push(second, third);
+    expect(third.connectionId).toBe("a");
+    expect(slots.getLocalSlotStatus().active).toBe(2);
+    await Promise.all([second, third].map((lease) => lease.release()));
+  });
+
+  it("charges weighted large requests against both gates", async () => {
+    mocks.offline = true;
+    const candidates = [{ id: "weighted-a", limit: 3 }];
+    const first = await slots.reserveConnectionSlot(candidates, {
+      providerId: "weight-test", providerLimit: 3, weight: 2, queueTimeoutMs: 100,
+    });
+    leases.push(first);
+    const second = slots.reserveConnectionSlot(candidates, {
+      providerId: "weight-test", providerLimit: 3, weight: 2, queueTimeoutMs: 20,
+    });
+    await expect(second).rejects.toMatchObject({ code: "ROUTING_QUEUE_TIMEOUT" });
+    expect(slots.getConnectionConcurrencyLimit({}, {})).toBe(16);
+  });
+
+  it("estimates long-context requests with a bounded weight", () => {
+    expect(slots.estimateRequestWeight({ messages: Array(10) })).toBe(1);
+    expect(slots.estimateRequestWeight({ messages: Array(120) })).toBe(2);
+    expect(slots.estimateRequestWeight({ messages: Array(900) })).toBe(8);
+    expect(slots.estimateRequestWeight({ input: "x".repeat(120_000) })).toBe(2);
   });
 });

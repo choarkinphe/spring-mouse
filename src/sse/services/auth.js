@@ -7,11 +7,13 @@ import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { PROVIDERS } from "open-sse/config/providers.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
-import { getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
+import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
+import { getProviderModelBreaker } from "./providerBreaker.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
 // every request wait behind a SQLite read and a lastUsedAt write. Assignment
@@ -174,6 +176,22 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+    if (model) {
+      const breaker = await getProviderModelBreaker(providerId, model);
+      if (breaker.open) {
+        const retryAt = new Date(Date.now() + (breaker.retryAfterMs || 60_000)).toISOString();
+        log.warn("BREAKER", `${provider}/${model} | provider/model cooling down (${formatRetryAfter(retryAt)})`);
+        return {
+          allRateLimited: true,
+          retryAfter: retryAt,
+          retryAfterHuman: formatRetryAfter(retryAt),
+          lastError: "Provider model is temporarily cooling down after repeated failures",
+          lastErrorCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+          breakerOpen: true,
+        };
+      }
+    }
+
     // Account allocation belongs to the current provider/channel. A provider
     // without an explicit override always follows its connection priority.
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
@@ -251,11 +269,26 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Media/model-list callers must not allocate slots they cannot release.
     let lease = null;
     if (options.reserveSlot === true) {
+      const providerConfiguredLimit = providerOverride.providerMaxConcurrentStreams
+        ?? PROVIDERS[providerId]?.transport?.providerMaxConcurrentStreams;
+      const accountStrategy = providerOverride.maxConcurrentStreams == null
+        && Number.isFinite(PROVIDERS[providerId]?.transport?.maxConcurrentStreams)
+        ? { ...providerOverride, maxConcurrentStreams: PROVIDERS[providerId].transport.maxConcurrentStreams }
+        : providerOverride;
       const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
       const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
       lease = await reserveConnectionSlot(candidates.map((candidate) => ({
-        id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, providerOverride),
-      })));
+        id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
+      })), Number.isFinite(Number(providerConfiguredLimit)) ? {
+        providerId,
+        providerLimit: Number(providerConfiguredLimit),
+        weight: options.requestWeight ?? estimateRequestWeight(options.body),
+        queueTimeoutMs: providerOverride.queueTimeoutMs
+          ?? PROVIDERS[providerId]?.transport?.queueTimeoutMs,
+        maxQueueSize: providerOverride.maxQueueSize
+          ?? PROVIDERS[providerId]?.transport?.maxQueueSize,
+        signal: options.signal,
+      } : {});
       connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
     const mouseExecution = connection.mouseId ? await getMouseExecutionDetails(connection.mouseId) : null;

@@ -14,7 +14,14 @@ import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
-const CODEX_SSE_RETRY_PATTERNS = ["server_is_overloaded", "service_unavailable_error"];
+// The generic OpenAI 500 blurb ("An error occurred while processing your request…
+// help.openai.com…") sometimes arrives inside a 200-OK stream instead of an HTTP
+// 5xx status; without matching it here it would stream straight to the client.
+const CODEX_SSE_RETRY_PATTERNS = [
+  "server_is_overloaded",
+  "service_unavailable_error",
+  "an error occurred while processing your request",
+];
 const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "model_at_capacity"];
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   "event: response.output_text.delta",

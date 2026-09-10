@@ -3,11 +3,23 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const MOUSE_TOKEN_PREFIX = "mse_";
+const MOUSE_EXECUTION_TOKEN_PREFIX = "msx_";
 const REGISTRATION_TOKEN_PREFIX = "msr_";
 export const MOUSE_ONLINE_TIMEOUT_MS = 90_000;
 
 function hashToken(value) {
   return createHash("sha256").update(String(value)).digest("hex");
+}
+
+export function normalizeCallbackUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
 }
 
 function isOnline(row, now = Date.now()) {
@@ -26,6 +38,8 @@ function rowToMouse(row, now = Date.now()) {
     capabilities: parseJson(row.capabilities, []),
     metadata: parseJson(row.metadata, {}),
     registrationIp: row.registrationIp || null,
+    callbackUrl: row.callbackUrl || null,
+    executionTokenConfigured: Boolean(row.executionToken),
     lastHeartbeatAt: row.lastHeartbeatAt || null,
     registeredAt: row.registeredAt,
     updatedAt: row.updatedAt,
@@ -68,7 +82,18 @@ export async function getMouseById(id) {
 
 export async function getAvailableMouseById(id) {
   const mouse = await getMouseById(id);
-  return mouse && !mouse.disabledAt && mouse.isOnline ? mouse : null;
+  return mouse && !mouse.disabledAt && mouse.isOnline && mouse.callbackUrl && mouse.executionTokenConfigured
+    ? mouse
+    : null;
+}
+
+export async function getMouseExecutionDetails(id) {
+  if (!id) return null;
+  const db = await getAdapter();
+  const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
+  if (!row || row.disabledAt || !row.executionToken || !row.callbackUrl) return null;
+  if (!isOnline(row)) return null;
+  return { mouseId: row.id, callbackUrl: row.callbackUrl, executionToken: row.executionToken };
 }
 
 export async function createMouseRegistrationToken({
@@ -112,6 +137,7 @@ export async function registerMouse({
   capabilities,
   metadata,
   registrationIp,
+  callbackUrl,
 } = {}) {
   if (typeof registrationToken !== "string" || !registrationToken.startsWith(REGISTRATION_TOKEN_PREFIX)) {
     return { error: "invalid_registration_token" };
@@ -136,18 +162,20 @@ export async function registerMouse({
       capabilities: Array.isArray(capabilities) ? capabilities.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()) : [],
       metadata: metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {},
       registrationIp: registrationIp || null,
+      callbackUrl: normalizeCallbackUrl(callbackUrl),
       lastHeartbeatAt: now,
       registeredAt: now,
       updatedAt: now,
       disabledAt: null,
     };
     const accessToken = `${MOUSE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+    const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
 
     db.run(
       `INSERT INTO mouses(
         id, name, accessTokenHash, version, capabilities, metadata,
-        registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        registrationIp, callbackUrl, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       [
         mouse.id,
         mouse.name,
@@ -156,11 +184,13 @@ export async function registerMouse({
         stringifyJson(mouse.capabilities),
         stringifyJson(mouse.metadata),
         mouse.registrationIp,
+        mouse.callbackUrl,
         mouse.lastHeartbeatAt,
         mouse.registeredAt,
         mouse.updatedAt,
       ],
     );
+    db.run("UPDATE mouses SET executionToken = ? WHERE id = ?", [executionToken, mouse.id]);
     db.run(
       "UPDATE mouseRegistrationTokens SET usedAt = ?, usedByMouseId = ? WHERE id = ?",
       [now, mouse.id, tokenRow.id],
@@ -169,6 +199,7 @@ export async function registerMouse({
     result = {
       mouse: publicMouseWithSecret(db.get("SELECT * FROM mouses WHERE id = ?", [mouse.id])),
       accessToken,
+      executionToken,
     };
   });
 
@@ -188,6 +219,9 @@ export async function updateMouseHeartbeat(mouseId, { version, capabilities, met
   const now = new Date().toISOString();
   const row = db.get("SELECT * FROM mouses WHERE id = ?", [mouseId]);
   if (!row || row.disabledAt) return null;
+  const nextCallbackUrl = metadata?.callbackUrl === undefined
+    ? row.callbackUrl
+    : normalizeCallbackUrl(metadata.callbackUrl);
 
   const nextVersion = version === undefined ? row.version : typeof version === "string" ? version.slice(0, 80) : null;
   const nextCapabilities = capabilities === undefined
@@ -203,8 +237,8 @@ export async function updateMouseHeartbeat(mouseId, { version, capabilities, met
       : currentMetadata;
 
   db.run(
-    `UPDATE mouses SET version = ?, capabilities = ?, metadata = ?, lastHeartbeatAt = ?, updatedAt = ? WHERE id = ?`,
-    [nextVersion, stringifyJson(nextCapabilities), stringifyJson(nextMetadata), now, now, mouseId],
+    `UPDATE mouses SET callbackUrl = ?, version = ?, capabilities = ?, metadata = ?, lastHeartbeatAt = ?, updatedAt = ? WHERE id = ?`,
+    [nextCallbackUrl, nextVersion, stringifyJson(nextCapabilities), stringifyJson(nextMetadata), now, now, mouseId],
   );
   return rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [mouseId]));
 }
@@ -234,4 +268,16 @@ export async function deleteMouse(id) {
     deleted = (result?.changes || 0) > 0;
   });
   return deleted;
+}
+
+export async function rotateMouseExecutionToken(id) {
+  const db = await getAdapter();
+  const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
+  const now = new Date().toISOString();
+  const result = db.run(
+    "UPDATE mouses SET executionToken = ?, updatedAt = ? WHERE id = ? AND disabledAt IS NULL",
+    [executionToken, now, id],
+  );
+  if ((result?.changes || 0) === 0) return null;
+  return { executionToken };
 }

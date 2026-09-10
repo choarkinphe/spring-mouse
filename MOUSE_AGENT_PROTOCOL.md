@@ -31,17 +31,20 @@ Content-Type: application/json
   "registrationToken": "msr_...",
   "name": "mouse-us-east-01",
   "version": "1.0.0",
-  "capabilities": ["openai-compatible"],
+  "capabilities": ["http-provider-execute"],
+  "callbackUrl": "https://mouse-host:9101",
   "metadata": { "region": "us-east" }
 }
 ```
 
-Spring returns a Mouse identity and a long-lived access token:
+Spring returns a Mouse identity, an access token for heartbeats, and an
+execution token used by Spring when dispatching provider tasks:
 
 ```json
 {
   "mouse": { "id": "...", "name": "mouse-us-east-01" },
-  "accessToken": "mse_..."
+  "accessToken": "mse_...",
+  "executionToken": "msx_..."
 }
 ```
 
@@ -60,14 +63,66 @@ Content-Type: application/json
 
 {
   "version": "1.0.0",
-  "capabilities": ["openai-compatible"],
-  "metadata": { "activeTasks": 0 }
+  "capabilities": ["http-provider-execute"],
+  "metadata": {
+    "callbackUrl": "https://mouse-host:9101",
+    "activeTasks": 0
+  }
 }
 ```
 
-## Current first-phase behavior
+## 4. Execute a provider task
+
+Spring sends the already-translated provider request to:
+
+```http
+POST {callbackUrl}/v1/execute
+Authorization: Bearer msx_...
+Content-Type: application/json
+```
+
+The task contains a normal HTTP request:
+
+```json
+{
+  "taskId": "...",
+  "attempt": 1,
+  "request": {
+    "method": "POST",
+    "url": "https://provider.example/v1/chat/completions",
+    "headers": { "Authorization": "Bearer ..." },
+    "body": "{...}"
+  }
+}
+```
+
+Mouse forwards the request to the channel and returns the channel response
+unchanged, including streaming bodies. Spring continues to handle translation,
+usage accounting, retries, account fallback, and OAuth token refresh.
+
+The bundled agent implements this protocol:
+
+```bash
+node mouse/agent.mjs \
+  --spring-url https://spring.example.com \
+  --registration-token msr_... \
+  --callback-url https://mouse-host:9101 \
+  --port 9101
+```
+
+The identity and tokens are stored in `~/.spring-mouse-agent/agent.json`.
+Subsequent restarts can omit the registration token and reuse that identity.
+
+## Current phase behavior
 
 - Channel accounts without a Mouse keep using the existing Spring execution.
-- Channel account creation/update accepts an optional online `mouseId`.
-- A selected Mouse must be online; clearing it restores local execution.
-- Task dispatch and remote execution will be added in a later phase.
+- A channel account with an online Mouse sends its provider HTTP request through
+  that Mouse and receives the channel response through Spring.
+- A selected Mouse must be online with a callback URL and execution token.
+  Spring does not silently fall back to local execution, because that would
+  change the channel network environment.
+- The transport is enabled for executors using the common BaseExecutor HTTP
+  flow; highly specialized executors may continue to execute locally until they
+  are migrated individually.
+- Proxy configuration is not applied on the Spring side when Mouse transport is
+  active. Configure the network/proxy on the Mouse host.

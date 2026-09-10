@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -62,6 +62,8 @@ export const TABLES = {
       id: "TEXT PRIMARY KEY",
       name: "TEXT NOT NULL",
       accessTokenHash: "TEXT UNIQUE NOT NULL",
+      executionToken: "TEXT",
+      callbackUrl: "TEXT",
       version: "TEXT",
       capabilities: "TEXT NOT NULL DEFAULT '[]'",
       metadata: "TEXT NOT NULL DEFAULT '{}'",

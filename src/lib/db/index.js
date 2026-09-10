@@ -17,10 +17,11 @@ export {
 
 // Mouse agents
 export {
-  getMouses, getMouseById, getAvailableMouseById,
+  getMouses, getMouseById, getAvailableMouseById, getMouseExecutionDetails,
   createMouseRegistrationToken, getMouseRegistrationTokens, deleteMouseRegistrationToken,
   registerMouse, authenticateMouseAccessToken, updateMouseHeartbeat,
-  updateMouse, deleteMouse, MOUSE_ONLINE_TIMEOUT_MS,
+  updateMouse, deleteMouse, rotateMouseExecutionToken,
+  normalizeCallbackUrl, MOUSE_ONLINE_TIMEOUT_MS,
 } from "./repos/mousesRepo.js";
 
 // Provider nodes
@@ -96,6 +97,8 @@ export async function exportDb() {
       id: r.id,
       name: r.name,
       accessTokenHash: r.accessTokenHash,
+      executionToken: r.executionToken || null,
+      callbackUrl: r.callbackUrl || null,
       version: r.version || null,
       capabilities: parseJson(r.capabilities, []),
       metadata: parseJson(r.metadata, {}),
@@ -187,12 +190,14 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO mouses(
           id, name, accessTokenHash, version, capabilities, metadata,
-          registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          registrationIp, executionToken, callbackUrl, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           m.id,
           m.name,
           m.accessTokenHash,
+          m.executionToken || null,
+          m.callbackUrl || null,
           m.version || null,
           stringifyJson(m.capabilities || []),
           stringifyJson(m.metadata || {}),

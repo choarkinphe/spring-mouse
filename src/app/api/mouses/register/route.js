@@ -16,6 +16,7 @@ export async function POST(request) {
       capabilities: body?.capabilities,
       metadata: body?.metadata,
       registrationIp: getTrustedSourceIp(request),
+      callbackUrl: body?.callbackUrl,
     });
 
     if (result?.error) {

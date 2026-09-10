@@ -31,10 +31,13 @@ describe("mouse registration and optional channel binding", () => {
       version: "0.1.0",
       capabilities: ["http"],
       metadata: { region: "test" },
+      callbackUrl: "http://127.0.0.1:9101/",
     });
 
     expect(registered.mouse.name).toBe("worker-1");
     expect(registered.accessToken).toMatch(/^mse_/);
+    expect(registered.executionToken).toMatch(/^msx_/);
+    expect(registered.mouse.callbackUrl).toBe("http://127.0.0.1:9101");
     registeredMouseId = registered.mouse.id;
     const replay = await mousesRepo.registerMouse({ registrationToken: created.token });
     expect(replay.error).toBe("invalid_registration_token");
@@ -48,6 +51,7 @@ describe("mouse registration and optional channel binding", () => {
     });
     expect(heartbeat.isOnline).toBe(true);
     expect(heartbeat.version).toBe("0.1.1");
+    expect(heartbeat.callbackUrl).toBe("http://127.0.0.1:9101");
 
     const connection = await connectionsRepo.createProviderConnection({
       provider: "test-provider",

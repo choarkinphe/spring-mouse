@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
@@ -130,7 +131,61 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
+  async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+    const mouse = credentials.mouseExecution;
+    if (!mouse?.callbackUrl || !mouse.executionToken) {
+      throw new Error("Selected Mouse is not ready for task execution");
+    }
+    if (proxyOptions?.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
+      throw new Error("Connection proxy is configured in Spring; Mouse transport requires the proxy to run on the Mouse host");
+    }
+
+    const taskId = randomUUID();
+    const targetUrl = this.buildUrl(model, stream, 0, credentials);
+    const transformedBody = this.transformRequest(model, body, stream, credentials);
+    const headers = this.buildHeaders(credentials, stream, targetUrl, model);
+    const endpoint = `${mouse.callbackUrl.replace(/\/$/, "")}/v1/execute`;
+
+    log?.debug?.("MOUSE", `${this.provider.toUpperCase()} | task=${taskId} | mouse=${mouse.mouseId}`);
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${mouse.executionToken}`,
+        "Content-Type": "application/json",
+        "X-Mouse-Task-Id": taskId,
+      },
+      body: JSON.stringify({
+        taskId,
+        attempt: 1,
+        request: {
+          method: "POST",
+          url: targetUrl,
+          headers,
+          body: JSON.stringify(transformedBody),
+          proxyOptions,
+        },
+      }),
+      signal,
+    });
+
+    if (response.status === 401 || response.status === 403 || response.status === 404) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Mouse rejected execution task (${response.status}): ${text.slice(0, 300)}`);
+    }
+
+    return {
+      response,
+      url: targetUrl,
+      headers,
+      transformedBody,
+    };
+  }
+
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+    if (credentials?.mouseExecution) {
+      return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions });
+    }
+
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;

@@ -45,7 +45,15 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
     }
   }
 
-  // Default: transient cooldown for any unmatched error
+  // Client/request errors are not account health failures. Do not rotate or
+  // persist a cooldown for malformed input, unsupported parameters, conflicts,
+  // or oversized requests; retrying the same request on every account only
+  // amplifies the client error and can incorrectly quarantine the whole pool.
+  if (Number(status) >= 400 && Number(status) < 500) {
+    return { shouldFallback: false, cooldownMs: 0 };
+  }
+
+  // Default: transient cooldown for any unmatched server/network error.
   return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
 }
 

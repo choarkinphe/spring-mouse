@@ -197,6 +197,13 @@ export async function handleVideoGet(request, requestId) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
   }
 
+  // Video jobs are bound to the account that created them. If the pinned
+  // account is unavailable, never silently route the poll to another account
+  // (that account cannot see the original job).
+  if (preferredConnectionId && credentials.connectionId !== preferredConnectionId) {
+    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "The account that created this video job is unavailable");
+  }
+
   const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
   const result = await handleVideoProxyCore({

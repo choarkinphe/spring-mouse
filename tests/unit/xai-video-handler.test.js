@@ -216,6 +216,18 @@ describe("handleVideoGet", () => {
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.x.ai/v1/videos/req-1");
   });
 
+  it("does not poll a different account when the pinned account is unavailable", async () => {
+    authMocks.getProviderCredentials.mockResolvedValueOnce(account({ connectionId: "conn-other" }));
+
+    const res = await handleVideoGet(new Request("http://localhost/v1/videos/req-1", {
+      headers: { "x-connection-id": "conn-missing" },
+    }), "req-1");
+
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain("account that created this video job is unavailable");
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("records the failure when polling hits a terminal auth error", async () => {
     authMocks.getProviderCredentials.mockResolvedValueOnce(account({ refreshToken: null }));
     global.fetch.mockResolvedValueOnce(jsonResponse({ error: "unauthorized" }, 401));

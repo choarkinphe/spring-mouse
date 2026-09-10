@@ -191,6 +191,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const outcome = connection ? "sticky-hit" : "rotated";
 
         if (!connection) {
+          // Drop a stale sticky assignment before choosing a replacement. This
+          // prevents repeated misses after a model lock and makes concurrent
+          // retries converge on the newly selected account.
+          if (assignedId) state.assignments.delete(requesterId);
           const lastIndex = availableConnections.findIndex((candidate) => candidate.id === state.lastConnectionId);
           connection = availableConnections[(lastIndex + 1 + availableConnections.length) % availableConnections.length];
           state.assignments.set(requesterId, connection.id);

@@ -105,6 +105,22 @@ function getUpstreamErrorTitle(connection) {
   return `${source}\n${error}${raw}`;
 }
 
+function formatRelativeTime(isoString) {
+  if (!isoString) return "";
+  const at = new Date(isoString).getTime();
+  if (!Number.isFinite(at)) return "";
+  const elapsedMs = Date.now() - at;
+  if (elapsedMs < 0) return "";
+  const minutes = Math.floor(elapsedMs / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天前`;
+  return new Date(at).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
 function getQuotaTone(percentage) {
   if (percentage > 70) return "bg-emerald-400";
   if (percentage >= 30) return "bg-amber-400";
@@ -477,6 +493,10 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const quotaAvailable = canTrackQuota(connection);
   const isCodex = connection.provider === "codex";
   const status = getAccountStatus(connection);
+  const upstreamErrorAt = formatRelativeTime(connection.lastUpstreamAt);
+  // A healthy badge means the account has recovered. Any upstream error kept in
+  // the record is history, so demote it to a muted hint instead of a red alert.
+  const upstreamErrorStale = status.label === "可用";
   const canReorder = !(isFirst && isLast);
 
   return (
@@ -536,12 +556,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
         {connection.lastUpstreamError && connection.isActive !== false ? (
-          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={getUpstreamErrorTitle(connection)}>
-            <span className="material-symbols-outlined shrink-0 text-[15px]">error</span>
-            <span className="truncate">
-              {connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
+          <div
+            className={cn("mt-2 flex min-w-0 items-center gap-1.5 text-xs", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
+            title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}`}
+          >
+            <span className="material-symbols-outlined shrink-0 text-[15px]">{upstreamErrorStale ? "history" : "error"}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
               {connection.lastUpstreamError}
             </span>
+            {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}
           </div>
         ) : (
           <div className="mt-2 text-xs text-[#647688]">暂无渠道方返回错误</div>

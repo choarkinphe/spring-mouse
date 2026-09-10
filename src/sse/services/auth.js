@@ -447,19 +447,34 @@ export async function clearAccountError(connectionId, currentConnection, model =
     const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
     const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
     const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
-    if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return { value: null };
+    if (!conn.testStatus && !conn.lastError && !conn.lastUpstreamError && allLockKeys.length === 0) return { value: null };
 
     const keysToClear = allLockKeys.filter(k => {
       if (newerFailureInFlight) return conn[k] && new Date(conn[k]).getTime() <= now;
       if (model && (k === `modelLock_${model}` || k === "modelLock___all")) return true;
       return conn[k] && new Date(conn[k]).getTime() <= now;
     });
-    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return { value: null };
+    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.lastUpstreamError) return { value: null };
 
     const remainingActiveLocks = allLockKeys.filter(k => !keysToClear.includes(k) && conn[k] && new Date(conn[k]).getTime() > now);
     const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
     if (remainingActiveLocks.length === 0) {
-      Object.assign(clearObj, { testStatus: "active", lastError: null, errorCode: null, lastErrorAt: null, backoffLevel: 0 });
+      Object.assign(clearObj, {
+        testStatus: "active",
+        lastError: null,
+        errorCode: null,
+        lastErrorAt: null,
+        backoffLevel: 0,
+        // The account has fully recovered, so the upstream error snapshot is
+        // stale. Clear it in lockstep with the status fields, otherwise the
+        // channel panel keeps rendering a red banner for a resolved failure
+        // while the status badge already reads "可用".
+        lastUpstreamError: null,
+        lastUpstreamStatus: null,
+        lastUpstreamSource: null,
+        lastUpstreamRaw: null,
+        lastUpstreamAt: null,
+      });
     }
     return { value: true, update: clearObj };
   };

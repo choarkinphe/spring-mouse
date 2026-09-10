@@ -851,13 +851,16 @@ function channelStrategyForm(strategy = {}) {
   };
 }
 
+function resolveHardEnabled(strategy = {}) {
+  if (strategy.hardConcurrencyEnabled != null) return strategy.hardConcurrencyEnabled === true;
+  return Number.isFinite(Number(strategy.providerMaxConcurrentStreams));
+}
+
 function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClose, onSave }) {
   const [form, setForm] = useState(() => channelStrategyForm(strategy));
-  const [hardEnabled, setHardEnabled] = useState(() => {
-    if (strategy.hardConcurrencyEnabled != null) return strategy.hardConcurrencyEnabled === true;
-    return Number.isFinite(Number(strategy.providerMaxConcurrentStreams));
-  });
+  const [hardEnabled, setHardEnabled] = useState(() => resolveHardEnabled(strategy));
   const [breakerEnabled, setBreakerEnabled] = useState(() => strategy.enableModelBreaker !== false);
+  const [localError, setLocalError] = useState("");
 
   const updateNumber = (key, value) => {
     setForm((current) => ({ ...current, [key]: value === "" ? "" : Math.max(0, Number.parseInt(value, 10) || 0) }));
@@ -866,19 +869,25 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
   const submit = () => {
     const providerLimit = Math.max(1, Number(form.providerMaxConcurrentStreams) || 1);
     const accountLimit = Math.max(1, Number(form.maxConcurrentStreams) || 1);
-    if (accountLimit > providerLimit) return;
+    if (accountLimit > providerLimit) {
+      setLocalError("单账号并发不能大于渠道总并发");
+      return;
+    }
+    setLocalError("");
+    // Durations go over the wire in seconds — the settings API converts them to
+    // the millisecond values the runtime stores.
     onSave(providerId, {
       ...(strategy.fallbackStrategy === "round-robin" ? { fallbackStrategy: "round-robin" } : {}),
       ...(Number.isFinite(Number(strategy.stickyRoundRobinLimit)) ? { stickyRoundRobinLimit: Number(strategy.stickyRoundRobinLimit) } : {}),
       hardConcurrencyEnabled: hardEnabled,
       providerMaxConcurrentStreams: providerLimit,
       maxConcurrentStreams: accountLimit,
-      queueTimeoutMs: Math.max(1, Number(form.queueTimeoutSeconds) || 1) * 1000,
+      queueTimeoutSeconds: Math.max(1, Number(form.queueTimeoutSeconds) || 1),
       maxQueueSize: Math.max(1, Number(form.maxQueueSize) || 1),
       enableModelBreaker: breakerEnabled,
       breakerThreshold: Math.max(1, Number(form.breakerThreshold) || 1),
-      breakerWindowMs: Math.max(5, Number(form.breakerWindowSeconds) || 5) * 1000,
-      breakerCooldownMs: Math.max(1, Number(form.breakerCooldownSeconds) || 1) * 1000,
+      breakerWindowSeconds: Math.max(5, Number(form.breakerWindowSeconds) || 5),
+      breakerCooldownSeconds: Math.max(1, Number(form.breakerCooldownSeconds) || 1),
     });
   };
 
@@ -943,7 +952,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
         <p className="text-xs text-text-muted">
           权重规则：约每 100 条消息占 1 个并发额度，约每 20 个工具占 1 个额度，超长字符串输入按 10 万字符约等于 1 个额度，最大权重为 8。
         </p>
-        {error && <p className="text-xs text-rose-400">{error}</p>}
+        {(error || localError) && <p className="text-xs text-rose-400">{error || localError}</p>}
       </div>
     </Modal>
   );
@@ -1334,7 +1343,11 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         </div>
       )}
 
+      {/* Keyed by provider so every open remounts the form from the currently
+          saved strategy. Without it the modal keeps its first-mount defaults
+          and saved values look like they were reverted. */}
       <ChannelStrategyModal
+        key={strategyProviderId ?? "__closed__"}
         providerId={strategyProviderId}
         strategy={getEffectiveProviderStrategy(strategyProviderId, providerStrategies[strategyProviderId])}
         saving={strategySaving}

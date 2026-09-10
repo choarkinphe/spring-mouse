@@ -208,6 +208,15 @@ export async function PATCH(request) {
       const parsed = Number.parseInt(value, 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
     };
+    // Durations are stored in milliseconds. `*Seconds` is the documented client
+    // contract; the raw `*Ms` form is accepted too so a caller that sends either
+    // one is never silently dropped (a dropped duration quietly reverted to the
+    // built-in default after every reload).
+    const durationMs = (seconds, ms) => {
+      const parsedSeconds = positiveInt(seconds);
+      if (parsedSeconds) return parsedSeconds * 1000;
+      return ms == null ? null : positiveInt(ms);
+    };
     const normalize = (entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
       const result = {};
@@ -219,17 +228,17 @@ export async function PATCH(request) {
       if (providerLimit) result.providerMaxConcurrentStreams = providerLimit;
       const accountLimit = entry.maxConcurrentStreams == null ? null : positiveInt(entry.maxConcurrentStreams);
       if (accountLimit) result.maxConcurrentStreams = accountLimit;
-      const timeoutSeconds = entry.queueTimeoutSeconds == null ? null : positiveInt(entry.queueTimeoutSeconds);
-      if (timeoutSeconds) result.queueTimeoutMs = timeoutSeconds * 1000;
+      const queueTimeoutMs = durationMs(entry.queueTimeoutSeconds, entry.queueTimeoutMs);
+      if (queueTimeoutMs) result.queueTimeoutMs = queueTimeoutMs;
       const queueSize = entry.maxQueueSize == null ? null : positiveInt(entry.maxQueueSize);
       if (queueSize) result.maxQueueSize = queueSize;
       if (entry.enableModelBreaker != null) result.enableModelBreaker = entry.enableModelBreaker === true;
       const threshold = entry.breakerThreshold == null ? null : positiveInt(entry.breakerThreshold);
       if (threshold) result.breakerThreshold = threshold;
-      const windowSeconds = entry.breakerWindowSeconds == null ? null : positiveInt(entry.breakerWindowSeconds);
-      if (windowSeconds) result.breakerWindowMs = windowSeconds * 1000;
-      const cooldownSeconds = entry.breakerCooldownSeconds == null ? null : positiveInt(entry.breakerCooldownSeconds);
-      if (cooldownSeconds != null) result.breakerCooldownMs = cooldownSeconds * 1000;
+      const breakerWindowMs = durationMs(entry.breakerWindowSeconds, entry.breakerWindowMs);
+      if (breakerWindowMs) result.breakerWindowMs = breakerWindowMs;
+      const breakerCooldownMs = durationMs(entry.breakerCooldownSeconds, entry.breakerCooldownMs);
+      if (breakerCooldownMs != null) result.breakerCooldownMs = breakerCooldownMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

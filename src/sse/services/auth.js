@@ -276,6 +276,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
       },
       connectionId: connection.id,
+      // Used by clearAccountError to avoid an older in-flight success clearing
+      // a lock written by a newer failure.
+      _routingStartedAt: routingStartedAt,
       // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,
@@ -355,12 +358,21 @@ export async function clearAccountError(connectionId, currentConnection, model =
   if (!connectionId || connectionId === "noauth") return;
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
+  const requestStartedAt = Number(currentConnection._routingStartedAt || conn._routingStartedAt || 0);
+  const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
+  const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
 
   if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return;
 
   // Keys to clear: current model's lock + all expired locks
   const keysToClear = allLockKeys.filter(k => {
+    if (newerFailureInFlight) {
+      // This request started before the latest failure was recorded. Its
+      // eventual success must not clear the newer failure lock.
+      const expiry = conn[k];
+      return expiry && new Date(expiry).getTime() <= now;
+    }
     if (model && k === `modelLock_${model}`) return true; // succeeded model
     if (model && k === "modelLock___all") return true;    // account-level lock
     const expiry = conn[k];

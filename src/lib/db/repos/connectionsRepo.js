@@ -194,6 +194,25 @@ export async function createProviderConnection(data) {
 }
 
 // Critical: OAuth refresh token race — atomic merge inside transaction
+/** Atomic read/modify/write for connection health state. The updater runs
+ * inside the DB transaction so concurrent failures cannot lose backoff levels
+ * or let an older success clear a newer lock. */
+export async function updateProviderConnectionHealth(id, updater) {
+  const db = await getAdapter();
+  let output;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
+    if (!row) { output = null; return; }
+    const existing = rowToConn(row);
+    const result = updater(existing);
+    if (!result?.update) { output = result?.value ?? existing; return; }
+    const merged = { ...existing, ...result.update, updatedAt: new Date().toISOString() };
+    upsert(db, merged);
+    output = result.value ?? merged;
+  });
+  return output;
+}
+
 export async function updateProviderConnection(id, data) {
   const db = await getAdapter();
   let result;

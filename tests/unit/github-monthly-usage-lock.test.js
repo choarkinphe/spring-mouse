@@ -4,6 +4,7 @@ const dbMocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   getProviderConnectionById: vi.fn(),
   updateProviderConnection: vi.fn(),
+  updateProviderConnectionHealth: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => dbMocks);
@@ -20,6 +21,12 @@ const { markAccountUnavailable } = await import("../../src/sse/services/auth.js"
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMocks.updateProviderConnectionHealth.mockImplementation(async (_id, updater) => {
+    const rows = await dbMocks.getProviderConnections();
+    const result = updater(rows[0]);
+    if (result?.update) dbMocks.updateProviderConnection("github-a", result.update);
+    return result?.value || null;
+  });
   dbMocks.getProviderConnectionById.mockResolvedValue(null);
   dbMocks.getProviderConnections.mockResolvedValue([{
     id: "github-a",

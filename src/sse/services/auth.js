@@ -1,5 +1,5 @@
 import { recordRoutingDuration } from "@/lib/system/concurrency.js";
-import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -301,49 +301,66 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
-  const connections = await getProviderConnections({ provider });
-  const conn = connections.find(c => c.id === connectionId);
-  const backoffLevel = conn?.backoffLevel || 0;
 
-  // GitHub premium-request exhaustion is account-wide until the next UTC month.
-  const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
+  let decision = { shouldFallback: false, cooldownMs: 0 };
+  const applyFailure = (conn) => {
+    const backoffLevel = conn?.backoffLevel || 0;
+    const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
-  // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel;
-  if (githubResetAtMs) {
-    shouldFallback = true;
-    cooldownMs = githubResetAtMs - Date.now();
-    newBackoffLevel = 0;
-  } else if (resetsAtMs && resetsAtMs > Date.now()) {
-    shouldFallback = true;
-    cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
-    newBackoffLevel = 0;
+    let shouldFallback, cooldownMs, newBackoffLevel;
+    if (githubResetAtMs) {
+      shouldFallback = true;
+      cooldownMs = githubResetAtMs - Date.now();
+      newBackoffLevel = 0;
+    } else if (resetsAtMs && resetsAtMs > Date.now()) {
+      shouldFallback = true;
+      cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+      newBackoffLevel = 0;
+    } else {
+      ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    }
+    decision = { shouldFallback, cooldownMs };
+    if (!shouldFallback) return { value: decision };
+
+    const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+    const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+    const lockKey = Object.keys(lockUpdate)[0];
+    const oldExpiry = conn?.[lockKey];
+    if (oldExpiry && new Date(oldExpiry).getTime() > new Date(lockUpdate[lockKey]).getTime()) {
+      lockUpdate[lockKey] = oldExpiry;
+    }
+
+    return {
+      value: { ...decision, lockKey, reason, status },
+      update: {
+        ...lockUpdate,
+        testStatus: "unavailable",
+        lastError: reason,
+        errorCode: status,
+        lastErrorAt: new Date().toISOString(),
+        backoffLevel: newBackoffLevel ?? backoffLevel,
+        healthRevision: (conn?.healthRevision || 0) + 1,
+      },
+    };
+  };
+
+  if (typeof updateProviderConnectionHealth === "function") {
+    const result = await updateProviderConnectionHealth(connectionId, applyFailure);
+    if (!result || !decision.shouldFallback) return decision;
+    const connName = result.reason ? (result.connectionName || connectionId.slice(0, 8)) : connectionId.slice(0, 8);
+    log.warn("AUTH", `${connName} locked ${result.lockKey} for ${Math.round(result.cooldownMs / 1000)}s [${status}]`);
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    // Compatibility fallback for isolated test doubles and older route bundles.
+    const connections = await getProviderConnections({ provider });
+    const result = applyFailure(connections.find(c => c.id === connectionId));
+    if (!result.update) return decision;
+    await updateProviderConnection(connectionId, result.update);
+    log.warn("AUTH", `${connectionId.slice(0, 8)} locked ${Object.keys(result.update).find(k => k.startsWith("modelLock_"))} for ${Math.round(decision.cooldownMs / 1000)}s [${status}]`);
   }
-  if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
-
-  await updateProviderConnection(connectionId, {
-    ...lockUpdate,
-    testStatus: "unavailable",
-    lastError: reason,
-    errorCode: status,
-    lastErrorAt: new Date().toISOString(),
-    backoffLevel: newBackoffLevel ?? backoffLevel
-  });
-
-  const lockKey = Object.keys(lockUpdate)[0];
-  const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
-  log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
-
-  if (provider && status && reason) {
-    console.error(`❌ ${provider} [${status}]: ${reason}`);
-  }
-
-  return { shouldFallback: true, cooldownMs };
+  if (provider && status && reason) console.error(`❌ ${provider} [${status}]: ${reason}`);
+  return decision;
 }
 
 /**
@@ -357,55 +374,36 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  */
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
-  // Refresh the row before deciding what to clear. The credentials snapshot
-  // was taken when routing started and may already be stale by the time a
-  // streaming request completes.
-  const conn = (await getProviderConnectionById?.(connectionId)) || currentConnection._connection || currentConnection;
-  const now = Date.now();
   const requestStartedAt = Number(currentConnection._routingStartedAt || 0);
-  const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
-  const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
-  const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
+  const clearFailure = (conn) => {
+    const now = Date.now();
+    const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
+    const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
+    const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
+    if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return { value: null };
 
-  if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return;
-
-  // Keys to clear: current model's lock + all expired locks
-  const keysToClear = allLockKeys.filter(k => {
-    if (newerFailureInFlight) {
-      // This request started before the latest failure was recorded. Its
-      // eventual success must not clear the newer failure lock.
-      const expiry = conn[k];
-      return expiry && new Date(expiry).getTime() <= now;
-    }
-    if (model && k === `modelLock_${model}`) return true; // succeeded model
-    if (model && k === "modelLock___all") return true;    // account-level lock
-    const expiry = conn[k];
-    return expiry && new Date(expiry).getTime() <= now;   // expired
-  });
-
-  if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return;
-
-  // Check if any active locks remain after clearing
-  const remainingActiveLocks = allLockKeys.filter(k => {
-    if (keysToClear.includes(k)) return false;
-    const expiry = conn[k];
-    return expiry && new Date(expiry).getTime() > now;
-  });
-
-  const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
-
-  // Only reset error state if no active locks remain
-  if (remainingActiveLocks.length === 0) {
-    Object.assign(clearObj, {
-      testStatus: "active",
-      lastError: null,
-      errorCode: null,
-      lastErrorAt: null,
-      backoffLevel: 0
+    const keysToClear = allLockKeys.filter(k => {
+      if (newerFailureInFlight) return conn[k] && new Date(conn[k]).getTime() <= now;
+      if (model && (k === `modelLock_${model}` || k === "modelLock___all")) return true;
+      return conn[k] && new Date(conn[k]).getTime() <= now;
     });
-  }
+    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return { value: null };
 
-  await updateProviderConnection(connectionId, clearObj);
+    const remainingActiveLocks = allLockKeys.filter(k => !keysToClear.includes(k) && conn[k] && new Date(conn[k]).getTime() > now);
+    const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
+    if (remainingActiveLocks.length === 0) {
+      Object.assign(clearObj, { testStatus: "active", lastError: null, errorCode: null, lastErrorAt: null, backoffLevel: 0 });
+    }
+    return { value: true, update: clearObj };
+  };
+
+  if (typeof updateProviderConnectionHealth === "function") {
+    await updateProviderConnectionHealth(connectionId, clearFailure);
+    return;
+  }
+  const conn = (await getProviderConnectionById?.(connectionId)) || currentConnection._connection || currentConnection;
+  const result = clearFailure(conn);
+  if (result.update) await updateProviderConnection(connectionId, result.update);
 }
 
 /**

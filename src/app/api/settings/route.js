@@ -200,7 +200,47 @@ export async function PATCH(request) {
       }
     }
 
-    const settings = await updateSettings(body);
+    if (Object.prototype.hasOwnProperty.call(body, "providerStrategies")) {
+    const source = body.providerStrategies && typeof body.providerStrategies === "object" && !Array.isArray(body.providerStrategies)
+      ? body.providerStrategies
+      : {};
+    const positiveInt = (value) => {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+    const normalize = (entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const result = {};
+      if (entry.fallbackStrategy === "round-robin") result.fallbackStrategy = "round-robin";
+      const sticky = positiveInt(entry.stickyRoundRobinLimit);
+      if (sticky) result.stickyRoundRobinLimit = sticky;
+      const providerLimit = entry.providerMaxConcurrentStreams == null ? null : positiveInt(entry.providerMaxConcurrentStreams);
+      if (entry.hardConcurrencyEnabled != null) result.hardConcurrencyEnabled = entry.hardConcurrencyEnabled === true;
+      if (providerLimit) result.providerMaxConcurrentStreams = providerLimit;
+      const accountLimit = entry.maxConcurrentStreams == null ? null : positiveInt(entry.maxConcurrentStreams);
+      if (accountLimit) result.maxConcurrentStreams = accountLimit;
+      const timeoutSeconds = entry.queueTimeoutSeconds == null ? null : positiveInt(entry.queueTimeoutSeconds);
+      if (timeoutSeconds) result.queueTimeoutMs = timeoutSeconds * 1000;
+      const queueSize = entry.maxQueueSize == null ? null : positiveInt(entry.maxQueueSize);
+      if (queueSize) result.maxQueueSize = queueSize;
+      if (entry.enableModelBreaker != null) result.enableModelBreaker = entry.enableModelBreaker === true;
+      const threshold = entry.breakerThreshold == null ? null : positiveInt(entry.breakerThreshold);
+      if (threshold) result.breakerThreshold = threshold;
+      const windowSeconds = entry.breakerWindowSeconds == null ? null : positiveInt(entry.breakerWindowSeconds);
+      if (windowSeconds) result.breakerWindowMs = windowSeconds * 1000;
+      const cooldownSeconds = entry.breakerCooldownSeconds == null ? null : positiveInt(entry.breakerCooldownSeconds);
+      if (cooldownSeconds != null) result.breakerCooldownMs = cooldownSeconds * 1000;
+      return Object.keys(result).length ? result : null;
+    };
+    body.providerStrategies = Object.fromEntries(
+      Object.entries(source)
+        .filter(([providerId]) => typeof providerId === "string" && providerId.trim())
+        .map(([providerId, entry]) => [providerId.trim().slice(0, 100), normalize(entry)])
+        .filter(([, entry]) => Boolean(entry)),
+    );
+  }
+
+  const settings = await updateSettings(body);
 
     if (Object.prototype.hasOwnProperty.call(body, "usageDashboardScopeTags")) {
       // Refresh every open usage-dashboard SSE stream so the persisted scope

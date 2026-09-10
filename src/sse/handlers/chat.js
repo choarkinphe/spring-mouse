@@ -341,7 +341,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
-      const breaker = await recordProviderModelFailure(provider, model);
+      const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy);
       if (breaker.open) {
         const retryAt = new Date(Date.now() + (breaker.retryAfterMs || 60_000)).toISOString();
         log.warn("BREAKER", `${provider}/${model} | opened provider/model breaker (${result.status})`);

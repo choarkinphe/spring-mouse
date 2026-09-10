@@ -11,6 +11,7 @@ import {
   USAGE_SUPPORTED_PROVIDERS,
 } from "@/shared/constants/providers";
 import { Badge, Button, ConfirmModal, Modal, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import Input from "@/shared/components/Input";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -25,6 +26,18 @@ const CATEGORY_OPTIONS = [
   { id: "free", label: "免费套餐", providers: { ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS } },
   { id: "apikey", label: "API Key", providers: APIKEY_PROVIDERS },
 ];
+
+const PROVIDER_CONCURRENCY_DEFAULTS = {
+  codex: {
+    providerMaxConcurrentStreams: 3,
+    maxConcurrentStreams: 1,
+    hardConcurrencyEnabled: true,
+  },
+};
+
+function getEffectiveProviderStrategy(providerId, strategy = {}) {
+  return { ...(PROVIDER_CONCURRENCY_DEFAULTS[providerId] || {}), ...strategy };
+}
 
 function canTrackQuota(connection) {
   const isApiKey = connection.authType === "apikey" || connection.authType === "api_key";
@@ -572,15 +585,17 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpen, onSetRoundRobin, onSetRoundRobinLimit }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpenAccountConfig, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
   const channelColor = getProviderColor(group.provider);
-  const routing = providerStrategies[group.provider] || {};
+  const routing = getEffectiveProviderStrategy(group.provider, providerStrategies[group.provider]);
   const roundRobinEnabled = routing.fallbackStrategy === "round-robin";
   const stickyLimit = routing.stickyRoundRobinLimit || 1;
   const modelCount = modelCounts[group.provider] || 0;
+  const hardConcurrency = Number.isFinite(Number(routing.providerMaxConcurrentStreams));
+  const breakerEnabled = routing.enableModelBreaker !== false;
 
   return (
     <section className="relative overflow-visible rounded-xl border border-border-subtle bg-surface/35">
@@ -625,11 +640,29 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             </div>
           )}
 
-          <Tooltip text="渠道设置">
-            <button type="button" onClick={() => onOpen(group.provider)} aria-label={`${channelName} 渠道设置`} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]">
+          <Tooltip text={hardConcurrency ? `渠道总并发 ${routing.providerMaxConcurrentStreams} · 单账号 ${routing.maxConcurrentStreams || 1}` : "未启用渠道级硬并发"}>
+            <span className={cn("rounded-md border px-2 py-1", hardConcurrency ? "border-[#38bdf8]/15 bg-[#38bdf8]/[0.06] text-[#bae6fd]" : "border-white/[0.08] bg-black/[0.12]")}>
+              {hardConcurrency ? `并发 ${routing.providerMaxConcurrentStreams}` : "软并发"}
+            </span>
+          </Tooltip>
+          <Tooltip text={breakerEnabled ? `模型熔断：${routing.breakerThreshold || 3} 次失败后冷却 ${routing.breakerCooldownSeconds || Math.round((routing.breakerCooldownMs || 60000) / 1000)} 秒` : "模型熔断已关闭"}>
+            <span className={cn("rounded-md border px-2 py-1", breakerEnabled ? "border-violet-400/15 bg-violet-400/[0.06] text-violet-200" : "border-white/[0.08] bg-black/[0.12] text-text-muted")}>
+              {breakerEnabled ? "熔断" : "熔断关"}
+            </span>
+          </Tooltip>
+
+          <Tooltip text="账号配置">
+            <button type="button" onClick={() => onOpenAccountConfig(group.provider)} aria-label={`${channelName} 账号配置`} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]">
+              <span className="material-symbols-outlined text-[18px]">manage_accounts</span>
+            </button>
+          </Tooltip>
+
+          <Tooltip text="并发与熔断策略">
+            <button type="button" onClick={() => onConfigureStrategy(group.provider)} aria-label={`${channelName} 并发与熔断策略`} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]">
               <span className="material-symbols-outlined text-[18px]">settings</span>
             </button>
           </Tooltip>
+
         </div>
       </div>
       <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
@@ -769,6 +802,124 @@ function ChannelOrderModal({ isOpen, groups, saving, error, onClose, onSave }) {
   );
 }
 
+const STRATEGY_DEFAULTS = {
+  providerMaxConcurrentStreams: 3,
+  maxConcurrentStreams: 1,
+  queueTimeoutSeconds: 60,
+  maxQueueSize: 50,
+  breakerThreshold: 3,
+  breakerWindowSeconds: 120,
+  breakerCooldownSeconds: 60,
+};
+
+function channelStrategyForm(strategy = {}) {
+  const toSeconds = (ms, fallback) => Math.max(1, Math.round((Number(ms) || fallback * 1000) / 1000));
+  return {
+    providerMaxConcurrentStreams: Number(strategy.providerMaxConcurrentStreams) || STRATEGY_DEFAULTS.providerMaxConcurrentStreams,
+    maxConcurrentStreams: Number(strategy.maxConcurrentStreams) || STRATEGY_DEFAULTS.maxConcurrentStreams,
+    queueTimeoutSeconds: toSeconds(strategy.queueTimeoutMs, STRATEGY_DEFAULTS.queueTimeoutSeconds),
+    maxQueueSize: Number(strategy.maxQueueSize) || STRATEGY_DEFAULTS.maxQueueSize,
+    breakerThreshold: Number(strategy.breakerThreshold) || STRATEGY_DEFAULTS.breakerThreshold,
+    breakerWindowSeconds: toSeconds(strategy.breakerWindowMs, STRATEGY_DEFAULTS.breakerWindowSeconds),
+    breakerCooldownSeconds: toSeconds(strategy.breakerCooldownMs, STRATEGY_DEFAULTS.breakerCooldownSeconds),
+  };
+}
+
+function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClose, onSave }) {
+  const [form, setForm] = useState(() => channelStrategyForm(strategy));
+  const [hardEnabled, setHardEnabled] = useState(() => Number.isFinite(Number(strategy.providerMaxConcurrentStreams)));
+  const [breakerEnabled, setBreakerEnabled] = useState(() => strategy.enableModelBreaker !== false);
+
+  const updateNumber = (key, value) => {
+    setForm((current) => ({ ...current, [key]: value === "" ? "" : Math.max(0, Number.parseInt(value, 10) || 0) }));
+  };
+
+  const submit = () => {
+    const providerLimit = Math.max(1, Number(form.providerMaxConcurrentStreams) || 1);
+    const accountLimit = Math.max(1, Number(form.maxConcurrentStreams) || 1);
+    if (accountLimit > providerLimit) return;
+    onSave(providerId, {
+      ...(strategy.fallbackStrategy === "round-robin" ? { fallbackStrategy: "round-robin" } : {}),
+      ...(Number.isFinite(Number(strategy.stickyRoundRobinLimit)) ? { stickyRoundRobinLimit: Number(strategy.stickyRoundRobinLimit) } : {}),
+      hardConcurrencyEnabled: hardEnabled,
+      providerMaxConcurrentStreams: hardEnabled ? providerLimit : null,
+      maxConcurrentStreams: accountLimit,
+      queueTimeoutMs: Math.max(1, Number(form.queueTimeoutSeconds) || 1) * 1000,
+      maxQueueSize: Math.max(1, Number(form.maxQueueSize) || 1),
+      enableModelBreaker: breakerEnabled,
+      breakerThreshold: Math.max(1, Number(form.breakerThreshold) || 1),
+      breakerWindowMs: Math.max(5, Number(form.breakerWindowSeconds) || 5) * 1000,
+      breakerCooldownMs: Math.max(1, Number(form.breakerCooldownSeconds) || 1) * 1000,
+    });
+  };
+
+  const numberField = (key, label, min, max, hint) => (
+    <Input
+      key={key}
+      label={label}
+      type="number"
+      min={min}
+      max={max}
+      value={String(form[key] ?? "")}
+      onChange={(event) => updateNumber(key, event.target.value)}
+      hint={hint}
+    />
+  );
+
+  return (
+    <Modal
+      isOpen={Boolean(providerId)}
+      onClose={onClose}
+      title="并发与熔断策略"
+      size="lg"
+      footer={(
+        <div className="flex w-full items-center justify-between gap-3">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
+          <Button onClick={submit} loading={saving}>保存策略</Button>
+        </div>
+      )}
+    >
+      <div className="flex flex-col gap-5">
+        <section className="rounded-lg border border-white/[0.07] bg-white/[0.02] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-text-main">渠道硬并发</p>
+              <p className="mt-1 text-xs text-text-muted">超出总并发或账号并发后请求排队；关闭后恢复旧的软负载策略。</p>
+            </div>
+            <Toggle size="sm" checked={hardEnabled} onChange={setHardEnabled} />
+          </div>
+          <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !hardEnabled && "opacity-50 pointer-events-none")}>
+            {numberField("providerMaxConcurrentStreams", "渠道总并发", 1, 1000, "该渠道所有账号同时进入上游的最大权重请求数。")}
+            {numberField("maxConcurrentStreams", "单账号并发", 1, 1000, "单个账号同时处理的最大权重请求数；账号单独配置优先。")}
+            {numberField("queueTimeoutSeconds", "排队超时（秒）", 1, 3600, "超时后返回 429，并携带 Retry-After。")}
+            {numberField("maxQueueSize", "最大排队数", 1, 1000, "队列满时新请求立即返回限流错误。")}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-white/[0.07] bg-white/[0.02] p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-text-main">模型熔断</p>
+              <p className="mt-1 text-xs text-text-muted">同一渠道同一模型连续失败后，暂停扫描所有账号并整体冷却。</p>
+            </div>
+            <Toggle size="sm" checked={breakerEnabled} onChange={setBreakerEnabled} />
+          </div>
+          <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !breakerEnabled && "opacity-50 pointer-events-none")}>
+            {numberField("breakerThreshold", "连续失败阈值", 1, 100, "达到次数后打开熔断。")}
+            {numberField("breakerWindowSeconds", "失败统计窗口（秒）", 5, 3600, "窗口外的失败不连续计数。")}
+            {numberField("breakerCooldownSeconds", "熔断冷却（秒）", 1, 3600, "冷却结束后恢复尝试。")}
+          </div>
+        </section>
+
+        <p className="text-xs text-text-muted">
+          权重规则：约每 100 条消息占 1 个并发额度，约每 20 个工具占 1 个额度，超长字符串输入按 10 万字符约等于 1 个额度，最大权重为 8。
+        </p>
+        {error && <p className="text-xs text-rose-400">{error}</p>}
+      </div>
+    </Modal>
+  );
+}
+
 export default function ChannelManagement({ initialDetailProviderId = null }) {
   const router = useRouter();
   const [connections, setConnections] = useState([]);
@@ -788,6 +939,9 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [detailProviderId, setDetailProviderId] = useState(initialDetailProviderId);
+  const [strategyProviderId, setStrategyProviderId] = useState(null);
+  const [strategySaving, setStrategySaving] = useState(false);
+  const [strategyError, setStrategyError] = useState("");
 
   const fetchConnections = useCallback(async () => {
     setLoading(true);
@@ -960,18 +1114,49 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     }
   };
 
+  const saveProviderStrategySettings = async (providerId, strategy) => {
+    const previous = providerStrategies;
+    const updated = { ...previous, [providerId]: strategy };
+    setProviderStrategies(updated);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerStrategies: updated }),
+      });
+      if (!response.ok) throw new Error("Failed to update provider strategy");
+      return true;
+    } catch (error) {
+      console.error("Failed to update provider strategy:", error);
+      setProviderStrategies(previous);
+      return false;
+    }
+  };
+
+  const saveProviderStrategy = async (providerId, strategy) => {
+    setStrategySaving(true);
+    setStrategyError("");
+    const saved = await saveProviderStrategySettings(providerId, strategy);
+    setStrategySaving(false);
+    if (saved) setStrategyProviderId(null);
+    else setStrategyError("保存策略失败，请稍后重试");
+  };
+
   const saveProviderRouting = async (providerId, enabled, stickyLimit) => {
     const previous = providerStrategies;
+    const current = previous[providerId] || {};
     const updated = { ...previous };
-
-    if (enabled) {
-      updated[providerId] = {
-        fallbackStrategy: "round-robin",
-        stickyRoundRobinLimit: Math.max(1, Number.parseInt(stickyLimit, 10) || 1),
-      };
-    } else {
-      delete updated[providerId];
+    const next = {
+      ...current,
+      fallbackStrategy: enabled ? "round-robin" : undefined,
+      stickyRoundRobinLimit: enabled ? Math.max(1, Number.parseInt(stickyLimit, 10) || 1) : undefined,
+    };
+    if (!enabled) {
+      delete next.fallbackStrategy;
+      delete next.stickyRoundRobinLimit;
     }
+    if (Object.keys(next).length > 0) updated[providerId] = next;
+    else delete updated[providerId];
 
     setProviderStrategies(updated);
     try {
@@ -1104,13 +1289,26 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}
               onToggle={handleToggle}
               onMoveConnection={handleMoveConnection}
-              onOpen={openChannelDetail}
+              onOpenAccountConfig={openChannelDetail}
+              onConfigureStrategy={(providerId) => {
+                setStrategyError("");
+                setStrategyProviderId(providerId);
+              }}
               onSetRoundRobin={handleSetRoundRobin}
               onSetRoundRobinLimit={handleSetRoundRobinLimit}
             />
           ))}
         </div>
       )}
+
+      <ChannelStrategyModal
+        providerId={strategyProviderId}
+        strategy={getEffectiveProviderStrategy(strategyProviderId, providerStrategies[strategyProviderId])}
+        saving={strategySaving}
+        error={strategyError}
+        onClose={() => setStrategyProviderId(null)}
+        onSave={saveProviderStrategy}
+      />
 
       <ChannelOrderModal
         isOpen={channelOrderModalOpen}

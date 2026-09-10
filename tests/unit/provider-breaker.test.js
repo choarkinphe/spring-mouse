@@ -31,3 +31,22 @@ describe("provider/model breaker", () => {
     expect(mocks.eval.mock.calls[0][1].arguments[1]).toBe("3");
   });
 });
+
+it("can disable and tune the breaker per channel strategy", async () => {
+  await expect(breaker.recordProviderModelFailure("disabled", "m", { enableModelBreaker: false }))
+    .resolves.toEqual({ open: false });
+  expect(mocks.eval).not.toHaveBeenCalled();
+
+  mocks.get.mockResolvedValueOnce('{"until":1}');
+  mocks.pTTL.mockResolvedValueOnce(12_345);
+  await expect(breaker.getProviderModelBreaker("disabled", "m", { enableModelBreaker: false }))
+    .resolves.toEqual({ open: false });
+
+  await breaker.recordProviderModelFailure("tuned", "m", {
+    breakerThreshold: 1,
+    breakerWindowMs: 30_000,
+    breakerCooldownMs: 90_000,
+  });
+  const call = mocks.eval.mock.calls.at(-1);
+  expect(call[1].arguments).toEqual(["30000", "1", "90000"]);
+});

@@ -176,8 +176,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
+    const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     if (model) {
-      const breaker = await getProviderModelBreaker(providerId, model);
+      const breaker = await getProviderModelBreaker(providerId, model, providerOverride);
       if (breaker.open) {
         const retryAt = new Date(Date.now() + (breaker.retryAfterMs || 60_000)).toISOString();
         log.warn("BREAKER", `${provider}/${model} | provider/model cooling down (${formatRetryAfter(retryAt)})`);
@@ -194,7 +195,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Account allocation belongs to the current provider/channel. A provider
     // without an explicit override always follows its connection priority.
-    const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || "fill-first";
 
     let connection;
@@ -269,8 +269,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Media/model-list callers must not allocate slots they cannot release.
     let lease = null;
     if (options.reserveSlot === true) {
-      const providerConfiguredLimit = providerOverride.providerMaxConcurrentStreams
-        ?? PROVIDERS[providerId]?.transport?.providerMaxConcurrentStreams;
+      const providerConfiguredLimit = providerOverride.hardConcurrencyEnabled === false
+        ? null
+        : providerOverride.providerMaxConcurrentStreams
+          ?? PROVIDERS[providerId]?.transport?.providerMaxConcurrentStreams;
       const accountStrategy = providerOverride.maxConcurrentStreams == null
         && Number.isFinite(PROVIDERS[providerId]?.transport?.maxConcurrentStreams)
         ? { ...providerOverride, maxConcurrentStreams: PROVIDERS[providerId].transport.maxConcurrentStreams }
@@ -333,6 +335,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       lastError: connection.lastError,
       // Pass full connection for clearAccountError to read modelLock_* keys
       _connection: connection,
+      providerStrategy: providerOverride,
       releaseRouteSlot: lease?.release || null,
     };
 }

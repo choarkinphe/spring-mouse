@@ -16,6 +16,11 @@ function keyParts(providerId, model) {
   };
 }
 
+function positiveOption(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function readLocal(providerId, model, now = Date.now()) {
   const key = `${providerId}\n${model || ""}`;
   const state = g.providers.get(key);
@@ -26,8 +31,8 @@ function readLocal(providerId, model, now = Date.now()) {
 }
 
 /** Check the shared breaker without making availability depend on Redis. */
-export async function getProviderModelBreaker(providerId, model) {
-  if (!providerId || !model) return { open: false };
+export async function getProviderModelBreaker(providerId, model, strategy = {}) {
+  if (!providerId || !model || strategy.enableModelBreaker === false) return { open: false };
   const local = readLocal(providerId, model);
   if (local.open) return local;
 
@@ -37,7 +42,8 @@ export async function getProviderModelBreaker(providerId, model) {
   let payload = {};
   try { payload = JSON.parse(raw); } catch { payload = {}; }
   const ttlMs = await routingRedis((client) => client.pTTL(keys.open));
-  const retryAfterMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : COOLDOWN_MS;
+  const cooldownMs = positiveOption(strategy.breakerCooldownMs, COOLDOWN_MS);
+  const retryAfterMs = Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : cooldownMs;
   return { open: true, retryAfterMs, until: payload.until || null };
 }
 
@@ -45,18 +51,21 @@ export async function getProviderModelBreaker(providerId, model) {
  * Count consecutive routable upstream failures. Once the threshold is reached,
  * stop scanning every account and cool the provider/model pair down together.
  */
-export async function recordProviderModelFailure(providerId, model, threshold = THRESHOLD) {
-  if (!providerId || !model) return { open: false };
+export async function recordProviderModelFailure(providerId, model, strategy = {}) {
+  if (!providerId || !model || strategy.enableModelBreaker === false) return { open: false };
+  const threshold = positiveOption(strategy.breakerThreshold, THRESHOLD);
+  const failureWindowMs = positiveOption(strategy.breakerWindowMs, FAILURE_WINDOW_MS);
+  const cooldownMs = positiveOption(strategy.breakerCooldownMs, COOLDOWN_MS);
   const now = Date.now();
   const localKey = `${providerId}\n${model}`;
   const local = g.providers.get(localKey) || { count: 0, windowStartedAt: now, openUntil: 0 };
-  if (now - local.windowStartedAt > FAILURE_WINDOW_MS) {
+  if (now - local.windowStartedAt > failureWindowMs) {
     local.count = 0;
     local.windowStartedAt = now;
   }
   local.count += 1;
   if (local.count >= threshold) {
-    local.openUntil = now + COOLDOWN_MS;
+    local.openUntil = now + cooldownMs;
     local.count = 0;
   }
   g.providers.set(localKey, local);
@@ -73,12 +82,12 @@ export async function recordProviderModelFailure(providerId, model, threshold = 
     return 1
   `.replace("now_ms()", `${now}`), {
     keys: [keys.failures, keys.open],
-    arguments: [String(FAILURE_WINDOW_MS), String(threshold), String(COOLDOWN_MS)],
+    arguments: [String(failureWindowMs), String(threshold), String(cooldownMs)],
   }));
   const sharedOpen = opened === 1;
-  if (sharedOpen && local.openUntil <= now) local.openUntil = now + COOLDOWN_MS;
+  if (sharedOpen && local.openUntil <= now) local.openUntil = now + cooldownMs;
   if (!sharedOpen && local.openUntil <= now) return { open: false };
-  return { open: true, retryAfterMs: COOLDOWN_MS };
+  return { open: true, retryAfterMs: cooldownMs };
 }
 
 export async function clearProviderModelBreaker(providerId, model) {

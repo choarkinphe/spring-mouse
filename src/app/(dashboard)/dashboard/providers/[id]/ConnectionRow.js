@@ -6,7 +6,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, mouseName, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
   const autoPingTooltip = autoPing?.provider === "codex"
     ? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
     : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
@@ -116,6 +116,11 @@ export default function ConnectionRow({ connection, isOAuth, isFirst, isLast, on
             <Badge variant="default" size="sm">
               {authLabel}
             </Badge>
+            {connection.mouseId && (
+              <Badge variant="primary" size="sm" icon="device_hub">
+                {mouseName || "Mouse"}
+              </Badge>
+            )}
             {connection.accessTags?.map((tag) => (
               <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{tag}</span>
             ))}
@@ -181,10 +186,12 @@ ConnectionRow.propTypes = {
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
     priority: PropTypes.number,
+    mouseId: PropTypes.string,
     globalPriority: PropTypes.number,
     accessTags: PropTypes.arrayOf(PropTypes.string),
   }).isRequired,
   isOAuth: PropTypes.bool.isRequired,
+  mouseName: PropTypes.string,
   isFirst: PropTypes.bool.isRequired,
   isLast: PropTypes.bool.isRequired,
   onMoveUp: PropTypes.func.isRequired,

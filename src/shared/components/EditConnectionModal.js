@@ -9,10 +9,11 @@ import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import Select from "@/shared/components/Select";
 
-export default function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, mouses = [], onSave, onClose }) {
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
+    mouseId: "",
     apiKey: "",
   });
   const [azureData, setAzureData] = useState({
@@ -34,6 +35,7 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
       setFormData({
         name: connection.name || "",
         priority: connection.priority || 1,
+        mouseId: connection.mouseId || "",
         apiKey: "",
       });
       // Load Azure-specific data if present
@@ -120,6 +122,7 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
       const updates = {
         name: formData.name,
         priority: formData.priority,
+        mouseId: formData.mouseId || null,
       };
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
@@ -272,6 +275,18 @@ export default function EditConnectionModal({ isOpen, connection, onSave, onClos
           />
         )}
 
+        <Select
+          label="Mouse 执行节点"
+          value={formData.mouseId}
+          onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
+          placeholder="Spring 本地执行"
+          hint="只能切换到当前在线 Mouse；清空后恢复 Spring 本地执行。"
+          options={mouses.map((mouse) => ({
+            value: mouse.id,
+            label: `${mouse.name}${mouse.isOnline ? " · 在线" : mouse.id === connection.mouseId ? " · 当前节点" : ""}`,
+          }))}
+        />
+
         {!isCompatible && !isAzure && !isCloudflareAi && (
           <div className="flex items-center gap-3">
             <Button onClick={handleTest} variant="secondary" disabled={testing}>
@@ -308,4 +323,3 @@ EditConnectionModal.propTypes = {
   onSave: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };
-

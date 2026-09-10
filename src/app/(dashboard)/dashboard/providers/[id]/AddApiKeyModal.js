@@ -8,7 +8,7 @@ import { planBulkAdd } from "@/shared/utils/bulkAdd";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
-export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, authType, authHint, website, error, existingNames, onSave, onBulkDone, onClose }) {
+export default function AddApiKeyModal({ isOpen, provider, providerName, isCompatible, isAnthropic, authType, authHint, website, error, existingNames, mouses = [], onSave, onBulkDone, onClose }) {
   const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
@@ -27,6 +27,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     apiKey: "",
     defaultModel: "",
     priority: 1,
+    mouseId: "",
     ollamaHostUrl: "",
   });
   const [azureData, setAzureData] = useState({
@@ -122,6 +123,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         apiKey: formData.apiKey,
         defaultModel: isCompatible ? formData.defaultModel.trim() : undefined,
         priority: formData.priority,
+        mouseId: formData.mouseId || null,
         testStatus: isValid ? "active" : "unknown",
         providerSpecificData: buildProviderSpecificData()
       });
@@ -168,6 +170,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             name: entry.name,
             priority: 1,
             testStatus: isValid ? "active" : "unknown",
+            mouseId: formData.mouseId || null,
             ...(entry.providerSpecificData ? { providerSpecificData: entry.providerSpecificData } : {}),
           }),
         });
@@ -222,6 +225,18 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             </div>
           </div>
         )}
+
+        <Select
+          label="Mouse 执行节点"
+          value={formData.mouseId}
+          onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
+          placeholder="Spring 本地执行"
+          hint="可选。不选择时保持原有 Spring 执行；选择后该账号配置会绑定到在线 Mouse。"
+          options={mouses.map((mouse) => ({
+            value: mouse.id,
+            label: `${mouse.name}${mouse.isOnline ? " · 在线" : ""}`,
+          }))}
+        />
 
         {mode === "single" && (<>
         <Input

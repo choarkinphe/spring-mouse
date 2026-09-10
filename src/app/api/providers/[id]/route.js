@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import {
   getProviderConnectionById,
+  getMouseById,
+  getAvailableMouseById,
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
@@ -71,6 +73,7 @@ export async function PUT(request, { params }) {
       globalPriority,
       defaultModel,
       isActive,
+      mouseId,
       apiKey,
       testStatus,
       lastError,
@@ -94,6 +97,23 @@ export async function PUT(request, { params }) {
     if (globalPriority !== undefined) updateData.globalPriority = globalPriority;
     if (defaultModel !== undefined) updateData.defaultModel = defaultModel;
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (mouseId !== undefined) {
+      if (mouseId === null || mouseId === "") {
+        updateData.mouseId = null;
+      } else if (mouseId === existing.mouseId) {
+        const mouse = await getMouseById(mouseId);
+        if (!mouse) {
+          return NextResponse.json({ error: "Selected Mouse not found" }, { status: 400 });
+        }
+        updateData.mouseId = mouse.id;
+      } else {
+        const mouse = await getAvailableMouseById(mouseId);
+        if (!mouse) {
+          return NextResponse.json({ error: "Selected Mouse is not online" }, { status: 400 });
+        }
+        updateData.mouseId = mouse.id;
+      }
+    }
     if (apiKey && existing.authType === "apikey") updateData.apiKey = apiKey;
     if (testStatus !== undefined) updateData.testStatus = testStatus;
     if (lastError !== undefined) updateData.lastError = lastError;

@@ -31,6 +31,9 @@ const PUBLIC_API_PATHS = [
   "/api/codex/usage",
   "/api/version",
   "/api/settings/require-login",
+  // Agent-facing routes; both validate one-time registration / mouse tokens.
+  "/api/mouses/register",
+  "/api/mouses/heartbeat",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

@@ -42,6 +42,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const providerId = providerIdOverride || params.id;
   const { getCaps } = useModelCaps();
   const [connections, setConnections] = useState([]);
+  const [availableMouses, setAvailableMouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
@@ -438,6 +439,25 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     fetchCustomModels();
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchMouses = async () => {
+      try {
+        const res = await fetch("/api/mouses", { cache: "no-store" });
+        const data = await res.json();
+        if (!cancelled && res.ok) setAvailableMouses(data.mouses || []);
+      } catch (error) {
+        console.log("Error fetching mouses:", error);
+      }
+    };
+    void fetchMouses();
+    const timer = window.setInterval(fetchMouses, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // Cursor's model availability is account-specific and changes frequently.
   // Load the active account's live catalog for the dashboard; the static
@@ -919,6 +939,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             <div className="flex-1 min-w-0">
               <ConnectionRow
                 connection={conn}
+                mouseName={availableMouses.find((mouse) => mouse.id === conn.mouseId)?.name}
                 isOAuth={isOAuth}
                 isFirst={index === 0}
                 isLast={index === connections.length - 1}
@@ -1684,6 +1705,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         isOpen={showAddApiKeyModal}
         provider={providerId}
         providerName={providerInfo.name}
+        mouses={availableMouses.filter((mouse) => mouse.isOnline && !mouse.disabledAt)}
         isCompatible={isCompatible}
         isAnthropic={isAnthropicCompatible}
         authType={providerInfo?.authType}
@@ -1711,6 +1733,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       <EditConnectionModal
         isOpen={showEditModal}
         connection={selectedConnection}
+        mouses={availableMouses.filter((mouse) => mouse.isOnline || mouse.id === selectedConnection?.mouseId)}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}
       />

@@ -22,6 +22,7 @@ const operationItems = [
 ];
 
 const systemItems = [
+  { href: "/dashboard/mouses", label: "Mouse 节点", icon: "device_hub" },
   { href: "/dashboard/endpoint", label: "集成与凭据", icon: "key" },
   { href: "/dashboard/open-platform", label: "开放平台", icon: "api" },
   { href: "/dashboard/profile", label: "设置", icon: "settings" },

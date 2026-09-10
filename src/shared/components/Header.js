@@ -80,6 +80,13 @@ const getPageInfo = (pathname) => {
       icon: "dns",
       breadcrumbs: [],
     };
+  if (pathname === "/dashboard/mouses")
+    return {
+      title: "Mouse 节点",
+      description: "注册和管理可选的远程渠道执行节点",
+      icon: "device_hub",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/combos"))
     return {
       title: "Combos",

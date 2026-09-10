@@ -21,6 +21,7 @@ function rowToConn(row) {
     name: row.name,
     email: row.email,
     priority: row.priority,
+    mouseId: row.mouseId || null,
     isActive: row.isActive === 1 || row.isActive === true,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -34,7 +35,7 @@ function filterConnections(list, filter) {
 }
 
 function connToRow(c) {
-  const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+  const { id, provider, authType, name, email, priority, mouseId, isActive, createdAt, updatedAt, ...rest } = c;
   return {
     id,
     provider,
@@ -42,6 +43,7 @@ function connToRow(c) {
     name: name ?? null,
     email: email ?? null,
     priority: priority ?? null,
+    mouseId: mouseId || null,
     isActive: isActive === false ? 0 : 1,
     data: stringifyJson(rest),
     createdAt,
@@ -52,13 +54,13 @@ function connToRow(c) {
 function upsert(db, c) {
   const r = connToRow(c);
   db.run(
-    `INSERT INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO providerConnections(id, provider, authType, name, email, priority, mouseId, isActive, data, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        provider=excluded.provider, authType=excluded.authType, name=excluded.name,
-       email=excluded.email, priority=excluded.priority, isActive=excluded.isActive,
+       email=excluded.email, priority=excluded.priority, mouseId=excluded.mouseId, isActive=excluded.isActive,
        data=excluded.data, updatedAt=excluded.updatedAt`,
-    [r.id, r.provider, r.authType, r.name, r.email, r.priority, r.isActive, r.data, r.createdAt, r.updatedAt]
+    [r.id, r.provider, r.authType, r.name, r.email, r.priority, r.mouseId, r.isActive, r.data, r.createdAt, r.updatedAt]
   );
 }
 
@@ -173,6 +175,7 @@ export async function createProviderConnection(data) {
       authType: data.authType || "oauth",
       name: connectionName,
       priority: connectionPriority,
+      mouseId: data.mouseId || null,
       isActive: data.isActive !== undefined ? data.isActive : true,
       createdAt: now,
       updatedAt: now,

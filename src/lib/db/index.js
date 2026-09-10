@@ -15,6 +15,14 @@ export {
   reorderProviderConnections, cleanupProviderConnections,
 } from "./repos/connectionsRepo.js";
 
+// Mouse agents
+export {
+  getMouses, getMouseById, getAvailableMouseById,
+  createMouseRegistrationToken, getMouseRegistrationTokens, deleteMouseRegistrationToken,
+  registerMouse, authenticateMouseAccessToken, updateMouseHeartbeat,
+  updateMouse, deleteMouse, MOUSE_ONLINE_TIMEOUT_MS,
+} from "./repos/mousesRepo.js";
+
 // Provider nodes
 export {
   getProviderNodes, getProviderNodeById,
@@ -79,11 +87,24 @@ export async function exportDb() {
 
   const out = {
     settings: await exportSettings(),
-    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, mouseId: r.mouseId || null, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, quotaMode: r.quotaMode || "unlimited", quotaResetAt: r.quotaResetAt || null, fiveHourQuotaResetAt: r.fiveHourQuotaResetAt || null, weeklyQuotaResetAt: r.weeklyQuotaResetAt || null, createdAt: r.createdAt, lastUsedAt: r.lastUsedAt || null })),
     openPlatformApiKeys: db.all(`SELECT * FROM openPlatformApiKeys`).map((r) => ({ id: r.id, name: r.name, keyPrefix: r.keyPrefix, keyHash: r.keyHash, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt, lastUsedAt: r.lastUsedAt || null })),
     openPlatformApiCallLogs: db.all(`SELECT * FROM openPlatformApiCallLogs`),
+    mouses: db.all(`SELECT * FROM mouses`).map((r) => ({
+      id: r.id,
+      name: r.name,
+      accessTokenHash: r.accessTokenHash,
+      version: r.version || null,
+      capabilities: parseJson(r.capabilities, []),
+      metadata: parseJson(r.metadata, {}),
+      registrationIp: r.registrationIp || null,
+      lastHeartbeatAt: r.lastHeartbeatAt || null,
+      registeredAt: r.registeredAt,
+      updatedAt: r.updatedAt,
+      disabledAt: r.disabledAt || null,
+    })),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -117,6 +138,8 @@ export async function importDb(payload) {
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM openPlatformApiKeys`);
     db.run(`DELETE FROM openPlatformApiCallLogs`);
+    db.run(`DELETE FROM mouseRegistrationTokens`);
+    db.run(`DELETE FROM mouses`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
@@ -126,13 +149,13 @@ export async function importDb(payload) {
     }
 
     for (const c of payload.providerConnections || []) {
-      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
+      const { id, provider, authType, name, email, priority, mouseId, isActive, createdAt, updatedAt, ...rest } = c;
       if (rest.providerSpecificData && typeof rest.providerSpecificData === "object") {
         delete rest.providerSpecificData.proxyPoolId;
       }
       db.run(
-        `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, mouseId, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, provider, authType || "oauth", name || null, email || null, priority || null, mouseId || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
     for (const n of payload.providerNodes || []) {
@@ -158,6 +181,27 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO openPlatformApiCallLogs(id, apiKeyId, keyName, keyPrefix, timestamp, method, path, statusCode, durationMs, sourceIp, userAgent, subjectUserId) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [log.id, log.apiKeyId, log.keyName, log.keyPrefix, log.timestamp, log.method, log.path, log.statusCode, log.durationMs || 0, log.sourceIp || null, log.userAgent || null, log.subjectUserId || null]
+      );
+    }
+    for (const m of payload.mouses || []) {
+      db.run(
+        `INSERT OR REPLACE INTO mouses(
+          id, name, accessTokenHash, version, capabilities, metadata,
+          registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          m.id,
+          m.name,
+          m.accessTokenHash,
+          m.version || null,
+          stringifyJson(m.capabilities || []),
+          stringifyJson(m.metadata || {}),
+          m.registrationIp || null,
+          m.lastHeartbeatAt || null,
+          m.registeredAt || new Date().toISOString(),
+          m.updatedAt || m.registeredAt || new Date().toISOString(),
+          m.disabledAt || null,
+        ],
       );
     }
     for (const c of payload.combos || []) {

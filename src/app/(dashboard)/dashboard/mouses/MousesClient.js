@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Card, ConfirmModal, DashboardHero, Input, Modal } from "@/shared/components";
+import { Badge, Button, Card, ConfirmModal, DashboardHero, Input, Modal, Select } from "@/shared/components";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -16,22 +16,24 @@ function StatusBadge({ mouse }) {
 }
 
 function TokenBadge({ token }) {
-  const variant = token.status === "active" ? "success" : token.status === "used" ? "default" : "warning";
-  const label = token.status === "active" ? "可用" : token.status === "used" ? "已使用" : "已过期";
+  const variant = token.status === "active" ? "success" : token.status === "revoked" ? "error" : "warning";
+  const label = token.status === "active" ? "可用" : token.status === "revoked" ? "已删除" : "已过期";
   return <Badge variant={variant}>{label}</Badge>;
 }
 
 export default function MousesClient() {
   const [mouses, setMouses] = useState([]);
-  const [registrationTokens, setRegistrationTokens] = useState([]);
+  const [accessTokens, setAccessTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tokenName, setTokenName] = useState("");
+  const [tokenTtl, setTokenTtl] = useState("604800");
   const [creating, setCreating] = useState(false);
   const [createdToken, setCreatedToken] = useState(null);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [savingMouseId, setSavingMouseId] = useState("");
+  const [savingTokenId, setSavingTokenId] = useState("");
 
   const loadData = useCallback(async () => {
     setError("");
@@ -40,7 +42,7 @@ export default function MousesClient() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "读取 Mouse 失败");
       setMouses(data.mouses || []);
-      setRegistrationTokens(data.registrationTokens || []);
+      setAccessTokens(data.accessTokens || []);
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -64,11 +66,11 @@ export default function MousesClient() {
       const response = await fetch("/api/mouses", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tokenName.trim() || undefined, ttlSeconds: 600 }),
+        body: JSON.stringify({ name: tokenName.trim() || undefined, ttlSeconds: tokenTtl === "permanent" ? null : Number(tokenTtl) }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "创建注册 Token 失败");
-      setCreatedToken(data.registrationToken);
+      if (!response.ok) throw new Error(data.error || "创建访问 Token 失败");
+      setCreatedToken(data.accessToken);
       setCopied(false);
       setTokenName("");
       await loadData();
@@ -80,8 +82,29 @@ export default function MousesClient() {
   };
 
   const deleteToken = async (token) => {
-    await fetch(`/api/mouses/registration-tokens/${token.id}`, { method: "DELETE" });
+    await fetch(`/api/mouses/access-tokens/${token.id}`, { method: "DELETE" });
     await loadData();
+  };
+
+  const rotateToken = async (token) => {
+    setSavingTokenId(token.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/mouses/access-tokens/${token.id}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ttlSeconds: tokenTtl === "permanent" ? null : Number(tokenTtl) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "轮换 Token 失败");
+      setCreatedToken({ ...token, ...data });
+      setCopied(false);
+      await loadData();
+    } catch (rotateError) {
+      setError(rotateError.message);
+    } finally {
+      setSavingTokenId("");
+    }
   };
 
   const toggleMouse = async (mouse) => {
@@ -124,7 +147,7 @@ export default function MousesClient() {
         title="Mouse 执行节点"
         description="Mouse 是可选的远程渠道执行节点。未绑定 Mouse 的渠道账号仍由 Spring 本地执行。"
         icon="device_hub"
-        action={<Button icon="add_link" onClick={createToken} loading={creating}>生成注册 Token</Button>}
+        action={<Button icon="add_link" onClick={createToken} loading={creating}>生成访问 Token</Button>}
       >
         <Badge variant="primary" icon="dns">{mouses.length} 个节点</Badge>
         <Badge variant={onlineCount ? "success" : "default"} dot>{onlineCount} 个在线</Badge>
@@ -134,7 +157,7 @@ export default function MousesClient() {
         <Card className="border-red-500/30 bg-red-500/5 p-3 text-sm text-red-500">{error}</Card>
       )}
 
-      <Card title="注册 Token" subtitle="每个 Token 只能注册一个 Mouse，10 分钟后过期。">
+      <Card title="Mouse 访问 Token" subtitle="同一个有效 Token 可以认证多个 Mouse；Mouse 通过 clientId 唯一标识。">
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             className="flex-1"
@@ -143,13 +166,26 @@ export default function MousesClient() {
             value={tokenName}
             onChange={(event) => setTokenName(event.target.value)}
           />
+          <Select
+            className="sm:w-48"
+            label="有效期"
+            value={tokenTtl}
+            onChange={(event) => setTokenTtl(event.target.value)}
+            options={[
+              { value: "permanent", label: "长期有效" },
+              { value: "3600", label: "1 小时" },
+              { value: "86400", label: "1 天" },
+              { value: "604800", label: "7 天" },
+              { value: "2592000", label: "30 天" },
+            ]}
+          />
           <div className="flex items-end">
             <Button onClick={createToken} loading={creating}>生成</Button>
           </div>
         </div>
 
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[680px] text-left text-sm">
+          <table className="w-full min-w-[820px] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-text-muted">
               <tr>
                 <th className="px-3 py-2">名称</th>
@@ -160,19 +196,22 @@ export default function MousesClient() {
               </tr>
             </thead>
             <tbody>
-              {registrationTokens.map((token) => (
+              {accessTokens.map((token) => (
                 <tr key={token.id} className="border-t border-border-subtle">
                   <td className="px-3 py-2.5 font-medium">{token.name}</td>
                   <td className="px-3 py-2.5"><TokenBadge token={token} /></td>
                   <td className="px-3 py-2.5 text-text-muted">{formatDate(token.expiresAt)}</td>
                   <td className="px-3 py-2.5 text-text-muted">{formatDate(token.createdAt)}</td>
                   <td className="px-3 py-2.5 text-right">
-                    <Button size="sm" variant="ghost" onClick={() => deleteToken(token)}>删除</Button>
+                    <div className="inline-flex gap-1">
+                      <Button size="sm" variant="secondary" loading={savingTokenId === token.id} onClick={() => rotateToken(token)}>轮换</Button>
+                      <Button size="sm" variant="danger" onClick={() => deleteToken(token)}>删除</Button>
+                    </div>
                   </td>
                 </tr>
               ))}
-              {!registrationTokens.length && (
-                <tr><td colSpan="5" className="px-3 py-6 text-center text-text-muted">暂无注册 Token</td></tr>
+              {!accessTokens.length && (
+                <tr><td colSpan="5" className="px-3 py-6 text-center text-text-muted">暂无访问 Token</td></tr>
               )}
             </tbody>
           </table>
@@ -184,6 +223,7 @@ export default function MousesClient() {
           <table className="w-full min-w-[840px] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-text-muted">
               <tr>
+                <th className="px-3 py-2">Client ID</th>
                 <th className="px-3 py-2">名称</th>
                 <th className="px-3 py-2">状态</th>
                 <th className="px-3 py-2">版本</th>
@@ -195,6 +235,7 @@ export default function MousesClient() {
             <tbody>
               {mouses.map((mouse) => (
                 <tr key={mouse.id} className="border-t border-border-subtle">
+                  <td className="px-3 py-2.5 font-mono text-xs">{mouse.clientId}</td>
                   <td className="px-3 py-2.5 font-medium">{mouse.name}</td>
                   <td className="px-3 py-2.5"><StatusBadge mouse={mouse} /></td>
                   <td className="px-3 py-2.5 text-text-muted">{mouse.version || "—"}</td>
@@ -211,7 +252,7 @@ export default function MousesClient() {
                 </tr>
               ))}
               {!mouses.length && (
-                <tr><td colSpan="6" className="px-3 py-6 text-center text-text-muted">还没有 Mouse 注册；当前所有渠道仍由 Spring 执行</td></tr>
+                <tr><td colSpan="7" className="px-3 py-6 text-center text-text-muted">还没有 Mouse 注册；当前所有渠道仍由 Spring 执行</td></tr>
               )}
             </tbody>
           </table>
@@ -220,12 +261,12 @@ export default function MousesClient() {
 
       <Modal
         isOpen={Boolean(createdToken)}
-        title="Mouse 注册 Token"
+        title="Mouse 访问 Token"
         onClose={() => setCreatedToken(null)}
         footer={<Button onClick={() => setCreatedToken(null)}>完成</Button>}
       >
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-text-muted">请立即复制并配置到 Mouse 启动环境。关闭后无法再次查看。</p>
+          <p className="text-sm text-text-muted">请立即复制。这个 Token 可以给多个 Mouse 使用，关闭后无法再次查看。</p>
           <code className="block break-all rounded-lg bg-surface-2 p-3 font-mono text-xs">{createdToken?.token}</code>
           <Button variant="secondary" icon={copied ? "check" : "content_copy"} onClick={copyToken}>{copied ? "已复制" : "复制 Token"}</Button>
         </div>

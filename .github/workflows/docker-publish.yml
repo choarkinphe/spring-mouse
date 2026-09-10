@@ -90,7 +90,10 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          push: true
+          # Push an untagged, canonical platform digest. The merge job creates
+          # the shared multi-arch tags after both platforms finish.
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_BUILD_VERSION=${{ github.sha }}

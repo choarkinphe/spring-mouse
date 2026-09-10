@@ -10,6 +10,7 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
+import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
 import { getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
@@ -186,7 +187,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const requesterId = typeof options?.requesterId === "string" && options.requesterId ? options.requesterId : null;
       if (requesterId) {
         const state = providerUserAssignments.get(providerId) || { lastConnectionId: null, assignments: new Map() };
-        const assignedId = state.assignments.get(requesterId);
+        const localAssignedId = state.assignments.get(requesterId);
+        const redisAssignedId = await getStickyAssignment(providerId, requesterId);
+        const assignedId = redisAssignedId || localAssignedId;
         connection = availableConnections.find((candidate) => candidate.id === assignedId);
         const outcome = connection ? "sticky-hit" : "rotated";
 
@@ -197,10 +200,24 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           if (assignedId) state.assignments.delete(requesterId);
           const lastIndex = availableConnections.findIndex((candidate) => candidate.id === state.lastConnectionId);
           connection = availableConnections[(lastIndex + 1 + availableConnections.length) % availableConnections.length];
+
+          // Redis wins across workers. If another worker changed the mapping
+          // while this request was selecting, use its current assignment when
+          // it is still eligible instead of overwriting it blindly.
+          const committedId = await claimStickyAssignment(
+            providerId, requesterId, connection.id, redisAssignedId || null,
+          );
+          const committed = availableConnections.find((candidate) => candidate.id === committedId);
+          if (committed) connection = committed;
+
           state.assignments.set(requesterId, connection.id);
           if (state.assignments.size > MAX_USER_ASSIGNMENTS_PER_PROVIDER) {
             state.assignments.delete(state.assignments.keys().next().value);
           }
+        } else if (!redisAssignedId) {
+          // Seed the shared assignment from the local fallback when Redis was
+          // unavailable during the original request.
+          await claimStickyAssignment(providerId, requesterId, connection.id, null);
         }
         state.lastConnectionId = connection.id;
         providerUserAssignments.set(providerId, state);

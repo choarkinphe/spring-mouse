@@ -594,7 +594,9 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
   const roundRobinEnabled = routing.fallbackStrategy === "round-robin";
   const stickyLimit = routing.stickyRoundRobinLimit || 1;
   const modelCount = modelCounts[group.provider] || 0;
-  const hardConcurrency = Number.isFinite(Number(routing.providerMaxConcurrentStreams));
+  const hardConcurrency = routing.hardConcurrencyEnabled == null
+    ? Number.isFinite(Number(routing.providerMaxConcurrentStreams))
+    : routing.hardConcurrencyEnabled === true;
   const breakerEnabled = routing.enableModelBreaker !== false;
 
   return (
@@ -1128,6 +1130,10 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         body: JSON.stringify({ providerStrategies: updated }),
       });
       if (!response.ok) throw new Error("Failed to update provider strategy");
+      const payload = await response.json().catch(() => null);
+      if (payload && typeof payload === "object") {
+        setProviderStrategies(payload.providerStrategies || {});
+      }
       return true;
     } catch (error) {
       console.error("Failed to update provider strategy:", error);

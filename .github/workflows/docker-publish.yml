@@ -26,7 +26,7 @@ jobs:
       - name: Install application and test dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm --prefix tests ci --ignore-scripts --no-audit --no-fund
+          npm --prefix tests install --ignore-scripts --no-audit --no-fund
       - name: Run critical request-path regression tests
         working-directory: tests
         run: >-

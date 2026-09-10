@@ -9,20 +9,24 @@ on:
 permissions:
   contents: read
 
+env:
+  REGISTRY_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-mouse
+
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js for release checks
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
       - name: Install application and test dependencies
         run: |
-          npm install --ignore-scripts
-          npm --prefix tests install --ignore-scripts
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm --prefix tests ci --ignore-scripts --no-audit --no-fund
       - name: Run critical request-path regression tests
         working-directory: tests
         run: >-
@@ -33,6 +37,26 @@ jobs:
           unit/embedding-usage-persistence.test.js
           unit/fetch-success-clears-account.test.js
           unit/xai-video-handler.test.js
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            cache-slug: amd64
+          # Run the ARM64 build natively. QEMU turns npm ci and Next's
+          # compiler into a multi-hour/no-output process on ubuntu-latest.
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            cache-slug: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Verify Docker Hub credentials
         shell: bash
         env:
@@ -43,30 +67,85 @@ jobs:
             echo "::error::Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in GitHub Actions secrets before publishing."
             exit 1
           fi
-      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/spring-mouse
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
-      - uses: docker/build-push-action@v6
+
+      - name: Build and push platform image by digest
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_BUILD_VERSION=${{ github.sha }}
             NPM_REGISTRY=https://registry.npmmirror.com
-          cache-from: type=gha,scope=spring-mouse-${{ github.ref_name }}
-          cache-to: type=gha,mode=max,scope=spring-mouse-${{ github.ref_name }}
+          cache-from: type=gha,scope=spring-mouse-${{ github.ref_name }}-${{ matrix.cache-slug }}
+          cache-to: type=gha,mode=max,scope=spring-mouse-${{ github.ref_name }}-${{ matrix.cache-slug }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.cache-slug }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Create and push manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect manifest list
+        run: docker buildx imagetools inspect "${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}"

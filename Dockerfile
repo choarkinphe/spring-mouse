@@ -34,10 +34,10 @@ RUN --mount=type=cache,target=/root/.npm,id=spring-mouse-npm-${TARGETARCH} \
       if [ "${NPM_REGISTRY%/}" != "https://registry.npmjs.org" ]; then \
         sed -i "s#https://registry.npmjs.org/#${NPM_REGISTRY%/}/#g" package-lock.json; \
       fi; \
-      timeout 20m npm ci --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
+      timeout 20m npm ci --foreground-scripts --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     else \
       echo "Warning: package-lock.json not found, using npm install instead"; \
-      timeout 20m npm install --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
+      timeout 20m npm install --foreground-scripts --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     fi
 
 COPY . ./

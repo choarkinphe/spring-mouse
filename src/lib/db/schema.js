@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -62,6 +62,7 @@ export const TABLES = {
       id: "TEXT PRIMARY KEY",
       name: "TEXT NOT NULL",
       accessTokenHash: "TEXT UNIQUE NOT NULL",
+      clientId: "TEXT UNIQUE NOT NULL",
       executionToken: "TEXT",
       callbackUrl: "TEXT",
       version: "TEXT",
@@ -78,20 +79,20 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_mouse_disabled ON mouses(disabledAt)",
     ],
   },
-  mouseRegistrationTokens: {
+  mouseAccessTokens: {
     columns: {
       id: "TEXT PRIMARY KEY",
       name: "TEXT NOT NULL",
       tokenPrefix: "TEXT NOT NULL",
       tokenHash: "TEXT UNIQUE NOT NULL",
-      expiresAt: "TEXT NOT NULL",
+      expiresAt: "TEXT",
       createdAt: "TEXT NOT NULL",
-      usedAt: "TEXT",
-      usedByMouseId: "TEXT",
+      rotatedAt: "TEXT",
+      revokedAt: "TEXT",
     },
     indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_mouse_token_expires ON mouseRegistrationTokens(expiresAt)",
-      "CREATE INDEX IF NOT EXISTS idx_mouse_token_used ON mouseRegistrationTokens(usedAt)",
+      "CREATE INDEX IF NOT EXISTS idx_mouse_access_token_expires ON mouseAccessTokens(expiresAt)",
+      "CREATE INDEX IF NOT EXISTS idx_mouse_access_token_active ON mouseAccessTokens(revokedAt)",
     ],
   },
   providerNodes: {

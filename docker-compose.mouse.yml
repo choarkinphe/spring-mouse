@@ -17,7 +17,8 @@ services:
       MOUSE_PORT: 9101
       MOUSE_STATE_FILE: /data/agent.json
       SPRING_URL: ${SPRING_URL:-}
-      MOUSE_REGISTRATION_TOKEN: ${MOUSE_REGISTRATION_TOKEN:-}
+      MOUSE_TOKEN: ${MOUSE_TOKEN:-}
+      MOUSE_CLIENT_ID: ${MOUSE_CLIENT_ID:-docker-mouse}
       MOUSE_CALLBACK_URL: ${MOUSE_CALLBACK_URL:-http://host.docker.internal:9101}
       MOUSE_NAME: ${MOUSE_NAME:-docker-mouse}
     extra_hosts:

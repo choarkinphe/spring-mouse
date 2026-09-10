@@ -4,7 +4,7 @@ Mouse is an optional remote execution node. Spring continues to run normally
 when no Mouse is registered and all existing channel accounts keep using their
 current local execution path.
 
-## 1. Create a registration token
+## 1. Create an access token
 
 From the dashboard, open **Mouse 节点** and create a token, or call:
 
@@ -12,11 +12,13 @@ From the dashboard, open **Mouse 节点** and create a token, or call:
 POST /api/mouses
 Content-Type: application/json
 
-{ "name": "us-east-worker", "ttlSeconds": 600 }
+{ "name": "production-mice", "ttlSeconds": 604800 }
 ```
 
-The response contains a one-time `registrationToken`. It is displayed only
-once and expires after the configured TTL.
+The response contains an `accessToken`. It is displayed only once. A token is
+not owned by one Mouse: multiple Mouse processes may use the same active token.
+Each Mouse must report its own stable `clientId`. Tokens may be permanent,
+expiry-based, rotated, or deleted.
 
 ## 2. Register Mouse
 
@@ -28,7 +30,7 @@ POST /api/mouses/register
 Content-Type: application/json
 
 {
-  "registrationToken": "msr_...",
+  "clientId": "mouse-us-east-01",
   "name": "mouse-us-east-01",
   "version": "1.0.0",
   "capabilities": ["http-provider-execute"],
@@ -37,19 +39,18 @@ Content-Type: application/json
 }
 ```
 
-Spring returns a Mouse identity, an access token for heartbeats, and an
-execution token used by Spring when dispatching provider tasks:
+The token is sent in the Authorization header. Spring returns a Mouse identity
+and an execution token used by Spring when dispatching provider tasks:
 
 ```json
 {
   "mouse": { "id": "...", "name": "mouse-us-east-01" },
-  "accessToken": "mse_...",
   "executionToken": "msx_..."
 }
 ```
 
-The access token should be stored securely by Mouse. Spring stores only its
-SHA-256 hash and can disable or delete the identity.
+Spring stores only the access token's SHA-256 hash. The callback execution
+token is specific to the Mouse identity.
 
 ## 3. Send heartbeats
 
@@ -62,6 +63,7 @@ Authorization: Bearer mse_...
 Content-Type: application/json
 
 {
+  "clientId": "mouse-us-east-01",
   "version": "1.0.0",
   "capabilities": ["http-provider-execute"],
   "metadata": {
@@ -112,6 +114,14 @@ node mouse/agent.mjs \
 
 The identity and tokens are stored in `~/.spring-mouse-agent/agent.json`.
 Subsequent restarts can omit the registration token and reuse that identity.
+
+## Token lifecycle
+
+- One token can authorize many Mouse registrations and heartbeats.
+- `clientId` is the stable unique key for a Mouse.
+- A token can have `expiresAt`, be rotated, or be deleted.
+- Deleting a token immediately rejects registration and heartbeat requests for
+  every Mouse that used it.
 
 ## Current phase behavior
 

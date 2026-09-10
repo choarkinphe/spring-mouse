@@ -130,7 +130,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // selection only excludes failed/locked connections; API-key tags above
     // remain the permission boundary for models.
     const onlineMouses = new Map((await getMouses())
-      .filter((mouse) => mouse.isOnline && !mouse.disabledAt && mouse.callbackUrl && mouse.executionToken)
+      .filter((mouse) => mouse.isOnline && !mouse.disabledAt && mouse.callbackUrl && mouse.executionTokenConfigured)
       .map((mouse) => [mouse.id, mouse]));
     const onlineMouseIds = new Set(onlineMouses.keys());
 

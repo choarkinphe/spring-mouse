@@ -18,7 +18,9 @@ export {
 // Mouse agents
 export {
   getMouses, getMouseById, getAvailableMouseById, getMouseExecutionDetails,
-  createMouseRegistrationToken, getMouseRegistrationTokens, deleteMouseRegistrationToken,
+  getMouseByClientId,
+  createMouseAccessToken, getMouseAccessTokens, deleteMouseAccessToken, rotateMouseAccessToken,
+  normalizeClientId,
   registerMouse, authenticateMouseAccessToken, updateMouseHeartbeat,
   updateMouse, deleteMouse, rotateMouseExecutionToken,
   normalizeCallbackUrl, MOUSE_ONLINE_TIMEOUT_MS,
@@ -95,6 +97,7 @@ export async function exportDb() {
     openPlatformApiCallLogs: db.all(`SELECT * FROM openPlatformApiCallLogs`),
     mouses: db.all(`SELECT * FROM mouses`).map((r) => ({
       id: r.id,
+      clientId: r.clientId,
       name: r.name,
       accessTokenHash: r.accessTokenHash,
       executionToken: r.executionToken || null,
@@ -107,6 +110,16 @@ export async function exportDb() {
       registeredAt: r.registeredAt,
       updatedAt: r.updatedAt,
       disabledAt: r.disabledAt || null,
+    })),
+    mouseAccessTokens: db.all(`SELECT * FROM mouseAccessTokens`).map((r) => ({
+      id: r.id,
+      name: r.name,
+      tokenPrefix: r.tokenPrefix,
+      tokenHash: r.tokenHash,
+      expiresAt: r.expiresAt || null,
+      createdAt: r.createdAt,
+      rotatedAt: r.rotatedAt || null,
+      revokedAt: r.revokedAt || null,
     })),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
@@ -141,7 +154,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM openPlatformApiKeys`);
     db.run(`DELETE FROM openPlatformApiCallLogs`);
-    db.run(`DELETE FROM mouseRegistrationTokens`);
+    db.run(`DELETE FROM mouseAccessTokens`);
     db.run(`DELETE FROM mouses`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
@@ -189,11 +202,12 @@ export async function importDb(payload) {
     for (const m of payload.mouses || []) {
       db.run(
         `INSERT OR REPLACE INTO mouses(
-          id, name, accessTokenHash, version, capabilities, metadata,
+          id, clientId, name, accessTokenHash, version, capabilities, metadata,
           registrationIp, executionToken, callbackUrl, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           m.id,
+          m.clientId,
           m.name,
           m.accessTokenHash,
           m.executionToken || null,
@@ -206,6 +220,23 @@ export async function importDb(payload) {
           m.registeredAt || new Date().toISOString(),
           m.updatedAt || m.registeredAt || new Date().toISOString(),
           m.disabledAt || null,
+        ],
+      );
+    }
+    for (const t of payload.mouseAccessTokens || []) {
+      db.run(
+        `INSERT OR REPLACE INTO mouseAccessTokens(
+          id, name, tokenPrefix, tokenHash, expiresAt, createdAt, rotatedAt, revokedAt
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          t.id,
+          t.name,
+          t.tokenPrefix,
+          t.tokenHash,
+          t.expiresAt || null,
+          t.createdAt || new Date().toISOString(),
+          t.rotatedAt || null,
+          t.revokedAt || null,
         ],
       );
     }

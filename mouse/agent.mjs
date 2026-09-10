@@ -22,11 +22,12 @@ function usage(code = 0) {
   const text = `Spring Mouse agent
 
 Usage:
-  node mouse/agent.mjs --spring-url http://spring:8008 --registration-token msr_... --callback-url http://mouse-host:9101
+  node mouse/agent.mjs --spring-url http://spring:8008 --token mst_... --client-id mouse-01 --callback-url http://mouse-host:9101
 
 Options:
   --spring-url URL            Base URL of Spring (or SPRING_URL)
-  --registration-token TOKEN  One-time registration token (or MOUSE_REGISTRATION_TOKEN)
+  --token TOKEN               Mouse access token (or MOUSE_TOKEN)
+  --client-id ID              Stable unique identity reported to Spring (or MOUSE_CLIENT_ID)
   --callback-url URL          URL Spring uses to reach this agent (or MOUSE_CALLBACK_URL)
   --name NAME                 Mouse display name (or MOUSE_NAME)
   --host HOST                 HTTP bind address (default 0.0.0.0)
@@ -43,6 +44,10 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") usage();
+    if (arg === "--reset") {
+      values.reset = true;
+      continue;
+    }
     if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
     const key = arg.slice(2);
     const value = argv[i + 1];
@@ -96,8 +101,10 @@ function bearerToken(request) {
   return request.headers.authorization?.replace(/^Bearer\s+/i, "").trim() || "";
 }
 
-function extractClientIp(request) {
-  return request.socket.remoteAddress || null;
+function normalizeClientId(value) {
+  const clientId = String(value || "").trim();
+  if (!clientId || clientId.length > 100 || !/^[a-zA-Z0-9._:@-]+$/.test(clientId)) return null;
+  return clientId;
 }
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -135,7 +142,8 @@ class MouseAgent {
   }
 
   get identity() {
-    return this.state.identity || null;
+    const identity = this.state.identity || null;
+    return identity?.schemaVersion === 2 && identity.clientId === this.options.clientId ? identity : null;
   }
 
   async start() {
@@ -149,24 +157,39 @@ class MouseAgent {
 
     if (!this.identity || this.options.reset) {
       await this.register();
+    } else {
+      console.log(`[mouse] reused identity ${this.identity.mouseId} (${this.identity.clientId})`);
+    }
+
+    try {
+      await this.heartbeat();
+    } catch (error) {
+      if (Number(error.status) === 404 && this.options.token) {
+        console.log("[mouse] saved identity no longer exists; registering again");
+        await this.register();
+      } else {
+        throw error;
+      }
     }
 
     console.log(`[mouse] callback ${this.options.callbackUrl}`);
-    console.log(`[mouse] identity ${this.identity.mouseId} (${this.identity.name})`);
     await this.heartbeat();
     this.scheduleHeartbeat();
   }
 
   async register() {
-    if (!this.options.springUrl || !this.options.registrationToken) {
-      throw new Error("Mouse identity is missing; SPRING_URL and MOUSE_REGISTRATION_TOKEN are required");
+    if (!this.options.springUrl || !this.options.token) {
+      throw new Error("Registration requires SPRING_URL and MOUSE_TOKEN");
     }
     const response = await fetch(`${this.options.springUrl}/api/mouses/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Authorization": `Bearer ${this.options.token}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
-        registrationToken: this.options.registrationToken,
-        name: this.options.name || os.hostname(),
+        clientId: this.options.clientId,
+        name: this.options.name || this.options.clientId,
         version: AGENT_VERSION,
         capabilities: ["http-provider-execute"],
         callbackUrl: this.options.callbackUrl,
@@ -177,16 +200,17 @@ class MouseAgent {
     if (!response.ok) throw new Error(data.error || `Registration failed (${response.status})`);
 
     this.state = {
-      version: 1,
+      version: 2,
       identity: {
+        schemaVersion: 2,
         ...data.mouse,
-        accessToken: data.accessToken,
+        clientId: this.options.clientId,
         executionToken: data.executionToken,
       },
       registeredAt: new Date().toISOString(),
     };
     saveState(this.stateFile, this.state);
-    console.log("[mouse] registration complete");
+    console.log(`[mouse] registration complete: ${this.identity.clientId}`);
   }
 
   scheduleHeartbeat() {
@@ -202,10 +226,11 @@ class MouseAgent {
     const response = await fetch(`${this.options.springUrl}/api/mouses/heartbeat`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${this.identity.accessToken}`,
+        "Authorization": `Bearer ${this.options.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        clientId: this.options.clientId,
         version: AGENT_VERSION,
         capabilities: ["http-provider-execute"],
         metadata: {
@@ -218,7 +243,9 @@ class MouseAgent {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || `HTTP ${response.status}`);
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
     }
   }
 
@@ -265,6 +292,7 @@ class MouseAgent {
           ok: true,
           version: AGENT_VERSION,
           mouseId: this.identity?.mouseId || null,
+          clientId: this.identity?.clientId || this.options.clientId,
           startedAt: this.startedAt,
         }));
         return;
@@ -312,10 +340,15 @@ async function main() {
     args["callback-url"] || process.env.MOUSE_CALLBACK_URL || `http://${callbackHost}:${port}`,
     "callback URL",
   );
+  const clientId = normalizeClientId(args["client-id"] || process.env.MOUSE_CLIENT_ID);
+  if (!clientId) throw new Error("MOUSE_CLIENT_ID or --client-id is required");
+  const token = args.token || process.env.MOUSE_TOKEN || process.env.MOUSE_REGISTRATION_TOKEN || "";
+  if (!token) throw new Error("MOUSE_TOKEN or --token is required");
 
   const agent = new MouseAgent({
     springUrl: normalizeBaseUrl(args["spring-url"] || process.env.SPRING_URL, "Spring URL"),
-    registrationToken: args["registration-token"] || process.env.MOUSE_REGISTRATION_TOKEN || "",
+    token,
+    clientId,
     name: args.name || process.env.MOUSE_NAME || "",
     callbackUrl,
     host,

@@ -1,0 +1,41 @@
+# Standalone Mouse deployment. Run this on the server that owns the channel
+# network/proxy. SPRING_URL must be reachable from this container, and
+# MOUSE_CALLBACK_URL must be reachable from Spring.
+
+services:
+  mouse:
+    build:
+      context: .
+      dockerfile: Dockerfile.mouse
+    image: ${MOUSE_IMAGE:-choarkinphe/spring-mouse-agent:latest}
+    container_name: spring-mouse-agent
+    restart: always
+    ports:
+      - "${MOUSE_PORT:-9101}:9101"
+    environment:
+      MOUSE_HOST: 0.0.0.0
+      MOUSE_PORT: 9101
+      MOUSE_STATE_FILE: /data/agent.json
+      SPRING_URL: ${SPRING_URL:-}
+      MOUSE_REGISTRATION_TOKEN: ${MOUSE_REGISTRATION_TOKEN:-}
+      MOUSE_CALLBACK_URL: ${MOUSE_CALLBACK_URL:-http://host.docker.internal:9101}
+      MOUSE_NAME: ${MOUSE_NAME:-docker-mouse}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - mouse-agent-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9101/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+        max-file: "${DOCKER_LOG_MAX_FILES:-3}"
+
+volumes:
+  mouse-agent-data:
+    name: spring-mouse-agent-data

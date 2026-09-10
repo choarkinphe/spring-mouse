@@ -60,11 +60,36 @@ function getChannelIconSrc(providerId, connections = []) {
   return normalizeCustomChannelIconSrc(customIcon) || getProviderIconSrc(providerId);
 }
 
+function hasActiveModelLock(connection) {
+  const now = Date.now();
+  return Object.entries(connection || {}).some(([key, value]) => {
+    if (!key.startsWith("modelLock_") || !value) return false;
+    const at = new Date(value).getTime();
+    return Number.isFinite(at) && at > now;
+  });
+}
+
 function getAccountStatus(connection) {
   if (connection.isActive === false) return { label: "已停用", className: "border-white/10 text-text-muted" };
-  if (["active", "success"].includes(connection.testStatus)) return { label: "可用", className: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300" };
-  if (["error", "expired", "unavailable"].includes(connection.testStatus)) return { label: "异常", className: "border-rose-400/25 bg-rose-400/10 text-rose-300" };
+  if (connection.testStatus === "limited") return { label: "限流", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+  if (connection.testStatus === "degraded") return { label: "过载", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+  if (["error", "expired"].includes(connection.testStatus)) return { label: "异常", className: "border-rose-400/25 bg-rose-400/10 text-rose-300" };
+  if (connection.testStatus === "unavailable" && hasActiveModelLock(connection)) {
+    const code = Number(connection.errorCode ?? connection.lastUpstreamStatus);
+    if (code === 429) return { label: "限流", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+    if (code >= 500) return { label: "过载", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+    return { label: "异常", className: "border-rose-400/25 bg-rose-400/10 text-rose-300" };
+  }
+  if (["active", "success", "unavailable"].includes(connection.testStatus)) return { label: "可用", className: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300" };
   return { label: "待检测", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+}
+
+function getUpstreamErrorTitle(connection) {
+  const error = connection?.lastUpstreamError;
+  if (!error) return "";
+  const source = connection.lastUpstreamSource === "sse" ? "上游 SSE" : `上游 HTTP ${connection.lastUpstreamStatus ?? ""}`.trim();
+  const raw = connection.lastUpstreamRaw && connection.lastUpstreamRaw !== error ? `\n${connection.lastUpstreamRaw}` : "";
+  return `${source}\n${error}${raw}`;
 }
 
 function getQuotaTone(percentage) {
@@ -497,11 +522,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
-        {(connection.lastError || resetError) && connection.isActive !== false && (
-          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={resetError || connection.lastError}>
+        {connection.lastUpstreamError && connection.isActive !== false ? (
+          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-rose-400" title={getUpstreamErrorTitle(connection)}>
             <span className="material-symbols-outlined shrink-0 text-[15px]">error</span>
-            <span className="truncate">{resetError || connection.lastError}</span>
+            <span className="truncate">
+              {connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
+              {connection.lastUpstreamError}
+            </span>
           </div>
+        ) : (
+          <div className="mt-2 text-xs text-[#647688]">暂无渠道方返回错误</div>
         )}
       </div>
 

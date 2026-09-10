@@ -116,3 +116,21 @@ describe("Codex reasoning normalization", () => {
     expect(body.reasoning.effort).toBe("ultra");
   });
 });
+
+it("keeps the original SSE evidence when upstream returns an overloaded error", async () => {
+  const executor = new CodexExecutor();
+  const response = new Response(streamFromText([
+    "event: error",
+    'data: {"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}',
+    "",
+  ].join("\n")), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+  const peek = await executor._peekSseTransientError(response);
+  expect(peek.upstreamError).toMatchObject({
+    source: "sse",
+    status: 200,
+    message: "Our servers are currently overloaded. Please try again later.",
+  });
+  expect(peek.upstreamError.body).toContain("server_is_overloaded");
+  expect(executor.config.retry[503]).toEqual({ attempts: 1, delayMs: 1000 });
+});

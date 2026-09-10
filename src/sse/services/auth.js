@@ -299,8 +299,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string|null} model - The specific model that triggered the error
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
-export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
+export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, upstreamError = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  const isUpstream = upstreamError?.source === "http" || upstreamError?.source === "sse";
 
   let decision = { shouldFallback: false, cooldownMs: 0 };
   const applyFailure = (conn) => {
@@ -315,6 +316,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     } else if (resetsAtMs && resetsAtMs > Date.now()) {
       shouldFallback = true;
       cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
+      newBackoffLevel = 0;
+    } else if (Number.isFinite(upstreamError?.retryAfterMs) && upstreamError.retryAfterMs > 0) {
+      shouldFallback = true;
+      cooldownMs = Math.min(upstreamError.retryAfterMs, MAX_RATE_LIMIT_COOLDOWN_MS);
       newBackoffLevel = 0;
     } else {
       ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
@@ -334,12 +339,23 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       value: { ...decision, lockKey, reason, status },
       update: {
         ...lockUpdate,
-        testStatus: "unavailable",
-        lastError: reason,
-        errorCode: status,
-        lastErrorAt: new Date().toISOString(),
+        testStatus: status === 429 ? "limited" : status >= 500 ? "degraded" : "unavailable",
         backoffLevel: newBackoffLevel ?? backoffLevel,
         healthRevision: (conn?.healthRevision || 0) + 1,
+        ...(isUpstream ? {
+          lastUpstreamError: String(upstreamError.message || reason).slice(0, 2000),
+          lastUpstreamStatus: upstreamError.status ?? status,
+          lastUpstreamSource: upstreamError.source,
+          lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
+          lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
+          lastError: String(upstreamError.message || reason).slice(0, 2000),
+          errorCode: upstreamError.status ?? status,
+          lastErrorAt: upstreamError.receivedAt || new Date().toISOString(),
+        } : {
+          gatewayError: reason,
+          gatewayErrorCode: status,
+          gatewayErrorAt: new Date().toISOString(),
+        }),
       },
     };
   };

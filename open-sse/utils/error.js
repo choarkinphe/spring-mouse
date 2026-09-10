@@ -55,6 +55,27 @@ export async function writeStreamError(writer, statusCode, message) {
  * @param {object} [executor] - Optional executor with parseError() override for provider-specific parsing
  * @returns {Promise<{statusCode: number, message: string, resetsAtMs?: number}>}
  */
+function retryAfterMs(response) {
+  const value = response?.headers?.get?.("retry-after");
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30 * 60 * 1000);
+  const dateMs = new Date(value).getTime();
+  return Number.isFinite(dateMs) ? Math.max(0, Math.min(dateMs - Date.now(), 30 * 60 * 1000)) : null;
+}
+
+export function buildUpstreamError(response, bodyText, message, source = "http", overrides = {}) {
+  return {
+    source,
+    status: response?.status,
+    message: String(message || "").slice(0, 2000),
+    body: String(bodyText || "").slice(0, 4000),
+    retryAfterMs: retryAfterMs(response),
+    receivedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 export async function parseUpstreamError(response, executor = null) {
   let bodyText = "";
   try {
@@ -63,29 +84,37 @@ export async function parseUpstreamError(response, executor = null) {
     bodyText = "";
   }
 
+  const fallback = () => {
+    let message = "";
+    try {
+      const json = JSON.parse(bodyText);
+      message = json.error?.message || json.message || json.error || bodyText;
+    } catch {
+      message = bodyText;
+    }
+    const messageStr = typeof message === "string" ? message : JSON.stringify(message);
+    const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
+    return { statusCode: response.status, message: finalMessage, upstreamError: buildUpstreamError(response, bodyText, finalMessage) };
+  };
+
   // Let executor-specific parser extract provider-specific fields (e.g. codex resetsAtMs)
   if (executor && typeof executor.parseError === "function") {
     try {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
+        return {
+          statusCode: parsed.status || response.status,
+          message: msg,
+          resetsAtMs: parsed.resetsAtMs,
+          upstreamError: buildUpstreamError(response, bodyText, msg, "http", {
+            status: parsed.status || response.status,
+          }),
+        };
       }
     } catch { /* fall through to default parsing */ }
   }
-
-  let message = "";
-  try {
-    const json = JSON.parse(bodyText);
-    message = json.error?.message || json.message || json.error || bodyText;
-  } catch {
-    message = bodyText;
-  }
-
-  const messageStr = typeof message === "string" ? message : JSON.stringify(message);
-  const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-
-  return { statusCode: response.status, message: finalMessage };
+  return fallback();
 }
 
 /**
@@ -95,12 +124,13 @@ export async function parseUpstreamError(response, executor = null) {
  * @param {number} [resetsAtMs] - Optional precise cooldown expiry (ms epoch) for provider-specific quota errors
  * @returns {{ success: false, status: number, error: string, response: Response, resetsAtMs?: number }}
  */
-export function createErrorResult(statusCode, message, resetsAtMs) {
+export function createErrorResult(statusCode, message, resetsAtMs, upstreamError = null) {
   return {
     success: false,
     status: statusCode,
     error: message,
     resetsAtMs,
+    upstreamError,
     response: errorResponse(statusCode, message)
   };
 }

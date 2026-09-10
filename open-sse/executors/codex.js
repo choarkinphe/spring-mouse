@@ -200,6 +200,9 @@ function codexSseErrorResponse(status, message) {
 export class CodexExecutor extends BaseExecutor {
   constructor() {
     super("codex", PROVIDERS.codex);
+    // Obvious upstream overload should fail over quickly instead of occupying a
+    // long-lived request slot with three same-account retries.
+    this.config = { ...PROVIDERS.codex, retry: { ...(PROVIDERS.codex?.retry || {}), 503: { attempts: 1, delayMs: 1000 } } };
     this._currentSessionId = null;
   }
 
@@ -342,7 +345,21 @@ export class CodexExecutor extends BaseExecutor {
     if (matched) {
       try { await reader.cancel(); } catch { /* noop */ }
       try { reader.releaseLock(); } catch { /* noop */ }
-      return { matched, message: extractSseErrorMessage(text, matched), accountFallback, replacementBody: null };
+      const message = extractSseErrorMessage(text, matched);
+      return {
+        matched,
+        message,
+        accountFallback,
+        replacementBody: null,
+        upstreamError: {
+          source: "sse",
+          status: response.status,
+          message,
+          body: text.slice(0, 4000),
+          retryAfterMs: null,
+          receivedAt: new Date().toISOString(),
+        },
+      };
     }
 
     reader.releaseLock();

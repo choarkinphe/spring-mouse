@@ -18,3 +18,8 @@ describe("account fallback classification", () => {
     });
   });
 });
+
+it("uses a short fixed cooldown for provider overload instead of exponential account escalation", () => {
+  const result = checkFallbackError(503, "Our servers are currently overloaded", 8);
+  expect(result).toEqual({ shouldFallback: true, cooldownMs: 30_000 });
+});

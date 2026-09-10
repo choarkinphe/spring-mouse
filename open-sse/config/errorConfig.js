@@ -44,6 +44,7 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 // Cooldown durations (ms)
 const COOLDOWN = {
   long: 2 * 60 * 1000,
+  medium: 30 * 1000,
   short: 5 * 1000,
 };
 
@@ -64,8 +65,8 @@ export const ERROR_RULES = [
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
-  { text: "capacity",                 backoff: true },
-  { text: "overloaded",               backoff: true },
+  { text: "capacity",                 cooldownMs: COOLDOWN.medium },
+  { text: "overloaded",               cooldownMs: COOLDOWN.medium },
 
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },

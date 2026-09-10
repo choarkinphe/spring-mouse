@@ -7,6 +7,8 @@ const SAFE_FIELDS = [
   "id", "provider", "authType", "name", "email", "displayName",
   "priority", "globalPriority", "isActive", "defaultModel",
   "testStatus", "lastError", "lastErrorAt", "errorCode",
+  "lastUpstreamError", "lastUpstreamStatus", "lastUpstreamSource", "lastUpstreamRaw", "lastUpstreamAt",
+  "gatewayError", "gatewayErrorCode", "gatewayErrorAt",
   "expiresAt", "lastUsedAt", "consecutiveUseCount",
   "createdAt", "updatedAt",
 ];

@@ -827,7 +827,10 @@ function channelStrategyForm(strategy = {}) {
 
 function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClose, onSave }) {
   const [form, setForm] = useState(() => channelStrategyForm(strategy));
-  const [hardEnabled, setHardEnabled] = useState(() => Number.isFinite(Number(strategy.providerMaxConcurrentStreams)));
+  const [hardEnabled, setHardEnabled] = useState(() => {
+    if (strategy.hardConcurrencyEnabled != null) return strategy.hardConcurrencyEnabled === true;
+    return Number.isFinite(Number(strategy.providerMaxConcurrentStreams));
+  });
   const [breakerEnabled, setBreakerEnabled] = useState(() => strategy.enableModelBreaker !== false);
 
   const updateNumber = (key, value) => {
@@ -842,7 +845,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       ...(strategy.fallbackStrategy === "round-robin" ? { fallbackStrategy: "round-robin" } : {}),
       ...(Number.isFinite(Number(strategy.stickyRoundRobinLimit)) ? { stickyRoundRobinLimit: Number(strategy.stickyRoundRobinLimit) } : {}),
       hardConcurrencyEnabled: hardEnabled,
-      providerMaxConcurrentStreams: hardEnabled ? providerLimit : null,
+      providerMaxConcurrentStreams: providerLimit,
       maxConcurrentStreams: accountLimit,
       queueTimeoutMs: Math.max(1, Number(form.queueTimeoutSeconds) || 1) * 1000,
       maxQueueSize: Math.max(1, Number(form.maxQueueSize) || 1),

@@ -87,6 +87,21 @@ describe("provider account load balancing", () => {
     expect(retry.connectionId).toBe("second");
   });
 
+  it("reassigns a sticky user when its account is model-locked after a 503", async () => {
+    mocks.getSettings.mockResolvedValue({
+      providerStrategies: { openai: { fallbackStrategy: "round-robin" } },
+      modelAccessTags: {},
+    });
+    mocks.getProviderConnections.mockResolvedValue([
+      connection("first", { "modelLock_gpt-5": new Date(Date.now() + 30_000).toISOString() }),
+      connection("second"),
+    ]);
+
+    const credentials = await getProviderCredentials("openai", null, "gpt-5", { requesterId: "key-a", accessTags: [] });
+
+    expect(credentials.connectionId).toBe("second");
+  });
+
   it("keeps model access tags as a strict permission boundary", async () => {
     mocks.getProviderConnections.mockResolvedValue([connection("first")]);
     mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: { "openai/gpt-5": ["premium"] } });

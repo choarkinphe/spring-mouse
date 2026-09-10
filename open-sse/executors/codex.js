@@ -20,6 +20,7 @@ import { resolveSessionId } from "../utils/sessionManager.js";
 const CODEX_SSE_RETRY_PATTERNS = [
   "server_is_overloaded",
   "service_unavailable_error",
+  "our servers are currently overloaded",
   "an error occurred while processing your request",
 ];
 const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "model_at_capacity"];

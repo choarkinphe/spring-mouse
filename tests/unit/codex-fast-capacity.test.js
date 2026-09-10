@@ -52,6 +52,23 @@ describe("Codex fast tier and capacity handling", () => {
     expect(peek.message).toBe("Selected model is at capacity. Please try a different model.");
   });
 
+  it("classifies the provider's overloaded-server SSE error for account fallback", async () => {
+    const executor = new CodexExecutor();
+    const response = new Response(streamFromText([
+      "event: error",
+      'data: {"error":{"message":"Our servers are currently overloaded. Please try again later."}}',
+      "",
+    ].join("\n")), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("our servers are currently overloaded");
+    expect(peek.accountFallback).toBe(false);
+    expect(peek.message).toBe("Our servers are currently overloaded. Please try again later.");
+  });
+
   it("reassembles normal SSE after peeking", async () => {
     const executor = new CodexExecutor();
     const text = [

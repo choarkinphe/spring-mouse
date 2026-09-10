@@ -26,11 +26,15 @@ ARG NPM_REGISTRY=https://registry.npmjs.org
 COPY package.json package-lock.json* ./
 # Use npm ci if package-lock.json exists, otherwise fallback to npm install
 RUN --mount=type=cache,target=/root/.npm,id=spring-mouse-npm-${TARGETARCH} \
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 20000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    npm config set fetch-timeout 300000 && \
     if [ -f package-lock.json ]; then \
-      npm ci --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
+      timeout 20m npm ci --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     else \
       echo "Warning: package-lock.json not found, using npm install instead"; \
-      npm install --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
+      timeout 20m npm install --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
     fi
 
 COPY . ./

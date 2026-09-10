@@ -1,5 +1,5 @@
 import { recordRoutingDuration } from "@/lib/system/concurrency.js";
-import { getApiKeyByValue, getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -61,6 +61,7 @@ export async function authorizeModelAccess(provider, model, accessTags) {
  */
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   const routingStarted = performance.now();
+  const routingStartedAt = Date.now();
   // Normalize to Set for consistent handling
   const excludeSet = excludeConnectionIds instanceof Set
     ? excludeConnectionIds
@@ -356,9 +357,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  */
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
-  const conn = currentConnection._connection || currentConnection;
+  // Refresh the row before deciding what to clear. The credentials snapshot
+  // was taken when routing started and may already be stale by the time a
+  // streaming request completes.
+  const conn = (await getProviderConnectionById?.(connectionId)) || currentConnection._connection || currentConnection;
   const now = Date.now();
-  const requestStartedAt = Number(currentConnection._routingStartedAt || conn._routingStartedAt || 0);
+  const requestStartedAt = Number(currentConnection._routingStartedAt || 0);
   const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
   const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));

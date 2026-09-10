@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
+  getProviderConnectionById: vi.fn(),
   getSettings: vi.fn(),
   updateProviderConnection: vi.fn(),
   routeLine: vi.fn(),
@@ -41,6 +42,7 @@ describe("provider account load balancing", () => {
     mocks.reserve.mockImplementation(async (candidates) => ({ connectionId: candidates[0].id, release: mocks.release }));
     mocks.release.mockResolvedValue(undefined);
     mocks.getSettings.mockResolvedValue({ providerStrategies: {}, modelAccessTags: {} });
+    mocks.getProviderConnectionById.mockResolvedValue(null);
     mocks.updateProviderConnection.mockResolvedValue({});
   });
 

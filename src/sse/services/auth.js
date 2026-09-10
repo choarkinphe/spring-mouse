@@ -1,5 +1,5 @@
 import { recordRoutingDuration } from "@/lib/system/concurrency.js";
-import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings } from "@/lib/localDb";
+import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -129,11 +129,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Account tags do not participate in authorization or routing. Account
     // selection only excludes failed/locked connections; API-key tags above
     // remain the permission boundary for models.
+    const onlineMouses = new Map((await getMouses())
+      .filter((mouse) => mouse.isOnline && !mouse.disabledAt && mouse.callbackUrl && mouse.executionToken)
+      .map((mouse) => [mouse.id, mouse]));
+    const onlineMouseIds = new Set(onlineMouses.keys());
+
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      if (c.mouseId && !onlineMouseIds.has(c.mouseId)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
     });
+
+    const offlineMouseCount = connections.filter((c) => c.mouseId && !onlineMouseIds.has(c.mouseId)).length;
+    if (offlineMouseCount) log.debug("AUTH", `${provider} | ${offlineMouseCount} connection(s) skipped: Mouse unavailable`);
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
     connections.forEach(c => {
@@ -249,6 +258,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       })));
       connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
+    const mouseExecution = connection.mouseId ? await getMouseExecutionDetails(connection.mouseId) : null;
+    if (connection.mouseId && !mouseExecution) {
+      await lease?.release();
+      return null;
+    }
     let resolvedProxy;
     try {
       resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
@@ -270,6 +284,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       projectId: connection.projectId,
       connectionName: connection.displayName || connection.name || connection.email || connection.id,
       copilotToken: connection.providerSpecificData?.copilotToken,
+      mouseExecution,
       providerSpecificData: {
         ...(connection.providerSpecificData || {}),
         connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,

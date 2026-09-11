@@ -67,14 +67,19 @@ function processTextNode(node) {
 
   if (skipTags.includes(tagName)) return;
 
-  // Store original text if not already stored
-  if (!node._originalText) {
+  // Refresh the translation baseline whenever the text was rewritten outside this
+  // function (React updates text nodes in place). A permanently cached baseline
+  // would stamp the first-render copy back over the live text — e.g. a hero that
+  // swaps its loading copy for real copy once data arrives would keep the loading
+  // copy forever, because this pass runs again after the dictionary finishes loading.
+  if (node._translatedValue === undefined || node.nodeValue !== node._translatedValue) {
     node._originalText = node.nodeValue;
   }
 
   // Use original text for translation
   const original = node._originalText;
   const translated = translate(original);
+  node._translatedValue = translated;
 
   // Only update if different to avoid unnecessary DOM mutations
   if (translated !== node.nodeValue) {

@@ -88,11 +88,15 @@ export async function POST(request) {
         if (!metadata) return normalized;
         // Catalog metadata wins for capabilities/limits, the provider wins for
         // the id (it is what the endpoint actually accepts).
+        // A provider that omits `name` is normalized to `name === id`; that bare
+        // id must not shadow the catalog's human-readable display name (e.g.
+        // deepseek's `deepseek-flash` is shown as "DeepSeek V4.1 Flash").
+        const providerName = normalized.name && normalized.name !== normalized.id ? normalized.name : "";
         return {
           ...normalized,
           ...metadata,
           id: normalized.id,
-          name: normalized.name || metadata.name,
+          name: providerName || metadata.name || normalized.id,
           capabilities: { ...(metadata.capabilities || {}), ...(normalized.capabilities || {}) },
         };
       })

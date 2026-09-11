@@ -634,7 +634,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const canReorder = !(isFirst && isLast);
 
   return (
-    <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
+    <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_auto] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
       <div className="flex min-w-0 items-center gap-3">
         {canReorder && (
           <div className="flex shrink-0 flex-col" aria-label="调整账号顺序">
@@ -713,7 +713,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
-        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <div className="mt-2 flex min-w-0 items-center text-xs">
           {connection.lastUpstreamError && connection.isActive !== false ? (
             <div
               className={cn("flex min-w-0 flex-1 items-center gap-1.5", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
@@ -729,18 +729,22 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           ) : (
             <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>
           )}
-          {/* Last request time (success or failure) — tells apart idle accounts
-              from ones that are actively serving traffic. */}
+        </div>
+        {/* Last request time (success or failure) — tells apart idle accounts
+            from ones that are actively serving traffic. It gets its own line,
+            left aligned, so the action buttons on the right can never overlap
+            it (they used to spill out of the fixed 8rem action column). */}
+        <div className="mt-1.5 flex min-w-0 items-center text-xs">
           <span
-            className={cn("flex shrink-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
+            className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
             title={lastRequestTitle}
           >
             {/* `!` is required: globals.css sets a 24px font-size on
                 .material-symbols-outlined outside any cascade layer, which beats
                 every Tailwind text-[Npx] utility. */}
             <span className="material-symbols-outlined text-[14px]! leading-none">schedule</span>
-            <span>最近请求</span>
-            <span className="font-medium">{lastRequestAt || "无记录"}</span>
+            <span className="shrink-0">最近请求</span>
+            <span className="truncate font-medium">{lastRequestAt || "无记录"}</span>
           </span>
         </div>
       </div>
@@ -1029,7 +1033,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
           </div>
         </div>
       </div>
-      <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
+      <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_auto] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
         <span>账号配置</span>
         <span className="border-l border-white/[0.065] pl-6">配额</span>
         <span className="text-center">操作</span>
@@ -1834,7 +1838,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         description="集中查看每个渠道的连接状态、可用模型与配额信息。"
         icon="hub"
       >
-        <Badge variant="primary" size="md" icon="hub">{channelGroups.length} 个渠道</Badge>
+        <Badge variant="primary" size="md" icon="hub">{loading ? "—" : `${channelGroups.length} 个渠道`}</Badge>
         <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
         <Badge variant="default" size="md" icon="database">{loading ? "—" : `${connections.length} 个账号配置`}</Badge>
       </DashboardHero>

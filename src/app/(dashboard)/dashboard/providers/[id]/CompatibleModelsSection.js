@@ -275,6 +275,12 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
           {allModels.map(({ id, alias, source, modelSource, providerId, capabilities }) => {
             const capsKey = `${providerStorageAlias}/${id}`;
+            // Mirror ProviderDetailClient: the parent tracks the in-flight toggle as
+            // "<alias>|<modelId>|<capabilityKey>"; the card only needs the suffix.
+            const busyPrefix = `${providerStorageAlias}|${id}|`;
+            const busyCapabilityKey = togglingCapability?.startsWith(busyPrefix)
+              ? togglingCapability.slice(busyPrefix.length)
+              : null;
             // Locally stored capabilities win; the shared resolver fills the rest
             // so a partially-known model still shows every applicable badge.
             const caps = { ...(getCaps(capsKey) || {}), ...(capabilities || {}) };

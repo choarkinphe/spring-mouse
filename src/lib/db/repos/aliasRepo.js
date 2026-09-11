@@ -43,7 +43,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
     added = true;
   });
   db.flush?.();
-  if (added) deleteHotJson("kv:customModels").catch(() => {});
+  if (added) await deleteHotJson("kv:customModels").catch(() => {});
   return added;
 }
 
@@ -76,7 +76,7 @@ export async function syncCustomModels(models) {
     }
   });
   db.flush?.();
-  if (added > 0 || updated > 0) deleteHotJson("kv:customModels").catch(() => {});
+  if (added > 0 || updated > 0) await deleteHotJson("kv:customModels").catch(() => {});
 
   return { added, updated, unchanged };
 }
@@ -85,7 +85,7 @@ export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   const db = await getAdapter();
   db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [customKey(providerAlias, id, type)]);
   db.flush?.();
-  deleteHotJson("kv:customModels").catch(() => {});
+  await deleteHotJson("kv:customModels").catch(() => {});
 }
 
 // Marks rows that exist purely to carry capability metadata for a model that is
@@ -156,7 +156,7 @@ export async function upsertModelCapabilities({ providerAlias, providerId, id, t
   });
 
   db.flush?.();
-  if (changed) deleteHotJson("kv:customModels").catch(() => {});
+  if (changed) await deleteHotJson("kv:customModels").catch(() => {});
 
   return { changed, removed, capabilities: hasCapabilities ? clean : {} };
 }

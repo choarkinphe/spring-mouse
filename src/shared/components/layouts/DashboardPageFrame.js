@@ -34,7 +34,8 @@ export default function DashboardPageFrame({ children }) {
   const isFullHeight = pathname?.startsWith("/dashboard/console-log") || pathname?.startsWith("/dashboard/chat-debug");
   // The channel list shares the media console's wide canvas: a group rail on the
   // left plus a three-column account table needs more than the default 72rem.
-  const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname === "/dashboard/providers" || pathname === "/dashboard/endpoint";
+  // Routing strategy follows the same master-detail frame (combo rail + detail).
+  const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname?.startsWith("/dashboard/combos") || pathname === "/dashboard/providers" || pathname === "/dashboard/endpoint";
 
   return (
     <div className={`mx-auto w-full ${isFullHeight ? "h-full min-h-0 max-w-none pb-0" : isWideWorkspace ? "max-w-[108rem] pb-8" : "max-w-6xl pb-8"}`}>

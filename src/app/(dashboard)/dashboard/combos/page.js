@@ -161,6 +161,9 @@ export default function CombosPage() {
   const [comboStrategies, setComboStrategies] = useState({});
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
+  // Master-detail selection. `null` means "follow the first combo", so deleting
+  // the selected row falls back to the head of the list without needing an effect.
+  const [activeComboId, setActiveComboId] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -198,7 +201,11 @@ export default function CombosPage() {
         body: JSON.stringify(data),
       });
       if (res.ok) {
+        const created = await res.json().catch(() => null);
         await fetchData();
+        // Focus the freshly created combo so the detail pane matches the action
+        // that opened the form instead of staying on the previous selection.
+        if (created?.id != null) setActiveComboId(created.id);
         setShowCreateModal(false);
       } else {
         const err = await res.json();
@@ -323,12 +330,13 @@ export default function CombosPage() {
           title="路由策略"
           description="正在读取组合、策略与模型编排数据。"
           icon="route"
-          action={<Button icon="add" disabled>新增模型组合</Button>}
         >
           <Badge variant="default" size="md" icon="progress_activity">正在加载组合</Badge>
         </DashboardHero>
-        <ModuleSkeleton title="正在加载路由组合" icon="layers" lines={5} className="min-h-[270px]" />
-        <ModuleSkeleton title="正在读取调度策略" icon="account_tree" lines={4} className="min-h-[180px]" />
+        <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
+          <ModuleSkeleton title="正在加载模型组合" icon="layers" lines={5} className="min-h-[240px]" />
+          <ModuleSkeleton title="正在读取调度策略" icon="account_tree" lines={6} className="min-h-[320px]" />
+        </div>
       </div>
     );
   }
@@ -348,6 +356,9 @@ export default function CombosPage() {
     }
     group.combos.push(combo);
   }
+  // Derived selection: an unknown/removed id falls back to the first combo, so no
+  // effect has to keep the id and the list in sync.
+  const activeCombo = combos.find((combo) => combo.id === activeComboId) || combos[0] || null;
 
   return (
     <div className="flex min-w-0 flex-col gap-5 px-1 sm:px-0">
@@ -356,59 +367,57 @@ export default function CombosPage() {
         title="路由策略"
         description="将多个模型编排为稳定调用入口，并为每个组合指定清晰的调度方式。"
         icon="route"
-        action={<Button icon="add" onClick={() => setShowCreateModal(true)}>新增模型组合</Button>}
       >
         <Badge variant="primary" size="md" icon="layers">{combos.length} 个模型组合</Badge>
         <Badge variant="default" size="md" icon="memory">{routedModelCount} 个路由节点</Badge>
         <Badge variant={fusionCount > 0 ? "info" : "default"} size="md" icon="account_tree">{fusionCount} 个融合策略</Badge>
       </DashboardHero>
 
-      <section aria-labelledby="model-combos-heading" className="flex flex-col gap-4">
-        <div className="flex items-start gap-3 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-4 py-3">
-          <span className="material-symbols-outlined mt-0.5 text-[19px] text-[#7dd3fc]">route</span>
-          <div className="min-w-0">
-            <h2 id="model-combos-heading" className="text-sm font-semibold text-text-main">组合如何调度</h2>
-            <p className="mt-1 text-xs leading-5 text-text-muted"><span className="font-medium text-text-main">回退</span> 按顺序切换；<span className="font-medium text-text-main">轮询</span> 均匀分摊负载；<span className="font-medium text-text-main">融合</span> 并行调用并交由裁判模型汇总，质量更高但会产生 N+1 次调用。</p>
-          </div>
+      {/* Routing mirrors the channel list: a combo rail on the left, the selected
+          combo's full configuration on the right. */}
+      {combos.length === 0 ? (
+        <div className="flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 text-center">
+          <span className="material-symbols-outlined mb-3 text-[34px] text-[#647688]">layers</span>
+          <h2 className="text-base font-semibold text-text-main">还没有模型组合</h2>
+          <p className="mt-1 max-w-sm text-sm text-text-muted">新建一个组合后，即可为同一模型入口配置回退、轮询或融合策略。</p>
+          <Button icon="add" className="mt-5" onClick={() => setShowCreateModal(true)}>新增模型组合</Button>
         </div>
+      ) : (
+        <div className="grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
+          <ComboGroupRail
+            groups={comboGroups}
+            strategies={comboStrategies}
+            activeId={activeCombo?.id ?? null}
+            totalCombos={combos.length}
+            totalNodes={routedModelCount}
+            onSelect={setActiveComboId}
+            onAdd={() => setShowCreateModal(true)}
+          />
+          {activeCombo && (
+            <section aria-label={`${activeCombo.name} 组合详情`} className="flex min-w-0 flex-col gap-4">
+              <div className="flex items-start gap-3 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-4 py-3">
+                <span className="material-symbols-outlined mt-0.5 text-[19px] text-[#7dd3fc]">route</span>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-text-main">组合如何调度</h2>
+                  <p className="mt-1 text-xs leading-5 text-text-muted"><span className="font-medium text-text-main">回退</span> 按顺序切换；<span className="font-medium text-text-main">轮询</span> 均匀分摊负载；<span className="font-medium text-text-main">融合</span> 并行调用并交由裁判模型汇总，质量更高但会产生 N+1 次调用。</p>
+                </div>
+              </div>
 
-        {/* Combos List */}
-        {combos.length === 0 ? (
-          <div className="flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 text-center">
-            <span className="material-symbols-outlined mb-3 text-[34px] text-[#647688]">layers</span>
-            <h2 className="text-base font-semibold text-text-main">还没有模型组合</h2>
-            <p className="mt-1 max-w-sm text-sm text-text-muted">新建一个组合后，即可为同一模型入口配置回退、轮询或融合策略。</p>
-            <Button icon="add" className="mt-5" onClick={() => setShowCreateModal(true)}>新增模型组合</Button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {comboGroups.map((group) => (
-              <section key={group.name} aria-label={`${group.name} 组合`} className="flex flex-col gap-3">
-                <div className="flex items-center gap-2 px-1">
-                  <span className="material-symbols-outlined text-[17px] text-[#7dd3fc]">folder</span>
-                  <h3 className="text-sm font-semibold text-text-main">{group.name}</h3>
-                  <span className="rounded-full border border-white/[0.08] bg-black/[0.12] px-1.5 py-0.5 text-[10px] text-text-muted">{group.combos.length}</span>
-                </div>
-                <div className="flex flex-col gap-4">
-                  {group.combos.map((combo) => (
-                    <ComboCard
-                      key={combo.id}
-                      combo={combo}
-                      getCaps={getCaps}
-                      activeProviders={activeProviders}
-                      onEdit={() => setEditingCombo(combo)}
-                      onToggleActive={(isActive) => handleToggleComboActive(combo.id, isActive)}
-                      onUpdateAccessTags={(accessTags) => handleUpdateComboAccessTags(combo.id, accessTags)}
-                      strategy={comboStrategies[combo.name] || {}}
-                      onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        )}
-      </section>
+              <ComboCard
+                key={activeCombo.id}
+                combo={activeCombo}
+                getCaps={getCaps}
+                activeProviders={activeProviders}
+                onEdit={() => setEditingCombo(activeCombo)}
+                onToggleActive={(isActive) => handleToggleComboActive(activeCombo.id, isActive)}
+                onUpdateAccessTags={(accessTags) => handleUpdateComboAccessTags(activeCombo.id, accessTags)}
+                strategy={comboStrategies[activeCombo.name] || {}}
+                onSetStrategy={(patch) => handleSetComboStrategy(activeCombo.name, patch)}
+              />
+            </section>
+          )}
+        </div>
+      )}
 
       {/* Create Modal - Use key to force remount and reset state */}
       {showCreateModal && (
@@ -455,6 +464,71 @@ const STRATEGY_OPTIONS = [
   { value: "round-robin", label: "轮询", description: "在模型之间轮换请求以分摊负载", icon: "sync" },
   { value: "fusion", label: "融合", description: "并行调用面板模型，并由裁判模型综合结果", icon: "merge_type" },
 ];
+
+const STRATEGY_LABELS = Object.fromEntries(STRATEGY_OPTIONS.map((option) => [option.value, option.label]));
+
+// Left rail: mirrors the channel list's group rail — the page-level action lives in
+// the rail header and only the list scrolls. Combo groups keep their configured
+// names so the rail matches the grouping used by every combo form.
+function ComboGroupRail({ groups, strategies = {}, activeId, totalCombos, totalNodes, onSelect, onAdd }) {
+  return (
+    <aside aria-label="模型组合" className="flex min-w-0 flex-col rounded-xl border border-border-subtle bg-surface/35 lg:sticky lg:top-4 lg:max-h-[calc(100vh-7rem)]">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.065] p-2.5">
+        <p className="mr-auto font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#647688]">模型组合</p>
+        <Tooltip text="新增模型组合">
+          <button
+            type="button"
+            onClick={onAdd}
+            aria-label="新增模型组合"
+            className="flex size-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]"
+          >
+            <span className="material-symbols-outlined text-[16px]! leading-none">add</span>
+          </button>
+        </Tooltip>
+      </div>
+      <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+        <div className="flex flex-col gap-3">
+          {groups.map((group) => (
+            <div key={group.name} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5 px-1.5">
+                <span className="material-symbols-outlined text-[13px] text-[#7dd3fc]">folder</span>
+                <span className="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-[#647688]">{group.name}</span>
+                <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-[#647688]">{group.combos.length}</span>
+              </div>
+              {group.combos.map((combo) => {
+                const isActive = combo.id === activeId;
+                const isEnabled = combo.isActive !== false;
+                const strategyLabel = STRATEGY_LABELS[strategies[combo.name]?.fallbackStrategy || "fallback"] || "回退";
+                return (
+                  <button
+                    key={combo.id}
+                    type="button"
+                    onClick={() => onSelect(combo.id)}
+                    aria-current={isActive ? "true" : undefined}
+                    className={`group flex min-w-0 flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition-colors ${isActive ? "border-[#38bdf8]/35 bg-[#38bdf8]/[0.08] text-text-main" : "border-transparent text-text-muted hover:bg-white/[0.04] hover:text-text-main"}`}
+                  >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className={`size-1.5 shrink-0 rounded-full ${isEnabled ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.55)]" : "bg-slate-500"}`} title={isEnabled ? "路由中" : "已停用"} />
+                      <span className="truncate font-mono text-[12px] font-medium">{combo.name}</span>
+                    </span>
+                    <span className="flex min-w-0 items-center gap-1.5 pl-3 font-mono text-[10px] text-[#647688]">
+                      <span className="shrink-0">{strategyLabel}</span>
+                      <span className="shrink-0">·</span>
+                      <span className="truncate">{combo.models.length} 节点</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="shrink-0 border-t border-white/[0.065] px-3.5 py-2 text-[10px] text-[#647688]">
+        共 <span className="font-mono tabular-nums text-text-muted">{totalCombos}</span> 个组合 · <span className="font-mono tabular-nums text-text-muted">{totalNodes}</span> 个路由节点
+      </div>
+    </aside>
+  );
+}
 
 function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, strategy = {}, onSetStrategy }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);

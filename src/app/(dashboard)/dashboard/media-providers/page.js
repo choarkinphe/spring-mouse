@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Badge, Card, Drawer } from "@/shared/components";
+import { Badge, DashboardHero, Drawer } from "@/shared/components";
 import { getProvidersByKind } from "@/shared/constants/providers";
 import MediaProviderDetailPanel from "./components/MediaProviderDetailPanel";
 
@@ -209,22 +209,16 @@ function MediaProvidersOverviewContent() {
 
   return (
     <div className="flex flex-col gap-6">
-      <section className="relative overflow-hidden rounded-[18px] border border-brand-500/15 bg-[linear-gradient(135deg,rgba(14,165,233,0.10),rgba(99,102,241,0.07)_45%,transparent_75%)] p-5 sm:p-7">
-        <div aria-hidden="true" className="absolute -right-8 -top-10 text-brand-500/[0.06]">
-          <span className="material-symbols-outlined text-[180px]">perm_media</span>
-        </div>
-        <div className="relative max-w-2xl">
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">MEDIA SERVICE CENTER</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-text-main sm:text-3xl">统一管理媒体能力</h1>
-          <p className="mt-3 max-w-xl text-sm leading-6 text-text-muted">在左侧选择能力分组，右侧集中查看服务商与连接状态；服务商配置在当前页面的抽屉中完成。</p>
-
-          <div className="mt-6 flex flex-wrap gap-2.5">
-            <Badge variant="primary" size="md" icon="apps">{summary.capabilities} 项能力</Badge>
-            <Badge variant={summary.configuredCapabilities > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取接入状态" : `${summary.configuredCapabilities} 项已接入`}</Badge>
-            <Badge variant="default" size="md" icon="cable">{loading ? "—" : `${summary.activeConnections} 条启用连接`}</Badge>
-          </div>
-        </div>
-      </section>
+      <DashboardHero
+        eyebrow="MEDIA SERVICE CENTER"
+        title="统一管理媒体能力"
+        description="在左侧选择能力分组，右侧集中查看服务商与连接状态；服务商配置在当前页面的抽屉中完成。"
+        icon="perm_media"
+      >
+        <Badge variant="primary" size="md" icon="apps">{summary.capabilities} 项能力</Badge>
+        <Badge variant={summary.configuredCapabilities > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取接入状态" : `${summary.configuredCapabilities} 项已接入`}</Badge>
+        <Badge variant="default" size="md" icon="cable">{loading ? "—" : `${summary.activeConnections} 条启用连接`}</Badge>
+      </DashboardHero>
 
       <div className="grid items-start gap-4 lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-6">
         <aside className="rounded-[16px] border border-border-subtle bg-surface p-2.5 shadow-[var(--shadow-soft)] lg:sticky lg:top-4">

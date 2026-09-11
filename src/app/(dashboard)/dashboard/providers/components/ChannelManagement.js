@@ -616,7 +616,7 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, testState, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
+function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, testState, concurrency, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
@@ -632,6 +632,9 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
     ? `该账号最近一次请求：${new Date(connection.lastRequestAt).toLocaleString("zh-CN", { hour12: false })}`
     : "该账号还没有请求记录";
   const canReorder = !(isFirst && isLast);
+  // Live in-flight count for this account, polled from the routing process. Used
+  // to light up the provider icon while the account is actually serving traffic.
+  const isServing = (concurrency?.active ?? 0) > 0;
 
   return (
     <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_auto] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
@@ -658,7 +661,22 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             </button>
           </div>
         )}
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: `${providerColor}20` }}>
+        <span
+          className={cn(
+            "relative isolate flex size-10 shrink-0 items-center justify-center rounded-xl",
+            isServing && "ring-1 ring-[#38bdf8]/50",
+          )}
+          style={{ backgroundColor: `${providerColor}20` }}
+          title={isServing ? "该账号正在响应请求" : undefined}
+        >
+          {/* Halo pulse, same visual language as the dashboard's glowing status
+              dot: it only lights up while the account holds an in-flight slot. */}
+          {isServing && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute -inset-1 -z-10 animate-[pulse_1.2s_ease-in-out_infinite] rounded-xl bg-[#38bdf8]/30"
+            />
+          )}
           <ProviderIcon
             src={normalizeCustomChannelIconSrc(connection.providerSpecificData?.nodeIcon) || getProviderIconSrc(connection.provider)}
             alt={providerName}
@@ -748,6 +766,22 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <span className="shrink-0">最近请求</span>
             <span className="truncate font-medium">{lastRequestAt || "无记录"}</span>
           </span>
+          {/* Live slot usage from the routing process. Shares the line with the
+              last request time so the row keeps its two-line footprint. */}
+          {concurrency && (
+            <span
+              className={cn(
+                "ml-auto flex shrink-0 items-center gap-1 pl-3 tabular-nums",
+                concurrency.active >= concurrency.limit ? "text-amber-300"
+                  : concurrency.active > 0 ? "text-sky-300" : "text-[#647688]",
+              )}
+              title={`当前并发 ${concurrency.active} / ${concurrency.limit}\n长上下文请求按权重占用多个并发额度，数据来自本进程实时租约${concurrency.active === 0 ? "（当前空闲）" : ""}`}
+            >
+              <span className="material-symbols-outlined text-[14px]! leading-none">call_split</span>
+              <span>并发</span>
+              <span className="font-medium">{concurrency.active}/{concurrency.limit}</span>
+            </span>
+          )}
         </div>
       </div>
 
@@ -887,7 +921,7 @@ function ChannelGroupRail({ groups, activeProvider, onSelect, onSort, onAdd, sor
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, concurrency, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
@@ -1055,6 +1089,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             reordering={reordering}
             mouse={mousesById?.get(connection.mouseId)}
             testState={testSummary?.results?.[connection.id]}
+            concurrency={concurrency?.[connection.id]}
             onRefreshQuota={onRefreshQuota}
             onResetCodexLimit={onResetCodexLimit}
             onToggle={onToggle}
@@ -1343,6 +1378,9 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [editingConnection, setEditingConnection] = useState(null);
   const [deletingConnection, setDeletingConnection] = useState(null);
   const [testRun, setTestRun] = useState(null);
+  // Live per-account concurrency, kept in its own state so the poller can
+  // refresh it without re-reading quotas, nodes and model counts.
+  const [concurrency, setConcurrency] = useState({});
   const stopTestRef = useRef(false);
 
   // `options.silent` refreshes the data in place: the skeleton only belongs to
@@ -1465,6 +1503,31 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [fetchConnections, refreshQuota]);
+
+  // Concurrency is a live counter owned by the routing process, so it has to be
+  // polled. It deliberately does not ride on the connection payload: re-reading
+  // providers every tick would drag quotas, nodes and model counts along just
+  // to update one small number.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const response = await fetch("/api/providers/concurrency", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        if (!cancelled && payload?.accounts) setConcurrency(payload.accounts);
+      } catch {
+        // Transient failure: keep the last known numbers rather than blanking
+        // every row back to zero.
+      }
+    };
+    load();
+    // 2s keeps the "serving" halo responsive: a request often finishes inside a
+    // single tick, so the slower interval put the icon to sleep between polls.
+    const timer = window.setInterval(load, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   const openChannelDetail = (providerId) => {
     setDetailProviderId(providerId);
@@ -1890,6 +1953,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               providerStrategies={providerStrategies}
               modelCounts={modelCounts}
               mousesById={mousesById}
+              concurrency={concurrency}
               reordering={Boolean(reorderingProviderId)}
               onRefreshQuota={(item) => refreshQuota(item, true)}
               onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}

@@ -315,6 +315,19 @@ function makeHardLease(lease, chosenIndex, candidates) {
   };
 }
 
+/**
+ * Live slot usage keyed by connection id, weighted the same way admission
+ * counts it (a long-context turn can hold more than one slot). Reflects the
+ * requests this process is serving right now.
+ */
+export function getConnectionSlotCounts() {
+  const counts = {};
+  for (const lease of active.values()) {
+    counts[lease.connectionId] = (counts[lease.connectionId] || 0) + (lease.weight || 1);
+  }
+  return counts;
+}
+
 export function getLocalSlotStatus() {
   return {
     active: active.size,

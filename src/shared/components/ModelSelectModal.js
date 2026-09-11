@@ -363,9 +363,18 @@ export default function ModelSelectModal({
           hasModels: mergedModels.length > 0,
         };
       } else {
-        const hardcodedModels = liveModelsByProvider[providerId]?.length
-          ? liveModelsByProvider[providerId]
-          : getModelsByProviderId(providerId);
+        // Union the live /models result with the built-in catalog instead of
+        // letting it replace the catalog. Live lists are often partial (deepseek
+        // reports 2 of its 7 models), and replacing dropped the rest from the
+        // picker even though the channel page still lists them.
+        const staticCatalogModels = getModelsByProviderId(providerId);
+        const liveProviderModels = liveModelsByProvider[providerId] || [];
+        const hardcodedModels = liveProviderModels.length
+          ? [
+            ...liveProviderModels,
+            ...staticCatalogModels.filter((s) => !liveProviderModels.some((l) => l.id === s.id)),
+          ]
+          : staticCatalogModels;
         const hardcodedIds = new Set(hardcodedModels.map((m) => m.id));
 
         // Custom models: if no hardcoded models (e.g. openrouter), show all aliases for this provider

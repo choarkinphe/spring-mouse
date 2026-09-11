@@ -139,6 +139,42 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const providerDisplayAlias = isCompatible
     ? (providerNode?.prefix || providerId)
     : providerAlias;
+  // Derive the model grid once, here, so the header count and the rendered cards
+  // always agree. The count used to read `models.length` (the static catalog
+  // only), which under-reported every channel that had synced or added models.
+  const modelGrid = (() => {
+    if (isCompatible) {
+      const rows = getProviderCustomModelRows({
+        customModels,
+        modelAliases,
+        providerAlias: providerStorageAlias,
+        type: "llm",
+      });
+      return { count: rows.length, allModels: [], displayModels: [], disabledDisplayModels: [], customModelRows: [] };
+    }
+    // Combine hardcoded models with Kilo free models (deduplicated).
+    // Exclude non-llm models (embedding, tts, …) — they have dedicated pages under media-providers.
+    const allModels = [
+      ...models,
+      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const disabledSet = new Set(disabledModelIds);
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
+    return {
+      count: customModelRows.length + displayModels.length,
+      allModels,
+      displayModels,
+      disabledDisplayModels: allModels.filter((m) => disabledSet.has(m.id)),
+      customModelRows,
+    };
+  })();
 
   const fetchDisabledModels = useCallback(async () => {
     try {
@@ -215,12 +251,22 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   }, []);
 
+  // /api/models/custom returns a global list, so the last response is cached on
+  // window and reused when the component remounts (for example after leaving and
+  // re-entering the page). Cached rows render immediately and are then refreshed
+  // in the background — previously the grid drew the static catalog first and
+  // visibly "filled in" the synced models a moment later.
   const fetchCustomModels = useCallback(async () => {
+    const cacheKey = "__smCustomModelsCache";
+    const cached = typeof window !== "undefined" ? window[cacheKey] : null;
+    if (Array.isArray(cached)) setCustomModels(cached);
     try {
       const res = await fetch("/api/models/custom", { cache: "no-store" });
       const data = await res.json();
       if (res.ok) {
-        setCustomModels(data.models || []);
+        const rows = data.models || [];
+        if (typeof window !== "undefined") window[cacheKey] = rows;
+        setCustomModels(rows);
       }
     } catch (error) {
       console.log("Error fetching custom models:", error);
@@ -896,22 +942,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         />
       );
     }
-    // Combine hardcoded models with Kilo free models (deduplicated)
-    // Exclude non-llm models (embedding, tts, etc.) — they have dedicated pages under media-providers
-    const allModels = [
-      ...models,
-      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
-    const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
-    const customModelRows = getProviderCustomModelRows({
-      customModels,
-      modelAliases,
-      providerAlias: providerStorageAlias,
-      builtInModels: models,
-      type: "llm",
-    });
+    // Model-area data is derived once at the top of the component (`modelGrid`)
+    // so the header count and this grid can never disagree.
+    const { allModels, displayModels, disabledDisplayModels, customModelRows } = modelGrid;
 
     return (
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -1227,7 +1260,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-text-muted">
               <p>
-                {connections.length} 个账号 · {models.length} 个模型
+                {connections.length} 个账号 · {modelGrid.count} 个模型
               </p>
               {providerThinkingLevels && (
                 <div className="flex flex-wrap items-center gap-1.5">

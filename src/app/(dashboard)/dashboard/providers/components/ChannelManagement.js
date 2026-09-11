@@ -222,7 +222,7 @@ function isCompatibleProviderId(providerId) {
     && (isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId));
 }
 
-function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], onClose, onConnectionCreated }) {
+function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], onClose, onConnectionCreated, onCreated }) {
   const methods = getSetupMethods(provider, category);
   const [authMethod, setAuthMethod] = useState(methods[0]);
   const [apiKey, setApiKey] = useState("");
@@ -265,6 +265,15 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "创建渠道失败");
       await onConnectionCreated();
+      // Hand the saved record to the caller so it can show a success screen
+      // instead of silently dropping the user back on the provider picker.
+      onCreated?.({
+        id: data.connection?.id ?? null,
+        name: data.connection?.name || displayName.trim() || provider.name,
+        provider: data.connection?.provider || provider.id,
+        authType: data.connection?.authType || "apikey",
+        mouseName: mouseSupported && mouseId ? mouses.find((mouse) => mouse.id === mouseId)?.name : undefined,
+      });
       onClose();
     } catch (requestError) {
       setError(requestError.message || "创建渠道失败");
@@ -277,6 +286,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
     setShowOAuth(false);
     setShowIFlowCookie(false);
     await onConnectionCreated();
+    onCreated?.({ name: provider.name, provider: provider.id, authType: "oauth" });
     onClose();
   };
 
@@ -400,7 +410,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
   );
 }
 
-function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, mouses = [] }) {
+function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, onCreated, mouses = [] }) {
   const [category, setCategory] = useState("oauth");
   const [query, setQuery] = useState("");
   const [selectedProvider, setSelectedProvider] = useState(null);
@@ -518,6 +528,7 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, mouses = [
           mouses={mouses}
           onClose={() => setSelectedProvider(null)}
           onConnectionCreated={onConnectionCreated}
+          onCreated={onCreated}
         />
       )}
       <AddCompatibleModal
@@ -535,6 +546,73 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, mouses = [
         onCreated={handleCompatibleCreated}
       />
     </>
+  );
+}
+
+// Confirmation shown right after a channel (or account) is created. Previously
+// the create drawer closed straight back onto the provider picker, so the user
+// could not tell whether anything had actually been saved.
+function ChannelCreatedModal({ created, onClose, onAddAnother }) {
+  if (!created) return null;
+  const isAccount = created.kind === "account";
+  const providerLabel = getProviderName(created.provider) || created.provider || "未知提供商";
+  const channelLabel = created.name || providerLabel;
+  const authLabel = created.authType === "oauth"
+    ? "OAuth 授权"
+    : created.authType === "cookie"
+      ? "Cookie 认证"
+      : "API 密钥";
+  const rows = [
+    [isAccount ? "账号名称" : "渠道名称", channelLabel],
+    ["提供商", providerLabel],
+    ["认证方式", authLabel],
+    ...(created.mouseName ? [["执行节点", created.mouseName]] : []),
+  ];
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={isAccount ? "账号添加成功" : "渠道添加成功"}
+      size="md"
+      closeOnOverlay={false}
+      footer={(
+        <>
+          {onAddAnother && (
+            <Button variant="ghost" icon="add" onClick={onAddAnother}>
+              再添加一个
+            </Button>
+          )}
+          <Button icon="check" onClick={onClose}>
+            完成，返回渠道列表
+          </Button>
+        </>
+      )}
+    >
+      <div className="flex flex-col items-center gap-5 text-center">
+        <span className="flex size-16 items-center justify-center rounded-full border border-emerald-400/25 bg-emerald-400/[0.10] text-emerald-300">
+          <span className="material-symbols-outlined text-[34px]! leading-none">check</span>
+        </span>
+        <div>
+          <p className="text-base font-semibold text-text-main">
+            {isAccount ? `「${channelLabel}」已加入 ${providerLabel}` : `「${channelLabel}」已接入`}
+          </p>
+          <p className="mt-1.5 text-sm leading-6 text-text-muted">
+            {isAccount
+              ? "该账号已进入账号池，可以立即参与调度。"
+              : "渠道已出现在左侧「渠道分组」中，可以继续添加账号或逐个测试连通性。"}
+          </p>
+        </div>
+        <dl className="w-full overflow-hidden rounded-xl border border-border-subtle bg-bg/30 text-left">
+          {rows.map(([label, value]) => (
+            <div key={label} className="flex items-baseline gap-3 border-b border-white/[0.06] px-3.5 py-2.5 last:border-b-0">
+              <dt className="w-20 shrink-0 text-xs text-text-muted">{label}</dt>
+              <dd className="min-w-0 flex-1 truncate text-sm text-text-main" title={String(value)}>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </Modal>
   );
 }
 
@@ -714,14 +792,39 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   );
 }
 
-function ChannelGroupRail({ groups, activeProvider, onSelect }) {
+function ChannelGroupRail({ groups, activeProvider, onSelect, onSort, onAdd, sortDisabled }) {
   const totalAccounts = groups.reduce((total, group) => total + group.connections.length, 0);
   const totalActive = groups.reduce((total, group) => total + group.connections.filter((connection) => connection.isActive !== false).length, 0);
 
   return (
-    <aside className="custom-scrollbar min-w-0 rounded-xl border border-border-subtle bg-surface/35 p-2.5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:overscroll-contain">
-      <p className="px-2 pb-2 pt-1 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#647688]">渠道分组</p>
-      <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-1">
+    <aside className="flex min-w-0 flex-col rounded-xl border border-border-subtle bg-surface/35 lg:sticky lg:top-4 lg:max-h-[calc(100vh-7rem)]">
+      {/* The rail owns the page-level actions now, so only the channel list scrolls. */}
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.065] p-2.5">
+        <p className="mr-auto font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#647688]">渠道分组</p>
+        <Tooltip text="自定义渠道排序">
+          <button
+            type="button"
+            onClick={onSort}
+            disabled={sortDisabled}
+            aria-label="自定义渠道排序"
+            className="flex size-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            <span className="material-symbols-outlined text-[16px]! leading-none">swap_vert</span>
+          </button>
+        </Tooltip>
+        <Tooltip text="新增渠道">
+          <button
+            type="button"
+            onClick={onAdd}
+            aria-label="新增渠道"
+            className="flex size-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]"
+          >
+            <span className="material-symbols-outlined text-[16px]! leading-none">add</span>
+          </button>
+        </Tooltip>
+      </div>
+      <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+        <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-1">
         {groups.map((group) => {
           const channelName = getChannelName(group.provider, group.connections);
           const channelColor = getProviderColor(group.provider);
@@ -769,10 +872,11 @@ function ChannelGroupRail({ groups, activeProvider, onSelect }) {
             </button>
           );
         })}
+        </div>
       </div>
-      <p className="mt-2 border-t border-white/[0.065] px-2 pt-2 text-[10px] text-[#647688]">
+      <div className="shrink-0 border-t border-white/[0.065] px-3.5 py-2 text-[10px] text-[#647688]">
         共 <span className="font-mono tabular-nums text-text-muted">{groups.length}</span> 个渠道 · <span className="font-mono tabular-nums text-text-muted">{totalActive}/{totalAccounts}</span> 账号启用
-      </p>
+      </div>
     </aside>
   );
 }
@@ -1213,6 +1317,8 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [loading, setLoading] = useState(true);
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Payload for the "created successfully" screen; null when it is not shown.
+  const [createdChannel, setCreatedChannel] = useState(null);
   const [mouses, setMouses] = useState([]);
   // Compatible / custom nodes carry channel-level config (baseUrl, API type) that
   // used to live in the model drawer. It is managed from the outer list now.
@@ -1410,6 +1516,22 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     }
   };
 
+  // ---- Create success screen ----
+
+  // Refresh the list, leave the create flow, and point the list at the channel
+  // that was just created so the user lands on their new channel.
+  const handleChannelCreated = useCallback(async (created) => {
+    await fetchConnections();
+    setPickerOpen(false);
+    if (created?.provider) setActiveChannelProvider(created.provider);
+    setCreatedChannel({ ...created, kind: "channel" });
+  }, [fetchConnections]);
+
+  const handleAccountCreated = useCallback(async (created, providerId) => {
+    await fetchConnections();
+    setCreatedChannel({ ...created, provider: created?.provider || providerId, kind: "account" });
+  }, [fetchConnections]);
+
   // ---- Account pool actions (moved out of the channel detail drawer) ----
 
   const handleAddAccount = (group) => {
@@ -1437,6 +1559,13 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       }
       await fetchConnections();
       setAddAccountTarget(null);
+      setCreatedChannel({
+        kind: "account",
+        name: formData?.name || getProviderName(providerId),
+        provider: providerId,
+        authType: "apikey",
+        mouseName: formData?.mouseId ? mouses.find((mouse) => mouse.id === formData.mouseId)?.name : undefined,
+      });
       return true;
     } catch (error) {
       console.error("Failed to add account:", error);
@@ -1704,22 +1833,6 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         title="渠道管理"
         description="集中查看每个渠道的连接状态、可用模型与配额信息。"
         icon="hub"
-        action={(
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              icon="swap_vert"
-              onClick={() => {
-                setChannelOrderError("");
-                setChannelOrderModalOpen(true);
-              }}
-              disabled={loading || channelGroups.length < 2}
-            >
-              渠道排序
-            </Button>
-            <Button icon="add" onClick={() => setPickerOpen(true)}>新增渠道</Button>
-          </div>
-        )}
       >
         <Badge variant="primary" size="md" icon="hub">{channelGroups.length} 个渠道</Badge>
         <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
@@ -1744,6 +1857,12 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
             groups={channelGroups}
             activeProvider={activeChannelGroup?.provider}
             onSelect={setActiveChannelProvider}
+            onSort={() => {
+              setChannelOrderError("");
+              setChannelOrderModalOpen(true);
+            }}
+            onAdd={() => setPickerOpen(true)}
+            sortDisabled={channelGroups.length < 2}
           />
           {activeChannelGroup && (
             <ChannelGroup
@@ -1829,6 +1948,15 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         mouses={mouses}
         onClose={() => setPickerOpen(false)}
         onConnectionCreated={fetchConnections}
+        onCreated={handleChannelCreated}
+      />
+
+      <ChannelCreatedModal
+        created={createdChannel}
+        onClose={() => setCreatedChannel(null)}
+        onAddAnother={createdChannel?.kind === "channel"
+          ? () => { setCreatedChannel(null); setPickerOpen(true); }
+          : undefined}
       />
       <ChannelDetailDrawer
         providerId={detailProviderId}
@@ -1846,6 +1974,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
           mouses={mouses}
           onClose={() => setAddAccountTarget(null)}
           onConnectionCreated={fetchConnections}
+          onCreated={(created) => handleAccountCreated(created, addAccountTarget?.provider?.id)}
         />
       )}
       {addAccountTarget?.mode === "compatible" && (

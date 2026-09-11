@@ -676,18 +676,20 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                 the badges drifting to the vertical centre of the account block. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
-              {testState && (
+              {/* Only the in-flight and failed states are unique to this badge.
+                  A passing test writes back to the connection's testStatus, so
+                  the status badge on the right already reads "可用" — rendering
+                  it here as well produced two identical green pills per row. */}
+              {testState && testState.state !== "success" && (
                 <Badge
                   size="sm"
                   variant={
-                    testState.state === "success" ? "success"
-                      : testState.state === "failed" ? "error"
-                        : testState.state === "testing" ? "primary" : "default"
+                    testState.state === "failed" ? "error"
+                      : testState.state === "testing" ? "primary" : "default"
                   }
                 >
                   {testState.state === "queued" ? "待测试"
-                    : testState.state === "testing" ? "测试中"
-                      : testState.state === "success" ? "可用" : "测试失败"}
+                    : testState.state === "testing" ? "测试中" : "测试失败"}
                 </Badge>
               )}
               <span
@@ -1343,8 +1345,14 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [testRun, setTestRun] = useState(null);
   const stopTestRef = useRef(false);
 
-  const fetchConnections = useCallback(async () => {
-    setLoading(true);
+  // `options.silent` refreshes the data in place: the skeleton only belongs to
+  // the first load, so background syncs (e.g. after a one-by-one test run) must
+  // not blank the whole page. Anything that is not an explicit `{ silent: true }`
+  // call — including React event objects passed by accident — keeps the old
+  // skeleton behaviour.
+  const fetchConnections = useCallback(async (options) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const [response, settingsResponse, mousesResponse, nodesResponse] = await Promise.all([
         fetch("/api/providers?includeModelCounts=1", { cache: "no-store" }),
@@ -1371,7 +1379,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       setConnections([]);
       return [];
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -1657,7 +1665,9 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     } finally {
       stopTestRef.current = false;
       setTestRun((current) => (current ? { ...current, running: false } : current));
-      await fetchConnections();
+      // Silent: the rows are already on screen and the test only updates their
+      // status, so swapping in the skeleton here reads as a full page reload.
+      await fetchConnections({ silent: true });
     }
   };
 

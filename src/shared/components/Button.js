@@ -17,12 +17,20 @@ const sizes = {
   lg: "h-11 px-6 text-sm rounded-[10px]",
 };
 
+// Square variants for icon-only buttons (no label). Keep in sync with `sizes` heights.
+const iconOnlySizes = {
+  sm: "size-7 p-0 rounded-[8px]",
+  md: "size-9 p-0 rounded-[10px]",
+  lg: "size-11 p-0 rounded-[10px]",
+};
+
 export default function Button({
   children,
   variant = "primary",
   size = "md",
   icon,
   iconRight,
+  iconOnly = false,
   disabled = false,
   loading = false,
   fullWidth = false,
@@ -35,7 +43,7 @@ export default function Button({
         "inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer",
         "active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100",
         variants[variant],
-        sizes[size],
+        iconOnly ? iconOnlySizes[size] : sizes[size],
         fullWidth && "w-full",
         className
       )}
@@ -47,7 +55,7 @@ export default function Button({
       ) : icon ? (
         <span className="material-symbols-outlined text-[18px]">{icon}</span>
       ) : null}
-      {children}
+      {!iconOnly && children}
       {iconRight && !loading && (
         <span className="material-symbols-outlined text-[18px]">{iconRight}</span>
       )}

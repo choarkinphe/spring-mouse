@@ -5,8 +5,9 @@ import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/c
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
+import MouseExecutorChip from "../components/MouseExecutorChip";
 
-export default function ConnectionRow({ connection, mouseName, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, mouse, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
   const autoPingTooltip = autoPing?.provider === "codex"
     ? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
     : "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.";
@@ -80,7 +81,7 @@ export default function ConnectionRow({ connection, mouseName, isOAuth, isFirst,
   const canReorder = !(isFirst && isLast);
 
   return (
-    <div className={`group flex min-w-0 flex-col gap-2 rounded-lg px-1 py-1.5 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
+    <div className={`group flex min-w-0 flex-col gap-2 rounded-lg px-1 py-1.5 transition-colors hover:bg-surface-2/50 sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
         {/* Priority arrows */}
         {canReorder && (
@@ -148,18 +149,18 @@ export default function ConnectionRow({ connection, mouseName, isOAuth, isFirst,
             <Tooltip text={autoPingTooltip}>
               <button
                 onClick={() => autoPing.onToggle(!autoPing.on)}
-                className={`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${autoPing.on ? "text-primary" : "text-text-muted hover:text-primary"}`}
+                className={`flex w-full flex-col items-center rounded-[8px] px-2 py-1 transition-colors hover:bg-surface-2 ${autoPing.on ? "text-primary" : "text-text-muted hover:text-primary"}`}
               >
                 <span className="material-symbols-outlined text-[18px]">bolt</span>
                 <span className="text-[10px] leading-tight">Auto-ping</span>
               </button>
             </Tooltip>
           )}
-          <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
+          <button onClick={onEdit} className="flex flex-col items-center rounded-[8px] px-2 py-1 text-text-muted transition-colors hover:bg-surface-2 hover:text-primary">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
           </button>
-          <button onClick={onDelete} className="flex flex-col items-center rounded px-2 py-1 text-red-500 hover:bg-red-500/10">
+          <button onClick={onDelete} className="flex flex-col items-center rounded-[8px] px-2 py-1 text-red-500 transition-colors hover:bg-red-500/10">
             <span className="material-symbols-outlined text-[18px]">delete</span>
             <span className="text-[10px] leading-tight">Delete</span>
           </button>
@@ -191,7 +192,11 @@ ConnectionRow.propTypes = {
     accessTags: PropTypes.arrayOf(PropTypes.string),
   }).isRequired,
   isOAuth: PropTypes.bool.isRequired,
-  mouseName: PropTypes.string,
+  mouse: PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    isOnline: PropTypes.bool,
+  }),
   isFirst: PropTypes.bool.isRequired,
   isLast: PropTypes.bool.isRequired,
   onMoveUp: PropTypes.func.isRequired,

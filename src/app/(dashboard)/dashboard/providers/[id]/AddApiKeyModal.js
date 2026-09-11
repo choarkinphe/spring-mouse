@@ -4,6 +4,7 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
@@ -19,6 +20,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
   const isAzure = provider === "azure";
   const isCloudflareAi = provider === "cloudflare-ai";
+  // Providers whose executor bypasses BaseExecutor.execute() cannot route
+  // through a Mouse node — hide the picker instead of offering a no-op choice.
+  const mouseSupported = supportsMouseExecution(provider);
   const providerRegions = AI_PROVIDERS?.[provider]?.regions || null;
   const defaultRegion = AI_PROVIDERS?.[provider]?.defaultRegion || providerRegions?.[0]?.id || "";
 
@@ -226,17 +230,19 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           </div>
         )}
 
-        <Select
-          label="Mouse 执行节点"
-          value={formData.mouseId}
-          onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
-          placeholder="Spring 本地执行"
-          hint="可选。不选择时保持原有 Spring 执行；选择后该账号配置会绑定到在线 Mouse。"
-          options={mouses.map((mouse) => ({
-            value: mouse.id,
-            label: `${mouse.name}${mouse.isOnline ? " · 在线" : ""}`,
-          }))}
-        />
+        {mouseSupported && (
+          <Select
+            label="Mouse 执行节点"
+            value={formData.mouseId}
+            onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
+            placeholder="Spring 本地执行"
+            hint="可选。不选择时保持原有 Spring 执行；选择后该账号配置会绑定到在线 Mouse。"
+            options={mouses.map((mouse) => ({
+              value: mouse.id,
+              label: `${mouse.name}${mouse.isOnline ? " · 在线" : ""}`,
+            }))}
+          />
+        )}
 
         {mode === "single" && (<>
         <Input

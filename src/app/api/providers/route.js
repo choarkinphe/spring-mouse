@@ -11,7 +11,9 @@ import { buildModelsList } from "@/app/api/v1/models/route";
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
+import { getConnectionLastRequestAt } from "@/lib/usageDb";
 
 export const dynamic = "force-dynamic";
 
@@ -103,7 +105,20 @@ export async function GET(request) {
       }
     }
 
-    return NextResponse.json({ connections: safeConnections, ...(includeModelCounts ? { modelCounts } : {}) });
+    // Surface the last time each account actually served a request so the
+    // channel list can show which accounts are working, not just which failed.
+    let lastRequestByConnection = {};
+    try {
+      lastRequestByConnection = await getConnectionLastRequestAt(safeConnections.map((connection) => connection.id));
+    } catch (error) {
+      console.log("Error reading last request times:", error);
+    }
+    const enrichedConnections = safeConnections.map((connection) => ({
+      ...connection,
+      lastRequestAt: lastRequestByConnection[connection.id] || null,
+    }));
+
+    return NextResponse.json({ connections: enrichedConnections, ...(includeModelCounts ? { modelCounts } : {}) });
   } catch (error) {
     console.log("Error fetching providers:", error);
     return NextResponse.json({ error: "Failed to fetch providers" }, { status: 500 });
@@ -146,6 +161,15 @@ export async function POST(request) {
     }
     let selectedMouse = null;
     if (mouseId) {
+      // This provider's executor never reaches BaseExecutor.execute(), so the
+      // Mouse dispatch branch would be skipped and traffic would silently stay
+      // on the Spring host. Reject instead of storing a binding that lies.
+      if (!supportsMouseExecution(provider)) {
+        return NextResponse.json(
+          { error: `Provider "${provider}" does not support Mouse execution` },
+          { status: 400 },
+        );
+      }
       selectedMouse = await getAvailableMouseById(mouseId);
       if (!selectedMouse) {
         return NextResponse.json({ error: "Selected Mouse is not online" }, { status: 400 });

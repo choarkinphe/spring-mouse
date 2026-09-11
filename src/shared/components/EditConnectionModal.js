@@ -7,9 +7,13 @@ import Input from "@/shared/components/Input";
 import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
 
 export default function EditConnectionModal({ isOpen, connection, mouses = [], onSave, onClose }) {
+  // Providers whose executor bypasses BaseExecutor.execute() cannot route
+  // through a Mouse node — hide the picker instead of offering a no-op choice.
+  const mouseSupported = supportsMouseExecution(connection?.provider);
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -275,17 +279,19 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
           />
         )}
 
-        <Select
-          label="Mouse 执行节点"
-          value={formData.mouseId}
-          onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
-          placeholder="Spring 本地执行"
-          hint="只能切换到当前在线 Mouse；清空后恢复 Spring 本地执行。"
-          options={mouses.map((mouse) => ({
-            value: mouse.id,
-            label: `${mouse.name}${mouse.isOnline ? " · 在线" : mouse.id === connection.mouseId ? " · 当前节点" : ""}`,
-          }))}
-        />
+        {mouseSupported && (
+          <Select
+            label="Mouse 执行节点"
+            value={formData.mouseId}
+            onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
+            placeholder="Spring 本地执行"
+            hint="只能切换到当前在线 Mouse；清空后恢复 Spring 本地执行。"
+            options={mouses.map((mouse) => ({
+              value: mouse.id,
+              label: `${mouse.name}${mouse.isOnline ? " · 在线" : mouse.id === connection.mouseId ? " · 当前节点" : ""}`,
+            }))}
+          />
+        )}
 
         {!isCompatible && !isAzure && !isCloudflareAi && (
           <div className="flex items-center gap-3">

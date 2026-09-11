@@ -16,6 +16,8 @@ import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
+import MouseExecutorChip from "./MouseExecutorChip";
 import { cn } from "@/shared/utils/cn";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
@@ -121,6 +123,16 @@ function formatRelativeTime(isoString) {
   return new Date(at).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
+// Kept out of the component body: reading the clock during render trips
+// react-hooks/purity, which is an error in this repo.
+function isRecentlyActive(isoString, windowMs = 5 * 60 * 1000) {
+  if (!isoString) return false;
+  const at = new Date(isoString).getTime();
+  if (!Number.isFinite(at)) return false;
+  const ageMs = Date.now() - at;
+  return ageMs >= 0 && ageMs < windowMs;
+}
+
 function getQuotaTone(percentage) {
   if (percentage > 70) return "bg-emerald-400";
   if (percentage >= 30) return "bg-amber-400";
@@ -191,18 +203,22 @@ function getSetupMethods(provider, category) {
   return [category === "oauth" ? "oauth" : "apikey"];
 }
 
-function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onConnectionCreated }) {
+function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], onClose, onConnectionCreated }) {
   const methods = getSetupMethods(provider, category);
   const [authMethod, setAuthMethod] = useState(methods[0]);
   const [apiKey, setApiKey] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [priority, setPriority] = useState("1");
   const [defaultModel, setDefaultModel] = useState("");
+  const [mouseId, setMouseId] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [showOAuth, setShowOAuth] = useState(false);
   const [showIFlowCookie, setShowIFlowCookie] = useState(false);
+  // Providers whose executor never reaches BaseExecutor.execute() cannot route
+  // through a Mouse node; only offer the picker when it would actually work.
+  const mouseSupported = supportsMouseExecution(provider.id);
 
   const handleApiKeySubmit = async (event) => {
     event.preventDefault();
@@ -224,6 +240,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onCo
           displayName: displayName.trim() || undefined,
           priority: Math.max(1, Number(priority) || 1),
           defaultModel: defaultModel.trim() || undefined,
+          ...(mouseSupported && mouseId ? { mouseId } : {}),
         }),
       });
       const data = await response.json();
@@ -321,6 +338,20 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onCo
                       默认模型
                       <input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} placeholder="可选" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm font-normal outline-none placeholder:text-text-muted focus:border-[#38bdf8]/60" />
                     </label>
+                    {mouseSupported && mouses.some((mouse) => mouse.isOnline) && (
+                      <label className="grid gap-1.5 text-sm font-medium text-text-main sm:col-span-2">
+                        Mouse 执行节点
+                        <select value={mouseId} onChange={(event) => setMouseId(event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm font-normal outline-none focus:border-[#38bdf8]/60">
+                          <option value="">Spring 本机执行（默认）</option>
+                          {mouses.filter((mouse) => mouse.isOnline).map((mouse) => (
+                            <option key={mouse.id} value={mouse.id}>
+                              {mouse.name} · 在线
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-xs font-normal text-text-muted">选择后该账号的请求由所选 Mouse 节点发出；不选则保持 Spring 本机执行。</span>
+                      </label>
+                    )}
                   </div>
                 )}
 
@@ -350,7 +381,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, onClose, onCo
   );
 }
 
-function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated }) {
+function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, mouses = [] }) {
   const [category, setCategory] = useState("oauth");
   const [query, setQuery] = useState("");
   const [selectedProvider, setSelectedProvider] = useState(null);
@@ -465,6 +496,7 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated }) {
           isOpen={true}
           provider={selectedProvider}
           category={selectedCategory}
+          mouses={mouses}
           onClose={() => setSelectedProvider(null)}
           onConnectionCreated={onConnectionCreated}
         />
@@ -487,7 +519,7 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated }) {
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown }) {
+function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown }) {
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
@@ -497,6 +529,11 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   // A healthy badge means the account has recovered. Any upstream error kept in
   // the record is history, so demote it to a muted hint instead of a red alert.
   const upstreamErrorStale = status.label === "可用";
+  const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
+  const recentlyActive = isRecentlyActive(connection.lastRequestAt);
+  const lastRequestTitle = connection.lastRequestAt
+    ? `该账号最近一次请求：${new Date(connection.lastRequestAt).toLocaleString("zh-CN", { hour12: false })}`
+    : "该账号还没有请求记录";
   const canReorder = !(isFirst && isLast);
 
   return (
@@ -534,16 +571,25 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             fallbackColor={providerColor}
           />
         </span>
-        <span className="min-w-0">
+        <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-sm font-semibold text-text-main">{getConnectionName(connection)}</span>
-            <span className={cn("shrink-0 rounded border px-1.5 py-0.5 text-[10px]", status.className)}>{status.label}</span>
+            <span className="min-w-0 truncate text-sm font-semibold text-text-main">{getConnectionName(connection)}</span>
+            {/* Status badge shares the name line and is pinned to the column's
+                right edge, so every row lines up on both edges without the
+                badge drifting to the vertical centre of the account block. */}
+            <span
+              className={cn("ml-auto flex min-w-[2.75rem] shrink-0 items-center justify-center rounded border px-1.5 py-0.5 text-[10px] leading-none", status.className)}
+            >
+              {status.label}
+            </span>
           </span>
-          <span className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-text-muted">
-            <span className="truncate">{providerName}</span>
-            <span className="text-[#506070]">/</span>
-            <span>{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
-            {connection.email && <><span className="text-[#506070]">·</span><span className="truncate">{connection.email}</span></>}
+          <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
+            <span className="min-w-0 truncate">{providerName}</span>
+            <span className="shrink-0 text-[#506070]">/</span>
+            <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
+            {connection.email && <><span className="shrink-0 text-[#506070]">·</span><span className="min-w-0 truncate">{connection.email}</span></>}
+            <span className="shrink-0 text-[#506070]">·</span>
+            <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
           </span>
           {connection.accessTags?.length > 0 && (
             <span className="mt-1.5 flex flex-wrap gap-1">
@@ -555,21 +601,36 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
-        {connection.lastUpstreamError && connection.isActive !== false ? (
-          <div
-            className={cn("mt-2 flex min-w-0 items-center gap-1.5 text-xs", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
-            title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}`}
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          {connection.lastUpstreamError && connection.isActive !== false ? (
+            <div
+              className={cn("flex min-w-0 flex-1 items-center gap-1.5", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
+              title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}`}
+            >
+              <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{upstreamErrorStale ? "history" : "error"}</span>
+              <span className="min-w-0 flex-1 truncate">
+                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
+                {connection.lastUpstreamError}
+              </span>
+              {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}
+            </div>
+          ) : (
+            <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>
+          )}
+          {/* Last request time (success or failure) — tells apart idle accounts
+              from ones that are actively serving traffic. */}
+          <span
+            className={cn("flex shrink-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
+            title={lastRequestTitle}
           >
-            <span className="material-symbols-outlined shrink-0 text-[15px]">{upstreamErrorStale ? "history" : "error"}</span>
-            <span className="min-w-0 flex-1 truncate">
-              {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
-              {connection.lastUpstreamError}
-            </span>
-            {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}
-          </div>
-        ) : (
-          <div className="mt-2 text-xs text-[#647688]">暂无渠道方返回错误</div>
-        )}
+            {/* `!` is required: globals.css sets a 24px font-size on
+                .material-symbols-outlined outside any cascade layer, which beats
+                every Tailwind text-[Npx] utility. */}
+            <span className="material-symbols-outlined text-[14px]! leading-none">schedule</span>
+            <span>最近请求</span>
+            <span className="font-medium">{lastRequestAt || "无记录"}</span>
+          </span>
+        </div>
       </div>
 
       <div className="flex items-center justify-end gap-1 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
@@ -609,7 +670,70 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpenAccountConfig, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit }) {
+function ChannelGroupRail({ groups, activeProvider, onSelect }) {
+  const totalAccounts = groups.reduce((total, group) => total + group.connections.length, 0);
+  const totalActive = groups.reduce((total, group) => total + group.connections.filter((connection) => connection.isActive !== false).length, 0);
+
+  return (
+    <aside className="custom-scrollbar min-w-0 rounded-xl border border-border-subtle bg-surface/35 p-2.5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:overscroll-contain">
+      <p className="px-2 pb-2 pt-1 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#647688]">渠道分组</p>
+      <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-1">
+        {groups.map((group) => {
+          const channelName = getChannelName(group.provider, group.connections);
+          const channelColor = getProviderColor(group.provider);
+          const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
+          // Surface problem accounts in the rail so monitoring does not require
+          // opening every single channel.
+          const problemCount = group.connections.filter((connection) => {
+            const label = getAccountStatus(connection).label;
+            return connection.isActive !== false && ["异常", "限流", "过载"].includes(label);
+          }).length;
+          const isActive = group.provider === activeProvider;
+
+          return (
+            <button
+              key={group.provider}
+              type="button"
+              onClick={() => onSelect(group.provider)}
+              aria-current={isActive ? "true" : undefined}
+              className={cn(
+                "group flex min-w-0 items-center gap-2.5 rounded-lg border px-2 py-2 text-left transition-colors",
+                isActive ? "border-[#38bdf8]/35 bg-[#38bdf8]/[0.08] text-text-main" : "border-transparent text-text-muted hover:bg-white/[0.04] hover:text-text-main",
+              )}
+            >
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${channelColor}20` }}>
+                <ProviderIcon
+                  src={getChannelIconSrc(group.provider, group.connections)}
+                  alt={channelName}
+                  size={24}
+                  className="max-h-6 max-w-6 rounded object-contain"
+                  fallbackText={channelName.slice(0, 2).toUpperCase()}
+                  fallbackColor={channelColor}
+                />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-[13px] font-medium">{channelName}</span>
+                  {problemCount > 0 && (
+                    <span className="ml-auto size-1.5 shrink-0 rounded-full bg-rose-400" title={`${problemCount} 个账号需要关注`} />
+                  )}
+                </span>
+                <span className="mt-0.5 block truncate font-mono text-[10px] text-[#647688]">
+                  {group.connections.length} 账号 · {activeCount} 启用
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 border-t border-white/[0.065] px-2 pt-2 text-[10px] text-[#647688]">
+        共 <span className="font-mono tabular-nums text-text-muted">{groups.length}</span> 个渠道 · <span className="font-mono tabular-nums text-text-muted">{totalActive}/{totalAccounts}</span> 账号启用
+      </p>
+    </aside>
+  );
+}
+
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpenAccountConfig, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
@@ -709,6 +833,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             isFirst={index === 0}
             isLast={index === group.connections.length - 1}
             reordering={reordering}
+            mouse={mousesById?.get(connection.mouseId)}
             onRefreshQuota={onRefreshQuota}
             onResetCodexLimit={onResetCodexLimit}
             onToggle={onToggle}
@@ -976,7 +1101,11 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [loading, setLoading] = useState(true);
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [mouses, setMouses] = useState([]);
+  const mousesById = useMemo(() => new Map((mouses || []).map((m) => [m.id, m])), [mouses]);
   const [detailProviderId, setDetailProviderId] = useState(initialDetailProviderId);
+  // Which channel group the left rail is showing; null falls back to the first.
+  const [activeChannelProvider, setActiveChannelProvider] = useState(null);
   const [strategyProviderId, setStrategyProviderId] = useState(null);
   const [strategySaving, setStrategySaving] = useState(false);
   const [strategyError, setStrategyError] = useState("");
@@ -984,19 +1113,22 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const fetchConnections = useCallback(async () => {
     setLoading(true);
     try {
-      const [response, settingsResponse] = await Promise.all([
+      const [response, settingsResponse, mousesResponse] = await Promise.all([
         fetch("/api/providers?includeModelCounts=1", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
+        fetch("/api/mouses", { cache: "no-store" }),
       ]);
       if (!response.ok) throw new Error("Failed to fetch channels");
-      const [data, settingsData] = await Promise.all([
+      const [data, settingsData, mousesData] = await Promise.all([
         response.json(),
         settingsResponse.ok ? settingsResponse.json() : Promise.resolve({}),
+        mousesResponse.ok ? mousesResponse.json() : Promise.resolve({}),
       ]);
       setConnections(data.connections || []);
       setProviderStrategies(settingsData.providerStrategies || {});
       setProviderChannelOrder(Array.isArray(settingsData.providerChannelOrder) ? settingsData.providerChannelOrder : []);
       setModelCounts(data.modelCounts || {});
+      setMouses(mousesData.mouses || []);
       return data.connections || [];
     } catch (error) {
       console.error("Failed to fetch channels:", error);
@@ -1267,6 +1399,11 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       });
   }, [connections, providerChannelOrder]);
 
+  const activeChannelGroup = useMemo(
+    () => channelGroups.find((group) => group.provider === activeChannelProvider) || channelGroups[0] || null,
+    [channelGroups, activeChannelProvider],
+  );
+
   const activeConnectionCount = connections.filter((connection) => connection.isActive !== false).length;
 
   return (
@@ -1299,12 +1436,9 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       </DashboardHero>
 
       {loading ? (
-        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,0.75fr)]">
+        <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
+          <ModuleSkeleton title="正在加载渠道数据" icon="hub" lines={5} className="min-h-[240px]" />
           <ModuleSkeleton title="正在读取渠道连接" icon="hub" lines={6} className="min-h-[320px]" />
-          <div className="flex flex-col gap-4">
-            <ModuleSkeleton title="正在同步渠道状态" icon="sync" lines={4} className="min-h-[150px]" />
-            <ModuleSkeleton title="正在预载渠道额度" icon="account_balance_wallet" lines={4} className="min-h-[150px]" />
-          </div>
         </div>
       ) : connections.length === 0 ? (
         <div className="flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 text-center">
@@ -1314,11 +1448,16 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
           <Button icon="add" className="mt-5" onClick={() => setPickerOpen(true)}>新增渠道</Button>
         </div>
       ) : (
-        <div className="flex flex-col gap-4">
-          {channelGroups.map((group) => (
+        <div className="grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
+          <ChannelGroupRail
+            groups={channelGroups}
+            activeProvider={activeChannelGroup?.provider}
+            onSelect={setActiveChannelProvider}
+          />
+          {activeChannelGroup && (
             <ChannelGroup
-              key={group.provider}
-              group={group}
+              key={activeChannelGroup.provider}
+              group={activeChannelGroup}
               quotaData={quotaData}
               quotaLoading={quotaLoading}
               resetCreditsByConnection={resetCreditsByConnection}
@@ -1326,6 +1465,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               resetErrors={resetErrors}
               providerStrategies={providerStrategies}
               modelCounts={modelCounts}
+              mousesById={mousesById}
               reordering={Boolean(reorderingProviderId)}
               onRefreshQuota={(item) => refreshQuota(item, true)}
               onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}
@@ -1339,7 +1479,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               onSetRoundRobin={handleSetRoundRobin}
               onSetRoundRobinLimit={handleSetRoundRobinLimit}
             />
-          ))}
+          )}
         </div>
       )}
 
@@ -1388,6 +1528,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
 
       <ProviderPickerDrawer
         isOpen={pickerOpen}
+        mouses={mouses}
         onClose={() => setPickerOpen(false)}
         onConnectionCreated={fetchConnections}
       />

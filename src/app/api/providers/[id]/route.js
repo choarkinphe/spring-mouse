@@ -6,6 +6,7 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -100,6 +101,14 @@ export async function PUT(request, { params }) {
     if (mouseId !== undefined) {
       if (mouseId === null || mouseId === "") {
         updateData.mouseId = null;
+      } else if (!supportsMouseExecution(existing.provider)) {
+        // Binding would be accepted but ignored at request time — the executor
+        // never reaches BaseExecutor.execute(), so traffic keeps going out
+        // locally. Refuse it instead of showing a routing decision that is not real.
+        return NextResponse.json(
+          { error: `Provider "${existing.provider}" does not support Mouse execution` },
+          { status: 400 },
+        );
       } else if (mouseId === existing.mouseId) {
         const mouse = await getMouseById(mouseId);
         if (!mouse) {

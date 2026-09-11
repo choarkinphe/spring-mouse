@@ -7,6 +7,7 @@ import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { supportsMouseExecution } from "@/shared/constants/mouseSupport.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
@@ -138,12 +139,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
-      if (c.mouseId && !onlineMouseIds.has(c.mouseId)) return false;
+      // A binding on a provider whose executor bypasses BaseExecutor.execute()
+      // is inert: it would never be dispatched to the node, so treating it as
+      // "node offline" would wrongly take the account out of rotation.
+      if (c.mouseId && supportsMouseExecution(c.provider) && !onlineMouseIds.has(c.mouseId)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
     });
 
-    const offlineMouseCount = connections.filter((c) => c.mouseId && !onlineMouseIds.has(c.mouseId)).length;
+    const offlineMouseCount = connections.filter((c) => c.mouseId && supportsMouseExecution(c.provider) && !onlineMouseIds.has(c.mouseId)).length;
     if (offlineMouseCount) log.debug("AUTH", `${provider} | ${offlineMouseCount} connection(s) skipped: Mouse unavailable`);
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
@@ -293,8 +297,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       } : {});
       connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
-    const mouseExecution = connection.mouseId ? await getMouseExecutionDetails(connection.mouseId) : null;
-    if (connection.mouseId && !mouseExecution) {
+    const usesMouse = Boolean(connection.mouseId) && supportsMouseExecution(connection.provider);
+    const mouseExecution = usesMouse ? await getMouseExecutionDetails(connection.mouseId) : null;
+    if (usesMouse && !mouseExecution) {
       await lease?.release();
       return null;
     }

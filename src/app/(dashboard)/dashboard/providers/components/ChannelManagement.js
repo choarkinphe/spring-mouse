@@ -45,6 +45,23 @@ function getEffectiveProviderStrategy(providerId, strategy = {}) {
   return { ...(PROVIDER_CONCURRENCY_DEFAULTS[providerId] || {}), ...strategy };
 }
 
+// How a channel spreads requests across its accounts. Persisted as
+// `providerStrategies[pid].fallbackStrategy`; an absent value keeps the
+// historical fill-first behaviour, so existing channels are unaffected.
+const LOAD_BALANCE_LABELS = {
+  priority: "优先级",
+  "round-robin": "粘滞",
+  "request-round-robin": "轮转",
+};
+
+function getLoadBalanceMode(strategy = {}) {
+  const value = strategy.fallbackStrategy;
+  if (value === "round-robin" || value === "request-round-robin") return value;
+  return "priority";
+}
+
+const LB_MENU_ITEM = "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06] text-[#b9c7d5]";
+
 function canTrackQuota(connection) {
   const isApiKey = connection.authType === "apikey" || connection.authType === "api_key";
   return USAGE_SUPPORTED_PROVIDERS.includes(connection.provider) && (
@@ -921,13 +938,14 @@ function ChannelGroupRail({ groups, activeProvider, onSelect, onSort, onAdd, sor
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, concurrency, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, concurrency, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetLoadBalance, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
+  const [lbMenuOpen, setLbMenuOpen] = useState(false);
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
   const channelColor = getProviderColor(group.provider);
   const routing = getEffectiveProviderStrategy(group.provider, providerStrategies[group.provider]);
-  const roundRobinEnabled = routing.fallbackStrategy === "round-robin";
+  const lbMode = getLoadBalanceMode(routing);
   const stickyLimit = routing.stickyRoundRobinLimit || 1;
   const modelCount = modelCounts[group.provider] || 0;
   const hardConcurrency = routing.hardConcurrencyEnabled == null
@@ -1030,17 +1048,69 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             </Tooltip>
 
             {group.connections.length > 1 && (
-              <Tooltip text="同一 API Key 会优先复用上次命中的账号；新 API Key 自动分配到下一个账号。">
-                <span className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.04]">
-                  <span className="text-[11px] font-medium text-[#b9c7d5]">粘滞均衡</span>
-                  <Toggle
-                    size="sm"
-                    checked={roundRobinEnabled}
-                    onChange={(enabled) => onSetRoundRobin(group.provider, enabled, stickyLimit)}
-                    aria-label={`${channelName} 用户粘滞均衡`}
-                  />
-                </span>
-              </Tooltip>
+              <div className="relative">
+                <Tooltip
+                  text={`负载均衡模式：${LOAD_BALANCE_LABELS[lbMode]}\n· 优先级：始终用第 1 个账号，占满后依次向下\n· 粘滞：同一 API Key 固定复用上次命中的账号\n· 轮转：每个请求依次换账号，所有账号均摊流量\n点击切换`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setLbMenuOpen((open) => !open)}
+                    aria-expanded={lbMenuOpen}
+                    aria-label={`${channelName} 负载均衡模式，当前 ${LOAD_BALANCE_LABELS[lbMode]}`}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-white/[0.08] bg-black/[0.12] px-2.5 py-1.5 text-xs text-[#b9c7d5] transition-colors hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-text-main"
+                  >
+                    <span className="text-[11px] text-[#9db0c2]">分配 {LOAD_BALANCE_LABELS[lbMode]}</span>
+                    <span className="material-symbols-outlined text-[14px]! leading-none">expand_more</span>
+                  </button>
+                </Tooltip>
+                {lbMenuOpen && (
+                  <>
+                    <button type="button" aria-label="关闭菜单" className="fixed inset-0 z-20 cursor-default" onClick={() => setLbMenuOpen(false)} />
+                    <div role="menu" className="absolute right-0 top-9 z-30 w-64 rounded-lg border border-border-subtle bg-surface p-1 shadow-[var(--shadow-elev)]">
+                      <div className="px-2 py-1.5 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688]">负载均衡模式</div>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { setLbMenuOpen(false); onSetLoadBalance(group.provider, "priority", stickyLimit); }}
+                        className={LB_MENU_ITEM}
+                      >
+                        <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none">swap_vert</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs text-text-main">按优先级</span>
+                          <span className="mt-0.5 block text-[10px] text-text-muted">始终使用第 1 个账号，占满后依次向下</span>
+                        </span>
+                        {lbMode === "priority" && <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none text-[#38bdf8]">check</span>}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { setLbMenuOpen(false); onSetLoadBalance(group.provider, "round-robin", stickyLimit); }}
+                        className={LB_MENU_ITEM}
+                      >
+                        <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none">link</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs text-text-main">粘滞均衡</span>
+                          <span className="mt-0.5 block text-[10px] text-text-muted">同一 API Key 固定复用上次命中的账号</span>
+                        </span>
+                        {lbMode === "round-robin" && <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none text-[#38bdf8]">check</span>}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { setLbMenuOpen(false); onSetLoadBalance(group.provider, "request-round-robin", stickyLimit); }}
+                        className={LB_MENU_ITEM}
+                      >
+                        <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none">call_split</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs text-text-main">请求轮转</span>
+                          <span className="mt-0.5 block text-[10px] text-text-muted">每个请求依次换账号，所有账号均摊流量</span>
+                        </span>
+                        {lbMode === "request-round-robin" && <span className="material-symbols-outlined mt-0.5 text-[16px]! leading-none text-[#38bdf8]">check</span>}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
 
             <span className="hidden h-5 w-px bg-white/[0.08] sm:block" aria-hidden="true" />
@@ -1259,7 +1329,9 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
     // Durations go over the wire in seconds — the settings API converts them to
     // the millisecond values the runtime stores.
     onSave(providerId, {
-      ...(strategy.fallbackStrategy === "round-robin" ? { fallbackStrategy: "round-robin" } : {}),
+      ...(strategy.fallbackStrategy === "round-robin" || strategy.fallbackStrategy === "request-round-robin"
+        ? { fallbackStrategy: strategy.fallbackStrategy }
+        : {}),
       ...(Number.isFinite(Number(strategy.stickyRoundRobinLimit)) ? { stickyRoundRobinLimit: Number(strategy.stickyRoundRobinLimit) } : {}),
       hardConcurrencyEnabled: hardEnabled,
       providerMaxConcurrentStreams: providerLimit,
@@ -1813,19 +1885,17 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     else setStrategyError("保存策略失败，请稍后重试");
   };
 
-  const saveProviderRouting = async (providerId, enabled, stickyLimit) => {
+  const saveProviderRouting = async (providerId, mode, stickyLimit) => {
     const previous = providerStrategies;
     const current = previous[providerId] || {};
     const updated = { ...previous };
-    const next = {
-      ...current,
-      fallbackStrategy: enabled ? "round-robin" : undefined,
-      stickyRoundRobinLimit: enabled ? Math.max(1, Number.parseInt(stickyLimit, 10) || 1) : undefined,
-    };
-    if (!enabled) {
-      delete next.fallbackStrategy;
-      delete next.stickyRoundRobinLimit;
-    }
+    const next = { ...current };
+    // `priority` is the absence of an override — dropping the keys keeps the
+    // stored blob minimal and lets the runtime default apply.
+    if (mode === "round-robin" || mode === "request-round-robin") next.fallbackStrategy = mode;
+    else delete next.fallbackStrategy;
+    if (mode === "round-robin") next.stickyRoundRobinLimit = Math.max(1, Number.parseInt(stickyLimit, 10) || 1);
+    else delete next.stickyRoundRobinLimit;
     if (Object.keys(next).length > 0) updated[providerId] = next;
     else delete updated[providerId];
 
@@ -1843,8 +1913,8 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     }
   };
 
-  const handleSetRoundRobin = (providerId, enabled, stickyLimit) => {
-    saveProviderRouting(providerId, enabled, stickyLimit);
+  const handleSetLoadBalance = (providerId, mode, stickyLimit) => {
+    saveProviderRouting(providerId, mode, stickyLimit);
   };
 
   const handleSetRoundRobinLimit = (providerId, stickyLimit) => {
@@ -1971,7 +2041,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
                 setStrategyError("");
                 setStrategyProviderId(providerId);
               }}
-              onSetRoundRobin={handleSetRoundRobin}
+              onSetLoadBalance={handleSetLoadBalance}
               onSetRoundRobinLimit={handleSetRoundRobinLimit}
             />
           )}

@@ -255,9 +255,22 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
       const res = await fetch("/api/settings", { cache: "no-store" });
       const data = res.ok ? await res.json() : {};
       const current = data.providerStrategies || {};
-      const override = {};
-      if (strategy) override.fallbackStrategy = strategy;
-      if (strategy === "round-robin" && stickyLimit !== "") override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
+      const existing = current[providerId] || {};
+      // Start from what is already stored so saving here never drops fields this
+      // card does not manage (concurrency, breaker, or a routing mode introduced
+      // elsewhere such as request-round-robin).
+      const override = { ...existing };
+      if (strategy) {
+        // Turning the switch on from this card always means the sticky mode.
+        override.fallbackStrategy = "round-robin";
+        if (stickyLimit !== "") override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
+      } else {
+        // The toggle's off state means "no balancing" for this channel, so any
+        // variant — including one this card cannot pick — is cleared. The other
+        // stored fields (concurrency, breaker) stay untouched above.
+        delete override.stickyRoundRobinLimit;
+        delete override.fallbackStrategy;
+      }
       const updated = { ...current };
       if (Object.keys(override).length === 0) delete updated[providerId];
       else updated[providerId] = override;
@@ -323,7 +336,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-text-muted font-medium">用户粘滞均衡</span>
             <Toggle
-              checked={providerStrategy === "round-robin"}
+              checked={providerStrategy === "round-robin" || providerStrategy === "request-round-robin"}
               onChange={(enabled) => {
                 const strategy = enabled ? "round-robin" : null;
                 setProviderStrategy(strategy);

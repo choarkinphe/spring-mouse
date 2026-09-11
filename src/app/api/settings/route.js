@@ -220,7 +220,9 @@ export async function PATCH(request) {
     const normalize = (entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
       const result = {};
-      if (entry.fallbackStrategy === "round-robin") result.fallbackStrategy = "round-robin";
+      if (entry.fallbackStrategy === "round-robin" || entry.fallbackStrategy === "request-round-robin") {
+        result.fallbackStrategy = entry.fallbackStrategy;
+      }
       const sticky = positiveInt(entry.stickyRoundRobinLimit);
       if (sticky) result.stickyRoundRobinLimit = sticky;
       const providerLimit = entry.providerMaxConcurrentStreams == null ? null : positiveInt(entry.providerMaxConcurrentStreams);

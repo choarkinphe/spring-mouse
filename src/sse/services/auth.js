@@ -213,10 +213,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
-    } else if (strategy === "round-robin") {
+    } else if (strategy === "round-robin" || strategy === "request-round-robin") {
       // Sticky assignments remain in memory; non-sticky rotation uses Redis.
       // No SQLite lastUsedAt write is needed on the request hot path.
-      const requesterId = typeof options?.requesterId === "string" && options.requesterId ? options.requesterId : null;
+      //
+      // `request-round-robin` drops the caller identity on purpose: every
+      // request advances the shared cursor so all accounts share the traffic,
+      // instead of every API key pinning one account for the whole sticky TTL.
+      const requesterId = strategy === "request-round-robin"
+        ? null
+        : (typeof options?.requesterId === "string" && options.requesterId ? options.requesterId : null);
       if (requesterId) {
         const state = providerUserAssignments.get(providerId) || { lastConnectionId: null, assignments: new Map() };
         const localAssignedId = state.assignments.get(requesterId);
@@ -263,6 +269,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const next = redisCursor ?? ((providerLocalCursors.get(providerId) || 0) + 1);
         providerLocalCursors.set(providerId, next);
         connection = availableConnections[(next - 1) % availableConnections.length];
+        if (strategy === "request-round-robin") {
+          log.routeLine(log.tagForSession(`rotate:${providerId}`), "⚖️", `${provider} | request-rotate #${next} → ${connection.connectionName || connection.displayName || connection.name || connection.id.slice(0, 8)} | accounts=${availableConnections.length}`);
+        }
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)

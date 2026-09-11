@@ -88,6 +88,79 @@ export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   deleteHotJson("kv:customModels").catch(() => {});
 }
 
+// Marks rows that exist purely to carry capability metadata for a model that is
+// otherwise defined by the static registry. They are deleted once the last
+// capability flag is cleared so the built-in pattern table applies again.
+export const CAPABILITY_OVERRIDE_ORIGIN = "capability-override";
+
+/**
+ * Upsert per-model capability metadata for any model (built-in or custom).
+ * Built-in models get a capability-only row on demand; the runtime override
+ * pipeline (src/lib/modelCapabilityOverrides.js) picks it up automatically.
+ */
+export async function upsertModelCapabilities({ providerAlias, providerId, id, type = "llm", capabilities }) {
+  if (!providerAlias || !id) return { changed: false, removed: false, capabilities: {} };
+
+  const clean = {};
+  for (const [key, value] of Object.entries(capabilities || {})) {
+    if (typeof value === "boolean") clean[key] = value;
+    if ((key === "contextWindow" || key === "maxOutput") && Number.isFinite(value) && value > 0) {
+      clean[key] = value;
+    }
+  }
+  const hasCapabilities = Object.keys(clean).length > 0;
+
+  const k = customKey(providerAlias, id, type);
+  const db = await getAdapter();
+  let changed = false;
+  let removed = false;
+
+  db.transaction(() => {
+    const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
+
+    if (!row) {
+      if (!hasCapabilities) return;
+      const value = stringifyJson({
+        providerAlias,
+        ...(providerId ? { providerId } : {}),
+        id,
+        type,
+        name: id,
+        origin: CAPABILITY_OVERRIDE_ORIGIN,
+        capabilities: clean,
+      });
+      db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
+      changed = true;
+      return;
+    }
+
+    const existing = parseJson(row.value) || {};
+
+    // Cleared back to "no metadata" — drop capability-only rows entirely.
+    if (!hasCapabilities && existing.origin === CAPABILITY_OVERRIDE_ORIGIN) {
+      db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
+      changed = true;
+      removed = true;
+      return;
+    }
+
+    const next = { ...existing };
+    if (hasCapabilities) next.capabilities = clean;
+    else delete next.capabilities;
+    if (providerId && !next.providerId) next.providerId = providerId;
+
+    const serialized = stringifyJson(next);
+    if (serialized === row.value) return;
+    db.run(`UPDATE kv SET value = ? WHERE scope = 'customModels' AND key = ?`, [serialized, k]);
+    changed = true;
+  });
+
+  db.flush?.();
+  if (changed) deleteHotJson("kv:customModels").catch(() => {});
+
+  return { changed, removed, capabilities: hasCapabilities ? clean : {} };
+}
+
 // mitmAlias: key=toolName, value=mappings object
 export async function getMitmAlias(toolName) {
   if (toolName) {

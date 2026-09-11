@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Modal } from "@/shared/components";
+import { Button, Input, Modal } from "@/shared/components";
 
 export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose }) {
   const [modelId, setModelId] = useState("");
@@ -10,12 +10,8 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Reset state when modal opens
-  useEffect(() => {
-    if (isOpen) { setModelId(""); setTestStatus(null); setTestError(""); }
-  }, [isOpen]);
-
-  // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
+  // State is reset by the parent remounting this modal on open (key on isOpen),
+  // so no reset-on-open effect is needed here.
   const stripAlias = (id) => {
     const prefix = `${providerAlias}/`;
     return id.startsWith(prefix) ? id.slice(prefix.length) : id;
@@ -60,15 +56,15 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
     <Modal isOpen={isOpen} onClose={onClose} title="Add Custom Model">
       <div className="flex flex-col gap-4">
         <div>
-          <label className="text-sm font-medium mb-1.5 block">Model ID</label>
-          <div className="flex gap-2">
-            <input
-              type="text"
+          <div className="flex items-end gap-2">
+            <Input
+              className="flex-1"
+              label="Model ID"
               value={modelId}
               onChange={(e) => { setModelId(e.target.value); setTestStatus(null); setTestError(""); }}
               onKeyDown={handleKeyDown}
               placeholder="e.g. claude-opus-4-5"
-              className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+              inputClassName="font-mono text-xs"
               autoFocus
             />
             <Button
@@ -82,7 +78,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
             </Button>
           </div>
           <p className="text-xs text-text-muted mt-1">
-            Sent to provider as: <code className="font-mono bg-sidebar px-1 rounded">{stripAlias(modelId.trim()) || "model-id"}</code>
+            Sent to provider as: <code className="font-mono bg-surface-2 px-1 rounded">{stripAlias(modelId.trim()) || "model-id"}</code>
           </p>
         </div>
 
@@ -101,11 +97,10 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
         )}
 
         <div className="flex gap-2 pt-1">
-          <Button onClick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
+          <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
           <Button
             onClick={handleSave}
             fullWidth
-            size="sm"
             disabled={!modelId.trim() || saving}
           >
             {saving ? "Adding..." : "Add Model"}

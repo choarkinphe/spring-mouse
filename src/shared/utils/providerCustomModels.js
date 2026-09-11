@@ -2,6 +2,15 @@ function modelType(model) {
   return model?.kind || model?.type || "llm";
 }
 
+// Badge label for a stored custom-model row. Synchronized rows keep the source
+// they were imported from so the dashboard can tell "came from the provider's
+// own /models" apart from "came from the shared capability catalog".
+export function describeModelSource(source) {
+  if (source === "official") return "官方";
+  if (source === "models-dev" || source === "catalog") return "目录";
+  return null;
+}
+
 export function getProviderCustomModelRows({
   customModels = [],
   modelAliases = {},
@@ -29,6 +38,10 @@ export function getProviderCustomModelRows({
       fullModel,
       source: "custom",
       type: rowType,
+      // Only surfaced when the synchronized row actually carries them, so rows
+      // created by hand keep their original shape.
+      ...(model.source ? { modelSource: model.source } : {}),
+      ...(model.providerId ? { providerId: model.providerId } : {}),
       ...(model.capabilities && Object.keys(model.capabilities).length > 0
         ? { capabilities: model.capabilities }
         : {}),

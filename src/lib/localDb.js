@@ -23,7 +23,7 @@ export {
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,
   getModelAliases, setModelAlias, deleteModelAlias,
-  getCustomModels, addCustomModel, syncCustomModels, deleteCustomModel,
+  getCustomModels, addCustomModel, syncCustomModels, deleteCustomModel, upsertModelCapabilities,
   getMitmAlias, setMitmAliasAll,
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
   exportDb, importDb,

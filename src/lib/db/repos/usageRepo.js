@@ -724,6 +724,31 @@ export async function getUsageHistory(filter = {}) {
   }));
 }
 
+// Dashboard channel list enrichment: the most recent request time per provider
+// connection. Every relayed attempt writes usageHistory with its connectionId,
+// so this reflects "is the account actually serving traffic" independently of
+// whether the last attempt failed.
+export async function getConnectionLastRequestAt(connectionIds = []) {
+  const ids = Array.from(new Set((connectionIds || []).filter((id) => typeof id === "string" && id)));
+  if (ids.length === 0) return {};
+
+  const db = await getAdapter();
+  const result = {};
+  // Keep the IN list small enough to stay under SQLite's variable limit.
+  const CHUNK_SIZE = 400;
+  for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + CHUNK_SIZE);
+    const rows = db.all(
+      `SELECT connectionId, MAX(timestamp) AS lastRequestAt FROM usageHistory WHERE connectionId IN (${chunk.map(() => "?").join(", ")}) GROUP BY connectionId`,
+      chunk,
+    );
+    for (const row of rows) {
+      if (row?.connectionId && row.lastRequestAt) result[row.connectionId] = row.lastRequestAt;
+    }
+  }
+  return result;
+}
+
 
 export async function getUsageDetails(filter = {}) {
   const db = await getAdapter();

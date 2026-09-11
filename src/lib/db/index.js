@@ -57,7 +57,7 @@ export {
 // Aliases (model + custom + mitm)
 export {
   getModelAliases, setModelAlias, deleteModelAlias,
-  getCustomModels, addCustomModel, syncCustomModels, deleteCustomModel,
+  getCustomModels, addCustomModel, syncCustomModels, deleteCustomModel, upsertModelCapabilities,
   getMitmAlias, setMitmAliasAll,
 } from "./repos/aliasRepo.js";
 
@@ -75,6 +75,7 @@ export {
 export {
   statsEmitter, notifyUsageCommitted, trackPendingRequest, updatePendingRequestTokens, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageDetails, getUsageStats, getChartData,
+  getConnectionLastRequestAt,
   appendRequestLog, getRecentLogs,
 } from "./repos/usageRepo.js";
 

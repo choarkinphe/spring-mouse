@@ -40,6 +40,7 @@ export {
   addCustomModel,
   syncCustomModels,
   deleteCustomModel,
+  upsertModelCapabilities,
   getMitmAlias,
   setMitmAliasAll,
   getApiKeys,

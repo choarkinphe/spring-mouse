@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { syncCustomModels } from "@/models";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
-import { parseModelsDevCatalog } from "@/shared/utils/modelCatalog";
+import {
+  fetchModelsDevCatalog,
+  mergeSyncedModels,
+  MODELS_DEV_CATALOG_URL,
+  parseModelsDevCatalog,
+  resolveModelsDevProviderKey,
+} from "@/shared/utils/modelCatalog";
 import { supportsLiveModelSync } from "@/shared/constants/providers";
 
 export const dynamic = "force-dynamic";
@@ -24,57 +30,91 @@ const normalizeSupportedModel = (model) => {
   };
 };
 
+/**
+ * Resolve the external capability catalog for a channel. Registry entries may
+ * declare one explicitly; everything else is looked up in the shared mapping
+ * table so preset channels do not depend on a per-provider registry edit.
+ */
+const resolveCatalog = (provider, providerId) => {
+  const declared = provider?.modelCatalog;
+  if (declared) return declared;
+  const providerKey = resolveModelsDevProviderKey(providerId);
+  if (!providerKey) return null;
+  return { type: "models-dev", url: MODELS_DEV_CATALOG_URL, provider: providerKey };
+};
+
 export async function POST(request) {
   try {
-    const { providerId, supportedModels } = await request.json();
-    const isCompatibleChannel = supportsLiveModelSync(providerId);
-    const provider = REGISTRY.find((entry) => entry.id === providerId);
-    const catalog = provider?.modelCatalog;
+    const body = await request.json();
+    const providerId = body?.providerId;
+    const supportedModels = Array.isArray(body?.supportedModels) ? body.supportedModels : [];
+    if (!providerId) {
+      return NextResponse.json({ error: "providerId required" }, { status: 400 });
+    }
 
-    if (!isCompatibleChannel && (!provider || !catalog)) {
+    const provider = REGISTRY.find((entry) => entry.id === providerId);
+    const catalog = resolveCatalog(provider, providerId);
+    // Compatible channels (openai-compatible-* / anthropic-compatible-*) are
+    // provider nodes, not registry entries — they are always syncable.
+    const canSyncLive = supportsLiveModelSync(providerId);
+
+    if (!canSyncLive && !catalog) {
       return NextResponse.json({ error: "This provider does not support model synchronization" }, { status: 400 });
     }
 
+    // ── 1. External capability catalog (best effort, never fatal) ───────────
     let catalogModels = [];
-    if (catalog?.url) {
-      const response = await fetch(catalog.url, { cache: "no-store" });
-      if (!response.ok) {
-        return NextResponse.json({ error: `Failed to fetch model catalog: ${response.status}` }, { status: 502 });
+    let catalogWarning = "";
+    if (catalog?.type === "models-dev" && catalog.provider) {
+      const payload = await fetchModelsDevCatalog({ url: catalog.url || MODELS_DEV_CATALOG_URL });
+      if (!payload) {
+        catalogWarning = "capability catalog unreachable";
+      } else {
+        catalogModels = parseModelsDevCatalog(payload, catalog.provider);
+        if (catalogModels.length === 0) {
+          catalogWarning = `capability catalog has no entry for "${catalog.provider}"`;
+        }
       }
-
-      const payload = await response.json();
-      catalogModels = catalog.type === "models-dev"
-        ? parseModelsDevCatalog(payload, catalog.provider)
-        : [];
     }
 
     const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
-    const officialModels = Array.isArray(supportedModels)
-      ? supportedModels
-          .map((model) => {
-            const normalized = normalizeSupportedModel(model);
-            if (!normalized) return null;
-            const metadata = catalogById.get(normalized.id);
-            return metadata ? {
-              ...normalized,
-              ...metadata,
-              id: normalized.id,
-            } : normalized;
-          })
-          .filter(Boolean)
-      : catalogModels;
-    const models = Array.from(new Map(officialModels.map((model) => [model.id, model])).values());
+
+    // ── 2. Provider's own /models list (authoritative for naming) ───────────
+    const officialModels = supportedModels
+      .map((model) => {
+        const normalized = normalizeSupportedModel(model);
+        if (!normalized) return null;
+        const metadata = catalogById.get(normalized.id);
+        if (!metadata) return normalized;
+        // Catalog metadata wins for capabilities/limits, the provider wins for
+        // the id (it is what the endpoint actually accepts).
+        return {
+          ...normalized,
+          ...metadata,
+          id: normalized.id,
+          name: normalized.name || metadata.name,
+          capabilities: { ...(metadata.capabilities || {}), ...(normalized.capabilities || {}) },
+        };
+      })
+      .filter(Boolean);
+
+    // ── 3. Union: official ∪ catalog ───────────────────────────────────────
+    // Previously the catalog only *enriched* ids present in the live list, so
+    // anything the account's /models endpoint omitted was silently dropped.
+    const { models, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels });
 
     if (models.length === 0) {
-      return NextResponse.json({ error: "The model catalog returned no supported models" }, { status: 502 });
+      return NextResponse.json(
+        { error: catalogWarning || "The model catalog returned no supported models" },
+        { status: 502 },
+      );
     }
 
-    const providerAlias = provider?.uiAlias || provider?.alias || provider.id;
+    const providerAlias = provider?.uiAlias || provider?.alias || provider?.id || providerId;
     const result = await syncCustomModels(models.map((model) => ({
       ...model,
       providerAlias,
       providerId: provider?.id || providerId,
-      source: catalog?.type || "official",
       syncedAt: new Date().toISOString(),
     })));
     await refreshModelCapabilityOverrides({ force: true });
@@ -82,6 +122,9 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       total: models.length,
+      officialCount: officialModels.length,
+      catalogCount: catalogOnlyCount,
+      ...(catalogWarning ? { warning: catalogWarning } : {}),
       ...result,
     });
   } catch (error) {

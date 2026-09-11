@@ -4,6 +4,7 @@ import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 
 // GET /api/models - Get models with aliases
 export async function GET() {
@@ -36,13 +37,9 @@ export async function GET() {
           fullModel,
           routedModel,
           alias: modelAliases[fullModel] || m.model,
-          caps: {
-            vision: c.vision,
-            search: c.search,
-            reasoning: c.reasoning,
-            contextWindow: c.contextWindow,
-            maxOutput: c.maxOutput,
-          },
+          // Full capability set — the dashboard renders one badge per modality,
+          // so trimming to vision/search/reasoning here would hide the rest.
+          caps: pickModelCapabilities(c),
         };
       });
 
@@ -60,13 +57,7 @@ export async function GET() {
         fullModel: routedModel,
         routedModel,
         alias: modelAliases[routedModel] || custom.id,
-        caps: {
-          vision: c.vision,
-          search: c.search,
-          reasoning: c.reasoning,
-          contextWindow: c.contextWindow,
-          maxOutput: c.maxOutput,
-        },
+        caps: pickModelCapabilities(c),
       });
       seen.add(routedModel);
     }

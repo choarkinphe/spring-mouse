@@ -40,8 +40,16 @@ export const AI_MODELS = Object.entries(MODELS).flatMap(([alias, models]) =>
 export const getModelKind = (m, fallback = null) => m?.kind || m?.type || fallback;
 
 // Capacity metadata for UI badges — icon + label + color per capability.
+// Order = badge render order. Keep in sync with MODEL_CAPABILITY_KEYS
+// (src/shared/utils/modelCatalog.js): anything listed here shows a badge, and
+// every capability the editor can toggle has an entry here.
 export const CAPACITY_META = {
-  vision: { icon: "visibility", label: "Vision", desc: "Supports image input", color: "text-blue-500" },
+  vision: { icon: "visibility", label: "Vision", desc: "支持图片输入", color: "text-blue-500" },
+  pdf: { icon: "picture_as_pdf", label: "PDF", desc: "支持 PDF / 文档输入", color: "text-rose-500" },
+  audioInput: { icon: "mic", label: "Audio In", desc: "支持音频输入", color: "text-teal-500" },
+  videoInput: { icon: "videocam", label: "Video In", desc: "支持视频输入", color: "text-indigo-500" },
+  imageOutput: { icon: "image", label: "Image Out", desc: "支持图像生成", color: "text-fuchsia-500" },
+  audioOutput: { icon: "volume_up", label: "Audio Out", desc: "支持音频生成", color: "text-orange-500" },
   // search: temporarily hidden (feature not wired yet)
-  reasoning: { icon: "neurology", label: "Reasoning", desc: "Supports reasoning / thinking", color: "text-amber-500" },
+  reasoning: { icon: "neurology", label: "Reasoning", desc: "支持思考 / 推理", color: "text-amber-500" },
 };

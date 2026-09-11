@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { AccessTagsEditor, Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { AccessTagsEditor, Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -14,7 +14,8 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
-import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { hasModelsDevCatalog } from "@/shared/utils/modelCatalog";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -26,6 +27,21 @@ import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
+
+// Chinese labels for thinking levels ("auto" = no suffix appended when copying model names).
+const THINKING_LEVEL_LABELS = {
+  auto: "自动",
+  none: "关闭",
+  minimal: "最低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最高",
+  ultra: "极致",
+  thinking: "思考",
+};
+const thinkingLevelLabel = (level) => THINKING_LEVEL_LABELS[level] || level;
 
 const AUTO_PING_SETTINGS_KEYS = {
   claude: "claudeAutoPing",
@@ -61,6 +77,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [modelsTestError, setModelsTestError] = useState("");
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
+  const [capabilitiesModel, setCapabilitiesModel] = useState(null);
+  const [savingCapabilities, setSavingCapabilities] = useState(false);
+  const [togglingCapability, setTogglingCapability] = useState(null);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
@@ -174,7 +193,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     return levels && levels.includes(thinkingMode) ? thinkingMode : null;
   };
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
-  const supportsModelSync = Boolean(providerInfo?.modelCatalog || supportsLiveModelSync(providerId));
+  // Channels without a live /models endpoint can still be synced when the shared
+  // capability catalog covers them (see MODELS_DEV_PROVIDER_KEYS).
+  const supportsModelSync = Boolean(
+    providerInfo?.modelCatalog || supportsLiveModelSync(providerId) || hasModelsDevCatalog(providerId)
+  );
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
   const providerThinkingLevels = (() => {
@@ -560,6 +583,88 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  // Capability editor works for built-in registry models too — the API upserts a
+  // capability-only override row, so the shared resolver picks it up everywhere.
+  const openModelCapabilitiesEditor = (payload) => {
+    if (!payload?.id || !payload?.providerAlias) return;
+    setCapabilitiesModel({ ...payload, key: `${payload.providerAlias}|${payload.id}` });
+  };
+
+  const handleSaveModelCapabilities = async (capabilities) => {
+    if (!capabilitiesModel || savingCapabilities) return;
+    setSavingCapabilities(true);
+    try {
+      const res = await fetch("/api/models/custom", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerAlias: capabilitiesModel.providerAlias,
+          providerId: capabilitiesModel.providerId || providerId,
+          id: capabilitiesModel.id,
+          type: "llm",
+          capabilities,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || translate("Failed to update model capabilities"));
+        return;
+      }
+      await fetchCustomModels();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      setCapabilitiesModel(null);
+    } catch (error) {
+      console.log("Error saving model capabilities:", error);
+      alert(translate("Failed to update model capabilities"));
+    } finally {
+      setSavingCapabilities(false);
+    }
+  };
+
+  // Raw user overrides (origin = "capability-override") keyed by `${alias}|${id}|${type}`.
+  // Card-level toggles rewrite only the capability they touch, so the override row
+  // never freezes the whole resolved capability set (built-in defaults keep winning
+  // for every capability the user has not explicitly touched).
+  const capabilityOverrides = useMemo(() => {
+    const map = {};
+    for (const m of customModels || []) {
+      if (!m?.id || !m?.capabilities || m.origin !== "capability-override") continue;
+      map[`${m.providerAlias}|${m.id}|${m.type || "llm"}`] = m.capabilities;
+    }
+    return map;
+  }, [customModels]);
+
+  const handleToggleCapability = async ({ providerAlias, providerId: targetProviderId, id, overrideCaps = {}, key, value }) => {
+    if (!providerAlias || !id || !key) return;
+    if (togglingCapability) return;
+    setTogglingCapability(`${providerAlias}|${id}|${key}`);
+    try {
+      const res = await fetch("/api/models/custom", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerAlias,
+          providerId: targetProviderId || providerId,
+          id,
+          type: "llm",
+          capabilities: { ...overrideCaps, [key]: value },
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || translate("Failed to update model capabilities"));
+        return;
+      }
+      await fetchCustomModels();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+    } catch (error) {
+      console.log("Error toggling model capability:", error);
+      alert(translate("Failed to update model capabilities"));
+    } finally {
+      setTogglingCapability(null);
+    }
+  };
+
   // Fetch Qoder model list and automatically add to available models
   const handleImportQoderModels = async () => {
     if (importingQoderModels) return;
@@ -624,17 +729,28 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     setSyncingModels(true);
     setModelSyncStatus(null);
     try {
-      const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
-      const officialData = await officialRes.json();
-      if (!officialRes.ok) {
-        setModelSyncStatus({ type: "error", text: officialData.error || translate("Failed to fetch official model list") });
-        return;
+      // The provider's own /models endpoint is the freshest source but is often
+      // partial (or entirely unavailable for the current account). Never abort on
+      // it — send what we got and let the backend merge the shared capability
+      // catalog so the channel still ends up with the full supported set.
+      let officialModels = [];
+      let officialWarning = "";
+      try {
+        const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
+        const officialData = await officialRes.json().catch(() => ({}));
+        if (officialRes.ok) {
+          officialModels = officialData.models || [];
+        } else {
+          officialWarning = officialData.error || `HTTP ${officialRes.status}`;
+        }
+      } catch (error) {
+        officialWarning = error.message;
       }
 
       const res = await fetch("/api/providers/model-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, supportedModels: officialData.models || [] }),
+        body: JSON.stringify({ providerId, supportedModels: officialModels }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -644,9 +760,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
       await fetchCustomModels();
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      const detail = `官方 ${data.officialCount ?? officialModels.length} · 目录 ${data.catalogCount ?? 0}`;
       setModelSyncStatus({
         type: "success",
-        text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")}, ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`,
+        text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")} (${detail}), ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`
+          + (officialWarning ? ` · 官方接口不可用（${officialWarning}），已用能力目录补齐` : ""),
       });
     } catch (error) {
       setModelSyncStatus({ type: "error", text: `${translate("Failed to sync supported models")}: ${error.message}` });
@@ -939,7 +1057,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             <div className="flex-1 min-w-0">
               <ConnectionRow
                 connection={conn}
-                mouseName={availableMouses.find((mouse) => mouse.id === conn.mouseId)?.name}
+                mouse={availableMouses.find((mouse) => mouse.id === conn.mouseId)}
                 isOAuth={isOAuth}
                 isFirst={index === 0}
                 isLast={index === connections.length - 1}
@@ -1032,6 +1150,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           isAnthropic={isAnthropicCompatible}
           modelAccessTags={modelAccessTags}
           onEditAccessTags={openModelTagEditor}
+          onEditCapabilities={openModelCapabilitiesEditor}
+          onToggleCapability={handleToggleCapability}
+          capabilityOverrides={capabilityOverrides}
+          togglingCapability={togglingCapability}
         />
       );
     }
@@ -1055,33 +1177,58 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     return (
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         {/* Custom models first */}
-        {customModelRows.map((model) => (
-          <ModelRow
-            key={`${model.source}-${model.fullModel}`}
-            model={{ id: model.id, name: model.name }}
-            fullModel={`${providerDisplayAlias}/${model.id}`}
-            alias={model.alias}
-            copied={copied}
-            onCopy={copy}
-            onSetAlias={() => {}}
-            onDeleteAlias={() => {
-              if (model.source === "custom") {
-                handleDeleteCustomModel(model.id, "llm", providerStorageAlias);
-              } else {
-                handleDeleteAlias(model.alias);
-              }
-            }}
-            testStatus={modelTestResults[model.id]}
-            onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
-            isTesting={testingModelIds.has(model.id)}
-            isCustom
-            isFree={false}
-            caps={model.capabilities || getCaps(`${providerId}/${model.id}`)}
-            thinkingSuffix={resolveThinkingSuffix(model.id)}
-            accessTags={modelAccessTags[`${providerStorageAlias}/${model.id}`] || []}
-            onEditAccessTags={() => openModelTagEditor(`${providerStorageAlias}/${model.id}`)}
-          />
-        ))}
+        {customModelRows.map((model) => {
+          const rowCaps = { ...(getCaps(`${providerStorageAlias}/${model.id}`) || {}), ...(model.capabilities || {}) };
+          const rowOverrideCaps = model.capabilities || capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
+          const rowBusyPrefix = `${providerStorageAlias}|${model.id}|`;
+          const rowBusyCapabilityKey = togglingCapability?.startsWith(rowBusyPrefix)
+            ? togglingCapability.slice(rowBusyPrefix.length)
+            : null;
+          return (
+            <ModelRow
+              key={`${model.source}-${model.fullModel}`}
+              model={{ id: model.id, name: model.name }}
+              fullModel={`${providerDisplayAlias}/${model.id}`}
+              alias={model.alias}
+              copied={copied}
+              onCopy={copy}
+              onSetAlias={() => {}}
+              onDeleteAlias={() => {
+                if (model.source === "custom") {
+                  handleDeleteCustomModel(model.id, "llm", providerStorageAlias);
+                } else {
+                  handleDeleteAlias(model.alias);
+                }
+              }}
+              testStatus={modelTestResults[model.id]}
+              onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
+              isTesting={testingModelIds.has(model.id)}
+              isCustom
+              isFree={false}
+              sourceLabel={describeModelSource(model.modelSource)}
+              caps={rowCaps}
+              thinkingSuffix={resolveThinkingSuffix(model.id)}
+              accessTags={modelAccessTags[`${providerStorageAlias}/${model.id}`] || []}
+              onEditAccessTags={() => openModelTagEditor(`${providerStorageAlias}/${model.id}`)}
+              onEditCapabilities={() => openModelCapabilitiesEditor({
+                id: model.id,
+                providerAlias: providerStorageAlias,
+                providerId: model.providerId || providerId,
+                fullModel: `${providerDisplayAlias}/${model.id}`,
+                caps: rowCaps,
+              })}
+              onToggleCapability={(key, value) => handleToggleCapability({
+                providerAlias: providerStorageAlias,
+                providerId: model.providerId || providerId,
+                id: model.id,
+                overrideCaps: rowOverrideCaps,
+                key,
+                value,
+              })}
+              busyCapabilityKey={rowBusyCapabilityKey}
+            />
+          );
+        })}
 
         {displayModels.map((model) => {
           const fullModel = `${providerStorageAlias}/${model.id}`;
@@ -1089,6 +1236,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           const existingAlias = Object.entries(modelAliases).find(
             ([, m]) => m === fullModel || m === oldFormatModel
           )?.[0];
+          const builtInCaps = getCaps(`${providerId}/${model.id}`) || {};
+          const builtInOverrideCaps = capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
+          const builtInBusyPrefix = `${providerStorageAlias}|${model.id}|`;
+          const builtInBusyCapabilityKey = togglingCapability?.startsWith(builtInBusyPrefix)
+            ? togglingCapability.slice(builtInBusyPrefix.length)
+            : null;
           return (
             <ModelRow
               key={model.id}
@@ -1104,31 +1257,49 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               isTesting={testingModelIds.has(model.id)}
               isFree={model.isFree}
               onDisable={() => handleDisableModel(model.id)}
-              caps={getCaps(`${providerId}/${model.id}`)}
+              caps={builtInCaps}
               thinkingSuffix={resolveThinkingSuffix(model.id)}
               accessTags={modelAccessTags[`${providerStorageAlias}/${model.id}`] || []}
               onEditAccessTags={() => openModelTagEditor(`${providerStorageAlias}/${model.id}`)}
+              onEditCapabilities={() => openModelCapabilitiesEditor({
+                id: model.id,
+                providerAlias: providerStorageAlias,
+                providerId,
+                fullModel: `${providerDisplayAlias}/${model.id}`,
+                caps: builtInCaps,
+              })}
+              onToggleCapability={(key, value) => handleToggleCapability({
+                providerAlias: providerStorageAlias,
+                providerId,
+                id: model.id,
+                overrideCaps: builtInOverrideCaps,
+                key,
+                value,
+              })}
+              busyCapabilityKey={builtInBusyCapabilityKey}
             />
           );
         })}
 
         {/* Add model button — inline, same style as model chips */}
         <button
+          type="button"
           onClick={() => setShowAddCustomModel(true)}
-          className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary/[0.025] px-4 py-3 text-sm text-primary transition-colors hover:border-primary hover:bg-primary/[0.06]"
+          className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-sm font-semibold text-text-muted transition-colors hover:border-primary/50 hover:bg-primary/[0.05] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/30"
         >
-          <span className="material-symbols-outlined text-[20px]">add</span>
-          Add Model
+          <span className="material-symbols-outlined text-[18px]">add</span>
+          添加模型
         </button>
 
         {/* Import Qoder models button — only show for qoder provider */}
         {providerId === "qoder" && connections.some((conn) => conn.isActive !== false) && (
           <button
+            type="button"
             onClick={handleImportQoderModels}
             disabled={importingQoderModels}
-            className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-blue-500/40 bg-blue-500/[0.025] px-4 py-3 text-sm text-blue-600 transition-colors hover:border-blue-500 hover:bg-blue-500/[0.06] disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400"
+            className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-sm font-semibold text-text-muted transition-colors hover:border-primary/50 hover:bg-primary/[0.05] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <span className="material-symbols-outlined text-sm" style={importingQoderModels ? { animation: "spin 1s linear infinite" } : undefined}>
+            <span className="material-symbols-outlined text-[18px]" style={importingQoderModels ? { animation: "spin 1s linear infinite" } : undefined}>
               {importingQoderModels ? "progress_activity" : "download"}
             </span>
             {importingQoderModels ? translate("Fetching...") : translate("Fetch Qoder Models")}
@@ -1153,13 +1324,14 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 {notAdded.map((m) => (
                   <button
                     key={m.id}
+                    type="button"
                     onClick={async () => {
                       await handleAddCustomModel(m.id, "llm", providerStorageAlias);
                     }}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                    className="inline-flex items-center gap-1 rounded-[8px] border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary"
                     title={`${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx`}
                   >
-                    <span className="material-symbols-outlined text-[13px]">add</span>
+                    <span className="material-symbols-outlined text-[14px]">add</span>
                     {m.id.split("/").pop()}
                   </button>
                 ))}
@@ -1176,11 +1348,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               {disabledDisplayModels.map((m) => (
                 <button
                   key={m.id}
+                  type="button"
                   onClick={() => handleEnableModel(m.id)}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                  className="inline-flex items-center gap-1 rounded-[8px] border border-dashed border-border px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary"
                   title="Restore model"
                 >
-                  <span className="material-symbols-outlined text-[13px]">add</span>
+                  <span className="material-symbols-outlined text-[14px]">add</span>
                   {m.id}
                 </button>
               ))}
@@ -1276,17 +1449,17 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               onClick={() => setShowEditNodeIconModal(true)}
               aria-label="Edit channel icon"
               title="Edit channel icon"
-              className="group relative flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-white/[0.08] outline-none transition-transform hover:scale-[1.03] hover:ring-[#38bdf8]/35 focus-visible:ring-2 focus-visible:ring-[#38bdf8]/70"
+              className="group relative flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-border-subtle outline-none transition-transform hover:scale-[1.03] hover:ring-primary/35 focus-visible:ring-2 focus-visible:ring-brand-500/70"
               style={{ backgroundColor: `${providerInfo.color}15` }}
             >
               {renderHeaderIcon()}
-              <span className="material-symbols-outlined absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full border border-border bg-surface text-[13px] text-[#7dd3fc] shadow-sm transition-colors group-hover:border-[#38bdf8]/50 group-hover:bg-[#0d2230]">
+              <span className="material-symbols-outlined absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full border border-border bg-surface text-[13px] text-primary shadow-sm transition-colors group-hover:border-primary/50 group-hover:bg-surface-2">
                 edit
               </span>
             </button>
           ) : (
             <div
-              className="flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-white/[0.08]"
+              className="flex size-14 shrink-0 items-center justify-center rounded-xl ring-1 ring-border-subtle"
               style={{ backgroundColor: `${providerInfo.color}15` }}
             >
               {renderHeaderIcon()}
@@ -1315,24 +1488,25 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       </div>
 
       {providerInfo.deprecated && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
-          <span className="material-symbols-outlined text-[16px] text-yellow-500 mt-0.5 shrink-0">warning</span>
-          <p className="text-xs text-red-600 dark:text-yellow-400 leading-relaxed">{providerInfo.deprecationNotice}</p>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-warning/10 border border-warning/30">
+          <span className="material-symbols-outlined text-[16px] text-warning mt-0.5 shrink-0">warning</span>
+          <p className="text-xs text-warning leading-relaxed">{providerInfo.deprecationNotice}</p>
         </div>
       )}
 
       {providerInfo.notice?.text && !providerInfo.deprecated && (
-        <div className="flex flex-col gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 sm:flex-row sm:items-center">
-          <span className="material-symbols-outlined text-[16px] text-blue-500 shrink-0">info</span>
-          <p className="min-w-0 flex-1 text-xs leading-relaxed text-blue-600 dark:text-blue-400">{providerInfo.notice.text}</p>
+        <div className="flex flex-col gap-2 rounded-[10px] border border-info/30 bg-info/10 px-3 py-2 sm:flex-row sm:items-center">
+          <span className="material-symbols-outlined text-[16px] text-info shrink-0">info</span>
+          <p className="min-w-0 flex-1 text-xs leading-relaxed text-info">{providerInfo.notice.text}</p>
           {providerInfo.notice.apiKeyUrl && (
             <a
               href={providerInfo.notice.apiKeyUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex justify-center rounded bg-blue-500 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-600 sm:py-0.5"
+              className="inline-flex justify-center items-center gap-1 rounded-[8px] bg-brand-500 px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-brand-600 sm:py-0.5"
             >
-              Get API Key →
+              Get API Key
+              <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
             </a>
           )}
         </div>
@@ -1351,7 +1525,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             </div>
             <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
               <Button
-                size="sm"
+                size="md"
                 icon="add"
                 onClick={() => {
                   setAddConnectionError("");
@@ -1362,7 +1536,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 Add API Key
               </Button>
               <Button
-                size="sm"
+                size="md"
                 variant="secondary"
                 icon="edit"
                 onClick={() => setShowEditNodeModal(true)}
@@ -1371,7 +1545,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 Edit
               </Button>
               <Button
-                size="sm"
+                size="md"
                 variant="secondary"
                 icon="delete"
                 onClick={async () => {
@@ -1431,7 +1605,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 <>
                   {selectedConnectionIds.length > 0 && (
                     <Button
-                      size="sm"
+                      size="md"
                       variant="danger"
                       icon="delete"
                       onClick={handleBulkDelete}
@@ -1440,17 +1614,19 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                     </Button>
                   )}
                   <Button
-                    size="sm"
+                    size="md"
                     variant="secondary"
                     icon="sync"
+                    iconOnly
                     onClick={handleRunOneByOneTest}
                     disabled={oneByOneRunning}
-                  >
-                    {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
-                  </Button>
+                    loading={oneByOneRunning}
+                    title={oneByOneRunning ? "正在逐个测试连接" : "逐个测试连接"}
+                    aria-label="逐个测试连接"
+                  />
                   {oneByOneRunning && (
                     <Button
-                      size="sm"
+                      size="md"
                       variant="ghost"
                       icon="stop"
                       onClick={handleStopOneByOneTest}
@@ -1482,27 +1658,27 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               <div className="flex flex-wrap gap-2">
                 {hasDualAuthModes ? (
                   <>
-                    <Button size="sm" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
+                    <Button size="md" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
                       {oauthConnectionLabel}
                     </Button>
-                    <Button size="sm" icon="key" onClick={triggerApiKeyConnection}>
+                    <Button size="md" icon="key" onClick={triggerApiKeyConnection}>
                       {apiKeyConnectionLabel}
                     </Button>
                   </>
                 ) : (
                   <>
                     {!isCompatible && providerId === "iflow" && (
-                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
+                      <Button size="md" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
                         Cookie
                       </Button>
                     )}
                     {providerId === "codex" && (
-                      <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
+                      <Button size="md" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
                         {translate("Bulk Add")}
                       </Button>
                     )}
                     <Button
-                      size="sm"
+                      size="md"
                       icon="add"
                       onClick={triggerAddConnection}
                     >
@@ -1515,7 +1691,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           ) : (
             <>
               {oneByOneSummary && (
-                <div className="mb-4 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="mb-4 rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2 text-xs text-text-muted">
                   <div className="flex flex-wrap items-center gap-3">
                     <span>Total: {oneByOneSummary.total}</span>
                     <span>Completed: {oneByOneSummary.completed}</span>
@@ -1535,7 +1711,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
                   {providerId === "iflow" && (
                     <Button
-                      size="sm"
+                      size="md"
                       icon="cookie"
                       variant="secondary"
                       onClick={() => setShowIFlowCookieModal(true)}
@@ -1547,7 +1723,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   )}
                   {providerId === "codex" && (
                     <Button
-                      size="sm"
+                      size="md"
                       icon="playlist_add"
                       variant="secondary"
                       onClick={() => setShowBulkImportCodex(true)}
@@ -1560,7 +1736,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   {hasDualAuthModes ? (
                     <>
                       <Button
-                        size="sm"
+                        size="md"
                         icon="lock"
                         variant="secondary"
                         onClick={triggerOAuthConnection}
@@ -1569,7 +1745,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                         {oauthConnectionLabel}
                       </Button>
                       <Button
-                        size="sm"
+                        size="md"
                         icon="key"
                         onClick={triggerApiKeyConnection}
                         className="w-full sm:w-auto"
@@ -1579,7 +1755,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                     </>
                   ) : (
                     <Button
-                      size="sm"
+                      size="md"
                       icon="add"
                       onClick={triggerAddConnection}
                       className="w-full sm:w-auto"
@@ -1603,16 +1779,35 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               {"Available Models"}
             </h2>
             {providerThinkingLevels && (
-              <select
-                value={thinkingMode}
-                onChange={(e) => handleThinkingModeChange(e.target.value)}
-                title="Appends (level) suffix to copied model names"
-                className="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
-              >
-                {providerThinkingLevels.map((opt) => (
-                  <option key={opt} value={opt}>{`Thinking: ${opt.charAt(0).toUpperCase() + opt.slice(1)}`}</option>
-                ))}
-              </select>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="shrink-0 text-xs text-text-muted">思考</span>
+                <div
+                  role="radiogroup"
+                  aria-label="思考等级"
+                  title="复制模型名时追加 (等级) 后缀；选「自动」则不追加"
+                  className="flex flex-wrap items-center gap-1"
+                >
+                  {providerThinkingLevels.map((opt) => {
+                    const active = thinkingMode === opt;
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => handleThinkingModeChange(opt)}
+                        className={`inline-flex h-7 items-center rounded-[8px] border px-2.5 text-xs transition-colors ${
+                          active
+                            ? "border-brand-500/45 bg-brand-500/10 font-medium text-brand-500"
+                            : "border-border-subtle bg-surface-2 text-text-muted hover:border-border hover:text-text-main"
+                        }`}
+                      >
+                        {thinkingLevelLabel(opt)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
           {(!isCompatible || supportsModelSync) && (() => {
@@ -1625,7 +1820,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               <div className="flex flex-wrap gap-2">
                 {supportsModelSync && (
                   <Button
-                    size="sm"
+                    size="md"
                     variant="secondary"
                     icon="sync"
                     onClick={handleSyncSupportedModels}
@@ -1638,12 +1833,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 {!isCompatible && (
                   <>
                     {disabledModelIds.length > 0 && (
-                      <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
+                      <Button size="md" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                         Active All
                       </Button>
                     )}
                     {activeIds.length > 0 && (
-                      <Button size="sm" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
+                      <Button size="md" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
                         Disable All
                       </Button>
                     )}
@@ -1756,6 +1951,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       )}
       {!isCompatible && (
         <AddCustomModelModal
+          key={showAddCustomModel ? "open" : "closed"}
           isOpen={showAddCustomModel}
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
@@ -1765,6 +1961,20 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             return saved;
           }}
           onClose={() => setShowAddCustomModel(false)}
+        />
+      )}
+
+      {/* Mounted per model so the draft state seeds exactly once (see the modal). */}
+      {capabilitiesModel && (
+        <ModelCapabilitiesModal
+          key={capabilitiesModel.key}
+          isOpen
+          modelId={capabilitiesModel.id}
+          fullModel={capabilitiesModel.fullModel}
+          caps={capabilitiesModel.caps}
+          saving={savingCapabilities}
+          onSave={handleSaveModelCapabilities}
+          onClose={() => { if (!savingCapabilities) setCapabilitiesModel(null); }}
         />
       )}
 

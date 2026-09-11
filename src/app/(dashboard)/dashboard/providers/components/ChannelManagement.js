@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   APIKEY_PROVIDERS,
@@ -9,8 +9,10 @@ import {
   OAUTH_PROVIDERS,
   USAGE_APIKEY_PROVIDERS,
   USAGE_SUPPORTED_PROVIDERS,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { Badge, Button, ConfirmModal, Modal, ModuleSkeleton, CursorAuthModal, DashboardHero, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import { Badge, Button, ConfirmModal, Modal, ModuleSkeleton, CursorAuthModal, DashboardHero, EditConnectionModal, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
 import Input from "@/shared/components/Input";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
@@ -21,7 +23,9 @@ import MouseExecutorChip from "./MouseExecutorChip";
 import { cn } from "@/shared/utils/cn";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
+import AddApiKeyModal from "../[id]/AddApiKeyModal";
 import ProviderDetailClient from "../[id]/ProviderDetailClient";
+import EditCompatibleNodeModal from "../[id]/EditCompatibleNodeModal";
 
 const CATEGORY_OPTIONS = [
   { id: "oauth", label: "OAuth", providers: OAUTH_PROVIDERS },
@@ -201,6 +205,21 @@ function getSetupMethods(provider, category) {
   if (provider.noAuth) return ["none"];
   if (Array.isArray(provider.authModes) && provider.authModes.length > 0) return provider.authModes;
   return [category === "oauth" ? "oauth" : "apikey"];
+}
+
+// Descriptor for the "add account" drawer. Compatible nodes are not part of the
+// static categories, so they fall back to the plain API-key flow.
+function resolveProviderEntry(providerId) {
+  for (const category of CATEGORY_OPTIONS) {
+    const entry = category.providers[providerId];
+    if (entry) return { provider: entry, category: category.id };
+  }
+  return null;
+}
+
+function isCompatibleProviderId(providerId) {
+  return Boolean(providerId)
+    && (isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId));
 }
 
 function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], onClose, onConnectionCreated }) {
@@ -519,7 +538,7 @@ function ProviderPickerDrawer({ isOpen, onClose, onConnectionCreated, mouses = [
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown }) {
+function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, testState, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
@@ -579,6 +598,20 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                 the badges drifting to the vertical centre of the account block. */}
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
+              {testState && (
+                <Badge
+                  size="sm"
+                  variant={
+                    testState.state === "success" ? "success"
+                      : testState.state === "failed" ? "error"
+                        : testState.state === "testing" ? "primary" : "default"
+                  }
+                >
+                  {testState.state === "queued" ? "待测试"
+                    : testState.state === "testing" ? "测试中"
+                      : testState.state === "success" ? "可用" : "测试失败"}
+                </Badge>
+              )}
               <span
                 className={cn("flex min-w-[2.75rem] shrink-0 items-center justify-center rounded border px-1.5 py-0.5 text-[10px] leading-none", status.className)}
               >
@@ -663,6 +696,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             </button>
           </Tooltip>
         )}
+        <Tooltip text="编辑账号">
+          <button
+            type="button"
+            onClick={() => onEdit(connection)}
+            aria-label={`编辑 ${getConnectionName(connection)}`}
+            className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]"
+          >
+            <span className="material-symbols-outlined text-[18px]">edit</span>
+          </button>
+        </Tooltip>
         <div className="ml-2 pl-2 border-l border-white/[0.08]">
           <Toggle size="sm" checked={connection.isActive ?? true} onChange={(isActive) => onToggle(connection, isActive)} title={(connection.isActive ?? true) ? "停用渠道" : "启用渠道"} />
         </div>
@@ -734,7 +777,7 @@ function ChannelGroupRail({ groups, activeProvider, onSelect }) {
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, reordering, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onOpenAccountConfig, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetRoundRobin, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
   const channelName = getChannelName(group.provider, group.connections);
@@ -747,11 +790,16 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
     ? Number.isFinite(Number(routing.providerMaxConcurrentStreams))
     : routing.hardConcurrencyEnabled === true;
   const breakerEnabled = routing.enableModelBreaker !== false;
+  const allActive = activeCount === group.connections.length;
+  const testSummary = testRun?.provider === group.provider ? testRun : null;
+  const isCompatibleChannel = isOpenAICompatibleProvider(group.provider) || isAnthropicCompatibleProvider(group.provider);
 
   return (
     <section className="relative overflow-visible rounded-xl border border-border-subtle bg-surface/35">
-      <div className="rounded-t-[11px] flex flex-col gap-3 border-b border-white/[0.065] bg-white/[0.018] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
+      <div className="rounded-t-[11px] border-b border-white/[0.065] bg-white/[0.018] px-4 py-3">
+        {/* Row 1 — channel identity on the left, the single primary action on the right.
+            Anything else lives on row 2 so this line never crowds. */}
+        <div className="flex items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${channelColor}20` }}>
             <ProviderIcon
               src={getChannelIconSrc(group.provider, group.connections)}
@@ -762,24 +810,85 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
               fallbackColor={channelColor}
             />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-semibold text-text-main">{channelName}</h2>
             <p className="mt-0.5 truncate text-xs text-text-muted">{group.provider}</p>
           </div>
+          <Button size="sm" icon="person_add" onClick={() => onAddAccount(group)} className="shrink-0">
+            添加账号
+          </Button>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
-          <span className="rounded-md border border-white/[0.08] bg-black/[0.12] px-2 py-1">{group.connections.length} 个账号</span>
-          <span className="rounded-md border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">{activeCount} 个启用</span>
-          <span className="rounded-md border border-violet-400/15 bg-violet-400/[0.06] px-2 py-1 text-violet-200">{modelCount} 个模型</span>
-          {quotaCount > 0 && <span className="rounded-md border border-[#38bdf8]/15 bg-[#38bdf8]/[0.06] px-2 py-1 text-[#bae6fd]">{quotaCount} 个有配额</span>}
 
-          <span className="hidden h-5 w-px bg-white/[0.08] sm:block" aria-hidden="true" />
+        {/* Row 2 — read-only stats (borderless text, left) vs strategy + bulk actions (right).
+            The three separate pills for concurrency / breaker / gear collapsed into one
+            "策略" entry that both summarises the state and opens the settings modal. */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-t border-white/[0.05] pt-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
+            <span className="whitespace-nowrap">
+              <span className="font-semibold tabular-nums text-text-main">{group.connections.length}</span> 个账号
+            </span>
+            <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+            <span className={cn("whitespace-nowrap", activeCount > 0 ? "text-emerald-200/90" : "text-text-muted")}>
+              <span className="font-semibold tabular-nums">{activeCount}</span> 个启用
+            </span>
+            {quotaCount > 0 && (
+              <>
+                <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+                <span className="whitespace-nowrap text-[#bae6fd]">{quotaCount} 个有配额</span>
+              </>
+            )}
+            <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+            <Tooltip text="打开模型管理">
+              <button
+                type="button"
+                onClick={() => onOpenModels(group.provider)}
+                aria-label={`${channelName} 模型管理，共 ${modelCount} 个模型`}
+                className="inline-flex items-center gap-0.5 whitespace-nowrap rounded-md px-1 py-0.5 text-xs text-violet-200 transition-colors hover:bg-violet-400/[0.12] hover:text-violet-100"
+              >
+                <span className="font-semibold tabular-nums">{modelCount}</span> 个模型
+                <span className="material-symbols-outlined text-[13px]! leading-none">chevron_right</span>
+              </button>
+            </Tooltip>
+          </div>
 
-          {group.connections.length > 1 && (
-            <div className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/[0.12] px-2 py-1.5">
-              <span className="text-[11px] font-medium text-[#b9c7d5]">用户粘滞均衡</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {isCompatibleChannel && (
+              <Tooltip text="渠道配置：Base URL / API 类型">
+                <button
+                  type="button"
+                  onClick={() => onConfigureNode(group.provider)}
+                  aria-label={`${channelName} 渠道配置`}
+                  className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-white/[0.08] bg-black/[0.12] px-2.5 py-1.5 text-xs text-[#b9c7d5] transition-colors hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-text-main"
+                >
+                  <span className="material-symbols-outlined text-[14px]! leading-none">link</span>
+                  渠道配置
+                </button>
+              </Tooltip>
+            )}
+
+            <Tooltip text={`${hardConcurrency ? `渠道总并发 ${routing.providerMaxConcurrentStreams} · 单账号 ${routing.maxConcurrentStreams || 1}` : "未启用渠道级硬并发，当前按软负载策略调度"}\n${breakerEnabled ? `模型熔断：${routing.breakerThreshold || 3} 次失败后冷却 ${routing.breakerCooldownSeconds || Math.round((routing.breakerCooldownMs || 60000) / 1000)} 秒` : "模型熔断已关闭"}\n点击调整并发与熔断策略`}>
+              <button
+                type="button"
+                onClick={() => onConfigureStrategy(group.provider)}
+                aria-label={`${channelName} 并发与熔断策略`}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-white/[0.08] bg-black/[0.12] px-2.5 py-1.5 text-xs text-[#b9c7d5] transition-colors hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-text-main"
+              >
+                <span className="material-symbols-outlined text-[14px]! leading-none">tune</span>
+                策略
+                <span className="flex items-center gap-1 text-[11px] text-[#9db0c2]">
+                  <span className={hardConcurrency ? "text-[#7dd3fc]" : undefined}>
+                    {hardConcurrency ? `并发 ${routing.providerMaxConcurrentStreams}` : "软并发"}
+                  </span>
+                  <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+                  <span className={breakerEnabled ? "text-violet-300" : undefined}>{breakerEnabled ? "熔断" : "熔断关"}</span>
+                </span>
+              </button>
+            </Tooltip>
+
+            {group.connections.length > 1 && (
               <Tooltip text="同一 API Key 会优先复用上次命中的账号；新 API Key 自动分配到下一个账号。">
-                <span>
+                <span className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.04]">
+                  <span className="text-[11px] font-medium text-[#b9c7d5]">粘滞均衡</span>
                   <Toggle
                     size="sm"
                     checked={roundRobinEnabled}
@@ -788,32 +897,32 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
                   />
                 </span>
               </Tooltip>
-            </div>
-          )}
+            )}
 
-          <Tooltip text={hardConcurrency ? `渠道总并发 ${routing.providerMaxConcurrentStreams} · 单账号 ${routing.maxConcurrentStreams || 1}` : "未启用渠道级硬并发"}>
-            <span className={cn("rounded-md border px-2 py-1", hardConcurrency ? "border-[#38bdf8]/15 bg-[#38bdf8]/[0.06] text-[#bae6fd]" : "border-white/[0.08] bg-black/[0.12]")}>
-              {hardConcurrency ? `并发 ${routing.providerMaxConcurrentStreams}` : "软并发"}
-            </span>
-          </Tooltip>
-          <Tooltip text={breakerEnabled ? `模型熔断：${routing.breakerThreshold || 3} 次失败后冷却 ${routing.breakerCooldownSeconds || Math.round((routing.breakerCooldownMs || 60000) / 1000)} 秒` : "模型熔断已关闭"}>
-            <span className={cn("rounded-md border px-2 py-1", breakerEnabled ? "border-violet-400/15 bg-violet-400/[0.06] text-violet-200" : "border-white/[0.08] bg-black/[0.12] text-text-muted")}>
-              {breakerEnabled ? "熔断" : "熔断关"}
-            </span>
-          </Tooltip>
+            <span className="hidden h-5 w-px bg-white/[0.08] sm:block" aria-hidden="true" />
 
-          <Tooltip text="账号配置">
-            <button type="button" onClick={() => onOpenAccountConfig(group.provider)} aria-label={`${channelName} 账号配置`} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]">
-              <span className="material-symbols-outlined text-[18px]">manage_accounts</span>
-            </button>
-          </Tooltip>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={testSummary?.running ? "stop" : "sync"}
+              onClick={() => (testSummary?.running ? onStopOneByOne() : onRunOneByOne(group))}
+              disabled={group.connections.length === 0}
+              title={testSummary?.running ? "停止逐个测试" : "逐个测试全部账号"}
+            >
+              {testSummary?.running ? `停止 ${testSummary.completed}/${testSummary.total}` : "逐个测试"}
+            </Button>
 
-          <Tooltip text="并发与熔断策略">
-            <button type="button" onClick={() => onConfigureStrategy(group.provider)} aria-label={`${channelName} 并发与熔断策略`} className="flex size-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc]">
-              <span className="material-symbols-outlined text-[18px]">settings</span>
-            </button>
-          </Tooltip>
-
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={allActive ? "block" : "restart_alt"}
+              onClick={() => onToggleAll(group, !allActive)}
+              disabled={group.connections.length === 0}
+              title={allActive ? "停用该渠道的全部账号" : "启用该渠道的全部账号"}
+            >
+              {allActive ? "全部禁用" : "全部启用"}
+            </Button>
+          </div>
         </div>
       </div>
       <div className="hidden grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_8rem] gap-6 border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688] lg:grid">
@@ -835,11 +944,13 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             isLast={index === group.connections.length - 1}
             reordering={reordering}
             mouse={mousesById?.get(connection.mouseId)}
+            testState={testSummary?.results?.[connection.id]}
             onRefreshQuota={onRefreshQuota}
             onResetCodexLimit={onResetCodexLimit}
             onToggle={onToggle}
             onMoveUp={() => onMoveConnection(group.connections, index, index - 1)}
             onMoveDown={() => onMoveConnection(group.connections, index, index + 1)}
+            onEdit={() => onEditConnection(connection)}
           />
         ))}
       </div>
@@ -849,7 +960,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
 
 function ChannelDetailDrawer({ providerId, onClose, onUpdated }) {
   return (
-    <Drawer isOpen={Boolean(providerId)} onClose={onClose} title="渠道详情" width="2xl">
+    <Drawer isOpen={Boolean(providerId)} onClose={onClose} title="模型管理" width="2xl">
       {providerId && (
         <ProviderDetailClient
           providerId={providerId}
@@ -1103,6 +1214,10 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [mouses, setMouses] = useState([]);
+  // Compatible / custom nodes carry channel-level config (baseUrl, API type) that
+  // used to live in the model drawer. It is managed from the outer list now.
+  const [providerNodes, setProviderNodes] = useState([]);
+  const [nodeConfigProviderId, setNodeConfigProviderId] = useState(null);
   const mousesById = useMemo(() => new Map((mouses || []).map((m) => [m.id, m])), [mouses]);
   const [detailProviderId, setDetailProviderId] = useState(initialDetailProviderId);
   // Which channel group the left rail is showing; null falls back to the first.
@@ -1110,22 +1225,32 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [strategyProviderId, setStrategyProviderId] = useState(null);
   const [strategySaving, setStrategySaving] = useState(false);
   const [strategyError, setStrategyError] = useState("");
+  // Account-pool actions that used to live inside the channel detail drawer.
+  const [addAccountTarget, setAddAccountTarget] = useState(null);
+  const [addAccountError, setAddAccountError] = useState("");
+  const [editingConnection, setEditingConnection] = useState(null);
+  const [deletingConnection, setDeletingConnection] = useState(null);
+  const [testRun, setTestRun] = useState(null);
+  const stopTestRef = useRef(false);
 
   const fetchConnections = useCallback(async () => {
     setLoading(true);
     try {
-      const [response, settingsResponse, mousesResponse] = await Promise.all([
+      const [response, settingsResponse, mousesResponse, nodesResponse] = await Promise.all([
         fetch("/api/providers?includeModelCounts=1", { cache: "no-store" }),
         fetch("/api/settings", { cache: "no-store" }),
         fetch("/api/mouses", { cache: "no-store" }),
+        fetch("/api/provider-nodes", { cache: "no-store" }),
       ]);
       if (!response.ok) throw new Error("Failed to fetch channels");
-      const [data, settingsData, mousesData] = await Promise.all([
+      const [data, settingsData, mousesData, nodesData] = await Promise.all([
         response.json(),
         settingsResponse.ok ? settingsResponse.json() : Promise.resolve({}),
         mousesResponse.ok ? mousesResponse.json() : Promise.resolve({}),
+        nodesResponse.ok ? nodesResponse.json() : Promise.resolve({}),
       ]);
       setConnections(data.connections || []);
+      setProviderNodes(nodesData.nodes || []);
       setProviderStrategies(settingsData.providerStrategies || {});
       setProviderChannelOrder(Array.isArray(settingsData.providerChannelOrder) ? settingsData.providerChannelOrder : []);
       setModelCounts(data.modelCounts || {});
@@ -1282,6 +1407,171 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       await fetchConnections();
     } finally {
       setReorderingProviderId(null);
+    }
+  };
+
+  // ---- Account pool actions (moved out of the channel detail drawer) ----
+
+  const handleAddAccount = (group) => {
+    setAddAccountError("");
+    const entry = resolveProviderEntry(group.provider);
+    setAddAccountTarget(entry
+      ? { mode: "provider", provider: entry.provider, category: entry.category }
+      : { mode: "compatible", providerId: group.provider });
+  };
+
+  const handleSaveApiKeyForChannel = async (formData) => {
+    const providerId = addAccountTarget?.providerId;
+    if (!providerId) return false;
+    setAddAccountError("");
+    try {
+      const response = await fetch("/api/providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerId, ...formData }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setAddAccountError(data.error || "添加账号失败");
+        return false;
+      }
+      await fetchConnections();
+      setAddAccountTarget(null);
+      return true;
+    } catch (error) {
+      console.error("Failed to add account:", error);
+      setAddAccountError("添加账号失败");
+      return false;
+    }
+  };
+
+  const handleToggleAllAccounts = async (group, isActive) => {
+    const targets = group.connections.filter((connection) => (connection.isActive ?? true) !== isActive);
+    if (targets.length === 0) return;
+    const ids = new Set(targets.map((connection) => connection.id));
+    setConnections((items) => items.map((item) => (ids.has(item.id) ? { ...item, isActive } : item)));
+    await Promise.all(targets.map(async (connection) => {
+      try {
+        const response = await fetch(`/api/providers/${connection.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isActive }),
+        });
+        if (!response.ok) throw new Error("Failed to update channel");
+      } catch (error) {
+        console.error("Failed to update channel:", error);
+        await fetchConnections();
+      }
+    }));
+  };
+
+  const handleRunOneByOneTest = async (group) => {
+    if (testRun?.running || group.connections.length === 0) return;
+    const queue = group.connections;
+    stopTestRef.current = false;
+    setTestRun({
+      provider: group.provider,
+      running: true,
+      completed: 0,
+      total: queue.length,
+      passed: 0,
+      failed: 0,
+      results: Object.fromEntries(queue.map((connection) => [connection.id, { state: "queued" }])),
+    });
+
+    let passed = 0;
+    let failed = 0;
+    try {
+      for (let index = 0; index < queue.length; index += 1) {
+        if (stopTestRef.current) break;
+        const connection = queue[index];
+        setTestRun((current) => (current ? {
+          ...current,
+          completed: index,
+          passed,
+          failed,
+          results: { ...current.results, [connection.id]: { state: "testing" } },
+        } : current));
+        try {
+          const response = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
+          const data = await response.json().catch(() => ({}));
+          if (data.valid) passed += 1;
+          else failed += 1;
+          setTestRun((current) => (current ? {
+            ...current,
+            completed: index + 1,
+            passed,
+            failed,
+            results: {
+              ...current.results,
+              [connection.id]: { state: data.valid ? "success" : "failed", error: data.valid ? null : (data.error || null) },
+            },
+          } : current));
+        } catch (error) {
+          failed += 1;
+          setTestRun((current) => (current ? {
+            ...current,
+            completed: index + 1,
+            passed,
+            failed,
+            results: { ...current.results, [connection.id]: { state: "failed", error: error.message || "测试失败" } },
+          } : current));
+        }
+        if (index < queue.length - 1) {
+          await new Promise((resolve) => { window.setTimeout(resolve, 1000); });
+        }
+      }
+    } finally {
+      stopTestRef.current = false;
+      setTestRun((current) => (current ? { ...current, running: false } : current));
+      await fetchConnections();
+    }
+  };
+
+  const handleStopOneByOneTest = () => {
+    if (testRun?.running) stopTestRef.current = true;
+  };
+
+  const handleSaveConnection = async (formData) => {
+    if (!editingConnection) return;
+    try {
+      const response = await fetch(`/api/providers/${editingConnection.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+      if (response.ok) {
+        await fetchConnections();
+        setEditingConnection(null);
+      }
+    } catch (error) {
+      console.error("Failed to update connection:", error);
+    }
+  };
+
+  const handleDeleteConnection = async (connection) => {
+    try {
+      const response = await fetch(`/api/providers/${connection.id}`, { method: "DELETE" });
+      if (response.ok) await fetchConnections();
+    } catch (error) {
+      console.error("Failed to delete connection:", error);
+    }
+  };
+
+  const handleSaveNodeConfig = async (formData) => {
+    if (!nodeConfigProviderId) return;
+    try {
+      const response = await fetch(`/api/provider-nodes/${nodeConfigProviderId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+      if (response.ok) {
+        await fetchConnections();
+        setNodeConfigProviderId(null);
+      }
+    } catch (error) {
+      console.error("Failed to update compatible node:", error);
     }
   };
 
@@ -1472,7 +1762,14 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}
               onToggle={handleToggle}
               onMoveConnection={handleMoveConnection}
-              onOpenAccountConfig={openChannelDetail}
+              testRun={testRun}
+              onAddAccount={handleAddAccount}
+              onEditConnection={setEditingConnection}
+              onToggleAll={handleToggleAllAccounts}
+              onRunOneByOne={handleRunOneByOneTest}
+              onStopOneByOne={handleStopOneByOneTest}
+              onOpenModels={openChannelDetail}
+              onConfigureNode={setNodeConfigProviderId}
               onConfigureStrategy={(providerId) => {
                 setStrategyError("");
                 setStrategyProviderId(providerId);
@@ -1537,6 +1834,80 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         providerId={detailProviderId}
         onClose={closeChannelDetail}
         onUpdated={fetchConnections}
+      />
+
+      {/* Add account — reuses the channel setup drawer for known providers and
+          falls back to a plain API-key form for compatible / custom nodes. */}
+      {addAccountTarget?.mode === "provider" && (
+        <ProviderConfigurationDrawer
+          isOpen
+          provider={addAccountTarget.provider}
+          category={addAccountTarget.category}
+          mouses={mouses}
+          onClose={() => setAddAccountTarget(null)}
+          onConnectionCreated={fetchConnections}
+        />
+      )}
+      {addAccountTarget?.mode === "compatible" && (
+        <AddApiKeyModal
+          isOpen
+          provider={addAccountTarget.providerId}
+          providerName={getProviderName(addAccountTarget.providerId)}
+          isCompatible
+          isAnthropic={isAnthropicCompatibleProvider(addAccountTarget.providerId)}
+          error={addAccountError}
+          existingNames={connections
+            .filter((connection) => connection.provider === addAccountTarget.providerId)
+            .map((connection) => connection.name)
+            .filter(Boolean)}
+          mouses={mouses.filter((mouse) => mouse.isOnline && !mouse.disabledAt)}
+          onSave={handleSaveApiKeyForChannel}
+          onClose={() => {
+            setAddAccountError("");
+            setAddAccountTarget(null);
+          }}
+        />
+      )}
+
+      {/* Compatible / custom nodes: channel-level config (Base URL, API type).
+          Mounted only while open and keyed by node id, so the form seeds from the
+          selected node instead of keeping the values of the first one opened. */}
+      {nodeConfigProviderId && (
+        <EditCompatibleNodeModal
+          key={nodeConfigProviderId}
+          isOpen
+          node={providerNodes.find((node) => node.id === nodeConfigProviderId) || null}
+          onSave={handleSaveNodeConfig}
+          onClose={() => setNodeConfigProviderId(null)}
+          isAnthropic={isAnthropicCompatibleProvider(nodeConfigProviderId)}
+        />
+      )}
+
+      <EditConnectionModal
+        isOpen={Boolean(editingConnection)}
+        connection={editingConnection}
+        mouses={mouses.filter((mouse) => mouse.isOnline || mouse.id === editingConnection?.mouseId)}
+        onSave={handleSaveConnection}
+        onDelete={(connection) => {
+          setEditingConnection(null);
+          setDeletingConnection(connection);
+        }}
+        onClose={() => setEditingConnection(null)}
+      />
+
+      <ConfirmModal
+        isOpen={Boolean(deletingConnection)}
+        onClose={() => setDeletingConnection(null)}
+        onConfirm={async () => {
+          const connection = deletingConnection;
+          setDeletingConnection(null);
+          if (connection) await handleDeleteConnection(connection);
+        }}
+        title="删除账号"
+        message={`将删除「${getConnectionName(deletingConnection || {})}」这个账号，其凭据与配额记录会一并移除，无法撤销。`}
+        confirmText="删除"
+        cancelText="取消"
+        variant="danger"
       />
     </div>
   );

@@ -10,7 +10,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
 
-export default function EditConnectionModal({ isOpen, connection, mouses = [], onSave, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, mouses = [], onSave, onDelete, onClose }) {
   // Providers whose executor bypasses BaseExecutor.execute() cannot route
   // through a Mouse node — hide the picker instead of offering a no-op choice.
   const mouseSupported = supportsMouseExecution(connection?.provider);
@@ -306,6 +306,27 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
           </div>
         )}
 
+        {/* Destructive action lives with the rest of the account form so the
+            account list itself stays a pure management surface. */}
+        {typeof onDelete === "function" && (
+          <div className="flex items-center justify-between gap-3 rounded-[10px] border border-danger/30 bg-danger/[0.06] px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-danger">删除此账号</p>
+              <p className="mt-0.5 text-xs text-text-muted">凭据、配额记录与熔断状态会一并移除，无法撤销。</p>
+            </div>
+            <Button
+              variant="danger"
+              size="sm"
+              icon="delete"
+              onClick={() => onDelete(connection)}
+              disabled={saving}
+              className="shrink-0"
+            >
+              删除
+            </Button>
+          </div>
+        )}
+
         <div className="flex gap-2">
           <Button onClick={handleSubmit} fullWidth disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
@@ -327,5 +348,6 @@ EditConnectionModal.propTypes = {
     providerSpecificData: PropTypes.object,
   }),
   onSave: PropTypes.func.isRequired,
+  onDelete: PropTypes.func,
   onClose: PropTypes.func.isRequired,
 };

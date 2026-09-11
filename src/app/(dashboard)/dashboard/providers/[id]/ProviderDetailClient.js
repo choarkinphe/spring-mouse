@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { AccessTagsEditor, Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Select, EditConnectionModal, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
+import { AccessTagsEditor, Card, Button, Modal, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -19,14 +19,8 @@ import { hasModelsDevCatalog } from "@/shared/utils/modelCatalog";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
-import ConnectionRow from "./ConnectionRow";
-import AddApiKeyModal from "./AddApiKeyModal";
-import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import EditCompatibleNodeIconModal from "./EditCompatibleNodeIconModal";
 import AddCustomModelModal from "./AddCustomModelModal";
-import BulkImportCodexModal from "./BulkImportCodexModal";
-
-const ONE_BY_ONE_DELAY_MS = 1000;
 
 // Chinese labels for thinking levels ("auto" = no suffix appended when copying model names).
 const THINKING_LEVEL_LABELS = {
@@ -43,33 +37,14 @@ const THINKING_LEVEL_LABELS = {
 };
 const thinkingLevelLabel = (level) => THINKING_LEVEL_LABELS[level] || level;
 
-const AUTO_PING_SETTINGS_KEYS = {
-  claude: "claudeAutoPing",
-  codex: "codexAutoPing",
-};
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export default function ProviderDetailClient({ providerId: providerIdOverride, embedded = false, onClose, onUpdated }) {
   const params = useParams();
-  const router = useRouter();
   const providerId = providerIdOverride || params.id;
   const { getCaps } = useModelCaps();
   const [connections, setConnections] = useState([]);
-  const [availableMouses, setAvailableMouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
-  const [showOAuthModal, setShowOAuthModal] = useState(false);
-  const [showIFlowCookieModal, setShowIFlowCookieModal] = useState(false);
-  const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
-  const [addConnectionError, setAddConnectionError] = useState("");
-  const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showEditNodeIconModal, setShowEditNodeIconModal] = useState(false);
-  const [selectedConnection, setSelectedConnection] = useState(null);
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
   const [headerImgError, setHeaderImgError] = useState(false);
@@ -80,9 +55,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [capabilitiesModel, setCapabilitiesModel] = useState(null);
   const [savingCapabilities, setSavingCapabilities] = useState(false);
   const [togglingCapability, setTogglingCapability] = useState(null);
-  const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [thinkingMode, setThinkingMode] = useState("auto");
-  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
@@ -92,64 +65,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [modelTagDraft, setModelTagDraft] = useState([]);
   const [savingModelTags, setSavingModelTags] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
-  const [showAgRiskModal, setShowAgRiskModal] = useState(false);
-  const [oneByOneRunning, setOneByOneRunning] = useState(false);
-  const [oneByOneStopping, setOneByOneStopping] = useState(false);
-  const [oneByOneCurrentConnectionId, setOneByOneCurrentConnectionId] = useState(null);
-  const [oneByOneResults, setOneByOneResults] = useState({});
-  const [oneByOneSummary, setOneByOneSummary] = useState(null);
-  const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [syncingModels, setSyncingModels] = useState(false);
   const [modelSyncStatus, setModelSyncStatus] = useState(null);
   const { copied, copy } = useCopyToClipboard();
-
-  const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
-
-  const openOAuthConnection = () => {
-    setShowOAuthModal(true);
-  };
-
-  const triggerOAuthConnection = () => {
-    if (providerId === "antigravity" && typeof window !== "undefined") {
-      const confirmed = window.localStorage.getItem(AG_RISK_STORAGE_KEY) === "true";
-      if (!confirmed) {
-        setShowAgRiskModal(true);
-        return;
-      }
-    }
-    if (isOAuth) {
-      openOAuthConnection();
-      return;
-    }
-    setAddConnectionError("");
-    setShowAddApiKeyModal(true);
-  };
-
-  const triggerApiKeyConnection = () => {
-    setAddConnectionError("");
-    setShowAddApiKeyModal(true);
-  };
-
-  const triggerAddConnection = () => {
-    if (isOAuth) {
-      triggerOAuthConnection();
-      return;
-    }
-    triggerApiKeyConnection();
-  };
-
-  const handleAgRiskConfirm = () => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(AG_RISK_STORAGE_KEY, "true");
-    }
-    setShowAgRiskModal(false);
-    if (isOAuth) {
-      openOAuthConnection();
-      return;
-    }
-    triggerApiKeyConnection();
-  };
 
   const providerInfo = providerNode
     ? {
@@ -162,9 +81,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         type: providerNode.type,
       }
     : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId]);
-  const authModes = providerInfo?.authModes || [];
-  const isOAuth = !!OAUTH_PROVIDERS[providerId] || !!FREE_PROVIDERS[providerId] || authModes.includes("oauth");
-  const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const staticModels = getModelsByProviderId(providerId);
   const models = providerId === "cursor" && liveModels.length > 0
@@ -175,17 +91,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
   const isAnthropicCompatible = isAnthropicCompatibleProvider(providerId);
   const isCompatible = isOpenAICompatible || isAnthropicCompatible;
-  const hasDualAuthModes = !isCompatible && isOAuth && supportsApiKeyAuth;
-  const oauthConnectionLabel =
-    providerId === "xai" ? "Grok Build OAuth"
-    : providerId === "grok-cli" ? "Grok CLI Device Login"
-    : providerId === "kimi" ? "Kimi Coding OAuth"
-    : "OAuth";
-  const apiKeyConnectionLabel =
-    providerId === "xai" ? "xAI API Key"
-    : providerId === "kimi" ? "Kimi API Key"
-    : providerId === "qoder" ? "PAT"
-    : "API Key";
   // Resolve suffix "(level)" for a model when a thinking level is picked and the model supports it.
   const resolveThinkingSuffix = (modelId) => {
     if (!thinkingMode || thinkingMode === "auto") return null;
@@ -336,9 +241,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
       setModelAccessTags(settingsData.modelAccessTags || {});
-      const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
-      const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
-      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -367,27 +269,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const notifyChannelListUpdated = useCallback(async () => {
     await onUpdated?.();
   }, [onUpdated]);
-
-  const handleUpdateNode = async (formData) => {
-    try {
-      const res = await fetch(`/api/provider-nodes/${providerId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setProviderNode(data.node);
-        setHeaderImgError(false);
-        await fetchConnections();
-        await notifyChannelListUpdated();
-        setShowEditNodeModal(false);
-      }
-    } catch (error) {
-      console.log("Error updating provider node:", error);
-    }
-  };
-
 
   const handleUpdateNodeIcon = async (icon) => {
     if (!providerNode) return;
@@ -436,51 +317,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     saveThinkingConfig(mode);
   };
 
-  const saveAutoPing = async (next) => {
-    const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
-    if (!autoPingSettingsKey) return;
-
-    setAutoPing(next);
-    try {
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [autoPingSettingsKey]: next }),
-      });
-    } catch (error) {
-      console.log("Error saving auto-ping config:", error);
-    }
-  };
-
-  const handleAutoPingConnection = (connectionId, on) => {
-    saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
-  };
-
   useEffect(() => {
     fetchConnections();
     fetchAliases();
     fetchCustomModels();
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const fetchMouses = async () => {
-      try {
-        const res = await fetch("/api/mouses", { cache: "no-store" });
-        const data = await res.json();
-        if (!cancelled && res.ok) setAvailableMouses(data.mouses || []);
-      } catch (error) {
-        console.log("Error fetching mouses:", error);
-      }
-    };
-    void fetchMouses();
-    const timer = window.setInterval(fetchMouses, 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
 
   // Cursor's model availability is account-specific and changes frequently.
   // Load the active account's live catalog for the dashboard; the static
@@ -773,314 +615,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
-  const handleRunOneByOneTest = async () => {
-    if (oneByOneRunning || connections.length === 0) return;
-
-    const queuedState = Object.fromEntries(
-      connections.map((connection) => [connection.id, { state: "queued", error: null }]),
-    );
-
-    stopOneByOneRef.current = false;
-    setOneByOneRunning(true);
-    setOneByOneStopping(false);
-    setOneByOneCurrentConnectionId(null);
-    setOneByOneResults(queuedState);
-    setOneByOneSummary({ total: connections.length, completed: 0, passed: 0, failed: 0, stopped: false });
-
-    let passed = 0;
-    let failed = 0;
-
-    try {
-      for (let index = 0; index < connections.length; index += 1) {
-        if (stopOneByOneRef.current) {
-          setOneByOneSummary({
-            total: connections.length,
-            completed: index,
-            passed,
-            failed,
-            stopped: true,
-          });
-          break;
-        }
-
-        const connection = connections[index];
-        setOneByOneCurrentConnectionId(connection.id);
-        setOneByOneResults((prev) => ({
-          ...prev,
-          [connection.id]: { state: "testing", error: null },
-        }));
-
-        try {
-          const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
-          const data = await res.json();
-          const valid = !!data.valid;
-
-          if (valid) {
-            passed += 1;
-          } else {
-            failed += 1;
-          }
-
-          setOneByOneResults((prev) => ({
-            ...prev,
-            [connection.id]: {
-              state: valid ? "success" : "failed",
-              error: valid ? null : (data.error || null),
-            },
-          }));
-        } catch (error) {
-          failed += 1;
-          setOneByOneResults((prev) => ({
-            ...prev,
-            [connection.id]: {
-              state: "failed",
-              error: error.message || "Test failed",
-            },
-          }));
-        }
-
-        setOneByOneSummary({
-          total: connections.length,
-          completed: index + 1,
-          passed,
-          failed,
-          stopped: false,
-        });
-
-        if (index < connections.length - 1) {
-          await sleep(ONE_BY_ONE_DELAY_MS);
-        }
-      }
-    } finally {
-      setOneByOneCurrentConnectionId(null);
-      setOneByOneRunning(false);
-      setOneByOneStopping(false);
-      stopOneByOneRef.current = false;
-    }
-  };
-
-  const handleStopOneByOneTest = () => {
-    if (!oneByOneRunning) return;
-    stopOneByOneRef.current = true;
-    setOneByOneStopping(true);
-  };
-
-  const handleDelete = async (id) => {
-    setConfirmState({
-      title: "Delete Connection",
-      message: "Delete this connection?",
-      onConfirm: async () => {
-        setConfirmState(null);
-        try {
-          const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
-          if (res.ok) {
-            setConnections(prev => prev.filter(c => c.id !== id));
-            await notifyChannelListUpdated();
-          }
-        } catch (error) {
-          console.log("Error deleting connection:", error);
-        }
-      }
-    });
-  };
-
-  const handleBulkDelete = () => {
-    const count = selectedConnectionIds.length;
-    if (count === 0) return;
-    setConfirmState({
-      title: `Delete ${count} Connection${count > 1 ? "s" : ""}`,
-      message: `Delete ${count} connection${count > 1 ? "s" : ""}? This cannot be undone.`,
-      onConfirm: async () => {
-        setConfirmState(null);
-        let failed = 0;
-        const idsToDelete = [...selectedConnectionIds];
-        for (const id of idsToDelete) {
-          try {
-            const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
-            if (!res.ok) failed += 1;
-          } catch (error) {
-            console.log("Error deleting connection:", error);
-            failed += 1;
-          }
-        }
-        setConnections(prev => prev.filter(c => !idsToDelete.includes(c.id)));
-        setSelectedConnectionIds([]);
-        await notifyChannelListUpdated();
-        if (failed > 0) alert(`Deleted ${idsToDelete.length - failed} connection(s), ${failed} failed.`);
-      }
-    });
-  };
-
-  const handleOAuthSuccess = async () => {
-    await fetchConnections();
-    await notifyChannelListUpdated();
-    setShowOAuthModal(false);
-  };
-
-  const handleIFlowCookieSuccess = async () => {
-    await fetchConnections();
-    await notifyChannelListUpdated();
-    setShowIFlowCookieModal(false);
-  };
-
-  const handleSaveApiKey = async (formData) => {
-    setAddConnectionError("");
-    try {
-      const res = await fetch("/api/providers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: providerId, ...formData }),
-      });
-
-      let data = null;
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
-
-      if (res.ok) {
-        await fetchConnections();
-        await notifyChannelListUpdated();
-        setShowAddApiKeyModal(false);
-        return;
-      }
-
-      setAddConnectionError(data?.error || "Failed to save connection");
-    } catch (error) {
-      console.log("Error saving connection:", error);
-      setAddConnectionError("Failed to save connection");
-    }
-  };
-
-  const handleUpdateConnection = async (formData) => {
-    try {
-      const res = await fetch(`/api/providers/${selectedConnection.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      if (res.ok) {
-        await fetchConnections();
-        await notifyChannelListUpdated();
-        setShowEditModal(false);
-      }
-    } catch (error) {
-      console.log("Error updating connection:", error);
-    }
-  };
-
-  const handleUpdateConnectionStatus = async (id, isActive) => {
-    try {
-      const res = await fetch(`/api/providers/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isActive }),
-      });
-      if (res.ok) {
-        setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
-        await notifyChannelListUpdated();
-      }
-    } catch (error) {
-      console.log("Error updating connection status:", error);
-    }
-  };
-
-  const handleSwapPriority = async (index1, index2) => {
-    // Optimistic update state
-    const newConnections = [...connections];
-    [newConnections[index1], newConnections[index2]] = [newConnections[index2], newConnections[index1]];
-    setConnections(newConnections);
-
-    try {
-      await Promise.all([
-        fetch(`/api/providers/${newConnections[index1].id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ priority: index1 }),
-        }),
-        fetch(`/api/providers/${newConnections[index2].id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ priority: index2 }),
-        }),
-      ]);
-      await notifyChannelListUpdated();
-    } catch (error) {
-      console.log("Error swapping priority:", error);
-      await fetchConnections();
-    }
-  };
-
-  const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
-  const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
-
-  const toggleSelectConnection = (connectionId) => {
-    setSelectedConnectionIds((prev) => (
-      prev.includes(connectionId)
-        ? prev.filter((id) => id !== connectionId)
-        : [...prev, connectionId]
-    ));
-  };
-
-  const toggleSelectAllConnections = () => {
-    if (allSelected) {
-      setSelectedConnectionIds([]);
-      return;
-    }
-    setSelectedConnectionIds(connections.map((conn) => conn.id));
-  };
-
-  const clearSelection = () => {
-    setSelectedConnectionIds([]);
-  };
-
-  useEffect(() => {
-    setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
-  }, [connections]);
-
-  const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
-
-  const connectionsList = (
-    <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {connections
-        .map((conn, index) => (
-          <div key={conn.id} className="flex min-w-0 items-stretch">
-            <div className="flex shrink-0 items-center pl-1 sm:pl-2">
-              <input
-                type="checkbox"
-                checked={isSelected(conn.id)}
-                onChange={() => toggleSelectConnection(conn.id)}
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-              />
-            </div>
-            <div className="flex-1 min-w-0">
-              <ConnectionRow
-                connection={conn}
-                mouse={availableMouses.find((mouse) => mouse.id === conn.mouseId)}
-                isOAuth={isOAuth}
-                isFirst={index === 0}
-                isLast={index === connections.length - 1}
-                onMoveUp={() => handleSwapPriority(index, index - 1)}
-                onMoveDown={() => handleSwapPriority(index, index + 1)}
-                onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
-                autoPing={AUTO_PING_SETTINGS_KEYS[providerId] && conn.authType === "oauth" ? {
-                  on: autoPing.connections[conn.id] === true,
-                  onToggle: (on) => handleAutoPingConnection(conn.id, on),
-                  provider: providerId,
-                } : null}
-                onEdit={() => {
-                  setSelectedConnection(conn);
-                  setShowEditModal(true);
-                }}
-                onDelete={() => handleDelete(conn.id)}
-                oneByOneStatus={oneByOneResults[conn.id] || null}
-              />
-            </div>
-          </div>
-        ))}
-    </div>
-  );
 
   const handleTestModel = async (modelId) => {
     if (testingModelIds.has(modelId)) return;
@@ -1481,7 +1015,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               )}
             </div>
             <p className="text-text-muted">
-              {connections.length} connection{connections.length === 1 ? "" : "s"}
+              {connections.length} 个账号 · {models.length} 个模型
             </p>
           </div>
         </div>
@@ -1511,265 +1045,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           )}
         </div>
       )}
-
-      <div className={isCompatible && providerNode ? "overflow-hidden rounded-[14px] border border-border-subtle bg-surface shadow-[var(--shadow-soft)]" : "contents"}>
-      {isCompatible && providerNode && (
-        <Card padding="sm" className="!rounded-none !border-0 !shadow-none">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold">{isAnthropicCompatible ? "Anthropic Compatible Details" : "OpenAI Compatible Details"}</h2>
-              <p className="break-all text-sm text-text-muted">
-                {isAnthropicCompatible ? "Messages API" : (providerNode.apiType === "responses" ? "Responses API" : "Chat Completions")} · {(providerNode.baseUrl || "").replace(/\/$/, "")}/
-                {isAnthropicCompatible ? "messages" : (providerNode.apiType === "responses" ? "responses" : "chat/completions")}
-              </p>
-            </div>
-            <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
-              <Button
-                size="md"
-                icon="add"
-                onClick={() => {
-                  setAddConnectionError("");
-                  setShowAddApiKeyModal(true);
-                }}
-                className="w-full sm:w-auto"
-              >
-                Add API Key
-              </Button>
-              <Button
-                size="md"
-                variant="secondary"
-                icon="edit"
-                onClick={() => setShowEditNodeModal(true)}
-                className="w-full sm:w-auto"
-              >
-                Edit
-              </Button>
-              <Button
-                size="md"
-                variant="secondary"
-                icon="delete"
-                onClick={async () => {
-                  setConfirmState({
-                    title: "Delete Compatible Node",
-                    message: `Delete this ${isAnthropicCompatible ? "Anthropic" : "OpenAI"} Compatible node?`,
-                    onConfirm: async () => {
-                      setConfirmState(null);
-                      try {
-                        const res = await fetch(`/api/provider-nodes/${providerId}`, { method: "DELETE" });
-                        if (res.ok) {
-                          await notifyChannelListUpdated();
-                          if (embedded) onClose?.();
-                          else router.push("/dashboard/providers");
-                        }
-                      } catch (error) {
-                        console.log("Error deleting provider node:", error);
-                      }
-                    }
-                  });
-                }}
-                className="w-full sm:w-auto"
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Connections */}
-      {isFreeNoAuth ? (
-        <Card>
-          <div className="py-8 text-center text-sm text-text-muted">
-            此提供商无需凭据配置，可直接使用。
-          </div>
-        </Card>
-      ) : (
-        <Card padding={isCompatible && providerNode ? "sm" : "md"} className={isCompatible && providerNode ? "!rounded-none !border-x-0 !border-b-0 !shadow-none" : ""}>
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-lg font-semibold">Connections</h2>
-              {connections.length > 0 && (
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleSelectAllConnections}
-                    className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
-                  />
-                  Select All
-                </label>
-              )}
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
-              {connections.length > 0 && (
-                <>
-                  {selectedConnectionIds.length > 0 && (
-                    <Button
-                      size="md"
-                      variant="danger"
-                      icon="delete"
-                      onClick={handleBulkDelete}
-                    >
-                      Delete Selected ({selectedConnectionIds.length})
-                    </Button>
-                  )}
-                  <Button
-                    size="md"
-                    variant="secondary"
-                    icon="sync"
-                    iconOnly
-                    onClick={handleRunOneByOneTest}
-                    disabled={oneByOneRunning}
-                    loading={oneByOneRunning}
-                    title={oneByOneRunning ? "正在逐个测试连接" : "逐个测试连接"}
-                    aria-label="逐个测试连接"
-                  />
-                  {oneByOneRunning && (
-                    <Button
-                      size="md"
-                      variant="ghost"
-                      icon="stop"
-                      onClick={handleStopOneByOneTest}
-                      disabled={oneByOneStopping}
-                    >
-                      {oneByOneStopping ? "Stopping..." : "Stop"}
-                    </Button>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {connections.length === 0 ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm text-text-muted">No connections yet</p>
-                  {hasDualAuthModes && (
-                    <p className="text-xs text-text-muted">
-                      Choose {oauthConnectionLabel} or {apiKeyConnectionLabel}.
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {hasDualAuthModes ? (
-                  <>
-                    <Button size="md" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
-                      {oauthConnectionLabel}
-                    </Button>
-                    <Button size="md" icon="key" onClick={triggerApiKeyConnection}>
-                      {apiKeyConnectionLabel}
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    {!isCompatible && providerId === "iflow" && (
-                      <Button size="md" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                        Cookie
-                      </Button>
-                    )}
-                    {providerId === "codex" && (
-                      <Button size="md" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
-                        {translate("Bulk Add")}
-                      </Button>
-                    )}
-                    <Button
-                      size="md"
-                      icon="add"
-                      onClick={triggerAddConnection}
-                    >
-                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              {oneByOneSummary && (
-                <div className="mb-4 rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2 text-xs text-text-muted">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span>Total: {oneByOneSummary.total}</span>
-                    <span>Completed: {oneByOneSummary.completed}</span>
-                    <span>Passed: {oneByOneSummary.passed}</span>
-                    <span>Failed: {oneByOneSummary.failed}</span>
-                    {oneByOneSummary.stopped && (
-                      <span className="text-amber-600 dark:text-amber-400">Stopped</span>
-                    )}
-                    {oneByOneRunning && oneByOneCurrentConnectionId && (
-                      <span>Running: {connections.find((conn) => conn.id === oneByOneCurrentConnectionId)?.name || oneByOneCurrentConnectionId}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-              {connectionsList}
-              {!isCompatible && (
-                <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
-                  {providerId === "iflow" && (
-                    <Button
-                      size="md"
-                      icon="cookie"
-                      variant="secondary"
-                      onClick={() => setShowIFlowCookieModal(true)}
-                      title="Add connection using browser cookie"
-                      className="w-full sm:w-auto"
-                    >
-                      Cookie
-                    </Button>
-                  )}
-                  {providerId === "codex" && (
-                    <Button
-                      size="md"
-                      icon="playlist_add"
-                      variant="secondary"
-                      onClick={() => setShowBulkImportCodex(true)}
-                      title={translate("Bulk import codex accounts from JSON")}
-                      className="w-full sm:w-auto"
-                    >
-                      {translate("Bulk Add")}
-                    </Button>
-                  )}
-                  {hasDualAuthModes ? (
-                    <>
-                      <Button
-                        size="md"
-                        icon="lock"
-                        variant="secondary"
-                        onClick={triggerOAuthConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {oauthConnectionLabel}
-                      </Button>
-                      <Button
-                        size="md"
-                        icon="key"
-                        onClick={triggerApiKeyConnection}
-                        className="w-full sm:w-auto"
-                      >
-                        {apiKeyConnectionLabel}
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="md"
-                      icon="add"
-                      onClick={triggerAddConnection}
-                      className="w-full sm:w-auto"
-                    >
-                      Add
-                    </Button>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </Card>
-      )}
-      </div>
 
       {/* Models */}
       <Card>
@@ -1860,61 +1135,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       </Card>
 
       {/* Modals */}
-      {providerId === "kiro" ? (
-        <KiroOAuthWrapper
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : providerId === "cursor" ? (
-        <CursorAuthModal
-          isOpen={showOAuthModal}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : providerId === "gitlab" ? (
-        <GitLabAuthModal
-          isOpen={showOAuthModal}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      ) : (
-        <OAuthModal
-          isOpen={showOAuthModal}
-          provider={providerId}
-          providerInfo={providerInfo}
-          onSuccess={handleOAuthSuccess}
-          onClose={() => setShowOAuthModal(false)}
-        />
-      )}
-      {providerId === "iflow" && (
-        <IFlowCookieModal
-          isOpen={showIFlowCookieModal}
-          onSuccess={handleIFlowCookieSuccess}
-          onClose={() => setShowIFlowCookieModal(false)}
-        />
-      )}
-      <AddApiKeyModal
-        isOpen={showAddApiKeyModal}
-        provider={providerId}
-        providerName={providerInfo.name}
-        mouses={availableMouses.filter((mouse) => mouse.isOnline && !mouse.disabledAt)}
-        isCompatible={isCompatible}
-        isAnthropic={isAnthropicCompatible}
-        authType={providerInfo?.authType}
-        authHint={providerInfo?.authHint}
-        website={providerInfo?.website}
-        error={addConnectionError}
-        existingNames={connections.map((c) => c.name).filter(Boolean)}
-        onSave={handleSaveApiKey}
-        onBulkDone={fetchConnections}
-        onClose={() => {
-          setAddConnectionError("");
-          setShowAddApiKeyModal(false);
-        }}
-      />
       <Modal isOpen={Boolean(taggingModel)} title={`配置模型权限 · ${taggingModel || ""}`} onClose={() => { if (!savingModelTags) setTaggingModel(null); }}>
         <div className="flex flex-col gap-5">
           <AccessTagsEditor value={modelTagDraft} onChange={setModelTagDraft} hint="模型未设置标签时所有用户都可使用；设置后，仅拥有任一相同标签的 API 密钥可调用。" />
@@ -1925,22 +1145,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         </div>
       </Modal>
 
-      <EditConnectionModal
-        isOpen={showEditModal}
-        connection={selectedConnection}
-        mouses={availableMouses.filter((mouse) => mouse.isOnline || mouse.id === selectedConnection?.mouseId)}
-        onSave={handleUpdateConnection}
-        onClose={() => setShowEditModal(false)}
-      />
-      {isCompatible && (
-        <EditCompatibleNodeModal
-          isOpen={showEditNodeModal}
-          node={providerNode}
-          onSave={handleUpdateNode}
-          onClose={() => setShowEditNodeModal(false)}
-          isAnthropic={isAnthropicCompatible}
-        />
-      )}
       {isCompatible && (
         <EditCompatibleNodeIconModal
           isOpen={showEditNodeIconModal}
@@ -1977,26 +1181,6 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onClose={() => { if (!savingCapabilities) setCapabilitiesModel(null); }}
         />
       )}
-
-      {providerId === "codex" && (
-        <BulkImportCodexModal
-          isOpen={showBulkImportCodex}
-          onClose={() => setShowBulkImportCodex(false)}
-          onSuccess={fetchConnections}
-        />
-      )}
-
-      {/* AG Risk Confirmation Modal */}
-      <ConfirmModal
-        isOpen={showAgRiskModal}
-        onClose={() => setShowAgRiskModal(false)}
-        onConfirm={handleAgRiskConfirm}
-        title="Risk Notice"
-        message={providerInfo?.deprecationNotice}
-        confirmText="I Understand, Continue"
-        cancelText="Cancel"
-        variant="danger"
-      />
 
       {/* Confirm Modal */}
       <ConfirmModal

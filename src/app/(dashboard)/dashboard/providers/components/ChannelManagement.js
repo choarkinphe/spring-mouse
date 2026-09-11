@@ -105,6 +105,17 @@ function hasActiveModelLock(connection) {
   });
 }
 
+// Cooldown countdown for the account badge. The remaining time is computed by
+// the concurrency route, so render never reads the clock (which would trip
+// react-hooks/purity) — a fresh value rides on the existing 2s poll.
+function formatLockCountdown(remainingMs) {
+  const seconds = Math.max(0, Math.ceil((remainingMs || 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m${rest}s` : `${minutes}m`;
+}
+
 function getAccountStatus(connection) {
   if (connection.isActive === false) return { label: "已停用", className: "border-white/10 text-text-muted" };
   if (connection.testStatus === "limited") return { label: "限流", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
@@ -652,6 +663,15 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   // Live in-flight count for this account, polled from the routing process. Used
   // to light up the provider icon while the account is actually serving traffic.
   const isServing = (concurrency?.active ?? 0) > 0;
+  // Model cooldowns are the one admission gate the status pill cannot express:
+  // a locked account still reads "可用" from testStatus while auth.js drops it
+  // from the candidate list, so requests silently skip it. Surfaced as its own
+  // badge, with the lock's model and remaining time from the same poll.
+  const locks = concurrency?.locks || [];
+  const lockCountdown = locks.length ? formatLockCountdown(locks[0].remainingMs) : "";
+  const lockTitle = locks.length
+    ? `该账号被上游失败冷却锁定，路由会跳过它\n${locks.map((lock) => `${lock.model} · 剩余 ${formatLockCountdown(lock.remainingMs)}`).join("\n")}`
+    : "";
 
   return (
     <div className={cn("group grid min-w-0 grid-cols-1 gap-4 px-4 py-4 transition-colors hover:bg-[#38bdf8]/[0.035] lg:grid-cols-[minmax(18rem,0.85fr)_minmax(25rem,1.45fr)_auto] lg:items-center lg:gap-6", !(connection.isActive ?? true) && "opacity-55")}>
@@ -726,6 +746,14 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                   {testState.state === "queued" ? "待测试"
                     : testState.state === "testing" ? "测试中" : "测试失败"}
                 </Badge>
+              )}
+              {lockCountdown && (
+                <Tooltip text={lockTitle}>
+                  <span className="flex shrink-0 items-center gap-0.5 rounded border border-amber-400/30 bg-amber-400/[0.12] px-1.5 py-0.5 text-[10px] leading-none text-amber-200">
+                    <span className="material-symbols-outlined text-[12px]! leading-none">lock</span>
+                    <span className="tabular-nums">{lockCountdown}</span>
+                  </span>
+                </Tooltip>
               )}
               <span
                 className={cn("flex min-w-[2.75rem] shrink-0 items-center justify-center rounded border px-1.5 py-0.5 text-[10px] leading-none", status.className)}
@@ -938,7 +966,7 @@ function ChannelGroupRail({ groups, activeProvider, onSelect, onSort, onAdd, sor
   );
 }
 
-function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, concurrency, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetLoadBalance, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
+function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection, resettingConnectionId, resetErrors, providerStrategies, modelCounts, mousesById, concurrency, health, reordering, testRun, onRefreshQuota, onResetCodexLimit, onToggle, onMoveConnection, onConfigureStrategy, onSetLoadBalance, onSetRoundRobinLimit, onAddAccount, onEditConnection, onToggleAll, onRunOneByOne, onStopOneByOne, onOpenModels, onConfigureNode }) {
   const [lbMenuOpen, setLbMenuOpen] = useState(false);
   const activeCount = group.connections.filter((connection) => connection.isActive !== false).length;
   const quotaCount = group.connections.filter((connection) => quotaData[connection.id]?.length > 0).length;
@@ -993,6 +1021,25 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             <span className={cn("whitespace-nowrap", activeCount > 0 ? "text-emerald-200/90" : "text-text-muted")}>
               <span className="font-semibold tabular-nums">{activeCount}</span> 个启用
             </span>
+            {/* Enabled ≠ routable. A model cooldown leaves an account enabled yet
+                invisible to admission, which is exactly the state that makes
+                "请求没打到这个账号" look impossible from the toggle alone. */}
+            {health && (
+              <>
+                <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+                <Tooltip text={`${health.routable} / ${health.active} 个启用账号可被路由选中\n处于模型冷却锁定、或 Mouse 离线的账号不会进入候选列表`}>
+                  <span
+                    className={cn(
+                      "whitespace-nowrap",
+                      health.active > 0 && health.routable === 0 ? "text-rose-300"
+                        : health.routable < health.active ? "text-amber-200" : "text-emerald-200/90",
+                    )}
+                  >
+                    <span className="font-semibold tabular-nums">{health.routable}</span> 个可路由
+                  </span>
+                </Tooltip>
+              </>
+            )}
             {quotaCount > 0 && (
               <>
                 <span className="text-[#3f4a56]" aria-hidden="true">·</span>
@@ -1011,6 +1058,36 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
                 <span className="material-symbols-outlined text-[13px]! leading-none">chevron_right</span>
               </button>
             </Tooltip>
+            {/* Channel-wide cap: admission checks the provider total BEFORE it
+                scans accounts, so this ceiling can queue a request while idle
+                accounts still exist. It was invisible in the UI until now. */}
+            {health?.slotLimit != null && (
+              <>
+                <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+                <Tooltip text={`渠道总并发 ${health.activeSlots} / ${health.slotLimit}\n先于账号选择生效：达到上限后新请求排队等空位，即使仍有空闲账号`}>
+                  <span
+                    className={cn(
+                      "whitespace-nowrap tabular-nums",
+                      health.activeSlots >= health.slotLimit ? "text-amber-300"
+                        : health.activeSlots > 0 ? "text-sky-300" : "text-[#647688]",
+                    )}
+                  >
+                    渠道并发 <span className="font-semibold">{health.activeSlots}</span>/{health.slotLimit}
+                  </span>
+                </Tooltip>
+              </>
+            )}
+            {health?.breaker && (
+              <>
+                <span className="text-[#3f4a56]" aria-hidden="true">·</span>
+                <Tooltip text={`模型熔断已打开：${health.breaker.model}\n连续失败达到阈值后整个渠道暂停该模型，期间不选任何账号，剩余 ${formatLockCountdown(health.breaker.retryAfterMs)}`}>
+                  <span className="flex shrink-0 items-center gap-0.5 whitespace-nowrap text-rose-300">
+                    <span className="material-symbols-outlined text-[13px]! leading-none">bolt</span>
+                    熔断 {formatLockCountdown(health.breaker.retryAfterMs)}
+                  </span>
+                </Tooltip>
+              </>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1453,6 +1530,9 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   // Live per-account concurrency, kept in its own state so the poller can
   // refresh it without re-reading quotas, nodes and model counts.
   const [concurrency, setConcurrency] = useState({});
+  // Per-channel admission health — routable account count, slot ceiling and an
+  // open circuit breaker — rides the same poll as the per-account counters.
+  const [channelHealth, setChannelHealth] = useState({});
   const stopTestRef = useRef(false);
 
   // `options.silent` refreshes the data in place: the skeleton only belongs to
@@ -1588,7 +1668,10 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         const response = await fetch("/api/providers/concurrency", { cache: "no-store" });
         if (!response.ok) return;
         const payload = await response.json().catch(() => null);
-        if (!cancelled && payload?.accounts) setConcurrency(payload.accounts);
+        if (!cancelled && payload?.accounts) {
+          setConcurrency(payload.accounts);
+          setChannelHealth(payload.channels || {});
+        }
       } catch {
         // Transient failure: keep the last known numbers rather than blanking
         // every row back to zero.
@@ -2024,6 +2107,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               modelCounts={modelCounts}
               mousesById={mousesById}
               concurrency={concurrency}
+              health={channelHealth[activeChannelGroup.provider]}
               reordering={Boolean(reorderingProviderId)}
               onRefreshQuota={(item) => refreshQuota(item, true)}
               onResetCodexLimit={(connection) => setResetConfirmConnection(connection)}

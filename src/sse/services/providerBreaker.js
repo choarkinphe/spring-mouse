@@ -90,6 +90,25 @@ export async function recordProviderModelFailure(providerId, model, strategy = {
   return { open: true, retryAfterMs: cooldownMs };
 }
 
+/**
+ * Enumerate the breakers this process currently has open. Every open — local or
+ * shared via Redis — also stamps the in-process `openUntil`, so listing memory
+ * is enough for the dashboard and avoids fanning out one lookup per model.
+ */
+export function listOpenBreakers(now = Date.now()) {
+  const open = [];
+  for (const [key, state] of g.providers.entries()) {
+    if (!state?.openUntil || state.openUntil <= now) continue;
+    const separator = key.indexOf("\n");
+    open.push({
+      providerId: separator === -1 ? key : key.slice(0, separator),
+      model: separator === -1 ? "" : key.slice(separator + 1),
+      retryAfterMs: state.openUntil - now,
+    });
+  }
+  return open;
+}
+
 export async function clearProviderModelBreaker(providerId, model) {
   if (!providerId || !model) return;
   g.providers.delete(`${providerId}\n${model}`);

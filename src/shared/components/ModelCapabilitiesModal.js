@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import Modal from "./Modal";
+import Drawer from "./Drawer";
 import Button from "./Button";
 import Input from "./Input";
 import Toggle from "./Toggle";
@@ -16,7 +16,7 @@ import {
 /**
  * Capability editor for a single model.
  *
- * NOTE: this modal is always mounted by the caller with `key={...}` tied to the
+ * NOTE: this drawer is always mounted by the caller with `key={...}` tied to the
  * selected model, so the draft state below is seeded exactly once per open.
  * Do NOT re-seed with useEffect + setState (react-hooks/set-state-in-effect).
  */
@@ -30,7 +30,7 @@ export default function ModelCapabilitiesModal({ isOpen, modelId, fullModel, cap
   const activeCount = CAPABILITY_BOOLEAN_KEYS.filter((key) => draft[key]).length;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="模型能力配置" size="lg">
+    <Drawer isOpen={isOpen} onClose={onClose} title="模型能力配置" width="lg">
       <div className="flex flex-col gap-5">
         <div className="rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2">
           <p className="truncate text-sm font-semibold text-text-main" title={modelId}>{modelId}</p>
@@ -102,7 +102,7 @@ export default function ModelCapabilitiesModal({ isOpen, modelId, fullModel, cap
           </Button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

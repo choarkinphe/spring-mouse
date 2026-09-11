@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Modal } from "@/shared/components";
+import { Button, Drawer } from "@/shared/components";
 import CompatibleChannelIconPicker from "@/shared/components/CompatibleChannelIconPicker";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 
@@ -24,7 +24,7 @@ export default function EditCompatibleNodeIconModal({ isOpen, node, onSave, onCl
   };
 
   return (
-    <Modal isOpen={isOpen} title="Edit channel icon" onClose={onClose}>
+    <Drawer isOpen={isOpen} title="Edit channel icon" onClose={onClose} width="md">
       <div className="flex flex-col gap-5">
         <CompatibleChannelIconPicker value={icon} onChange={setIcon} />
         <div className="flex gap-2">
@@ -36,7 +36,7 @@ export default function EditCompatibleNodeIconModal({ isOpen, node, onSave, onCl
           </Button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

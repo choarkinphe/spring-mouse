@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Badge, Input, Modal, Select } from "@/shared/components";
+import { Button, Badge, Drawer, Input, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
@@ -192,7 +192,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   if (!provider) return null;
 
   return (
-    <Modal isOpen={isOpen} title={`Add ${providerName || provider} ${credentialLabel}`} onClose={onClose}>
+    <Drawer isOpen={isOpen} title={`Add ${providerName || provider} ${credentialLabel}`} onClose={onClose} width="md">
       <div className="flex flex-col gap-4">
         {/* Mode switcher */}
         <div className="flex gap-2">
@@ -399,7 +399,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </div>
         </>)}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

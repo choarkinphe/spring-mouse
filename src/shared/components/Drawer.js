@@ -8,11 +8,13 @@ export default function Drawer({
   onClose,
   title,
   children,
+  footer,
   width = "md",
   className,
   bodyRef,
   zIndex = "z-50",
   lockScroll = true,
+  closeOnOverlay = true,
 }) {
   const widths = {
     sm: "w-full max-w-[400px]",
@@ -57,8 +59,11 @@ export default function Drawer({
     <div className={cn("fixed inset-0", zIndex)}>
       {/* Overlay */}
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in cursor-pointer"
-        onClick={onClose}
+        className={cn(
+          "absolute inset-0 bg-black/50 backdrop-blur-[2px] fade-in",
+          closeOnOverlay && "cursor-pointer",
+        )}
+        onClick={closeOnOverlay ? onClose : undefined}
         aria-hidden="true"
       />
 
@@ -91,6 +96,14 @@ export default function Drawer({
         <div ref={bodyRef} className="flex-1 overflow-y-auto p-6 custom-scrollbar">
           {children}
         </div>
+
+        {/* Footer — pinned so primary actions stay reachable while the body
+            scrolls, mirroring the Modal it replaces. */}
+        {footer && (
+          <div className="flex shrink-0 items-center justify-end gap-3 border-t border-border-subtle px-6 py-4">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

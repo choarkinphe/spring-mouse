@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input } from "@/shared/components";
+import { Drawer, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // Providers using the dynamic-port local callback proxy.
@@ -680,7 +680,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       : placeholderUrl;
 
   return (
-    <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
+    <Drawer isOpen={isOpen} title={modalTitle} onClose={handleClose} width="lg">
       <div className="flex flex-col gap-4">
         {/* Trae/Windsurf: browser OAuth (proxy) + paste-token fallback */}
         {PROXY_OAUTH_PROVIDERS.has(provider) && (step === "waiting" || step === "input" || step === "error") && (
@@ -907,7 +907,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </div>
         )}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

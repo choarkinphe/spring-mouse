@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input, OAuthModal } from "@/shared/components";
+import { Drawer, Button, Input, OAuthModal } from "@/shared/components";
 
 const GITLAB_COM = "https://gitlab.com";
 
@@ -97,7 +97,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
   }
 
   return (
-    <Modal isOpen={isOpen} title="Connect GitLab Duo" onClose={handleClose} size="lg">
+    <Drawer isOpen={isOpen} title="Connect GitLab Duo" onClose={handleClose} width="lg">
       <div className="flex flex-col gap-4">
         {/* Mode selection */}
         {!mode && (
@@ -182,7 +182,7 @@ export default function GitLabAuthModal({ isOpen, providerInfo, onSuccess, onClo
           </>
         )}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

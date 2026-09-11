@@ -6,7 +6,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { AccessTagsEditor, Button, Modal, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
+import { AccessTagsEditor, Button, Drawer, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -1501,8 +1501,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         {renderModelsSection()}
       </div>
 
-      {/* Modals */}
-      <Modal isOpen={Boolean(taggingModel)} title={`配置模型权限 · ${taggingModel || ""}`} onClose={() => { if (!savingModelTags) setTaggingModel(null); }}>
+      {/* Drawers */}
+      <Drawer isOpen={Boolean(taggingModel)} title={`配置模型权限 · ${taggingModel || ""}`} onClose={() => { if (!savingModelTags) setTaggingModel(null); }} width="md">
         <div className="flex flex-col gap-5">
           <AccessTagsEditor value={modelTagDraft} onChange={setModelTagDraft} hint="模型未设置标签时所有用户都可使用；设置后，仅拥有任一相同标签的 API 密钥可调用。" />
           <div className="flex gap-2">
@@ -1510,7 +1510,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             <Button variant="ghost" onClick={() => setTaggingModel(null)} disabled={savingModelTags} fullWidth>取消</Button>
           </div>
         </div>
-      </Modal>
+      </Drawer>
 
       {isCompatible && (
         <EditCompatibleNodeIconModal

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
-import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { Card, Badge, Button, Drawer, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -175,7 +175,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, onSave, onClose }) {
   if (!provider) return null;
 
   return (
-    <Modal isOpen={isOpen} title={`Add ${providerName || provider} API Key`} onClose={onClose}>
+    <Drawer isOpen={isOpen} title={`Add ${providerName || provider} API Key`} onClose={onClose} width="md">
       <div className="flex flex-col gap-4">
         <div>
           <label className="text-xs text-text-muted mb-1 block">Name</label>
@@ -208,7 +208,7 @@ function AddApiKeyModal({ isOpen, provider, providerName, onSave, onClose }) {
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

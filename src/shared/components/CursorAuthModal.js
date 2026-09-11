@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input } from "@/shared/components";
+import { Drawer, Button, Input } from "@/shared/components";
 
 /**
  * Cursor Auth Modal
@@ -89,7 +89,7 @@ export default function CursorAuthModal({ isOpen, onSuccess, onClose }) {
   };
 
   return (
-    <Modal isOpen={isOpen} title="Connect Cursor IDE" onClose={onClose}>
+    <Drawer isOpen={isOpen} title="Connect Cursor IDE" onClose={onClose} width="md">
       <div className="flex flex-col gap-4">
         {/* Auto-detecting state */}
         {autoDetecting && (
@@ -201,7 +201,7 @@ export default function CursorAuthModal({ isOpen, onSuccess, onClose }) {
           </>
         )}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

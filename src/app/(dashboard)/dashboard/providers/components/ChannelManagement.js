@@ -12,7 +12,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { Badge, Button, ConfirmModal, Modal, ModuleSkeleton, CursorAuthModal, DashboardHero, EditConnectionModal, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import { Badge, Button, ConfirmModal, ModuleSkeleton, CursorAuthModal, DashboardHero, EditConnectionModal, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
 import Input from "@/shared/components/Input";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
@@ -587,11 +587,11 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
   ];
 
   return (
-    <Modal
+    <Drawer
       isOpen
       onClose={onClose}
       title={isAccount ? "账号添加成功" : "渠道添加成功"}
-      size="md"
+      width="md"
       closeOnOverlay={false}
       footer={(
         <>
@@ -629,7 +629,7 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
           ))}
         </dl>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -1209,7 +1209,7 @@ function ChannelOrderModal({ isOpen, groups, saving, error, onClose, onSave }) {
   const orderedGroups = orderedProviderIds.map((providerId) => groupsByProvider.get(providerId)).filter(Boolean);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="自定义渠道排序" size="lg" closeOnOverlay={!saving}>
+    <Drawer isOpen={isOpen} onClose={onClose} title="自定义渠道排序" width="lg" closeOnOverlay={!saving}>
       <div className="flex flex-col gap-4">
         <div className="flex items-start gap-3 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-4 py-3">
           <span className="material-symbols-outlined mt-0.5 text-[19px] text-[#7dd3fc]">swap_vert</span>
@@ -1276,7 +1276,7 @@ function ChannelOrderModal({ isOpen, groups, saving, error, onClose, onSave }) {
           </div>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -1359,11 +1359,11 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
   );
 
   return (
-    <Modal
+    <Drawer
       isOpen={Boolean(providerId)}
       onClose={onClose}
       title="并发与熔断策略"
-      size="lg"
+      width="lg"
       footer={(
         <div className="flex w-full items-center justify-between gap-3">
           <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
@@ -1408,7 +1408,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
         </p>
         {(error || localError) && <p className="text-xs text-rose-400">{error || localError}</p>}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -2049,7 +2049,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       )}
 
       {/* Keyed by provider so every open remounts the form from the currently
-          saved strategy. Without it the modal keeps its first-mount defaults
+          saved strategy. Without it the drawer keeps its first-mount defaults
           and saved values look like they were reverted. */}
       <ChannelStrategyModal
         key={strategyProviderId ?? "__closed__"}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
-import { Modal, Button, Input } from "@/shared/components";
+import { Drawer, Button, Input } from "@/shared/components";
 
 /**
  * Kiro Auth Method Selection Modal
@@ -183,7 +183,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   };
 
   return (
-    <Modal isOpen={isOpen} title="Connect Kiro" onClose={onClose} size="lg">
+    <Drawer isOpen={isOpen} title="Connect Kiro" onClose={onClose} width="lg">
       <div className="flex flex-col gap-4">
         {/* Method Selection */}
         {!selectedMethod && (
@@ -584,7 +584,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
           </div>
         )}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

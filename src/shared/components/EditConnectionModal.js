@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
-import Modal from "@/shared/components/Modal";
+import Drawer from "@/shared/components/Drawer";
 import Input from "@/shared/components/Input";
 import Button from "@/shared/components/Button";
 import Badge from "@/shared/components/Badge";
@@ -188,7 +188,7 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
   if (!connection) return null;
 
   return (
-    <Modal isOpen={isOpen} title="Edit Connection" onClose={onClose}>
+    <Drawer isOpen={isOpen} title="Edit Connection" onClose={onClose} width="md">
       <div className="flex flex-col gap-4">
         <Input
           label="Name"
@@ -332,7 +332,7 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

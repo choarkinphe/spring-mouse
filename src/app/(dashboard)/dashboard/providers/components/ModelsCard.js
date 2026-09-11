@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Modal } from "@/shared/components";
+import { Card, Button, Drawer } from "@/shared/components";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -77,7 +77,7 @@ function AddCustomModelModal({ isOpen, onSave, onClose }) {
   };
 
   return (
-    <Modal isOpen={isOpen} title="Add Custom Model" onClose={onClose}>
+    <Drawer isOpen={isOpen} title="Add Custom Model" onClose={onClose} width="md">
       <div className="flex flex-col gap-4">
         <div>
           <label className="text-xs text-text-muted mb-1 block">Model ID</label>
@@ -95,7 +95,7 @@ function AddCustomModelModal({ isOpen, onSave, onClose }) {
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 

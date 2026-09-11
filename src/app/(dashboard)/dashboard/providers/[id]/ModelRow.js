@@ -4,10 +4,11 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
+import { SelectionCheckbox } from "@/shared/components";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel }) {
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, selectable = false, selected = false, onToggleSelect }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const borderColor = testStatus === "ok"
@@ -26,8 +27,11 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
   };
 
   return (
-    <article className={`group relative min-w-0 rounded-xl border ${borderColor} bg-bg/30 transition-colors hover:border-primary/35 hover:bg-sidebar/45`}>
+    <article className={`group relative min-w-0 rounded-xl border ${borderColor} bg-bg/30 transition-colors hover:border-primary/35 hover:bg-sidebar/45 ${selected ? "border-primary/60! bg-primary/[0.04]" : ""}`}>
       <header className="flex min-h-[52px] min-w-0 items-start gap-2 border-b border-border-subtle px-3 py-2.5">
+        {selectable && (
+          <SelectionCheckbox checked={selected} onChange={onToggleSelect} label={`选择模型 ${model.id}`} />
+        )}
         <span className={`material-symbols-outlined mt-0.5 shrink-0 text-[18px] ${statusColor}`}>
           {statusIcon}
         </span>
@@ -186,4 +190,7 @@ ModelRow.propTypes = {
   onToggleCapability: PropTypes.func,
   busyCapabilityKey: PropTypes.string,
   sourceLabel: PropTypes.string,
+  selectable: PropTypes.bool,
+  selected: PropTypes.bool,
+  onToggleSelect: PropTypes.func,
 };

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { AccessTagsEditor, Card, Button, Modal, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
+import { AccessTagsEditor, Button, Modal, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -20,7 +20,7 @@ import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
 import EditCompatibleNodeIconModal from "./EditCompatibleNodeIconModal";
-import AddCustomModelModal from "./AddCustomModelModal";
+import AddModelDrawer from "./AddModelDrawer";
 
 // Chinese labels for thinking levels ("auto" = no suffix appended when copying model names).
 const THINKING_LEVEL_LABELS = {
@@ -36,6 +36,11 @@ const THINKING_LEVEL_LABELS = {
   thinking: "思考",
 };
 const thinkingLevelLabel = (level) => THINKING_LEVEL_LABELS[level] || level;
+
+// Batch menu rows in the model-management drawer header — same shape as the
+// per-card ⋯ menu so both read as one family.
+const BATCH_MENU_ITEM = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main transition-colors hover:bg-sidebar disabled:cursor-not-allowed disabled:opacity-40";
+const BATCH_MENU_ITEM_DANGER = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40";
 
 export default function ProviderDetailClient({ providerId: providerIdOverride, embedded = false, onClose, onUpdated }) {
   const params = useParams();
@@ -68,6 +73,14 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [syncingModels, setSyncingModels] = useState(false);
   const [modelSyncStatus, setModelSyncStatus] = useState(null);
+  // Batch model operations: a "批量" menu in the channel header plus a selection
+  // mode that puts a checkbox on every model card.
+  const [batchMenuOpen, setBatchMenuOpen] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedModelIds, setSelectedModelIds] = useState(() => new Set());
+  const [batchAction, setBatchAction] = useState("");
+  const [batchTestProgress, setBatchTestProgress] = useState(null);
+  const batchTestStopRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
 
   const providerInfo = providerNode
@@ -425,6 +438,31 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  // Add-model drawer: create the custom model row first, then persist the
+  // capability override the user configured after a passing test.
+  const handleAddModelFromDrawer = async ({ id, capabilities }) => {
+    const added = await handleAddCustomModel(id, "llm", providerStorageAlias);
+    if (!added) return false;
+    if (!capabilities || Object.keys(capabilities).length === 0) return true;
+    try {
+      const res = await fetch("/api/models/custom", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerAlias: providerStorageAlias, providerId, id, type: "llm", capabilities }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || translate("Failed to update model capabilities"));
+        return true;
+      }
+      await fetchCustomModels();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+    } catch (error) {
+      console.log("Error saving model capabilities:", error);
+    }
+    return true;
+  };
+
   // Capability editor works for built-in registry models too — the API upserts a
   // capability-only override row, so the shared resolver picks it up everywhere.
   const openModelCapabilitiesEditor = (payload) => {
@@ -475,6 +513,27 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
     return map;
   }, [customModels]);
+
+  // Ids already present on this channel — the add-model drawer hides them from the
+  // upstream search list and refuses to add them twice. Built from the same row
+  // resolver the model grid uses, so preset channels (whose models live in
+  // modelAliases rather than customModels) are covered too. Plain computation
+  // instead of useMemo: the React Compiler cannot preserve a memo whose
+  // dependency is state-derived.
+  const existingModelIds = (() => {
+    const ids = new Set((models || []).map((model) => model.id));
+    const rows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
+    for (const row of rows) {
+      if (row?.id) ids.add(row.id);
+    }
+    return ids;
+  })();
 
   const handleToggleCapability = async ({ providerAlias, providerId: targetProviderId, id, overrideCaps = {}, key, value }) => {
     if (!providerAlias || !id || !key) return;
@@ -662,6 +721,147 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  // Rows the drawer can render, i.e. everything selectable. Deletability mirrors
+  // each card's own ⋯ menu: custom rows are deleted outright, aliased rows drop
+  // their alias, registry rows can only be disabled. Disabled registry rows live
+  // in their own restore strip, so they are reached through 全部启用 instead.
+  const batchModelRows = (() => {
+    const rows = [];
+    const seen = new Set();
+    const push = (id, extra) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      rows.push({ id, ...extra });
+    };
+    for (const row of getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: isCompatible ? [] : models,
+      type: "llm",
+    })) {
+      push(row.id, {
+        alias: row.alias || null,
+        deleteKind: row.source === "custom" ? "custom" : row.alias ? "alias" : null,
+      });
+    }
+    if (!isCompatible) {
+      const builtIns = [...models, ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id))];
+      for (const model of builtIns) {
+        const kind = getModelKind(model);
+        if (kind && kind !== "llm") continue;
+        push(model.id, { alias: null, deleteKind: null });
+      }
+    }
+    return rows;
+  })();
+  const batchActiveIds = batchModelRows.filter((row) => !disabledModelIds.includes(row.id)).map((row) => row.id);
+  const batchDeletableRows = batchModelRows.filter((row) => row.deleteKind);
+  const selectedBatchRows = batchModelRows.filter((row) => selectedModelIds.has(row.id));
+
+  const toggleModelSelection = (modelId) => {
+    setSelectedModelIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  };
+
+  const exitBatchMode = () => {
+    setBatchMode(false);
+    setBatchMenuOpen(false);
+    setSelectedModelIds(new Set());
+    setBatchTestProgress(null);
+  };
+
+  // Selected → enabled. The disabled list is per-id, so one request each.
+  const handleBatchEnableSelected = async (ids) => {
+    const targets = ids.filter((id) => disabledModelIds.includes(id));
+    if (targets.length === 0 || batchAction) return;
+    setBatchAction("enable");
+    try {
+      for (const id of targets) {
+        await fetch(
+          `/api/models/disabled?providerAlias=${encodeURIComponent(providerStorageAlias)}&id=${encodeURIComponent(id)}`,
+          { method: "DELETE" }
+        );
+      }
+      await fetchDisabledModels();
+    } catch (error) {
+      console.log("Error enabling selected models:", error);
+    } finally {
+      setBatchAction("");
+    }
+  };
+
+  // Selected → deleted. Rows without a deleteKind are skipped (registry models can
+  // only be disabled) and the confirmation says how many.
+  const handleBatchDelete = (rows) => {
+    const targets = rows.filter((row) => row.deleteKind);
+    if (targets.length === 0 || batchAction) return;
+    const skipped = rows.length - targets.length;
+    setConfirmState({
+      title: "批量删除模型",
+      message: `删除 ${targets.length} 个模型？${skipped > 0 ? `另有 ${skipped} 个内置模型无法删除，只能停用。` : ""}此操作不可撤销。`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBatchAction("delete");
+        try {
+          for (const row of targets) {
+            const url = row.deleteKind === "custom"
+              ? `/api/models/custom?${new URLSearchParams({ providerAlias: providerStorageAlias, id: row.id, type: "llm" })}`
+              : `/api/models/alias?alias=${encodeURIComponent(row.alias)}`;
+            await fetch(url, { method: "DELETE" });
+          }
+          await Promise.all([fetchCustomModels(), fetchAliases()]);
+          if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+          setSelectedModelIds(new Set());
+        } catch (error) {
+          console.log("Error deleting models:", error);
+        } finally {
+          setBatchAction("");
+        }
+      }
+    });
+  };
+
+  // Selected (or every row) → tested one at a time, stoppable mid-run.
+  const stopBatchTest = () => {
+    batchTestStopRef.current = true;
+  };
+
+  const handleBatchTest = async (ids) => {
+    if (ids.length === 0 || batchAction) return;
+    batchTestStopRef.current = false;
+    setBatchAction("test");
+    setBatchTestProgress({ done: 0, total: ids.length });
+    try {
+      for (let index = 0; index < ids.length; index += 1) {
+        if (batchTestStopRef.current) break;
+        const id = ids[index];
+        setTestingModelIds((prev) => new Set(prev).add(id));
+        try {
+          const res = await fetch("/api/models/test", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: `${providerStorageAlias}/${id}` }),
+          });
+          const data = await res.json();
+          setModelTestResults((prev) => ({ ...prev, [id]: data.ok ? "ok" : "error" }));
+        } catch {
+          setModelTestResults((prev) => ({ ...prev, [id]: "error" }));
+        } finally {
+          setTestingModelIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+        }
+        setBatchTestProgress({ done: index + 1, total: ids.length });
+      }
+    } finally {
+      setBatchAction("");
+      setBatchTestProgress(null);
+    }
+  };
+
   const renderModelsSection = () => {
     if (isCompatible) {
       return (
@@ -674,20 +874,25 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onCopy={copy}
           onSetAlias={handleSetAlias}
           onDeleteAlias={handleDeleteAlias}
-          onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
+          onOpenAddModel={() => setShowAddCustomModel(true)}
           onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
           onDisableModel={handleDisableModel}
           onEnableModel={handleEnableModel}
           disabledModelIds={disabledModelIds}
           connections={connections}
           getCaps={getCaps}
-          isAnthropic={isAnthropicCompatible}
           modelAccessTags={modelAccessTags}
           onEditAccessTags={openModelTagEditor}
           onEditCapabilities={openModelCapabilitiesEditor}
           onToggleCapability={handleToggleCapability}
           capabilityOverrides={capabilityOverrides}
           togglingCapability={togglingCapability}
+          modelTestResults={modelTestResults}
+          testingModelIds={testingModelIds}
+          onTestModel={handleTestModel}
+          selectable={batchMode}
+          selectedModelIds={selectedModelIds}
+          onToggleSelect={toggleModelSelection}
         />
       );
     }
@@ -760,6 +965,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 value,
               })}
               busyCapabilityKey={rowBusyCapabilityKey}
+              selectable={batchMode}
+              selected={selectedModelIds.has(model.id)}
+              onToggleSelect={() => toggleModelSelection(model.id)}
             />
           );
         })}
@@ -811,6 +1019,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 value,
               })}
               busyCapabilityKey={builtInBusyCapabilityKey}
+              selectable={batchMode}
+              selected={selectedModelIds.has(model.id)}
+              onToggleSelect={() => toggleModelSelection(model.id)}
             />
           );
         })}
@@ -999,7 +1210,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               {renderHeaderIcon()}
             </div>
           )}
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="truncate text-2xl font-semibold tracking-tight sm:text-3xl">{providerInfo.name}</h1>
               {(providerInfo.notice?.apiKeyUrl || providerInfo.notice?.signupUrl || providerInfo.website) && (
@@ -1014,11 +1225,208 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 </a>
               )}
             </div>
-            <p className="text-text-muted">
-              {connections.length} 个账号 · {models.length} 个模型
-            </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-text-muted">
+              <p>
+                {connections.length} 个账号 · {models.length} 个模型
+              </p>
+              {providerThinkingLevels && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="shrink-0 text-xs text-text-muted">思考等级</span>
+                  <div
+                    role="radiogroup"
+                    aria-label="思考等级"
+                    title="复制模型名时追加 (等级) 后缀；选「自动」则不追加"
+                    className="flex flex-wrap items-center gap-1"
+                  >
+                    {providerThinkingLevels.map((opt) => {
+                      const active = thinkingMode === opt;
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => handleThinkingModeChange(opt)}
+                          className={`inline-flex h-7 items-center rounded-[8px] border px-2.5 text-xs transition-colors ${
+                            active
+                              ? "border-brand-500/45 bg-brand-500/10 font-medium text-brand-500"
+                              : "border-border-subtle bg-surface-2 text-text-muted hover:border-border hover:text-text-main"
+                          }`}
+                        >
+                          {thinkingLevelLabel(opt)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+            {isCompatible && (
+              <p className="mt-1 text-xs text-text-muted">
+                手动添加{isAnthropicCompatible ? "Anthropic" : "OpenAI"}兼容模型，或点右上角「同步模型」从上游 /models 批量拉取。
+              </p>
+            )}
+          </div>
+          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {supportsModelSync && (
+              <Button
+                size="md"
+                variant="secondary"
+                icon="sync"
+                onClick={handleSyncSupportedModels}
+                disabled={syncingModels}
+                loading={syncingModels}
+              >
+                {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
+              </Button>
+            )}
+            {/* Batch entry: every action here works for both channel kinds. */}
+            <div className="relative">
+              <Button
+                size="md"
+                variant={batchMode ? "primary" : "secondary"}
+                icon="checklist"
+                title="批量操作模型"
+                aria-expanded={batchMode || batchMenuOpen}
+                onClick={() => (batchMode ? exitBatchMode() : setBatchMenuOpen((open) => !open))}
+              >
+                批量
+              </Button>
+              {batchMenuOpen && !batchMode && (
+                <>
+                  <button type="button" aria-label="关闭菜单" className="fixed inset-0 z-20 cursor-default" onClick={() => setBatchMenuOpen(false)} />
+                  <div role="menu" className="absolute right-0 top-11 z-30 min-w-52 rounded-lg border border-border-subtle bg-surface p-1 shadow-[var(--shadow-elev)]">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { setBatchMenuOpen(false); setBatchMode(true); }}
+                      className={BATCH_MENU_ITEM}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>check_box</span>
+                      选择模型…
+                    </button>
+                    <div className="my-1 h-px bg-border-subtle" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={disabledModelIds.length === 0}
+                      onClick={() => { setBatchMenuOpen(false); handleEnableAll(); }}
+                      className={BATCH_MENU_ITEM}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>restart_alt</span>
+                      全部启用 ({disabledModelIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={batchActiveIds.length === 0}
+                      onClick={() => { setBatchMenuOpen(false); handleDisableAll(batchActiveIds); }}
+                      className={BATCH_MENU_ITEM}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>block</span>
+                      全部禁用 ({batchActiveIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={batchModelRows.length === 0 || Boolean(batchAction)}
+                      onClick={() => { setBatchMenuOpen(false); handleBatchTest(batchModelRows.map((row) => row.id)); }}
+                      className={BATCH_MENU_ITEM}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>science</span>
+                      测试全部 ({batchModelRows.length})
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={batchDeletableRows.length === 0 || Boolean(batchAction)}
+                      onClick={() => { setBatchMenuOpen(false); handleBatchDelete(batchDeletableRows); }}
+                      className={BATCH_MENU_ITEM_DANGER}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>delete</span>
+                      删除自定义模型 ({batchDeletableRows.length})
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
+
+        {batchMode && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[10px] border border-border-subtle bg-surface-2/50 px-3 py-2">
+            <span className="text-xs text-text-muted">
+              已选 <strong className="font-semibold text-text-main">{selectedModelIds.size}</strong> / {batchModelRows.length}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedModelIds(new Set(batchModelRows.map((row) => row.id)))}
+              className="rounded-[6px] px-2 py-1 text-xs text-text-muted transition-colors hover:bg-sidebar hover:text-text-main"
+            >
+              全选
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedModelIds(new Set())}
+              disabled={selectedModelIds.size === 0}
+              className="rounded-[6px] px-2 py-1 text-xs text-text-muted transition-colors hover:bg-sidebar hover:text-text-main disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              清空
+            </button>
+            <span className="mx-1 h-4 w-px shrink-0 bg-border" />
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="restart_alt"
+              disabled={selectedModelIds.size === 0 || Boolean(batchAction)}
+              onClick={() => handleBatchEnableSelected(selectedBatchRows.map((row) => row.id))}
+            >
+              启用
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="block"
+              disabled={selectedModelIds.size === 0 || Boolean(batchAction)}
+              onClick={() => handleDisableAll(selectedBatchRows.map((row) => row.id))}
+            >
+              禁用
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="science"
+              disabled={selectedModelIds.size === 0 || Boolean(batchAction)}
+              onClick={() => handleBatchTest(selectedBatchRows.map((row) => row.id))}
+            >
+              测试
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="delete"
+              disabled={selectedModelIds.size === 0 || Boolean(batchAction)}
+              onClick={() => handleBatchDelete(selectedBatchRows)}
+            >
+              删除{selectedBatchRows.filter((row) => row.deleteKind).length > 0 ? ` (${selectedBatchRows.filter((row) => row.deleteKind).length})` : ""}
+            </Button>
+            {batchTestProgress && (
+              <span className="text-xs text-text-muted">测试中 {batchTestProgress.done}/{batchTestProgress.total}</span>
+            )}
+            {batchAction === "test" && (
+              <button
+                type="button"
+                onClick={stopBatchTest}
+                className="rounded-[6px] px-2 py-1 text-xs text-red-500 transition-colors hover:bg-red-500/10"
+              >
+                停止
+              </button>
+            )}
+            <Button size="sm" variant="ghost" icon="close" className="ml-auto" onClick={exitBatchMode}>
+              完成
+            </Button>
+          </div>
+        )}
       </div>
 
       {providerInfo.deprecated && (
@@ -1046,83 +1454,9 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         </div>
       )}
 
-      {/* Models */}
-      <Card>
-        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold">
-              {"Available Models"}
-            </h2>
-            {providerThinkingLevels && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="shrink-0 text-xs text-text-muted">思考</span>
-                <div
-                  role="radiogroup"
-                  aria-label="思考等级"
-                  title="复制模型名时追加 (等级) 后缀；选「自动」则不追加"
-                  className="flex flex-wrap items-center gap-1"
-                >
-                  {providerThinkingLevels.map((opt) => {
-                    const active = thinkingMode === opt;
-                    return (
-                      <button
-                        key={opt}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => handleThinkingModeChange(opt)}
-                        className={`inline-flex h-7 items-center rounded-[8px] border px-2.5 text-xs transition-colors ${
-                          active
-                            ? "border-brand-500/45 bg-brand-500/10 font-medium text-brand-500"
-                            : "border-border-subtle bg-surface-2 text-text-muted hover:border-border hover:text-text-main"
-                        }`}
-                      >
-                        {thinkingLevelLabel(opt)}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-          {(!isCompatible || supportsModelSync) && (() => {
-            const allIds = [
-              ...models,
-              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
-            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
-            return (
-              <div className="flex flex-wrap gap-2">
-                {supportsModelSync && (
-                  <Button
-                    size="md"
-                    variant="secondary"
-                    icon="sync"
-                    onClick={handleSyncSupportedModels}
-                    disabled={syncingModels}
-                    loading={syncingModels}
-                  >
-                    {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
-                  </Button>
-                )}
-                {!isCompatible && (
-                  <>
-                    {disabledModelIds.length > 0 && (
-                      <Button size="md" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
-                        Active All
-                      </Button>
-                    )}
-                    {activeIds.length > 0 && (
-                      <Button size="md" variant="secondary" icon="block" onClick={() => handleDisableAll(activeIds)}>
-                        Disable All
-                      </Button>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })()}
-        </div>
+      {/* Models — the channel header above carries the section actions and every
+          model card draws its own border, so no outer card wraps this list. */}
+      <div className="flex min-w-0 flex-col">
         {!!modelsTestError && (
           <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
         )}
@@ -1132,7 +1466,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           </p>
         )}
         {renderModelsSection()}
-      </Card>
+      </div>
 
       {/* Modals */}
       <Modal isOpen={Boolean(taggingModel)} title={`配置模型权限 · ${taggingModel || ""}`} onClose={() => { if (!savingModelTags) setTaggingModel(null); }}>
@@ -1153,17 +1487,15 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onClose={() => setShowEditNodeIconModal(false)}
         />
       )}
-      {!isCompatible && (
-        <AddCustomModelModal
-          key={showAddCustomModel ? "open" : "closed"}
-          isOpen={showAddCustomModel}
+      {showAddCustomModel && (
+        <AddModelDrawer
+          isOpen
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId) => {
-            const saved = await handleAddCustomModel(modelId, "llm", providerStorageAlias);
-            if (saved) setShowAddCustomModel(false);
-            return saved;
-          }}
+          connections={connections}
+          canTest={connections.length > 0 || isFreeNoAuth}
+          existingModelIds={existingModelIds}
+          onSave={handleAddModelFromDrawer}
           onClose={() => setShowAddCustomModel(false)}
         />
       )}

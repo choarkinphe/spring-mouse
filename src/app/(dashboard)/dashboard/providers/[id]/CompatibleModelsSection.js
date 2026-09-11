@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Input, Toggle } from "@/shared/components";
+import { SelectionCheckbox, Toggle } from "@/shared/components";
 import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
 import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
@@ -17,7 +17,7 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel }) {
+function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, selectable = false, selected = false, onToggleSelect }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -29,8 +29,11 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
   const canToggleCaps = typeof onToggleCapability === "function";
 
   return (
-    <article className={`group relative min-w-0 rounded-xl border ${borderColor} bg-bg/30 transition-colors hover:border-primary/35 hover:bg-sidebar/45 ${!isEnabled ? "opacity-60" : ""}`}>
+    <article className={`group relative min-w-0 rounded-xl border ${borderColor} bg-bg/30 transition-colors hover:border-primary/35 hover:bg-sidebar/45 ${!isEnabled ? "opacity-60" : ""} ${selected ? "border-primary/60!" : ""}`}>
       <header className="flex min-h-[52px] min-w-0 items-start gap-2 border-b border-border-subtle px-3 py-2.5">
+        {selectable && (
+          <SelectionCheckbox checked={selected} onChange={onToggleSelect} label={`选择模型 ${modelId}`} />
+        )}
         <span className={`material-symbols-outlined mt-0.5 shrink-0 text-[18px] ${statusColor}`} title={testStatus === "ok" ? "测试通过" : testStatus === "error" ? "测试失败" : role.label}>
           {statusIcon}
         </span>
@@ -151,31 +154,8 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onAddCustomModel, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, isAnthropic, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, capabilityOverrides = {}, togglingCapability = null }) {
-  const [newModel, setNewModel] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [testingModelId, setTestingModelId] = useState(null);
-  const [modelTestResults, setModelTestResults] = useState({});
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect }) {
   const [openModelMenuId, setOpenModelMenuId] = useState(null);
-
-  const handleTestModel = async (modelId) => {
-    if (testingModelId) return;
-    setTestingModelId(modelId);
-    try {
-      const res = await fetch("/api/models/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
-      });
-      const data = await res.json();
-      setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
-    } catch {
-      setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
-    } finally {
-      setTestingModelId(null);
-    }
-  };
 
   const allModels = getProviderCustomModelRows({
     customModels,
@@ -184,95 +164,25 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
     type: "llm",
   });
 
-  const handleAdd = async () => {
-    if (!newModel.trim() || adding) return;
-    const modelId = newModel.trim();
-    if (allModels.some((model) => model.id === modelId)) {
-      alert("Model already exists for this provider.");
-      return;
-    }
-
-    setAdding(true);
-    try {
-      const saved = await onAddCustomModel(modelId);
-      if (saved !== false) setNewModel("");
-    } catch (error) {
-      console.log("Error adding model:", error);
-    } finally {
-      setAdding(false);
-    }
-  };
-
-  const handleImport = async () => {
-    if (importing) return;
-    const activeConnection = connections.find((conn) => conn.isActive !== false);
-    if (!activeConnection) return;
-
-    setImporting(true);
-    try {
-      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || "Failed to import models");
-        return;
-      }
-      const models = data.models || [];
-      if (models.length === 0) {
-        alert("No models returned from /models.");
-        return;
-      }
-      let importedCount = 0;
-      for (const model of models) {
-        const modelId = model.id || model.name || model.model;
-        if (!modelId) continue;
-        if (allModels.some((entry) => entry.id === modelId)) continue;
-        const saved = await onAddCustomModel(modelId);
-        if (saved !== false) importedCount += 1;
-      }
-      if (importedCount === 0) {
-        alert("No new models were added.");
-      }
-    } catch (error) {
-      console.log("Error importing models:", error);
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  const canImport = connections.some((conn) => conn.isActive !== false);
+  const hasActiveConnection = connections.some((conn) => conn.isActive !== false);
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-sm text-text-muted">
-        手动添加 {isAnthropic ? "Anthropic" : "OpenAI"} 兼容模型，或从上游 /models 接口批量导入。
-      </p>
-
-      <div className="flex flex-wrap items-end gap-2">
-        <Input
-          className="min-w-[240px] flex-1"
-          label="Model ID"
-          value={newModel}
-          onChange={(e) => setNewModel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-          placeholder={isAnthropic ? "claude-3-opus-20240229" : "gpt-4o"}
-          inputClassName="font-mono text-xs"
-        />
-        <Button size="md" icon="add" onClick={handleAdd} disabled={!newModel.trim() || adding}>
-          {adding ? "Adding..." : "Add"}
-        </Button>
-        <Button size="md" variant="secondary" icon="download" onClick={handleImport} disabled={!canImport || importing} loading={importing}>
-          {importing ? "Importing..." : "Import from /models"}
-        </Button>
-      </div>
-
-      {!canImport && (
+      {!hasActiveConnection && (
         <p className="text-xs text-text-muted">
-          先添加一个可用连接，才能从上游导入模型。
+          先添加一个可用账号，才能测试模型或同步上游列表。
         </p>
       )}
 
-      {allModels.length > 0 && (
         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+          <button
+            type="button"
+            onClick={onOpenAddModel}
+            className="flex min-h-[116px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-sm font-semibold text-text-muted transition-colors hover:border-primary/50 hover:bg-primary/[0.05] hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/30"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            添加模型
+          </button>
           {allModels.map(({ id, alias, source, modelSource, providerId, capabilities }) => {
             const capsKey = `${providerStorageAlias}/${id}`;
             // Mirror ProviderDetailClient: the parent tracks the in-flight toggle as
@@ -285,6 +195,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
             // so a partially-known model still shows every applicable badge.
             const caps = { ...(getCaps(capsKey) || {}), ...(capabilities || {}) };
             const sourceLabel = describeModelSource(modelSource);
+            const overrideCaps = capabilities || capabilityOverrides[`${providerStorageAlias}|${id}|llm`] || {};
             return (
               <CompatibleModelCard
                 key={`${source}-${providerStorageAlias}/${id}`}
@@ -295,9 +206,12 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
                 copied={copied}
                 onCopy={onCopy}
                 onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
-                onTest={connections.length > 0 ? () => handleTestModel(id) : undefined}
+                onTest={connections.length > 0 && onTestModel ? () => onTestModel(id) : undefined}
                 testStatus={modelTestResults[id]}
-                isTesting={testingModelId === id}
+                isTesting={Boolean(testingModelIds?.has(id))}
+                selectable={selectable}
+                selected={Boolean(selectedModelIds?.has(id))}
+                onToggleSelect={() => onToggleSelect?.(id)}
                 isEnabled={!disabledModelIds.includes(id)}
                 onToggleEnabled={(enabled) => enabled ? onEnableModel(id) : onDisableModel(id)}
                 menuOpen={openModelMenuId === `${source}-${id}`}
@@ -325,7 +239,6 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
             );
           })}
         </div>
-      )}
     </div>
   );
 }
@@ -338,7 +251,7 @@ CompatibleModelsSection.propTypes = {
   copied: PropTypes.string,
   onCopy: PropTypes.func.isRequired,
   onDeleteAlias: PropTypes.func.isRequired,
-  onAddCustomModel: PropTypes.func.isRequired,
+  onOpenAddModel: PropTypes.func.isRequired,
   onDeleteCustomModel: PropTypes.func.isRequired,
   onDisableModel: PropTypes.func.isRequired,
   onEnableModel: PropTypes.func.isRequired,
@@ -348,13 +261,18 @@ CompatibleModelsSection.propTypes = {
     isActive: PropTypes.bool,
   })).isRequired,
   getCaps: PropTypes.func.isRequired,
-  isAnthropic: PropTypes.bool,
   modelAccessTags: PropTypes.object.isRequired,
   onEditAccessTags: PropTypes.func.isRequired,
   onEditCapabilities: PropTypes.func,
   onToggleCapability: PropTypes.func,
   capabilityOverrides: PropTypes.object,
   togglingCapability: PropTypes.string,
+  modelTestResults: PropTypes.object,
+  testingModelIds: PropTypes.object,
+  onTestModel: PropTypes.func,
+  selectable: PropTypes.bool,
+  selectedModelIds: PropTypes.object,
+  onToggleSelect: PropTypes.func,
 };
 
 CompatibleModelCard.propTypes = {
@@ -362,4 +280,7 @@ CompatibleModelCard.propTypes = {
   onEditCapabilities: PropTypes.func,
   onToggleCapability: PropTypes.func,
   busyCapabilityKey: PropTypes.string,
+  selectable: PropTypes.bool,
+  selected: PropTypes.bool,
+  onToggleSelect: PropTypes.func,
 };

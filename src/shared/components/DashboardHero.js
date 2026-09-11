@@ -27,13 +27,19 @@ export default function DashboardHero({
         <span className="material-symbols-outlined text-[132px]">{icon}</span>
       </div>
       <div className="relative flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0 max-w-3xl">
+        <div className="min-w-0 flex-1">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">{eyebrow}</p>
           <h1 className="mt-1 text-xl font-semibold tracking-tight text-text-main sm:text-2xl">{title}</h1>
           <p className="mt-1.5 max-w-2xl text-sm leading-5 text-text-muted">{description}</p>
-          {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
         </div>
-        {action && <div className="relative z-10 shrink-0 sm:pb-0.5">{action}</div>}
+        {/* Stats and the page action share one right-hand row so the hero does not
+            grow a second line just to hold the badges. */}
+        {(children || action) && (
+          <div className="relative z-10 flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pb-0.5">
+            {children}
+            {action}
+          </div>
+        )}
       </div>
     </section>
   );

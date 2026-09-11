@@ -574,13 +574,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 truncate text-sm font-semibold text-text-main">{getConnectionName(connection)}</span>
-            {/* Status badge shares the name line and is pinned to the column's
-                right edge, so every row lines up on both edges without the
-                badge drifting to the vertical centre of the account block. */}
-            <span
-              className={cn("ml-auto flex min-w-[2.75rem] shrink-0 items-center justify-center rounded border px-1.5 py-0.5 text-[10px] leading-none", status.className)}
-            >
-              {status.label}
+            {/* Executor + status share the name line and are pinned to the
+                column's right edge, so every row lines up on both edges without
+                the badges drifting to the vertical centre of the account block. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
+              <span
+                className={cn("flex min-w-[2.75rem] shrink-0 items-center justify-center rounded border px-1.5 py-0.5 text-[10px] leading-none", status.className)}
+              >
+                {status.label}
+              </span>
             </span>
           </span>
           <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
@@ -588,8 +591,6 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <span className="shrink-0 text-[#506070]">/</span>
             <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
             {connection.email && <><span className="shrink-0 text-[#506070]">·</span><span className="min-w-0 truncate">{connection.email}</span></>}
-            <span className="shrink-0 text-[#506070]">·</span>
-            <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
           </span>
           {connection.accessTags?.length > 0 && (
             <span className="mt-1.5 flex flex-wrap gap-1">

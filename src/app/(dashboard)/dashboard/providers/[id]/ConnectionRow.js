@@ -117,11 +117,7 @@ export default function ConnectionRow({ connection, mouse, isOAuth, isFirst, isL
             <Badge variant="default" size="sm">
               {authLabel}
             </Badge>
-            {connection.mouseId && (
-              <Badge variant="primary" size="sm" icon="device_hub">
-                {mouseName || "Mouse"}
-              </Badge>
-            )}
+            <MouseExecutorChip mouseId={connection.mouseId} mouseName={mouse?.name} isOnline={mouse?.isOnline} />
             {connection.accessTags?.map((tag) => (
               <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{tag}</span>
             ))}

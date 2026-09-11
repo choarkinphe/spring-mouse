@@ -27,9 +27,9 @@ export default function MouseExecutorChip({ mouseId, mouseName, isOnline, classN
         "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-none",
         routed
           ? offline
-            ? "border-amber-400/30 bg-amber-400/[0.08] text-amber-200"
-            : "border-[#38bdf8]/35 bg-[#38bdf8]/[0.08] text-[#7dd3fc]"
-          : "border-white/[0.08] bg-white/[0.03] text-text-muted",
+            ? "border-amber-400/40 bg-amber-400/[0.12] text-amber-200"
+            : "border-[#38bdf8]/45 bg-[#38bdf8]/[0.12] text-[#7dd3fc]"
+          : "border-border bg-surface-2 text-text-main",
         className,
       )}
       title={title}

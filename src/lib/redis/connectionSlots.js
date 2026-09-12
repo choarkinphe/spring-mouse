@@ -5,6 +5,17 @@ const positive = (value, fallback) => Math.max(1, Number.parseInt(value, 10) || 
 const bounded = (value, fallback, max) => Math.min(positive(value, fallback), max);
 const DEFAULT_LIMIT = positive(process.env.SPRING_MOUSE_CONNECTION_MAX_CONCURRENCY, 16);
 const LEASE_MS = Math.max(3000, positive(process.env.SPRING_MOUSE_CONNECTION_SLOT_TTL_SECONDS, 90) * 1000);
+// A caller that waited out the whole queue window without being admitted proves
+// the gate stayed saturated for that entire period. Advertising the observed
+// window is the honest hint; the former hardcoded 1s told every client to retry
+// almost immediately, so they re-queued for another full window in lockstep.
+const QUEUE_RETRY_AFTER_MIN_MS = positive(process.env.SPRING_MOUSE_QUEUE_RETRY_AFTER_MIN_MS, 5_000);
+const QUEUE_RETRY_AFTER_MAX_MS = Math.max(
+  QUEUE_RETRY_AFTER_MIN_MS,
+  positive(process.env.SPRING_MOUSE_QUEUE_RETRY_AFTER_MAX_MS, 60_000),
+);
+const queueRetryAfterMs = (timeoutMs) =>
+  Math.min(QUEUE_RETRY_AFTER_MAX_MS, Math.max(QUEUE_RETRY_AFTER_MIN_MS, Number(timeoutMs) || 0));
 // Distinct v3 keys avoid mixing hard-capacity leases with former soft counters.
 const slotKey = (id) => `spring-mouse:routing:{routing}:slots:v3:${id}`;
 const providerKey = (providerId) => `spring-mouse:routing:{routing}:provider:v1:${providerId}`;
@@ -16,12 +27,15 @@ const state = globalThis.__smConnectionLeases ||= {
 const { active } = state;
 
 export class RoutingQueueTimeoutError extends Error {
-  constructor(providerId, timeoutMs) {
+  constructor(providerId, timeoutMs, retryAfterMs = null) {
     super(`${providerId} concurrency queue timed out after ${timeoutMs}ms`);
     this.name = "RoutingQueueTimeoutError";
     this.code = "ROUTING_QUEUE_TIMEOUT";
     this.providerId = providerId;
-    this.retryAfterMs = 1000;
+    // How long the request actually waited before giving up. Kept separate from
+    // the advisory delay so logs report the real figure.
+    this.queueTimeoutMs = timeoutMs;
+    this.retryAfterMs = retryAfterMs ?? queueRetryAfterMs(timeoutMs);
   }
 }
 

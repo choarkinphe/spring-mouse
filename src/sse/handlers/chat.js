@@ -24,6 +24,8 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
+import { saveRequestUsage } from "@/lib/usageDb.js";
+import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 import { clearProviderModelBreaker, recordProviderModelFailure } from "../services/providerBreaker.js";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
@@ -159,6 +161,35 @@ export async function handleChat(request, clientRawRequest = null) {
  */
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = []) {
   const modelInfo = await getModelInfo(modelStr);
+  const requestStartTime = Date.now();
+
+  // A request rejected before an upstream account is chosen used to leave no
+  // trace in the database: usageHistory only ever saw requests that reached the
+  // chat pipeline, so "why are so few requests getting through?" could only be
+  // answered from the 200-line in-memory log buffer. Persist these with status
+  // "rejected" — which is never counted against API-key quota — so rejections
+  // become countable. The specific cause stays in the matching WARN log line,
+  // and the startedAt→completedAt span reveals how long a request queued.
+  const saveRejectedUsage = () => {
+    if (!request) return;
+    let endpoint = clientRawRequest?.endpoint || null;
+    if (!endpoint) {
+      try { endpoint = new URL(request.url).pathname; } catch { endpoint = null; }
+    }
+    return saveRequestUsage({
+      trafficRequestId: getTrafficRequestId(request),
+      startedAt: new Date(requestStartTime).toISOString(),
+      completedAt: new Date().toISOString(),
+      provider: modelInfo.provider || null,
+      model: modelInfo.model || null,
+      connectionId: null,
+      apiKey,
+      endpoint,
+      ...getRequestSourceMeta(request),
+      tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      status: "rejected",
+    }).catch(() => {});
+  };
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
@@ -237,12 +268,18 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       });
     } catch (error) {
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
-      log.warn("CONCURRENCY", `${provider}/${model} | queue timeout after ${error.retryAfterMs}ms`);
+      // Report what actually happened: how long this request waited, and how
+      // long the caller should back off before trying again.
+      const waitedMs = error.queueTimeoutMs ?? error.retryAfterMs;
+      const retryAfterMs = error.retryAfterMs;
+      const retryAfterHuman = `retry after ${Math.ceil(retryAfterMs / 1000)}s`;
+      log.warn("CONCURRENCY", `${provider}/${model} | queue timeout after ${waitedMs}ms (${retryAfterHuman})`);
+      saveRejectedUsage();
       return unavailableResponse(
         HTTP_STATUS.RATE_LIMITED,
         `${provider}/${model} is at the configured concurrency limit`,
-        new Date(Date.now() + error.retryAfterMs).toISOString(),
-        "retry after 1s",
+        new Date(Date.now() + retryAfterMs).toISOString(),
+        retryAfterHuman,
       );
     }
 
@@ -256,13 +293,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
+        saveRejectedUsage();
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
+        saveRejectedUsage();
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       log.warn("CHAT", "No more accounts available", { provider });
+      saveRejectedUsage();
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 

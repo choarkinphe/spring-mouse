@@ -138,16 +138,22 @@ is not.
 
 ## Running the bundled agent
 
+The node needs nothing from this repository. It downloads its own runtime from
+the Spring it is about to connect to — `GET /api/mouses/agent` serves exactly the
+`mouse/agent.mjs` in this checkout — so one command is all a fresh host needs:
+
 ```bash
-node mouse/agent.mjs --spring-url https://spring.example.com --token mst_...
+docker run -d --name spring-mouse-agent --restart unless-stopped \
+  -e SPRING_URL=https://spring.example.com \
+  -e MOUSE_TOKEN=mst_... \
+  node:22-alpine \
+  sh -c 'wget -qO /tmp/agent.mjs "$SPRING_URL/api/mouses/agent" && exec node /tmp/agent.mjs'
 ```
 
-or with Docker, from a checkout of this repository:
+Running it straight from a checkout works too:
 
 ```bash
-SPRING_URL=https://spring.example.com \
-MOUSE_TOKEN=mst_... \
-docker compose -f docker-compose.mouse.yml up -d --build
+node mouse/agent.mjs --spring-url https://spring.example.com --token mst_...
 ```
 
 The agent opens a local healthcheck on `127.0.0.1:9101/healthz` and nothing else;

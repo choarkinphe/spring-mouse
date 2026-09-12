@@ -40,13 +40,18 @@ const SETUP_STEPS = [
 
 // One command per node: the token in it *is* that node's identity, so the
 // plaintext is shown once only, and re-issuing it invalidates the previous
-// command. Nothing in it describes where the node lives — the agent dials out,
-// so the host needs no public address and the container publishes no port.
+// command. Nothing has to be uploaded to the target host — the node pulls its
+// own runtime from the Spring it dials — and no port is published, so the host
+// needs no public address.
 function buildStartCommand({ token, springUrl }) {
   return [
-    `SPRING_URL=${springUrl || "<Spring 地址>"} \\`,
-    `MOUSE_TOKEN=${token} \\`,
-    "docker compose -f docker-compose.mouse.yml up -d --build",
+    "docker run -d --name spring-mouse-agent --restart unless-stopped \\",
+    "  --add-host host.docker.internal:host-gateway \\",
+    "  --log-opt max-size=20m --log-opt max-file=3 \\",
+    `  -e SPRING_URL=${springUrl || "<Spring 地址>"} \\`,
+    `  -e MOUSE_TOKEN=${token} \\`,
+    "  node:22-alpine \\",
+    "  sh -c 'wget -qO /tmp/agent.mjs \"$SPRING_URL/api/mouses/agent\" && exec node /tmp/agent.mjs'",
   ].join("\n");
 }
 
@@ -361,7 +366,7 @@ export default function MousesClient() {
               {startCommand}
             </pre>
             <p className="text-xs leading-5 text-text-muted">
-              需在检出本仓库的机器上执行：agent 镜像由 <span className="font-mono">Dockerfile.mouse</span> 本地构建，未发布到镜像仓库。
+              目标服务器只要能访问上面的 Spring 地址即可：命令用官方 <span className="font-mono">node:22-alpine</span> 镜像启动，运行前从 Spring 下载该节点专属的 agent 脚本，不需要上传任何文件，也不需要开放端口。同一台服务器要跑多个节点时，改掉 <span className="font-mono">--name</span> 即可。
             </p>
           </div>
         )}

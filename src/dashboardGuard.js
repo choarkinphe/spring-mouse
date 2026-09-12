@@ -35,6 +35,10 @@ const PUBLIC_API_PATHS = [
   // both halves of the connection are outbound from it, so neither request can
   // carry a dashboard session. A prefix match also covers /tunnel/result.
   "/api/mouses/tunnel",
+  // Serves the agent's own source, which a fresh node downloads with curl/wget
+  // before it holds any credential. It is the same file that ships in this
+  // repository, so there is nothing here to protect.
+  "/api/mouses/agent",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

@@ -1,4 +1,8 @@
 # syntax=docker/dockerfile:1.7
+# Optional: build your own agent image for hosts that cannot reach Docker Hub, or
+# to pin the agent version at deploy time. The default deployment runs the
+# official node image and downloads the agent from Spring, so this file is not
+# needed for a normal install.
 ARG NODE_IMAGE=node:22-alpine
 
 FROM ${NODE_IMAGE}
@@ -8,19 +12,13 @@ WORKDIR /app
 COPY --chown=node:node mouse/agent.mjs ./mouse/agent.mjs
 
 ENV NODE_ENV=production \
-    MOUSE_HOST=0.0.0.0 \
-    MOUSE_PORT=9101 \
-    MOUSE_STATE_FILE=/data/agent.json
-
-RUN mkdir -p /data && chown node:node /data
+    MOUSE_HEALTH_PORT=9101
 
 USER node
 
-VOLUME ["/data"]
-
-EXPOSE 9101
-
+# The healthcheck lives on container loopback on purpose: Spring never dials the
+# node, so nothing here should be reachable from outside.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-  CMD ["sh", "-c", "wget -qO- http://127.0.0.1:${MOUSE_PORT:-9101}/healthz >/dev/null 2>&1"]
+  CMD ["sh", "-c", "wget -qO- http://127.0.0.1:${MOUSE_HEALTH_PORT:-9101}/healthz >/dev/null 2>&1"]
 
 ENTRYPOINT ["node", "/app/mouse/agent.mjs"]

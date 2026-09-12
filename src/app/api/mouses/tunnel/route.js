@@ -36,6 +36,13 @@ export async function GET(request) {
   let pingTimer = null;
   let closed = false;
 
+  // The node names its own agent version on the request that opens the tunnel.
+  // Keepalives deliberately carry nothing: this is a self-description, not a
+  // heartbeat payload. Seeing it in the dashboard is how an operator confirms
+  // which build a host is running.
+  const reportedVersion = (request.nextUrl.searchParams.get("version") || "").trim().slice(0, 80);
+  const selfDescription = reportedVersion ? { version: reportedVersion } : {};
+
   const handle = {
     send(event, data) {
       if (closed || !controller) return false;
@@ -72,7 +79,7 @@ export async function GET(request) {
 
       // A tunnel cannot exist without a valid token, so opening one is proof
       // enough that the node is registered — even if its register POST was lost.
-      void touchMouseHeartbeat(mouse.id).catch(() => {});
+      void touchMouseHeartbeat(mouse.id, selfDescription).catch(() => {});
 
       handle.send("ready", {
         mouseId: mouse.id,

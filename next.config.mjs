@@ -55,6 +55,12 @@ const nextConfig = {
     root: tracingRoot
   },
   outputFileTracingRoot: tracingRoot,
+  // The node fetches its runtime from /api/mouses/agent, which reads this file
+  // with `fs` at request time. Tracing only follows imports, so without this the
+  // standalone build would ship a route that cannot find its own payload.
+  outputFileTracingIncludes: {
+    "/api/mouses/agent": ["./mouse/agent.mjs"],
+  },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },

@@ -34,27 +34,41 @@ old one and drops the tunnel it was holding.
 
 ## Docker
 
-Build and run the standalone image:
+Nothing has to be copied to the target host. The container starts from the
+official Node image and downloads its own runtime from the Spring it dials, so
+this single command is the whole deployment:
 
 ```bash
-SPRING_URL=https://spring.example.com \
-MOUSE_TOKEN=mst_... \
-docker compose -f docker-compose.mouse.yml up -d --build
+docker run -d --name spring-mouse-agent --restart unless-stopped \
+  --add-host host.docker.internal:host-gateway \
+  --log-opt max-size=20m --log-opt max-file=3 \
+  -e SPRING_URL=https://spring.example.com \
+  -e MOUSE_TOKEN=mst_... \
+  node:22-alpine \
+  sh -c 'wget -qO /tmp/agent.mjs "$SPRING_URL/api/mouses/agent" && exec node /tmp/agent.mjs'
 ```
+
+The dashboard generates this command with the real token and Spring address
+filled in; the token is shown once, so copy it from there rather than retyping.
 
 The container publishes no ports. Its only listener is the healthcheck on
 `127.0.0.1:9101` inside the container, which is why the node can sit behind NAT:
 
 ```bash
-docker compose -f docker-compose.mouse.yml exec mouse wget -qO- http://127.0.0.1:9101/healthz
+docker exec spring-mouse-agent wget -qO- http://127.0.0.1:9101/healthz
 ```
 
 The agent reconnects on its own with a capped backoff if the tunnel drops, so a
 Spring restart or a network blip needs no intervention. It exits non-zero only
 when it cannot start at all (missing token, unreachable Spring URL).
 
+Building your own image from `Dockerfile.mouse` still works for hosts that
+cannot reach Docker Hub or that need the agent version pinned at deploy time.
+
 ## Where the code lives
 
 - `mouse/agent.mjs` — the whole agent: tunnel loop, SSE parsing, task execution.
+  Spring serves this exact file at `GET /api/mouses/agent`, which is how a new
+  node gets its runtime without an upload step.
 - `MOUSE_AGENT_PROTOCOL.md` — the wire protocol, including the frames Spring
   sends and the shape of the reply.

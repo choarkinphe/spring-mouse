@@ -402,7 +402,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
                         value={mouseId}
                         onChange={(event) => setMouseId(event.target.value)}
                         placeholder="Spring 本机执行（默认）"
-                        hint="不选择时由 Spring 主机本机执行；选择后该账号的请求改由所选 Mouse 节点发出。"
+                        hint="不选择时由 Spring 主机本机执行；选择后该账号的请求改由所选 Mouse 节点发出，节点离线时该账号暂不可用。"
                         placeholderDisabled={false}
                         options={mouses
                           .filter((mouse) => mouse.isOnline)

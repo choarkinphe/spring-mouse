@@ -15,6 +15,7 @@ export function getProviderCustomModelRows({
   customModels = [],
   modelAliases = {},
   providerAlias,
+  providerAliases = [],
   builtInModels = [],
   type = "llm",
   includeLegacyAliases = true,
@@ -24,7 +25,7 @@ export function getProviderCustomModelRows({
   const rows = [];
 
   for (const model of customModels) {
-    if (!model?.id || model.providerAlias !== providerAlias) continue;
+    if (!model?.id || !(model.providerAlias === providerAlias || providerAliases.includes(model.providerAlias))) continue;
     const rowType = modelType(model);
     if (type && rowType !== type) continue;
     if (builtInIds.has(model.id)) continue;
@@ -50,9 +51,13 @@ export function getProviderCustomModelRows({
 
   if (!includeLegacyAliases) return rows;
 
-  const prefix = `${providerAlias}/`;
+  const prefixes = [providerAlias, ...providerAliases]
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .map((value) => `${value}/`);
   for (const [alias, fullModel] of Object.entries(modelAliases || {})) {
-    if (typeof fullModel !== "string" || !fullModel.startsWith(prefix)) continue;
+    const prefix = prefixes.find((value) => fullModel?.startsWith(value));
+    if (typeof fullModel !== "string" || !prefix) continue;
     const id = fullModel.slice(prefix.length);
     if (!id || builtInIds.has(id) || seenFullModels.has(fullModel)) continue;
 

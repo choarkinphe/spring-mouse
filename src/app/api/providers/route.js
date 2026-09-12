@@ -117,8 +117,12 @@ export async function GET(request) {
     if (includeModelCounts) {
       // Use the same catalog construction as /v1/models, but never call live
       // provider catalogs while rendering the dashboard list.
+      // Channel cards expose the LLM routing set. Counting every media kind here
+      // made the card total larger than the model-management drawer and strategy
+      // selector (for example, embedding/vision entries were included but are
+      // managed under Media Services instead).
       const models = await buildModelsList(
-        ["llm", "embedding", "image", "imageToText", "video", "tts", "stt", "webSearch", "webFetch"],
+        ["llm"],
         { skipDynamicFetch: true, includeProviderModels: true },
       );
       const aliasesByProvider = new Map();

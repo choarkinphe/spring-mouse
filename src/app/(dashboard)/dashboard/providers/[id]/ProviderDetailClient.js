@@ -148,6 +148,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         customModels,
         modelAliases,
         providerAlias: providerStorageAlias,
+        providerAliases: [providerId, providerAlias],
         type: "llm",
       });
       return { count: rows.length, allModels: [], displayModels: [], disabledDisplayModels: [], customModelRows: [] };
@@ -164,6 +165,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
+      providerAliases: [providerId, providerAlias],
       builtInModels: models,
       type: "llm",
     });
@@ -572,6 +574,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
+      providerAliases: [providerId, providerAlias],
       builtInModels: models,
       type: "llm",
     });
@@ -783,6 +786,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
+      providerAliases: [providerId, providerAlias],
       builtInModels: isCompatible ? [] : models,
       type: "llm",
     })) {

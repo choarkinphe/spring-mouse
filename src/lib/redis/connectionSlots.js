@@ -62,7 +62,15 @@ redis.call('PEXPIRE', KEYS[best], tonumber(ARGV[2]) * 2)
 return best
 `;
 
-/** Atomically admits one weighted request into the provider and one account. */
+/**
+ * Atomically admits one weighted request into the provider and one account.
+ *
+ * ARGV contract — the caller MUST pass exactly this order, and KEYS[1] is the
+ * provider while account slot keys start at KEYS[2]:
+ *   [1]=lease id  [2]=lease_ms  [3]=provider_limit  [4]=weight
+ *   [5..]=per-account limits, aligned with KEYS[2..]
+ * A missing lease_ms shifts every later slot and silently rejects all traffic.
+ */
 export const HARD_RESERVE_SCRIPT = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
@@ -81,7 +89,7 @@ if tonumber(redis.call('ZCARD', provider)) + weight > provider_limit then return
 for i, key in ipairs(KEYS) do
   if i > 1 then
     redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-    if tonumber(redis.call('ZCARD', key)) + weight <= tonumber(ARGV[i + 4]) then
+    if tonumber(redis.call('ZCARD', key)) + weight <= tonumber(ARGV[i + 3]) then
       for n = 0, weight - 1 do
         local member = lease .. '#' .. n
         redis.call('ZADD', provider, expires, member)
@@ -262,7 +270,7 @@ export async function reserveConnectionSlot(candidates, options = {}) {
         const result = await routingRedis((client) => client.eval(HARD_RESERVE_SCRIPT, {
           keys: [providerKey(providerId), ...candidates.map((candidate) => slotKey(candidate.id))],
           arguments: [
-            id, String(providerLimit), String(weight),
+            id, String(LEASE_MS), String(providerLimit), String(weight),
             ...candidates.map((candidate) => String(candidate.limit)),
           ],
         }));
@@ -308,9 +316,10 @@ function makeHardLease(lease, chosenIndex, candidates) {
       if (!active.delete(lease.id)) return;
       if (!active.size) { clearInterval(state.renewalTimer); state.renewalTimer = null; }
       if (!lease.redis) return;
-      await routingRedis((client) => client.zRem([
-        providerKey(lease.providerId), slotKey(lease.connectionId),
-      ], lease.members));
+      await routingRedis(async (client) => {
+        await client.zRem(providerKey(lease.providerId), lease.members);
+        await client.zRem(slotKey(lease.connectionId), lease.members);
+      });
     },
   };
 }

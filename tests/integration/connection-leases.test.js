@@ -31,10 +31,10 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       slots = await import("../../src/lib/redis/connectionSlots.js");
       routing = await import("../../src/lib/redis/routingClient.js");
       admin = createClient({ url: process.env.SPRING_MOUSE_REDIS_URL }); admin.on("error", () => {}); await admin.connect();
-      const key = (id) => `spring-mouse:routing:{slots}:v2:${id}`;
+      const key = (id) => `spring-mouse:routing:{routing}:slots:v3:${id}`;
       const candidates = Array.from({ length: 8 }, (_, i) => ({ id: `account-${i}`, limit: 8 }));
       leases.push(...await Promise.all(Array.from({ length: 100 }, () => slots.reserveConnectionSlot(candidates))));
-      expect(slots.getLocalSlotStatus()).toEqual({ active: 100, redis: 100 });
+      expect(slots.getLocalSlotStatus()).toEqual({ active: 100, redis: 100, queued: 0 });
       const counts = await Promise.all(candidates.map((c) => admin.zCard(key(c.id))));
       expect(counts.reduce((a, b) => a + b, 0)).toBe(100);
       expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
@@ -57,13 +57,29 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       const stale = await slots.reserveConnectionSlot([{ id: "stale", limit: 2 }]); leases.push(stale);
       expect(await admin.zScore(key("stale"), "crashed")).toBeNull(); expect(await admin.zCard(key("stale"))).toBe(2);
       await stale.release(); await admin.del(key("stale"));
+      // Hard provider gate (HARD_RESERVE_SCRIPT): provider-wide cap, per-account cap
+      // and a real lease TTL. A missing lease_ms argument once shifted the whole
+      // ARGV layout, so every request on a provider-capped channel was rejected.
+      const providerKey = "spring-mouse:routing:{routing}:provider:v1:probe";
+      const hardCandidates = [{ id: "h0", limit: 1 }, { id: "h1", limit: 8 }];
+      const hardOptions = { providerId: "probe", providerLimit: 4, weight: 1, queueTimeoutMs: 700, maxQueueSize: 10 };
+      const first = await slots.reserveConnectionSlot(hardCandidates, hardOptions); leases.push(first);
+      expect(first.connectionId).toBe("h0");
+      expect(Number(await admin.sendCommand(["PTTL", providerKey]))).toBeGreaterThan(3000);
+      // h0 sits at its account limit of 1, so the next request must fall through to h1.
+      const second = await slots.reserveConnectionSlot(hardCandidates, hardOptions); leases.push(second);
+      expect(second.connectionId).toBe("h1");
+      expect(await admin.zCard(providerKey)).toBe(2);
+      await first.release(); await second.release();
+      expect(await admin.zCard(providerKey)).toBe(0);
+      await admin.del(key("h0"), key("h1"), providerKey);
       // Pause ONLY our temporary Redis. Concurrent callers must return rather than wait for it.
       await admin.sendCommand(["CLIENT", "PAUSE", "1000", "ALL"]);
       const start = performance.now();
       const offline = await Promise.all(Array.from({ length: 20 }, () => slots.reserveConnectionSlot(candidates)));
       leases.push(...offline);
       expect(performance.now() - start).toBeLessThan(800);
-      expect(slots.getLocalSlotStatus()).toEqual({ active: 20, redis: 0 });
+      expect(slots.getLocalSlotStatus()).toEqual({ active: 20, redis: 0, queued: 0 });
       await Promise.all(offline.map((l) => l.release()));
       expect(slots.getLocalSlotStatus().active).toBe(0);
       await sleep(1100);

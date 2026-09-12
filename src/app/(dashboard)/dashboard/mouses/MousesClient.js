@@ -22,11 +22,13 @@ function formatRelative(value) {
   return `${Math.floor(hours / 24)} 天前`;
 }
 
-function StatusBadge({ mouse }) {
-  const variant = mouse.status === "online" ? "success" : mouse.status === "disabled" ? "error" : "default";
-  const label = mouse.status === "online" ? "在线" : mouse.status === "disabled" ? "已禁用" : "离线";
-  return <Badge variant={variant} dot>{label}</Badge>;
-}
+// The node list is grouped by these buckets instead of printing a status badge
+// on every row: the group header carries the state, the rows carry the facts.
+const STATUS_GROUPS = [
+  { key: "online", label: "在线", icon: "sensors", accent: "text-green-600 dark:text-green-400", empty: "当前没有在线的 Mouse" },
+  { key: "offline", label: "离线", icon: "cloud_off", accent: "text-text-muted", empty: "当前没有离线的 Mouse" },
+  { key: "disabled", label: "已禁用", icon: "block", accent: "text-red-600 dark:text-red-400", empty: "当前没有已禁用的 Mouse" },
+];
 
 function TokenBadge({ token }) {
   const variant = token.status === "active" ? "success" : token.status === "revoked" ? "error" : "warning";
@@ -170,6 +172,14 @@ export default function MousesClient() {
 
   const onlineCount = mouses.filter((mouse) => mouse.isOnline).length;
   const activeTokenCount = accessTokens.filter((token) => token.status === "active").length;
+  const statusGroups = STATUS_GROUPS.map((group) => {
+    const items = mouses.filter((mouse) => mouse.status === group.key);
+    return {
+      ...group,
+      items,
+      boundTotal: items.reduce((sum, mouse) => sum + (mouse.boundAccountCount || 0), 0),
+    };
+  });
 
   return (
     <div className="flex min-w-0 flex-col gap-5 p-3 sm:p-4 lg:p-5">
@@ -189,48 +199,66 @@ export default function MousesClient() {
         <Card className="border-red-500/30 bg-red-500/5 p-3 text-sm text-red-500">{error}</Card>
       )}
 
-      <Card title="已注册 Mouse" subtitle="状态每 30 秒自动刷新。">
+      <Card title="已注册 Mouse" subtitle="按在线状态分组；状态每 30 秒自动刷新。">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-left text-sm">
+          <table className="w-full min-w-[860px] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-text-muted">
-              <tr>
-                <th className="px-3 py-2">节点</th>
-                <th className="px-3 py-2">状态</th>
-                <th className="px-3 py-2">绑定账号</th>
-                <th className="px-3 py-2">最后心跳</th>
-                <th className="px-3 py-2">版本</th>
-                <th className="px-3 py-2 text-right">操作</th>
+              <tr className="border-b border-border-subtle">
+                <th className="px-4 py-2">节点</th>
+                <th className="px-4 py-2">绑定账号</th>
+                <th className="px-4 py-2">最后心跳</th>
+                <th className="px-4 py-2">版本</th>
+                <th className="px-4 py-2 text-right">操作</th>
               </tr>
             </thead>
-            <tbody>
-              {mouses.map((mouse) => (
-                <tr key={mouse.id} className="border-t border-border-subtle">
-                  <td className="px-3 py-2.5">
-                    <div className="font-medium text-text-main">{mouse.name}</div>
-                    <div className="font-mono text-xs text-text-muted">{mouse.clientId}</div>
-                  </td>
-                  <td className="px-3 py-2.5"><StatusBadge mouse={mouse} /></td>
-                  <td className="px-3 py-2.5">
-                    {mouse.boundAccountCount
-                      ? <span className="text-text-main">{mouse.boundAccountCount} 个账号</span>
-                      : <span className="text-text-muted">未绑定</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-text-muted" title={formatDate(mouse.lastHeartbeatAt)}>{formatRelative(mouse.lastHeartbeatAt)}</td>
-                  <td className="px-3 py-2.5 text-text-muted">{mouse.version || "—"}</td>
-                  <td className="px-3 py-2.5 text-right">
-                    <div className="inline-flex gap-1">
-                      <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
-                        {mouse.status === "disabled" ? "启用" : "禁用"}
-                      </Button>
-                      <Button size="sm" variant="danger" onClick={() => setConfirmDelete(mouse)}>删除</Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!mouses.length && (
-                <tr><td colSpan="6" className="px-3 py-6 text-center text-text-muted">还没有 Mouse 注册；当前所有渠道仍由 Spring 执行</td></tr>
-              )}
-            </tbody>
+            {!mouses.length ? (
+              <tbody>
+                <tr><td colSpan="5" className="px-4 py-8 text-center text-text-muted">还没有 Mouse 注册；当前所有渠道仍由 Spring 执行</td></tr>
+              </tbody>
+            ) : (
+              statusGroups.map((group) => (
+                <tbody key={group.key}>
+                  <tr className="border-b border-border-subtle bg-bg/40">
+                    <td colSpan="5" className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`material-symbols-outlined text-[14px]! leading-none ${group.accent}`}>{group.icon}</span>
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-text-muted">{group.label}</span>
+                        <span className="rounded-full bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-text-muted">{group.items.length}</span>
+                        {group.boundTotal > 0 && (
+                          <span className="text-[11px] text-text-muted">· 承载 {group.boundTotal} 个账号</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {group.items.map((mouse) => (
+                    <tr key={mouse.id} className="border-b border-border-subtle last:border-b-0">
+                      <td className="px-4 py-2.5">
+                        <div className="font-medium text-text-main">{mouse.name}</div>
+                        <div className="font-mono text-xs text-text-muted">{mouse.clientId}</div>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {mouse.boundAccountCount
+                          ? <span className="text-text-main">{mouse.boundAccountCount} 个账号</span>
+                          : <span className="text-text-muted">未绑定</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-text-muted" title={formatDate(mouse.lastHeartbeatAt)}>{formatRelative(mouse.lastHeartbeatAt)}</td>
+                      <td className="px-4 py-2.5 text-text-muted">{mouse.version || "—"}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <div className="inline-flex gap-1">
+                          <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
+                            {mouse.status === "disabled" ? "启用" : "禁用"}
+                          </Button>
+                          <Button size="sm" variant="danger" onClick={() => setConfirmDelete(mouse)}>删除</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!group.items.length && (
+                    <tr><td colSpan="5" className="px-4 py-3 text-center text-xs text-text-muted">{group.empty}</td></tr>
+                  )}
+                </tbody>
+              ))
+            )}
           </table>
         </div>
       </Card>

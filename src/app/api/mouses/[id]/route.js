@@ -17,6 +17,7 @@ export async function PATCH(request, { params }) {
       updates.name = body.name;
     }
     if (body.disabled !== undefined) updates.disabled = body.disabled === true;
+    if (body.callbackUrl !== undefined) updates.callbackUrl = body.callbackUrl;
     if (!Object.keys(updates).length) {
       return NextResponse.json({ error: "No supported fields provided" }, { status: 400, headers: NO_STORE_HEADERS });
     }

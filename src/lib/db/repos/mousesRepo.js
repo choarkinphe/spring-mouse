@@ -10,6 +10,10 @@ function hashToken(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
 
+function generateAccessToken() {
+  return `${MOUSE_ACCESS_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
+}
+
 export function normalizeCallbackUrl(value) {
   if (typeof value !== "string" || !value.trim()) return null;
   try {
@@ -28,6 +32,21 @@ export function normalizeClientId(value) {
   return clientId;
 }
 
+// The dashboard names a node before it ever connects, so the client id has to be
+// allocated up front: `clientId` is NOT NULL and UNIQUE on every install, and two
+// nodes must never race for the same one at registration time. Names without
+// ASCII characters collapse to an id-only slug instead of an empty prefix.
+function deriveClientId(name, id) {
+  const slug = String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._:@-]+/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/[^a-z0-9]+$/, "")
+    .slice(0, 40);
+  const suffix = String(id).slice(0, 8);
+  return normalizeClientId(slug ? `${slug}-${suffix}` : `mouse-${suffix}`);
+}
+
 function isOnline(row, now = Date.now()) {
   if (!row?.lastHeartbeatAt || row.disabledAt) return false;
   const heartbeat = Date.parse(row.lastHeartbeatAt);
@@ -37,6 +56,10 @@ function isOnline(row, now = Date.now()) {
 function rowToMouse(row, now = Date.now()) {
   if (!row) return null;
   const disabled = Boolean(row.disabledAt);
+  // A node is "registered" once it has made contact at least once. Rows created
+  // from the dashboard start out unregistered: the command has been handed out
+  // but no agent has used it yet.
+  const registered = Boolean(row.lastHeartbeatAt);
   return {
     id: row.id,
     clientId: row.clientId,
@@ -47,28 +70,19 @@ function rowToMouse(row, now = Date.now()) {
     registrationIp: row.registrationIp || null,
     callbackUrl: row.callbackUrl || null,
     executionTokenConfigured: Boolean(row.executionToken),
+    registered,
     lastHeartbeatAt: row.lastHeartbeatAt || null,
     registeredAt: row.registeredAt,
     updatedAt: row.updatedAt,
     disabledAt: row.disabledAt || null,
     isOnline: isOnline(row, now),
-    status: disabled ? "disabled" : isOnline(row, now) ? "online" : "offline",
-  };
-}
-
-function rowToAccessToken(row, now = Date.now()) {
-  if (!row) return null;
-  const revoked = Boolean(row.revokedAt);
-  const expired = Boolean(row.expiresAt) && Date.parse(row.expiresAt) <= now;
-  return {
-    id: row.id,
-    name: row.name,
-    tokenPrefix: row.tokenPrefix,
-    expiresAt: row.expiresAt || null,
-    createdAt: row.createdAt,
-    rotatedAt: row.rotatedAt || null,
-    revokedAt: row.revokedAt || null,
-    status: revoked ? "revoked" : expired ? "expired" : "active",
+    status: disabled
+      ? "disabled"
+      : !registered
+        ? "unregistered"
+        : isOnline(row, now)
+          ? "online"
+          : "offline",
   };
 }
 
@@ -105,153 +119,99 @@ export async function getMouseExecutionDetails(id) {
   return { mouseId: row.id, callbackUrl: row.callbackUrl, executionToken: row.executionToken };
 }
 
-function normalizeExpiresAt(ttlSeconds, now = new Date()) {
-  if (ttlSeconds === null || ttlSeconds === 0 || ttlSeconds === "0") return null;
-  const ttl = Number(ttlSeconds);
-  if (!Number.isFinite(ttl)) return undefined;
-  return new Date(now.getTime() + Math.max(30, Math.min(ttl, 86_400 * 365)) * 1000).toISOString();
-}
-
-export async function createMouseAccessToken({ name, ttlSeconds = null } = {}) {
-  const expiresAt = normalizeExpiresAt(ttlSeconds);
-  if (expiresAt === undefined) throw new Error("Invalid token TTL");
-  const token = `${MOUSE_ACCESS_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-  const now = new Date().toISOString();
-  const record = {
-    id: randomUUID(),
-    name: (name || "Mouse access token").slice(0, 80),
-    tokenPrefix: token.slice(0, 13),
-    expiresAt,
-    createdAt: now,
-  };
-  const db = await getAdapter();
-  db.run(
-    `INSERT INTO mouseAccessTokens(id, name, tokenPrefix, tokenHash, expiresAt, createdAt, rotatedAt, revokedAt)
-     VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)`,
-    [record.id, record.name, record.tokenPrefix, hashToken(token), record.expiresAt, record.createdAt],
-  );
-  return { ...record, token };
-}
-
-export async function getMouseAccessTokens() {
-  const db = await getAdapter();
-  const now = Date.now();
-  return db.all("SELECT * FROM mouseAccessTokens ORDER BY createdAt DESC").map((row) => rowToAccessToken(row, now));
-}
-
-export async function deleteMouseAccessToken(id) {
-  const db = await getAdapter();
-  const result = db.run("DELETE FROM mouseAccessTokens WHERE id = ?", [id]);
-  return (result?.changes || 0) > 0;
-}
-
-export async function rotateMouseAccessToken(id, { ttlSeconds = null } = {}) {
-  const expiresAt = normalizeExpiresAt(ttlSeconds);
-  if (expiresAt === undefined) throw new Error("Invalid token TTL");
-  const token = `${MOUSE_ACCESS_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-  const now = new Date().toISOString();
-  const db = await getAdapter();
-  const result = db.run(
-    "UPDATE mouseAccessTokens SET tokenPrefix = ?, tokenHash = ?, expiresAt = ?, rotatedAt = ?, revokedAt = NULL WHERE id = ?",
-    [token.slice(0, 13), hashToken(token), expiresAt, now, id],
-  );
-  return (result?.changes || 0) > 0 ? { token, expiresAt } : null;
-}
-
-export async function authenticateMouseAccessToken(token) {
+// The access token is the node's identity: one token, one node. It is minted when
+// the node is created in the dashboard and only its hash is ever stored, so the
+// plaintext can be shown exactly once.
+export async function getMouseByAccessToken(token) {
   if (typeof token !== "string" || !token.startsWith(MOUSE_ACCESS_TOKEN_PREFIX)) return null;
   const db = await getAdapter();
-  const row = db.get("SELECT * FROM mouseAccessTokens WHERE tokenHash = ?", [hashToken(token)]);
-  if (!row || row.revokedAt) return null;
-  if (row.expiresAt && Date.parse(row.expiresAt) <= Date.now()) return null;
-  return rowToAccessToken(row);
+  return rowToMouse(db.get("SELECT * FROM mouses WHERE accessTokenHash = ?", [hashToken(token)]));
 }
 
+export async function createMouse({ name, callbackUrl } = {}) {
+  const trimmedName = typeof name === "string" ? name.trim() : "";
+  if (!trimmedName) return { validationError: "Name is required" };
+  if (trimmedName.length > 80) return { validationError: "Name must be at most 80 characters" };
+
+  const rawCallbackUrl = typeof callbackUrl === "string" ? callbackUrl.trim() : "";
+  const normalizedCallbackUrl = rawCallbackUrl ? normalizeCallbackUrl(rawCallbackUrl) : null;
+  if (rawCallbackUrl && !normalizedCallbackUrl) {
+    return { validationError: "callbackUrl must be a valid HTTP or HTTPS URL" };
+  }
+
+  const id = randomUUID();
+  const token = generateAccessToken();
+  const now = new Date().toISOString();
+  const db = await getAdapter();
+  db.run(
+    `INSERT INTO mouses(
+      id, name, accessTokenHash, clientId, executionToken, callbackUrl, version,
+      capabilities, metadata, registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
+    ) VALUES(?, ?, ?, ?, NULL, ?, NULL, '[]', '{}', NULL, NULL, ?, ?, NULL)`,
+    [id, trimmedName, hashToken(token), deriveClientId(trimmedName, id), normalizedCallbackUrl, now, now],
+  );
+  return { mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])), token };
+}
+
+// Re-issues the access token for a node that never used the one it was given, or
+// whose command has to be handed out again. The previous token stops working.
+export async function rotateMouseToken(id) {
+  if (!id) return null;
+  const db = await getAdapter();
+  if (!db.get("SELECT id FROM mouses WHERE id = ?", [id])) return null;
+  const token = generateAccessToken();
+  const now = new Date().toISOString();
+  db.run("UPDATE mouses SET accessTokenHash = ?, updatedAt = ? WHERE id = ?", [hashToken(token), now, id]);
+  return { token, mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])) };
+}
+
+// Registration claims the row that already carries this token: the identity comes
+// from the token, not from whatever clientId the agent happens to send, so a node
+// provisioned from the dashboard can never land on a second row.
 export async function registerMouse({
   mouseToken,
-  clientId,
-  name,
   version,
   capabilities,
   metadata,
   registrationIp,
   callbackUrl,
 } = {}) {
-  const tokenRow = await authenticateMouseAccessToken(mouseToken);
-  if (!tokenRow) return { error: "invalid_mouse_token" };
+  const mouse = await getMouseByAccessToken(mouseToken);
+  if (!mouse) return { error: "invalid_mouse_token" };
+  if (mouse.disabledAt) return { error: "mouse_disabled" };
 
-  const normalizedClientId = normalizeClientId(clientId);
-  if (!normalizedClientId) return { error: "invalid_client_id" };
   const normalizedCallbackUrl = normalizeCallbackUrl(callbackUrl);
   if (!normalizedCallbackUrl) return { error: "invalid_callback_url" };
 
   const db = await getAdapter();
-  let result;
-  db.transaction(() => {
-    const nowMs = Date.now();
-    const now = new Date(nowMs).toISOString();
-    const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-    const nextName = ((typeof name === "string" && name.trim()) || normalizedClientId).slice(0, 80);
-    const nextVersion = typeof version === "string" ? version.slice(0, 80) : null;
-    const nextCapabilities = Array.isArray(capabilities)
-      ? capabilities.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
-      : [];
-    const nextMetadata = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
-    const existingRow = db.get("SELECT * FROM mouses WHERE clientId = ?", [normalizedClientId]);
-    let mouseId;
+  const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const nextVersion = typeof version === "string" ? version.slice(0, 80) : null;
+  const nextCapabilities = Array.isArray(capabilities)
+    ? capabilities.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
+    : [];
+  const nextMetadata = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
 
-    if (existingRow) {
-      if (existingRow.disabledAt) {
-        result = { error: "client_id_disabled" };
-        return;
-      }
-      mouseId = existingRow.id;
-      db.run(
-        `UPDATE mouses SET name = ?, version = ?, capabilities = ?, metadata = ?, callbackUrl = ?,
-          executionToken = ?, lastHeartbeatAt = ?, updatedAt = ?
-         WHERE id = ?`,
-        [
-          nextName,
-          nextVersion,
-          stringifyJson(nextCapabilities),
-          stringifyJson(nextMetadata),
-          normalizedCallbackUrl,
-          executionToken,
-          now,
-          now,
-          mouseId,
-        ],
-      );
-    } else {
-      mouseId = randomUUID();
-      db.run(
-        `INSERT INTO mouses(
-          id, clientId, name, accessTokenHash, executionToken, callbackUrl, version,
-          capabilities, metadata, registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-        [
-          mouseId,
-          normalizedClientId,
-          nextName,
-          hashToken(`${normalizedClientId}:${randomUUID()}`),
-          executionToken,
-          normalizedCallbackUrl,
-          nextVersion,
-          stringifyJson(nextCapabilities),
-          stringifyJson(nextMetadata),
-          registrationIp || null,
-          now,
-          now,
-          now,
-        ],
-      );
-    }
+  db.run(
+    `UPDATE mouses SET executionToken = ?, callbackUrl = ?, version = ?, capabilities = ?,
+      metadata = ?, registrationIp = ?, lastHeartbeatAt = ?, updatedAt = ?
+     WHERE id = ?`,
+    [
+      executionToken,
+      normalizedCallbackUrl,
+      nextVersion,
+      stringifyJson(nextCapabilities),
+      stringifyJson(nextMetadata),
+      registrationIp || null,
+      now,
+      now,
+      mouse.id,
+    ],
+  );
 
-    const mouse = rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [mouseId]), nowMs);
-    result = { mouse, executionToken };
-  });
-
-  return result;
+  const updated = rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [mouse.id]), nowMs);
+  return { mouse: updated, executionToken };
 }
 
 export async function updateMouseHeartbeat(clientId, { version, capabilities, metadata } = {}) {
@@ -283,7 +243,7 @@ export async function updateMouseHeartbeat(clientId, { version, capabilities, me
   return rowToMouse(db.get("SELECT * FROM mouses WHERE clientId = ?", [clientId]));
 }
 
-export async function updateMouse(id, { name, disabled } = {}) {
+export async function updateMouse(id, { name, disabled, callbackUrl } = {}) {
   const db = await getAdapter();
   const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
   if (!row) return null;
@@ -291,10 +251,21 @@ export async function updateMouse(id, { name, disabled } = {}) {
   const nextName = name === undefined ? row.name : String(name).trim().slice(0, 80);
   if (!nextName) return { validationError: "Name is required" };
   const nextDisabledAt = disabled === undefined ? row.disabledAt : disabled ? now : null;
+  // The start command embeds the callback URL, so it stays editable until the node
+  // actually registers (registration overwrites it with what the agent reports).
+  let nextCallbackUrl = row.callbackUrl;
+  if (callbackUrl !== undefined) {
+    if (callbackUrl === null || callbackUrl === "") {
+      nextCallbackUrl = null;
+    } else {
+      nextCallbackUrl = normalizeCallbackUrl(callbackUrl);
+      if (!nextCallbackUrl) return { validationError: "callbackUrl must be a valid HTTP or HTTPS URL" };
+    }
+  }
 
   db.run(
-    "UPDATE mouses SET name = ?, disabledAt = ?, updatedAt = ? WHERE id = ?",
-    [nextName, nextDisabledAt, now, id],
+    "UPDATE mouses SET name = ?, callbackUrl = ?, disabledAt = ?, updatedAt = ? WHERE id = ?",
+    [nextName, nextCallbackUrl, nextDisabledAt, now, id],
   );
   return { mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])) };
 }

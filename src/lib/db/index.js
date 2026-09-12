@@ -18,10 +18,10 @@ export {
 // Mouse agents
 export {
   getMouses, getMouseById, getAvailableMouseById, getMouseExecutionDetails,
-  getMouseByClientId,
-  createMouseAccessToken, getMouseAccessTokens, deleteMouseAccessToken, rotateMouseAccessToken,
+  getMouseByClientId, getMouseByAccessToken,
+  createMouse, rotateMouseToken,
   normalizeClientId,
-  registerMouse, authenticateMouseAccessToken, updateMouseHeartbeat,
+  registerMouse, updateMouseHeartbeat,
   updateMouse, deleteMouse, rotateMouseExecutionToken,
   normalizeCallbackUrl, MOUSE_ONLINE_TIMEOUT_MS,
 } from "./repos/mousesRepo.js";

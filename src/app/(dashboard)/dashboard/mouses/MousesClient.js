@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Card, ConfirmModal, DashboardHero, Drawer, Input, Select } from "@/shared/components";
+import { Badge, Button, Card, ConfirmModal, DashboardHero, Drawer, Input } from "@/shared/components";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -22,55 +22,50 @@ function formatRelative(value) {
   return `${Math.floor(hours / 24)} 天前`;
 }
 
-// The node list is grouped by these buckets instead of printing a status badge
-// on every row: the group header carries the state, the rows carry the facts.
+// Nodes are grouped by these buckets instead of printing a status badge on every
+// row: the group header carries the state, the rows carry the facts. 未注册 comes
+// first because it is the only bucket that asks the operator to do something.
 const STATUS_GROUPS = [
+  { key: "unregistered", label: "未注册", icon: "pending", accent: "text-yellow-600 dark:text-yellow-400", empty: "当前没有待接入的 Mouse" },
   { key: "online", label: "在线", icon: "sensors", accent: "text-green-600 dark:text-green-400", empty: "当前没有在线的 Mouse" },
   { key: "offline", label: "离线", icon: "cloud_off", accent: "text-text-muted", empty: "当前没有离线的 Mouse" },
   { key: "disabled", label: "已禁用", icon: "block", accent: "text-red-600 dark:text-red-400", empty: "当前没有已禁用的 Mouse" },
 ];
 
-function TokenBadge({ token }) {
-  const variant = token.status === "active" ? "success" : token.status === "revoked" ? "error" : "warning";
-  const label = token.status === "active" ? "可用" : token.status === "revoked" ? "已删除" : "已过期";
-  return <Badge variant={variant}>{label}</Badge>;
-}
+// The mouse container reaches Spring through host.docker.internal, so this default
+// fits the single-host case. A node on another machine needs its own address here.
+const DEFAULT_CALLBACK_URL = "http://host.docker.internal:9101";
 
-const TOKEN_TTL_OPTIONS = [
-  { value: "permanent", label: "长期有效" },
-  { value: "3600", label: "1 小时" },
-  { value: "86400", label: "1 天" },
-  { value: "604800", label: "7 天" },
-  { value: "2592000", label: "30 天" },
+const SETUP_STEPS = [
+  { icon: "add_circle", title: "新建 Mouse", body: "给节点起个名字，系统为它生成专属访问 Token。" },
+  { icon: "terminal", title: "在目标服务器执行", body: "复制生成的启动命令，用 Docker 跑起来。" },
+  { icon: "sensors", title: "节点自动接入", body: "第一次心跳后，「未注册」变为「在线」。" },
 ];
 
-// The empty state hands out a runnable command: a first-time user should not have
-// to open MOUSE_AGENT_PROTOCOL.md just to find out how a node joins.
-// Docker is the supported path (mouse/README.md): the agent image is built from
-// Dockerfile.mouse on the target host, so the repo has to be checked out there.
-const MOUSE_START_COMMAND = [
-  "SPRING_URL=<Spring 地址> \\",
-  "MOUSE_TOKEN=mst_… \\",
-  "MOUSE_CLIENT_ID=<节点标识> \\",
-  "MOUSE_CALLBACK_URL=<本节点回调地址，如 http://<本机 IP>:9101> \\",
-  "docker compose -f docker-compose.mouse.yml up -d --build",
-].join("\n");
+// One command per node: the token in it *is* that node's identity, so the plaintext
+// is shown once only, and re-issuing it invalidates the previous command.
+function buildStartCommand({ token, clientId, springUrl, callbackUrl }) {
+  return [
+    `SPRING_URL=${springUrl || "<Spring 地址>"} \\`,
+    `MOUSE_TOKEN=${token} \\`,
+    `MOUSE_CLIENT_ID=${clientId} \\`,
+    `MOUSE_CALLBACK_URL=${callbackUrl || DEFAULT_CALLBACK_URL} \\`,
+    "docker compose -f docker-compose.mouse.yml up -d --build",
+  ].join("\n");
+}
 
 export default function MousesClient() {
   const [mouses, setMouses] = useState([]);
-  const [accessTokens, setAccessTokens] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [tokenName, setTokenName] = useState("");
-  const [tokenTtl, setTokenTtl] = useState("604800");
-  const [creating, setCreating] = useState(false);
-  const [createdToken, setCreatedToken] = useState(null);
-  const [copied, setCopied] = useState(false);
-  const [cmdCopied, setCmdCopied] = useState(false);
-  const [tokenDrawerOpen, setTokenDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [reissueTarget, setReissueTarget] = useState(null);
+  const [form, setForm] = useState({ name: "", springUrl: "", callbackUrl: DEFAULT_CALLBACK_URL });
+  const [created, setCreated] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [commandCopied, setCommandCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [savingMouseId, setSavingMouseId] = useState("");
-  const [savingTokenId, setSavingTokenId] = useState("");
 
   const loadData = useCallback(async () => {
     setError("");
@@ -79,7 +74,6 @@ export default function MousesClient() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "读取 Mouse 失败");
       setMouses(data.mouses || []);
-      setAccessTokens(data.accessTokens || []);
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -96,51 +90,78 @@ export default function MousesClient() {
     };
   }, [loadData]);
 
-  const createToken = async () => {
-    setCreating(true);
+  const openCreateDrawer = () => {
+    setReissueTarget(null);
+    setCreated(null);
+    setCommandCopied(false);
     setError("");
-    try {
-      const response = await fetch("/api/mouses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: tokenName.trim() || undefined, ttlSeconds: tokenTtl === "permanent" ? null : Number(tokenTtl) }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "创建访问 Token 失败");
-      setCreatedToken(data.accessToken);
-      setCopied(false);
-      setTokenName("");
-      await loadData();
-    } catch (createError) {
-      setError(createError.message);
-    } finally {
-      setCreating(false);
+    setForm({ name: "", springUrl: window.location.origin, callbackUrl: DEFAULT_CALLBACK_URL });
+    setDrawerOpen(true);
+  };
+
+  // Re-issuing is the recovery path for a node whose command was lost, and for one
+  // whose addresses have to change before it ever connects.
+  const openReissueDrawer = (mouse) => {
+    setReissueTarget(mouse);
+    setCreated(null);
+    setCommandCopied(false);
+    setError("");
+    setForm({
+      name: mouse.name,
+      springUrl: window.location.origin,
+      callbackUrl: mouse.callbackUrl || DEFAULT_CALLBACK_URL,
+    });
+    setDrawerOpen(true);
+  };
+
+  // The plaintext token must not survive the drawer: closing it drops the secret
+  // from memory, matching the "only visible once" promise in the copy.
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setReissueTarget(null);
+    setCreated(null);
+    setCommandCopied(false);
+    setError("");
+  };
+
+  const submit = async () => {
+    const name = form.name.trim();
+    if (!name) {
+      setError("请填写节点名称");
+      return;
     }
-  };
-
-  const deleteToken = async (token) => {
-    await fetch(`/api/mouses/access-tokens/${token.id}`, { method: "DELETE" });
-    await loadData();
-  };
-
-  const rotateToken = async (token) => {
-    setSavingTokenId(token.id);
+    setSubmitting(true);
     setError("");
     try {
-      const response = await fetch(`/api/mouses/access-tokens/${token.id}/rotate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ttlSeconds: tokenTtl === "permanent" ? null : Number(tokenTtl) }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "轮换 Token 失败");
-      setCreatedToken({ ...token, ...data });
-      setCopied(false);
+      const callbackUrl = form.callbackUrl.trim();
+      if (reissueTarget) {
+        const rotateResponse = await fetch(`/api/mouses/${reissueTarget.id}/access-token`, { method: "POST" });
+        const rotateData = await rotateResponse.json();
+        if (!rotateResponse.ok) throw new Error(rotateData.error || "生成启动命令失败");
+        if ((reissueTarget.callbackUrl || "") !== callbackUrl) {
+          await fetch(`/api/mouses/${reissueTarget.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ callbackUrl }),
+          });
+        }
+        setCreated({ mouse: rotateData.mouse, token: rotateData.token });
+      } else {
+        const response = await fetch("/api/mouses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, callbackUrl }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "新建 Mouse 失败");
+        setCreated({ mouse: data.mouse, token: data.token });
+      }
+      setCommandCopied(false);
       await loadData();
-    } catch (rotateError) {
-      setError(rotateError.message);
+    } catch (submitError) {
+      setError(submitError.message);
     } finally {
-      setSavingTokenId("");
+      setSubmitting(false);
     }
   };
 
@@ -170,26 +191,22 @@ export default function MousesClient() {
     }
   };
 
-  const copyToken = async () => {
-    await navigator.clipboard.writeText(createdToken?.token || "");
-    setCopied(true);
-  };
+  const startCommand = created
+    ? buildStartCommand({
+        token: created.token,
+        clientId: created.mouse.clientId,
+        springUrl: form.springUrl.trim(),
+        callbackUrl: form.callbackUrl.trim(),
+      })
+    : "";
 
   const copyCommand = async () => {
-    await navigator.clipboard.writeText(MOUSE_START_COMMAND);
-    setCmdCopied(true);
-  };
-
-  // The plaintext token must not survive the drawer: closing it drops the
-  // secret from memory, matching the "only visible once" promise in the copy.
-  const closeTokenDrawer = () => {
-    setTokenDrawerOpen(false);
-    setCreatedToken(null);
-    setCopied(false);
+    await navigator.clipboard.writeText(startCommand);
+    setCommandCopied(true);
   };
 
   const onlineCount = mouses.filter((mouse) => mouse.isOnline).length;
-  const activeTokenCount = accessTokens.filter((token) => token.status === "active").length;
+  const unregisteredCount = mouses.filter((mouse) => mouse.status === "unregistered").length;
   const statusGroups = STATUS_GROUPS.map((group) => {
     const items = mouses.filter((mouse) => mouse.status === group.key);
     return {
@@ -206,37 +223,40 @@ export default function MousesClient() {
         title="Mouse 执行节点"
         description="Mouse 是可选的远程渠道执行节点。未绑定 Mouse 的渠道账号仍由 Spring 本机执行。"
         icon="device_hub"
-        action={<Button variant="secondary" icon="key" onClick={() => setTokenDrawerOpen(true)}>访问 Token</Button>}
+        action={<Button icon="add" onClick={openCreateDrawer}>新建 Mouse</Button>}
       >
         <Badge size="md" variant="default" icon="dns">{mouses.length} 个节点</Badge>
         <Badge size="md" variant={onlineCount ? "success" : "default"} icon="sensors">{onlineCount} 个在线</Badge>
-        <Badge size="md" variant={activeTokenCount ? "primary" : "default"} icon="key">{activeTokenCount} 个可用 Token</Badge>
+        <Badge size="md" variant={unregisteredCount ? "warning" : "default"} icon="pending">{unregisteredCount} 个未注册</Badge>
       </DashboardHero>
 
-      {error && (
+      {error && !drawerOpen && (
         <Card className="border-red-500/30 bg-red-500/5 p-3 text-sm text-red-500">{error}</Card>
       )}
 
-      <Card title="已注册 Mouse" subtitle={mouses.length ? "按在线状态分组；状态每 30 秒自动刷新。" : undefined}>
+      <Card title="Mouse 节点" subtitle={mouses.length ? "按接入状态分组；状态每 30 秒自动刷新。" : undefined}>
         {!mouses.length ? (
           <div className="flex min-h-[320px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 py-10 text-center">
             <span className="material-symbols-outlined mb-3 text-[34px] text-[#647688]">device_hub</span>
-            <h2 className="text-base font-semibold text-text-main">还没有 Mouse 注册</h2>
+            <h2 className="text-base font-semibold text-text-main">还没有 Mouse</h2>
             <p className="mt-1 max-w-md text-sm leading-6 text-text-muted">
-              不接入 Mouse 时，所有渠道仍由 Spring 本机执行。生成访问 Token，在待接入的机器上用 Docker 启动 Mouse agent，它就会出现在这里并开始心跳。
+              不接入 Mouse 时，所有渠道仍由 Spring 本机执行。新建一个 Mouse，把生成的启动命令贴到目标服务器上执行，它就会出现在这里。
             </p>
-            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-              <Button size="field" icon="key" onClick={() => setTokenDrawerOpen(true)}>生成访问 Token</Button>
-              <Button size="field" variant="secondary" icon={cmdCopied ? "check" : "content_copy"} onClick={copyCommand}>
-                {cmdCopied ? "已复制" : "复制启动命令"}
-              </Button>
+            <div className="mt-5">
+              <Button size="field" icon="add" onClick={openCreateDrawer}>新建 Mouse</Button>
             </div>
-            <pre className="mt-5 max-w-full overflow-x-auto rounded-lg border border-border-subtle bg-bg/40 px-3 py-2 text-left font-mono text-xs leading-5 text-text-muted">
-              {MOUSE_START_COMMAND}
-            </pre>
-            <p className="mt-2 max-w-md text-xs leading-5 text-text-muted">
-              需在目标机器上检出本仓库：agent 镜像由 <span className="font-mono">Dockerfile.mouse</span> 本地构建，未发布到镜像仓库。
-            </p>
+            <div className="mt-6 grid w-full max-w-2xl gap-3 sm:grid-cols-3">
+              {SETUP_STEPS.map((step, index) => (
+                <div key={step.title} className="rounded-xl border border-border-subtle bg-bg/40 p-3 text-left">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[16px]! leading-none text-[#647688]">{step.icon}</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">第 {index + 1} 步</span>
+                  </div>
+                  <p className="mt-2 text-sm font-medium text-text-main">{step.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-text-muted">{step.body}</p>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
         <div className="overflow-x-auto">
@@ -279,9 +299,15 @@ export default function MousesClient() {
                       <td className="px-4 py-2.5 text-text-muted">{mouse.version || "—"}</td>
                       <td className="px-4 py-2.5 text-right">
                         <div className="inline-flex gap-1">
-                          <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
-                            {mouse.status === "disabled" ? "启用" : "禁用"}
-                          </Button>
+                          {mouse.status === "unregistered" ? (
+                            <Button size="sm" variant="secondary" icon="terminal" onClick={() => openReissueDrawer(mouse)}>
+                              启动命令
+                            </Button>
+                          ) : (
+                            <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
+                              {mouse.status === "disabled" ? "启用" : "禁用"}
+                            </Button>
+                          )}
                           <Button size="sm" variant="danger" onClick={() => setConfirmDelete(mouse)}>删除</Button>
                         </div>
                       </td>
@@ -297,90 +323,73 @@ export default function MousesClient() {
         )}
       </Card>
 
-      <Drawer isOpen={tokenDrawerOpen} onClose={closeTokenDrawer} title="Mouse 访问 Token" width="xl">
-        <div className="flex flex-col gap-6">
-          <section className="rounded-xl border border-border-subtle bg-bg/30 p-5">
-            <h3 className="text-sm font-semibold text-text-main">生成访问 Token</h3>
-            <p className="mt-1 text-xs text-text-muted">同一个有效 Token 可以认证多个 Mouse；Mouse 通过 clientId 唯一标识。</p>
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-              <Input
-                className="flex-1"
-                label="Token 名称"
-                placeholder="例如：US Twitter Mouse"
-                value={tokenName}
-                onChange={(event) => setTokenName(event.target.value)}
-              />
-              <Select
-                className="sm:w-36"
-                label="有效期"
-                value={tokenTtl}
-                onChange={(event) => setTokenTtl(event.target.value)}
-                options={TOKEN_TTL_OPTIONS}
-              />
-              <Button size="field" onClick={createToken} loading={creating}>生成</Button>
+      <Drawer
+        isOpen={drawerOpen}
+        onClose={closeDrawer}
+        title={created ? "启动命令" : reissueTarget ? "重新生成启动命令" : "新建 Mouse"}
+        width="xl"
+        footer={created ? (
+          <>
+            <Button variant="secondary" onClick={closeDrawer}>完成</Button>
+            <Button icon={commandCopied ? "check" : "content_copy"} onClick={copyCommand}>
+              {commandCopied ? "已复制" : "复制启动命令"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="secondary" onClick={closeDrawer}>取消</Button>
+            <Button onClick={submit} loading={submitting}>{reissueTarget ? "生成启动命令" : "新建并生成命令"}</Button>
+          </>
+        )}
+      >
+        {!created ? (
+          <div className="flex flex-col gap-5">
+            <p className="text-sm leading-6 text-text-muted">
+              为节点命名后，系统会立即为它生成专属访问 Token，并给出可复制的 Docker 启动命令。节点在第一次心跳前显示为「未注册」。
+            </p>
+            <Input
+              label="节点名称"
+              placeholder="例如：tokyo-edge-01"
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              disabled={Boolean(reissueTarget)}
+              hint={reissueTarget ? "名称创建后不可修改，需要改名请删除后重建。" : "只用于在列表里识别这个节点。"}
+            />
+            <Input
+              label="Spring 地址"
+              placeholder="http://spring.example.com"
+              value={form.springUrl}
+              onChange={(event) => setForm({ ...form, springUrl: event.target.value })}
+              hint="目标服务器能访问到的 Spring 地址。"
+            />
+            <Input
+              label="回调地址"
+              placeholder={DEFAULT_CALLBACK_URL}
+              value={form.callbackUrl}
+              onChange={(event) => setForm({ ...form, callbackUrl: event.target.value })}
+              hint="Spring 访问该节点的地址。节点与 Spring 同机时可留默认值；不同机器请填目标机器可达的 IP。"
+            />
+            {error && <p className="text-sm text-red-500">{error}</p>}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="rounded-xl border border-[#38bdf8]/30 bg-[#38bdf8]/[0.06] p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-[#7dd3fc]">
+                <span className="material-symbols-outlined text-[18px]!">key</span>
+                {created.mouse.name} 已创建，把命令贴到目标服务器上执行
+              </div>
+              <p className="mt-2 text-xs leading-5 text-[#7dd3fc]/80">
+                访问 Token 只在这里显示一次，关闭后无法再次查看；丢失时回到列表点「启动命令」重新生成，旧命令随即失效。
+              </p>
             </div>
-
-            {createdToken && (
-              <div className="mt-4 rounded-xl border border-[#38bdf8]/30 bg-[#38bdf8]/[0.06] p-4">
-                <div className="flex items-center gap-2 text-sm font-medium text-[#7dd3fc]">
-                  <span className="material-symbols-outlined text-[18px]">key</span>
-                  Token 已生成，请立即复制
-                </div>
-                <code className="mt-3 block break-all rounded-lg bg-surface-2 p-3 font-mono text-xs text-text-main">{createdToken.token}</code>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Button size="sm" variant="secondary" icon={copied ? "check" : "content_copy"} onClick={copyToken}>
-                    {copied ? "已复制" : "复制 Token"}
-                  </Button>
-                  <span className="text-xs text-text-muted">关闭抽屉后无法再次查看。</span>
-                </div>
-              </div>
-            )}
-          </section>
-
-          <section>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-text-main">已生成 Token</h3>
-              <span className="text-xs text-text-muted">{accessTokens.length} 个</span>
-            </div>
-            {accessTokens.length ? (
-              <div className="overflow-x-auto rounded-xl border border-border-subtle">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-bg/40 text-xs uppercase tracking-wide text-text-muted">
-                  <tr>
-                    <th className="px-3 py-2">名称</th>
-                    <th className="px-3 py-2">状态</th>
-                    <th className="px-3 py-2">过期时间</th>
-                    <th className="px-3 py-2">创建时间</th>
-                    <th className="px-3 py-2 text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accessTokens.map((token) => (
-                    <tr key={token.id} className="border-t border-border-subtle">
-                      <td className="px-3 py-2.5 font-medium text-text-main">{token.name}</td>
-                      <td className="px-3 py-2.5"><TokenBadge token={token} /></td>
-                      <td className="px-3 py-2.5 text-text-muted">{formatDate(token.expiresAt)}</td>
-                      <td className="px-3 py-2.5 text-text-muted">{formatDate(token.createdAt)}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        <div className="inline-flex gap-1">
-                          <Button size="sm" variant="secondary" loading={savingTokenId === token.id} onClick={() => rotateToken(token)}>轮换</Button>
-                          <Button size="sm" variant="danger" onClick={() => deleteToken(token)}>删除</Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              </div>
-            ) : (
-              <div className="flex min-h-[160px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 text-center">
-                <span className="material-symbols-outlined mb-2 text-[26px] text-[#647688]">key_off</span>
-                <p className="text-sm font-medium text-text-main">还没有访问 Token</p>
-                <p className="mt-1 max-w-sm text-xs leading-5 text-text-muted">在上方生成一个 Token，Mouse 端用它完成注册与心跳认证；同一个 Token 可认证多个 Mouse。</p>
-              </div>
-            )}
-          </section>
-        </div>
+            <pre className="max-w-full overflow-x-auto rounded-lg border border-border-subtle bg-bg/40 px-3 py-2 text-left font-mono text-xs leading-5 text-text-main">
+              {startCommand}
+            </pre>
+            <p className="text-xs leading-5 text-text-muted">
+              需在检出本仓库的机器上执行：agent 镜像由 <span className="font-mono">Dockerfile.mouse</span> 本地构建，未发布到镜像仓库。
+            </p>
+          </div>
+        )}
       </Drawer>
 
       <ConfirmModal

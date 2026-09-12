@@ -4,21 +4,32 @@ Mouse is an optional remote execution node. Spring continues to run normally
 when no Mouse is registered and all existing channel accounts keep using their
 current local execution path.
 
-## 1. Create an access token
+## 1. Create the Mouse
 
-From the dashboard, open **Mouse 节点** and create a token, or call:
+The node is provisioned first — from the dashboard (**Mouse 节点** → **新建 Mouse**)
+or over the API:
 
 ```http
 POST /api/mouses
 Content-Type: application/json
 
-{ "name": "production-mice", "ttlSeconds": 604800 }
+{ "name": "tokyo-edge-01", "callbackUrl": "http://10.0.0.31:9101" }
 ```
 
-The response contains an `accessToken`. It is displayed only once. A token is
-not owned by one Mouse: multiple Mouse processes may use the same active token.
-Each Mouse must report its own stable `clientId`. Tokens may be permanent,
-expiry-based, rotated, or deleted.
+The response carries the node plus its own `token`, shown exactly once:
+
+```json
+{
+  "mouse": { "id": "...", "clientId": "tokyo-edge-01-6da85af6", "status": "unregistered" },
+  "token": "mst_..."
+}
+```
+
+Each node owns one token: one token, one Mouse. A freshly created node reports
+`status: "unregistered"`; it turns `online` on its first register/heartbeat and
+falls back to `offline` once the 90-second heartbeat window lapses. Re-issuing the
+token (`POST /api/mouses/{id}/access-token`) returns a new plaintext once and
+immediately invalidates the previous one.
 
 ## 2. Register Mouse
 
@@ -39,8 +50,10 @@ Content-Type: application/json
 }
 ```
 
-The token is sent in the Authorization header. Spring returns a Mouse identity
-and an execution token used by Spring when dispatching provider tasks:
+The token is sent in the Authorization header. The token *is* the node's
+identity, so `clientId` and `name` in this body are informational: Spring claims
+the row provisioned in step 1 instead of creating one. Spring returns a Mouse
+identity and an execution token used by Spring when dispatching provider tasks:
 
 ```json
 {
@@ -107,7 +120,8 @@ The bundled agent implements this protocol:
 ```bash
 node mouse/agent.mjs \
   --spring-url https://spring.example.com \
-  --registration-token msr_... \
+  --token mst_... \
+  --client-id tokyo-edge-01 \
   --callback-url https://mouse-host:9101 \
   --port 9101
 ```
@@ -117,11 +131,13 @@ Subsequent restarts can omit the registration token and reuse that identity.
 
 ## Token lifecycle
 
-- One token can authorize many Mouse registrations and heartbeats.
-- `clientId` is the stable unique key for a Mouse.
-- A token can have `expiresAt`, be rotated, or be deleted.
-- Deleting a token immediately rejects registration and heartbeat requests for
-  every Mouse that used it.
+- One token belongs to exactly one Mouse. The token is the node's identity, so a
+  start command is bound to the node it was generated for.
+- `clientId` is derived from the node name when the node is created and reported
+  back by the agent; it is descriptive, not authoritative.
+- Tokens do not expire. Re-issuing one (`POST /api/mouses/{id}/access-token`)
+  returns a new plaintext once and immediately rejects the previous token.
+- Deleting the node rejects its registration and heartbeat requests.
 
 ## Current phase behavior
 

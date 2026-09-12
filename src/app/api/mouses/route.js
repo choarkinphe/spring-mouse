@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createMouseAccessToken, getMouseAccessTokens, getMouses } from "@/lib/localDb";
+import { createMouse, getMouses } from "@/lib/localDb";
 import { getAdapter } from "@/lib/db/driver.js";
 
 export const dynamic = "force-dynamic";
@@ -25,12 +25,9 @@ async function withBoundAccountCounts(mouses) {
 
 export async function GET() {
   try {
-    const [mouses, accessTokens] = await Promise.all([
-      getMouses(),
-      getMouseAccessTokens(),
-    ]);
+    const mouses = await getMouses();
     return NextResponse.json(
-      { mouses: await withBoundAccountCounts(mouses), accessTokens },
+      { mouses: await withBoundAccountCounts(mouses) },
       { headers: NO_STORE_HEADERS },
     );
   } catch (error) {
@@ -39,24 +36,25 @@ export async function GET() {
   }
 }
 
+// Creating a node is all it takes to enrol it: the row is inserted up front (so it
+// shows as 未注册 in the board) together with the access token that its start
+// command will carry. The plaintext token is returned exactly once.
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const name = typeof body?.name === "string" ? body.name.trim() : "";
-    const ttlSeconds = body?.ttlSeconds === null || body?.ttlSeconds === 0
-      ? null
-      : Number(body?.ttlSeconds);
-    if (name.length > 80) {
-      return NextResponse.json({ error: "Name must be at most 80 characters" }, { status: 400, headers: NO_STORE_HEADERS });
+    const result = await createMouse({
+      name: body?.name,
+      callbackUrl: body?.callbackUrl,
+    });
+    if (result?.validationError) {
+      return NextResponse.json({ error: result.validationError }, { status: 400, headers: NO_STORE_HEADERS });
     }
-    if (ttlSeconds !== null && (!Number.isFinite(ttlSeconds) || ttlSeconds < 30 || ttlSeconds > 86400 * 365)) {
-      return NextResponse.json({ error: "TTL must be permanent, 0, or between 30 seconds and 365 days" }, { status: 400, headers: NO_STORE_HEADERS });
-    }
-
-    const accessToken = await createMouseAccessToken({ name, ttlSeconds });
-    return NextResponse.json({ accessToken }, { status: 201, headers: NO_STORE_HEADERS });
+    return NextResponse.json(
+      { mouse: result.mouse, token: result.token },
+      { status: 201, headers: NO_STORE_HEADERS },
+    );
   } catch (error) {
-    console.error("[API] Failed to create mouse registration token:", error);
-    return NextResponse.json({ error: "Failed to create registration token" }, { status: 500, headers: NO_STORE_HEADERS });
+    console.error("[API] Failed to create mouse:", error);
+    return NextResponse.json({ error: "Failed to create mouse" }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }

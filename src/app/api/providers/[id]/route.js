@@ -7,6 +7,7 @@ import {
   deleteProviderConnection,
 } from "@/models";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
+import { moveProviderConnectionToPosition } from "@/lib/db/repos/connectionOrdering";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -92,9 +93,18 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: proxyConfig.error }, { status: 400 });
     }
 
+    // The account drawer sends a slot number ("3" means "become the 3rd
+    // account"); every other caller keeps the legacy weight semantics, where
+    // the number is a sort weight that gets renumbered afterwards.
+    const positionMode = body.priorityMode === "position";
+    const requestedPosition = positionMode ? Number.parseInt(priority, 10) : Number.NaN;
+    const moveToPosition = Number.isFinite(requestedPosition) && requestedPosition > 0
+      ? requestedPosition
+      : null;
+
     const updateData = {};
     if (name !== undefined) updateData.name = name;
-    if (priority !== undefined) updateData.priority = priority;
+    if (priority !== undefined && !positionMode) updateData.priority = priority;
     if (globalPriority !== undefined) updateData.globalPriority = globalPriority;
     if (defaultModel !== undefined) updateData.defaultModel = defaultModel;
     if (isActive !== undefined) updateData.isActive = isActive;
@@ -149,7 +159,14 @@ export async function PUT(request, { params }) {
       delete updateData.providerSpecificData.proxyPoolId;
     }
 
-    const updated = await updateProviderConnection(id, updateData);
+    let updated = await updateProviderConnection(id, updateData);
+
+    // Slot moves run after the field updates, so their renumbering cannot be
+    // undone by another priority write from this same request.
+    if (moveToPosition !== null) {
+      const moved = await moveProviderConnectionToPosition(id, moveToPosition);
+      if (moved) updated = { ...updated, priority: moved.priority };
+    }
 
     // Hide sensitive fields
     const result = { ...updated };

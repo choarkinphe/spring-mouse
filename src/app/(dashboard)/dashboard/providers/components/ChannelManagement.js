@@ -2278,6 +2278,12 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
               ).maxConcurrentStreams) || null
             : null
         }
+        // Bounds the priority slot picker to the accounts this channel has.
+        channelAccountCount={
+          editingConnection
+            ? (channelGroups.find((group) => group.provider === editingConnection.provider)?.connections.length ?? null)
+            : null
+        }
         mouses={mouses.filter((mouse) => mouse.isOnline || mouse.id === editingConnection?.mouseId)}
         onSave={handleSaveConnection}
         onDelete={(connection) => {

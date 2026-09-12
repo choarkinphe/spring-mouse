@@ -10,7 +10,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
 
-export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, onSave, onDelete, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, channelAccountCount = null, onSave, onDelete, onClose }) {
   // Providers whose executor bypasses BaseExecutor.execute() cannot route
   // through a Mouse node — hide the picker instead of offering a no-op choice.
   const mouseSupported = supportsMouseExecution(connection?.provider);
@@ -90,6 +90,16 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
     ? `本账号单独限流 ${overrideLimit} 个并发，优先生效${hasChannelLimit ? `（渠道配置为 ${channelLimit}）` : ""}。`
     : `留空则跟随渠道配置${hasChannelLimit ? `（当前 ${channelLimit} 个并发）` : ""}；填写后本账号优先按此值限流。`;
 
+  // Priority is a slot here, not a weight: the API moves the account into that
+  // slot and renumbers the rest, so the hint has to promise exactly that.
+  const accountCount = Number.parseInt(channelAccountCount, 10);
+  const hasAccountCount = Number.isFinite(accountCount) && accountCount > 0;
+  const currentSlot = Number.parseInt(connection?.priority, 10);
+  const currentSlotLabel = Number.isFinite(currentSlot) && currentSlot > 0 ? currentSlot : 1;
+  const priorityHint = `当前第 ${currentSlotLabel} 位；填写目标位次后本账号移动到该位置，其余账号自动顺延${
+    hasAccountCount ? `（本渠道共 ${accountCount} 个账号）` : ""
+  }。`;
+
   // Build providerSpecificData for region-aware providers
   const buildRegionSpecificData = () => {
     if (providerRegions && region) return { ...((connection?.providerSpecificData) || {}), region };
@@ -143,6 +153,9 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
       const updates = {
         name: formData.name,
         priority: formData.priority,
+        // This field carries a slot ("3" = become the 3rd account), not a sort
+        // weight — the API renumbers the channel to match.
+        priorityMode: "position",
         mouseId: formData.mouseId || null,
       };
       if (!isOAuth && formData.apiKey) {
@@ -231,8 +244,11 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
         <Input
           label="Priority"
           type="number"
+          min={1}
+          max={hasAccountCount ? accountCount : undefined}
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
+          hint={priorityHint}
         />
         <Input
           label="单账号并发"
@@ -386,6 +402,8 @@ EditConnectionModal.propTypes = {
   // Channel-level per-account ceiling, shown as the fallback this account
   // inherits while its own override is blank.
   channelConcurrencyLimit: PropTypes.number,
+  // How many accounts the channel has — bounds the slot picker.
+  channelAccountCount: PropTypes.number,
   onSave: PropTypes.func.isRequired,
   onDelete: PropTypes.func,
   onClose: PropTypes.func.isRequired,

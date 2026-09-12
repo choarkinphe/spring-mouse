@@ -46,8 +46,15 @@ const TOKEN_TTL_OPTIONS = [
 
 // The empty state hands out a runnable command: a first-time user should not have
 // to open MOUSE_AGENT_PROTOCOL.md just to find out how a node joins.
-const MOUSE_START_COMMAND =
-  "node mouse/agent.mjs --spring-url <Spring 地址> --token mst_… --client-id <节点标识> --callback-url <回调地址>";
+// Docker is the supported path (mouse/README.md): the agent image is built from
+// Dockerfile.mouse on the target host, so the repo has to be checked out there.
+const MOUSE_START_COMMAND = [
+  "SPRING_URL=<Spring 地址> \\",
+  "MOUSE_TOKEN=mst_… \\",
+  "MOUSE_CLIENT_ID=<节点标识> \\",
+  "MOUSE_CALLBACK_URL=<本节点回调地址，如 http://<本机 IP>:9101> \\",
+  "docker compose -f docker-compose.mouse.yml up -d --build",
+].join("\n");
 
 export default function MousesClient() {
   const [mouses, setMouses] = useState([]);
@@ -216,7 +223,7 @@ export default function MousesClient() {
             <span className="material-symbols-outlined mb-3 text-[34px] text-[#647688]">device_hub</span>
             <h2 className="text-base font-semibold text-text-main">还没有 Mouse 注册</h2>
             <p className="mt-1 max-w-md text-sm leading-6 text-text-muted">
-              不接入 Mouse 时，所有渠道仍由 Spring 本机执行。生成访问 Token，在待接入的机器上运行 Mouse agent，它就会出现在这里并开始心跳。
+              不接入 Mouse 时，所有渠道仍由 Spring 本机执行。生成访问 Token，在待接入的机器上用 Docker 启动 Mouse agent，它就会出现在这里并开始心跳。
             </p>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
               <Button size="field" icon="key" onClick={() => setTokenDrawerOpen(true)}>生成访问 Token</Button>
@@ -224,9 +231,12 @@ export default function MousesClient() {
                 {cmdCopied ? "已复制" : "复制启动命令"}
               </Button>
             </div>
-            <code className="mt-5 max-w-full overflow-x-auto rounded-lg border border-border-subtle bg-bg/40 px-3 py-2 font-mono text-xs text-text-muted">
+            <pre className="mt-5 max-w-full overflow-x-auto rounded-lg border border-border-subtle bg-bg/40 px-3 py-2 text-left font-mono text-xs leading-5 text-text-muted">
               {MOUSE_START_COMMAND}
-            </code>
+            </pre>
+            <p className="mt-2 max-w-md text-xs leading-5 text-text-muted">
+              需在目标机器上检出本仓库：agent 镜像由 <span className="font-mono">Dockerfile.mouse</span> 本地构建，未发布到镜像仓库。
+            </p>
           </div>
         ) : (
         <div className="overflow-x-auto">

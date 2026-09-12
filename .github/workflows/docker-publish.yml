@@ -29,14 +29,18 @@ jobs:
           npm --prefix tests install --ignore-scripts --no-audit --no-fund
       - name: Run critical request-path regression tests
         working-directory: tests
+        # The tunnel suite builds an isolated database in beforeAll, which
+        # exceeds vitest's 10s default hook budget on a cold runner.
         run: >-
           npm exec vitest run --
           --config vitest.config.js
+          --hookTimeout=90000
           unit/network-traffic.test.js
           unit/ingress-usage.test.js
           unit/embedding-usage-persistence.test.js
           unit/fetch-success-clears-account.test.js
           unit/xai-video-handler.test.js
+          unit/mouse-tunnel.test.js
 
   build:
     needs: test

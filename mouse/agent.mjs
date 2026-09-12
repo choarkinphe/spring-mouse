@@ -228,6 +228,26 @@ class MouseAgent {
   }
 
   /**
+   * Tells Spring the task is in hand, before any provider call is made.
+   *
+   * This request deliberately carries no body. A request that carries one only
+   * becomes readable to Spring once the whole upload has been buffered, so folding
+   * this handshake into the result upload would silently make Spring's ack budget
+   * cover the provider call too — and every request slower than that budget would be
+   * killed even though the node was working normally.
+   */
+  async reportStarted(taskId) {
+    await fetch(this.resultUrl(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.options.token}`,
+        "X-Mouse-Task-Id": taskId,
+        "X-Mouse-Phase": "started",
+      },
+    }).then((response) => response.arrayBuffer()).catch(() => {});
+  }
+
+  /**
    * Runs one provider request and replays the answer to Spring: status and
    * headers as headers, the body as the upload. Spring can only start reading
    * once this request arrives, so a local failure is reported through the same
@@ -240,6 +260,10 @@ class MouseAgent {
     this.activeTasks.set(taskId, controller);
 
     try {
+      // Announce the task before touching the network: this handshake is what Spring
+      // stops its ack budget on, so it must not wait on the provider.
+      await this.reportStarted(taskId);
+
       const target = new URL(upstream.url || "");
       if (!["http:", "https:"].includes(target.protocol)) throw new Error("invalid target URL");
       if (upstream.method !== "POST" || typeof upstream.body !== "string") {

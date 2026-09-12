@@ -17,6 +17,7 @@
 
 const REGISTRY_KEY = "__springMouseTunnels";
 const DEFAULT_ACK_TIMEOUT_MS = 120_000;
+const DEFAULT_RESULT_TIMEOUT_MS = 300_000;
 
 export class MouseTunnelError extends Error {
   constructor(code, message) {
@@ -33,12 +34,24 @@ function registry() {
   return globalThis[REGISTRY_KEY];
 }
 
-// Time allowed between "task pushed" and "agent starts answering". This covers
-// the agent's own provider request up to its first response byte, not the
-// response itself, so it has to tolerate a slow provider queue.
+// Time allowed between "task pushed" and "the node says it has taken the task on".
+// Once a node answers `started` the wait moves to the result window below, so this
+// is a handshake budget and must NOT be sized for a slow provider. Nodes older than
+// the `started` report never send it, and for them this window still has to cover
+// the whole provider call — that is why the default stays generous.
 function ackTimeoutMs(override) {
   const configured = Number(override ?? process.env.SPRING_MOUSE_TUNNEL_ACK_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ACK_TIMEOUT_MS;
+}
+
+// Time allowed, after `started`, for the node to hand back the upstream response
+// head. The node is waiting on the provider here, so the budget has to clear a slow
+// provider queue. It deliberately does not cover the response body: the body arrives
+// on a separate upload that starts once the head is already in, and a request only
+// becomes readable to Spring after that upload finishes.
+function resultTimeoutMs(override) {
+  const configured = Number(override ?? process.env.SPRING_MOUSE_TUNNEL_RESULT_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_RESULT_TIMEOUT_MS;
 }
 
 function abortAsTunnelError(reason) {
@@ -96,22 +109,49 @@ export function disconnectTunnel(mouseId, reason = "disconnected") {
  * Pushes one task down the node's tunnel and resolves once the agent has handed
  * back the upstream response head. Rejects with a `MouseTunnelError` carrying
  * `code` = `offline` | `timeout` | `aborted`.
+ *
+ * Two budgets, not one: the ack budget only covers the handshake with the node, and
+ * a node that reports `started` (see `markMouseTaskStarted`) moves the wait onto the
+ * result budget. That split is what keeps a slow provider from looking like a dead
+ * node — the provider call used to sit inside the handshake window, so every request
+ * slower than it was killed even though the node was working normally.
  */
-export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ackTimeoutMs: ackOverride } = {}) {
+export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ackTimeoutMs: ackOverride, resultTimeoutMs: resultOverride } = {}) {
   const tunnel = registry().tunnels.get(mouseId);
   if (!tunnel) return Promise.reject(new MouseTunnelError("offline", "Mouse node has no live tunnel"));
 
   return new Promise((resolve, reject) => {
-    const entry = { mouseId, settled: false, settle: null, timer: null, detach: null };
+    const entry = { mouseId, settled: false, started: false, settle: null, markStarted: null, timer: null, resultTimer: null, detach: null };
+
+    function armResultTimeout() {
+      const timeout = resultTimeoutMs(resultOverride);
+      entry.resultTimer = setTimeout(() => {
+        tunnel.send("cancel", { taskId });
+        entry.settle(new MouseTunnelError("timeout", `Mouse took the task but returned no result within ${timeout}ms`));
+      }, timeout);
+      entry.resultTimer.unref?.();
+    }
 
     entry.settle = (error, value) => {
       if (entry.settled) return;
       entry.settled = true;
       clearTimeout(entry.timer);
+      clearTimeout(entry.resultTimer);
       entry.detach?.();
       registry().pending.delete(taskId);
       if (error) reject(error);
       else resolve(value);
+    };
+
+    // Called when the node confirms it has taken the task on. From this point Spring
+    // is waiting on the provider rather than on the node, so the shorter handshake
+    // budget is retired and the longer result budget takes over.
+    entry.markStarted = () => {
+      if (entry.settled || entry.started) return false;
+      entry.started = true;
+      clearTimeout(entry.timer);
+      armResultTimeout();
+      return true;
     };
 
     if (signal) {
@@ -141,6 +181,17 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
       entry.settle(new MouseTunnelError("offline", "Mouse tunnel closed while dispatching"));
     }
   });
+}
+
+/**
+ * Records that a node has taken a task on, moving that task onto the result budget.
+ * Returns false when nothing is waiting on the id any more, which is the normal
+ * answer for work that already timed out or was cancelled in flight.
+ */
+export function markMouseTaskStarted(taskId) {
+  const entry = registry().pending.get(taskId);
+  if (!entry) return false;
+  return entry.markStarted();
 }
 
 /**

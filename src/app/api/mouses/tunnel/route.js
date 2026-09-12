@@ -40,7 +40,10 @@ export async function GET(request) {
   // Keepalives deliberately carry nothing: this is a self-description, not a
   // heartbeat payload. Seeing it in the dashboard is how an operator confirms
   // which build a host is running.
-  const reportedVersion = (request.nextUrl.searchParams.get("version") || "").trim().slice(0, 80);
+  // Read the query off the request URL instead of `request.nextUrl`: the latter is a
+  // Next.js-only extension, so anything that builds a plain Request (tests, another
+  // runtime) hits an undefined property and blows up before the tunnel opens.
+  const reportedVersion = (new URL(request.url).searchParams.get("version") || "").trim().slice(0, 80);
   const selfDescription = reportedVersion ? { version: reportedVersion } : {};
 
   const handle = {

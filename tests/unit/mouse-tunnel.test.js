@@ -148,6 +148,61 @@ describe("tunnel registry", () => {
     expect(frames.map((frame) => frame.event)).toContain("cancel");
   });
 
+  it("retires the handshake budget once the node reports it started", async () => {
+    const { mouse } = await mousesRepo.createMouse({ name: "handshake-node" });
+    const { handle } = collectorHandle();
+    tunnel.registerTunnel(mouse.id, handle);
+
+    const pending = tunnel.dispatchMouseTask(mouse.id, {
+      taskId: "task-handshake",
+      ackTimeoutMs: 30,
+      resultTimeoutMs: 5000,
+    });
+
+    expect(tunnel.markMouseTaskStarted("task-handshake")).toBe(true);
+    // The provider is now allowed to outlive the handshake budget several times over.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(tunnel.pendingTaskCount()).toBe(1);
+
+    expect(tunnel.deliverMouseResult("task-handshake", { status: 200, headers: {}, body: "late" })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+    expect(tunnel.pendingTaskCount()).toBe(0);
+  });
+
+  it("ignores a repeated started report", async () => {
+    const { mouse } = await mousesRepo.createMouse({ name: "repeat-started-node" });
+    const { handle } = collectorHandle();
+    tunnel.registerTunnel(mouse.id, handle);
+
+    const pending = tunnel.dispatchMouseTask(mouse.id, { taskId: "task-repeat", ackTimeoutMs: 5000 });
+    expect(tunnel.markMouseTaskStarted("task-repeat")).toBe(true);
+    expect(tunnel.markMouseTaskStarted("task-repeat")).toBe(false);
+
+    tunnel.deliverMouseResult("task-repeat", { status: 200, headers: {}, body: "ok" });
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("gives up when the node starts the task but never returns a result", async () => {
+    const { mouse } = await mousesRepo.createMouse({ name: "stalled-node" });
+    const { frames, handle } = collectorHandle();
+    tunnel.registerTunnel(mouse.id, handle);
+
+    const pending = tunnel.dispatchMouseTask(mouse.id, {
+      taskId: "task-stalled",
+      ackTimeoutMs: 5000,
+      resultTimeoutMs: 20,
+    });
+    expect(tunnel.markMouseTaskStarted("task-stalled")).toBe(true);
+
+    await expect(pending).rejects.toMatchObject({ code: "timeout" });
+    expect(frames.map((frame) => frame.event)).toContain("cancel");
+    expect(tunnel.pendingTaskCount()).toBe(0);
+  });
+
+  it("reports false when a started report arrives for a task nobody waits on", async () => {
+    expect(tunnel.markMouseTaskStarted("task-nobody-waits-on")).toBe(false);
+  });
+
   it("tells the node to cancel when the caller goes away", async () => {
     const { mouse } = await mousesRepo.createMouse({ name: "abort-node" });
     const { frames, handle } = collectorHandle();
@@ -247,5 +302,42 @@ describe("tunnel routes", () => {
       body: "orphan",
     }));
     expect(response.status).toBe(400);
+  });
+
+  it("switches a dispatched task onto the result budget when the node reports started", async () => {
+    const { mouse, token } = await mousesRepo.createMouse({ name: "started-route-node" });
+    const { handle } = collectorHandle();
+    tunnel.registerTunnel(mouse.id, handle);
+
+    const pending = tunnel.dispatchMouseTask(mouse.id, {
+      taskId: "route-started",
+      ackTimeoutMs: 30,
+      resultTimeoutMs: 5000,
+    });
+
+    // No body on this request. That is the point of the handshake: it is what lets a
+    // carrier that buffers uploads hand it over immediately.
+    const ack = await resultRoute.POST(new Request("http://localhost/api/mouses/tunnel/result", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "x-mouse-task-id": "route-started", "x-mouse-phase": "started" },
+    }));
+    expect(ack.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(tunnel.pendingTaskCount()).toBe(1);
+
+    tunnel.deliverMouseResult("route-started", { status: 200, headers: {}, body: "ok" });
+    await expect(pending).resolves.toMatchObject({ status: 200 });
+
+    tunnel.disconnectTunnel(mouse.id);
+  });
+
+  it("answers a started report for an unknown task with 404", async () => {
+    const { token } = await mousesRepo.createMouse({ name: "stray-started-node" });
+    const response = await resultRoute.POST(new Request("http://localhost/api/mouses/tunnel/result", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "x-mouse-task-id": "nobody-started", "x-mouse-phase": "started" },
+    }));
+    expect(response.status).toBe(404);
   });
 });

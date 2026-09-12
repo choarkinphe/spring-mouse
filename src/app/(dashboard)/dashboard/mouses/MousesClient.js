@@ -44,6 +44,11 @@ const TOKEN_TTL_OPTIONS = [
   { value: "2592000", label: "30 天" },
 ];
 
+// The empty state hands out a runnable command: a first-time user should not have
+// to open MOUSE_AGENT_PROTOCOL.md just to find out how a node joins.
+const MOUSE_START_COMMAND =
+  "node mouse/agent.mjs --spring-url <Spring 地址> --token mst_… --client-id <节点标识> --callback-url <回调地址>";
+
 export default function MousesClient() {
   const [mouses, setMouses] = useState([]);
   const [accessTokens, setAccessTokens] = useState([]);
@@ -54,6 +59,7 @@ export default function MousesClient() {
   const [creating, setCreating] = useState(false);
   const [createdToken, setCreatedToken] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [cmdCopied, setCmdCopied] = useState(false);
   const [tokenDrawerOpen, setTokenDrawerOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [savingMouseId, setSavingMouseId] = useState("");
@@ -162,6 +168,11 @@ export default function MousesClient() {
     setCopied(true);
   };
 
+  const copyCommand = async () => {
+    await navigator.clipboard.writeText(MOUSE_START_COMMAND);
+    setCmdCopied(true);
+  };
+
   // The plaintext token must not survive the drawer: closing it drops the
   // secret from memory, matching the "only visible once" promise in the copy.
   const closeTokenDrawer = () => {
@@ -199,7 +210,25 @@ export default function MousesClient() {
         <Card className="border-red-500/30 bg-red-500/5 p-3 text-sm text-red-500">{error}</Card>
       )}
 
-      <Card title="已注册 Mouse" subtitle="按在线状态分组；状态每 30 秒自动刷新。">
+      <Card title="已注册 Mouse" subtitle={mouses.length ? "按在线状态分组；状态每 30 秒自动刷新。" : undefined}>
+        {!mouses.length ? (
+          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 py-10 text-center">
+            <span className="material-symbols-outlined mb-3 text-[34px] text-[#647688]">device_hub</span>
+            <h2 className="text-base font-semibold text-text-main">还没有 Mouse 注册</h2>
+            <p className="mt-1 max-w-md text-sm leading-6 text-text-muted">
+              不接入 Mouse 时，所有渠道仍由 Spring 本机执行。生成访问 Token，在待接入的机器上运行 Mouse agent，它就会出现在这里并开始心跳。
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              <Button size="field" icon="key" onClick={() => setTokenDrawerOpen(true)}>生成访问 Token</Button>
+              <Button size="field" variant="secondary" icon={cmdCopied ? "check" : "content_copy"} onClick={copyCommand}>
+                {cmdCopied ? "已复制" : "复制启动命令"}
+              </Button>
+            </div>
+            <code className="mt-5 max-w-full overflow-x-auto rounded-lg border border-border-subtle bg-bg/40 px-3 py-2 font-mono text-xs text-text-muted">
+              {MOUSE_START_COMMAND}
+            </code>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[860px] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-text-muted">
@@ -211,12 +240,7 @@ export default function MousesClient() {
                 <th className="px-4 py-2 text-right">操作</th>
               </tr>
             </thead>
-            {!mouses.length ? (
-              <tbody>
-                <tr><td colSpan="5" className="px-4 py-8 text-center text-text-muted">还没有 Mouse 注册；当前所有渠道仍由 Spring 执行</td></tr>
-              </tbody>
-            ) : (
-              statusGroups.map((group) => (
+            {statusGroups.map((group) => (
                 <tbody key={group.key}>
                   <tr className="border-b border-border-subtle bg-bg/40">
                     <td colSpan="5" className="px-4 py-2">
@@ -257,10 +281,10 @@ export default function MousesClient() {
                     <tr><td colSpan="5" className="px-4 py-3 text-center text-xs text-text-muted">{group.empty}</td></tr>
                   )}
                 </tbody>
-              ))
-            )}
+              ))}
           </table>
         </div>
+        )}
       </Card>
 
       <Drawer isOpen={tokenDrawerOpen} onClose={closeTokenDrawer} title="Mouse 访问 Token" width="xl">
@@ -308,7 +332,8 @@ export default function MousesClient() {
               <h3 className="text-sm font-semibold text-text-main">已生成 Token</h3>
               <span className="text-xs text-text-muted">{accessTokens.length} 个</span>
             </div>
-            <div className="overflow-x-auto rounded-xl border border-border-subtle">
+            {accessTokens.length ? (
+              <div className="overflow-x-auto rounded-xl border border-border-subtle">
               <table className="w-full text-left text-sm">
                 <thead className="bg-bg/40 text-xs uppercase tracking-wide text-text-muted">
                   <tr>
@@ -334,12 +359,16 @@ export default function MousesClient() {
                       </td>
                     </tr>
                   ))}
-                  {!accessTokens.length && (
-                    <tr><td colSpan="5" className="px-3 py-6 text-center text-text-muted">暂无访问 Token</td></tr>
-                  )}
                 </tbody>
               </table>
-            </div>
+              </div>
+            ) : (
+              <div className="flex min-h-[160px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg/20 px-6 text-center">
+                <span className="material-symbols-outlined mb-2 text-[26px] text-[#647688]">key_off</span>
+                <p className="text-sm font-medium text-text-main">还没有访问 Token</p>
+                <p className="mt-1 max-w-sm text-xs leading-5 text-text-muted">在上方生成一个 Token，Mouse 端用它完成注册与心跳认证；同一个 Token 可认证多个 Mouse。</p>
+              </div>
+            )}
           </section>
         </div>
       </Drawer>

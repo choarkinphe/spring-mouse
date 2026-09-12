@@ -58,7 +58,7 @@ async function getConnectionLastRequests(connectionIds = []) {
   return result;
 }
 
-async function getConnectionSuccessRates(connectionIds = [], windowMs = 60 * 60 * 1000) {
+async function getConnectionSuccessRates(connectionIds = [], windowMs = 20 * 60 * 1000) {
   const ids = Array.from(new Set((connectionIds || []).filter(Boolean)));
   if (ids.length === 0) return {};
   const db = getAdapter();

@@ -813,7 +813,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         <div className="mt-1.5 flex min-w-0 items-center text-xs">
           <span
             className={cn("mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
-            title={`最近 1 小时请求成功率：${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
+            title={`最近 20 分钟请求成功率：${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
           >
             <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
             {successRateLabel}

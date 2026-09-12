@@ -388,7 +388,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
                 {showAdvanced && (
                   <div className="grid gap-4 border-l border-[#38bdf8]/25 pl-4 sm:grid-cols-2">
                     <label className="grid gap-1.5 text-sm font-medium text-text-main">
-                      优先级
+                      排序
                       <input value={priority} type="number" min="1" onChange={(event) => setPriority(event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm font-normal outline-none focus:border-[#38bdf8]/60" />
                     </label>
                     <label className="grid gap-1.5 text-sm font-medium text-text-main">

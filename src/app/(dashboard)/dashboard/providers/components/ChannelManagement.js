@@ -134,7 +134,8 @@ function getAccountStatus(connection) {
 function getUpstreamErrorTitle(connection) {
   const error = connection?.lastUpstreamError;
   if (!error) return "";
-  const source = connection.lastUpstreamSource === "sse" ? "上游 SSE" : `上游 HTTP ${connection.lastUpstreamStatus ?? ""}`.trim();
+  const layer = connection.lastUpstreamLayer === "gateway" ? "中间网关" : connection.lastUpstreamLayer === "network" ? "网络层" : "模型上游";
+  const source = `${layer} · ${connection.lastUpstreamSource === "sse" ? "HTTP SSE" : `HTTP ${connection.lastUpstreamStatus ?? ""}`}`.trim();
   const raw = connection.lastUpstreamRaw && connection.lastUpstreamRaw !== error ? `\n${connection.lastUpstreamRaw}` : "";
   return `${source}\n${error}${raw}`;
 }
@@ -796,7 +797,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             >
               <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{upstreamErrorStale ? "history" : "error"}</span>
               <span className="min-w-0 flex-1 truncate">
-                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamSource === "sse" ? "上游 SSE · " : `上游 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
+                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamLayer === "gateway" ? "中间网关 · " : connection.lastUpstreamLayer === "network" ? "网络层 · " : connection.lastUpstreamSource === "sse" ? "模型 SSE · " : `模型 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
                 {connection.lastUpstreamError}
               </span>
               {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}

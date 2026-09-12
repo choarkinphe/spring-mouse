@@ -427,6 +427,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
           lastUpstreamError: String(upstreamError.message || reason).slice(0, 2000),
           lastUpstreamStatus: upstreamError.status ?? status,
           lastUpstreamSource: upstreamError.source,
+          lastUpstreamLayer: upstreamError.layer || "provider",
           lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
           lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
           lastError: String(upstreamError.message || reason).slice(0, 2000),
@@ -502,6 +503,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
         lastUpstreamError: null,
         lastUpstreamStatus: null,
         lastUpstreamSource: null,
+        lastUpstreamLayer: null,
         lastUpstreamRaw: null,
         lastUpstreamAt: null,
       });

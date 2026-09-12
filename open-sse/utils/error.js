@@ -64,6 +64,13 @@ function retryAfterMs(response) {
   return Number.isFinite(dateMs) ? Math.max(0, Math.min(dateMs - Date.now(), 30 * 60 * 1000)) : null;
 }
 
+function classifyErrorLayer(bodyText = "", message = "") {
+  const text = `${message}\n${bodyText}`.toLowerCase();
+  if (/spring\s*(mouse|rejected)|spring rejected|\bnext\.js\b|\bfastapi\b/.test(text)) return "gateway";
+  if (/econnreset|etimedout|enotfound|fetch failed|socket|network/.test(text)) return "network";
+  return "provider";
+}
+
 export function buildUpstreamError(response, bodyText, message, source = "http", overrides = {}) {
   return {
     source,
@@ -72,6 +79,7 @@ export function buildUpstreamError(response, bodyText, message, source = "http",
     body: String(bodyText || "").slice(0, 4000),
     retryAfterMs: retryAfterMs(response),
     receivedAt: new Date().toISOString(),
+    layer: classifyErrorLayer(bodyText, message),
     ...overrides,
   };
 }

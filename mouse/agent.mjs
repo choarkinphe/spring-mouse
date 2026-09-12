@@ -12,7 +12,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-const AGENT_VERSION = "2.0.0";
+const AGENT_VERSION = "2.1.0";
 const DEFAULT_HEALTH_PORT = 9101;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;

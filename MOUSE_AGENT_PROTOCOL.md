@@ -44,7 +44,7 @@ network location is stored, because nothing needs it.
 ## 2. Open the tunnel
 
 ```http
-GET /api/mouses/tunnel?version=2.0.0
+GET /api/mouses/tunnel?version=2.1.0
 Authorization: Bearer mst_...
 Accept: text/event-stream
 ```
@@ -86,9 +86,26 @@ data: {"taskId":"..."}
 Spring sends `cancel` when the caller went away or the task ran out of time. The
 node should abort the matching provider request.
 
-## 4. Answer the task
+## 4. Report started, then answer the task
 
-The response is replayed as a request of the node's own:
+The node first says it has the task, on a request that carries **no body**:
+
+```http
+POST /api/mouses/tunnel/result
+Authorization: Bearer mst_...
+X-Mouse-Task-Id: <taskId>
+X-Mouse-Phase: started
+```
+
+Spring retires its handshake timer on that report, and waits for the real answer
+under a much longer budget. The split is not cosmetic: a request that carries a
+body only becomes readable to Spring once the whole upload has been buffered, so
+folding this handshake into the upload would make Spring's handshake budget cover
+the provider call as well — and every request slower than that budget would then
+be killed while the node was working perfectly. Report `started` before touching
+the provider, always, including when the request turns out to be malformed locally.
+
+The response is then replayed as a second request of the node's own:
 
 ```http
 POST /api/mouses/tunnel/result

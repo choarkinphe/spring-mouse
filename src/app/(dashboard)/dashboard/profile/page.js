@@ -968,7 +968,7 @@ export default function ProfilePage() {
                 onChange={(event) => setApiKeyQuotaForm((prev) => ({ ...prev, weeklyTokenLimitM: event.target.value }))}
                 disabled={loading || apiKeyQuotaLoading}
               />
-              <Button type="submit" loading={apiKeyQuotaLoading} disabled={loading}>
+              <Button type="submit" size="field" loading={apiKeyQuotaLoading} disabled={loading}>
                 Save
               </Button>
             </form>

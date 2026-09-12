@@ -283,7 +283,7 @@ export default function MousesClient() {
                 onChange={(event) => setTokenTtl(event.target.value)}
                 options={TOKEN_TTL_OPTIONS}
               />
-              <Button onClick={createToken} loading={creating}>生成</Button>
+              <Button size="field" onClick={createToken} loading={creating}>生成</Button>
             </div>
 
             {createdToken && (

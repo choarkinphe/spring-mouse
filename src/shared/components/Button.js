@@ -15,6 +15,10 @@ const sizes = {
   sm: "h-7 px-3 text-xs rounded-[8px]",
   md: "h-9 px-4 text-sm rounded-[10px]",
   lg: "h-11 px-6 text-sm rounded-[10px]",
+  // Matches the 42px field height of Input/Select (`py-2.5` + `text-sm` + 1px
+  // borders). Use it for a button that sits on the same row as a field, where
+  // `md` (36px) is 6px shorter and visibly drops below the inputs on `items-end`.
+  field: "h-[42px] px-4 text-sm rounded-[10px]",
 };
 
 // Square variants for icon-only buttons (no label). Keep in sync with `sizes` heights.
@@ -22,6 +26,7 @@ const iconOnlySizes = {
   sm: "size-7 p-0 rounded-[8px]",
   md: "size-9 p-0 rounded-[10px]",
   lg: "size-11 p-0 rounded-[10px]",
+  field: "size-[42px] p-0 rounded-[10px]",
 };
 
 export default function Button({

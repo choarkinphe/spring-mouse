@@ -203,8 +203,8 @@ export async function importDb(payload) {
     for (const m of payload.mouses || []) {
       db.run(
         `INSERT OR REPLACE INTO mouses(
-          id, clientId, name, accessTokenHash, version, capabilities, metadata,
-          registrationIp, executionToken, callbackUrl, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
+          id, clientId, name, accessTokenHash, executionToken, callbackUrl, version,
+          capabilities, metadata, registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           m.id,

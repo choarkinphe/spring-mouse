@@ -10,7 +10,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
 
-export default function EditConnectionModal({ isOpen, connection, mouses = [], onSave, onDelete, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, onSave, onDelete, onClose }) {
   // Providers whose executor bypasses BaseExecutor.execute() cannot route
   // through a Mouse node — hide the picker instead of offering a no-op choice.
   const mouseSupported = supportsMouseExecution(connection?.provider);
@@ -33,6 +33,9 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Kept as a string so "empty" stays distinguishable from a real number: an
+  // empty field means "follow the channel", which must not collapse into a 0.
+  const [concurrency, setConcurrency] = useState("");
 
   useEffect(() => {
     if (connection) {
@@ -60,6 +63,10 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
         const savedRegion = connection.providerSpecificData?.region || providerCfg.defaultRegion || providerCfg.regions[0]?.id || "";
         setRegion(savedRegion);
       }
+      // Only a real positive number is an account-level override; a null left
+      // behind by a previous "reset to channel" stays blank.
+      const savedConcurrency = Number.parseInt(connection.providerSpecificData?.maxConcurrentStreams, 10);
+      setConcurrency(Number.isFinite(savedConcurrency) && savedConcurrency > 0 ? String(savedConcurrency) : "");
       setTestResult(null);
       setValidationResult(null);
     }
@@ -72,6 +79,16 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
     ? (isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider))
     : false;
   const providerRegions = connection ? (AI_PROVIDERS?.[connection.provider]?.regions || null) : null;
+
+  // The channel ceiling is the fallback the router applies when this account
+  // has no override, so the hint can name the number that is actually in force.
+  const channelLimit = Number.parseInt(channelConcurrencyLimit, 10);
+  const hasChannelLimit = Number.isFinite(channelLimit) && channelLimit > 0;
+  const overrideLimit = Number.parseInt(concurrency, 10);
+  const hasOverride = Number.isFinite(overrideLimit) && overrideLimit > 0;
+  const concurrencyHint = hasOverride
+    ? `本账号单独限流 ${overrideLimit} 个并发，优先生效${hasChannelLimit ? `（渠道配置为 ${channelLimit}）` : ""}。`
+    : `留空则跟随渠道配置${hasChannelLimit ? `（当前 ${channelLimit} 个并发）` : ""}；填写后本账号优先按此值限流。`;
 
   // Build providerSpecificData for region-aware providers
   const buildRegionSpecificData = () => {
@@ -162,22 +179,31 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
         }
       }
       
-      // Add Azure-specific data if this is an Azure connection
+      // One merged patch: the API merges this object into the stored blob, but
+      // assigning per branch would let the last one win and silently drop the
+      // fields another branch owns.
+      const specificData = {};
       if (isAzure) {
-        updates.providerSpecificData = {
+        Object.assign(specificData, {
           azureEndpoint: azureData.azureEndpoint,
           apiVersion: azureData.apiVersion,
           deployment: azureData.deployment,
           organization: azureData.organization,
-        };
+        });
       }
       if (isCloudflareAi) {
-        updates.providerSpecificData = { accountId: cloudflareData.accountId };
+        Object.assign(specificData, { accountId: cloudflareData.accountId });
       }
       // Persist updated region for region-aware providers
       if (providerRegions && region) {
-        updates.providerSpecificData = buildRegionSpecificData();
+        Object.assign(specificData, buildRegionSpecificData());
       }
+      // Per-account concurrency ceiling. Empty means "follow the channel", and
+      // null is what makes getConnectionConcurrencyLimit() fall back to it.
+      const perAccountLimit = Number.parseInt(concurrency, 10);
+      specificData.maxConcurrentStreams =
+        Number.isFinite(perAccountLimit) && perAccountLimit > 0 ? perAccountLimit : null;
+      updates.providerSpecificData = specificData;
       
       await onSave(updates);
     } finally {
@@ -207,6 +233,15 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], o
           type="number"
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
+        />
+        <Input
+          label="单账号并发"
+          type="number"
+          min={1}
+          value={concurrency}
+          onChange={(e) => setConcurrency(e.target.value)}
+          placeholder={hasChannelLimit ? `渠道默认（${channelLimit}）` : "渠道默认"}
+          hint={concurrencyHint}
         />
         {!isOAuth && (
           <>
@@ -348,6 +383,9 @@ EditConnectionModal.propTypes = {
     provider: PropTypes.string,
     providerSpecificData: PropTypes.object,
   }),
+  // Channel-level per-account ceiling, shown as the fallback this account
+  // inherits while its own override is blank.
+  channelConcurrencyLimit: PropTypes.number,
   onSave: PropTypes.func.isRequired,
   onDelete: PropTypes.func,
   onClose: PropTypes.func.isRequired,

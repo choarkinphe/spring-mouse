@@ -2268,6 +2268,16 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       <EditConnectionModal
         isOpen={Boolean(editingConnection)}
         connection={editingConnection}
+        // Same resolution the strategy drawer shows, so the "channel default"
+        // hint on the account form cannot drift from the channel setting.
+        channelConcurrencyLimit={
+          editingConnection
+            ? Number(getEffectiveProviderStrategy(
+                editingConnection.provider,
+                providerStrategies[editingConnection.provider] || {},
+              ).maxConcurrentStreams) || null
+            : null
+        }
         mouses={mouses.filter((mouse) => mouse.isOnline || mouse.id === editingConnection?.mouseId)}
         onSave={handleSaveConnection}
         onDelete={(connection) => {

@@ -26,19 +26,20 @@ export default function DashboardHero({
       <div aria-hidden="true" className="absolute -right-5 -top-8 text-brand-500/[0.055]">
         <span className="material-symbols-outlined text-[132px]">{icon}</span>
       </div>
-      <div className="relative flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="relative flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">{eyebrow}</p>
           <h1 className="mt-1 text-xl font-semibold tracking-tight text-text-main sm:text-2xl">{title}</h1>
           <p className="mt-1.5 max-w-2xl text-sm leading-5 text-text-muted">{description}</p>
+          {/* Counters describe the page, so they sit with the description; the
+              action keeps its own column. Stacking them in one right-hand row
+              made a badge row and a button compete at two different heights. */}
+          {children && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">{children}</div>
+          )}
         </div>
-        {/* Stats and the page action share one right-hand row so the hero does not
-            grow a second line just to hold the badges. */}
-        {(children || action) && (
-          <div className="relative z-10 flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pb-0.5">
-            {children}
-            {action}
-          </div>
+        {action && (
+          <div className="relative z-10 flex shrink-0 items-center gap-2">{action}</div>
         )}
       </div>
     </section>

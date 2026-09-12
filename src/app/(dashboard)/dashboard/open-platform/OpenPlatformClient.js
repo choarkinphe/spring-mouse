@@ -277,9 +277,9 @@ export default function OpenPlatformClient() {
         icon="api"
         action={<Button icon="key" onClick={openManagement}>API Key 管理</Button>}
       >
-        <Badge variant="success" dot>{ENDPOINTS.length} 个开放接口</Badge>
-        <Badge variant="primary" icon="key">{keysLoading ? "读取密钥中" : `${activeCount} 个启用密钥`}</Badge>
-        <Badge variant="default" icon="history">调用记录已启用</Badge>
+        <Badge size="md" variant="default" icon="api">{ENDPOINTS.length} 个开放接口</Badge>
+        <Badge size="md" variant="primary" icon="key">{keysLoading ? "读取密钥中" : `${activeCount} 个启用密钥`}</Badge>
+        <Badge size="md" variant="default" icon="history">调用记录已启用</Badge>
       </DashboardHero>
 
       <section className="min-w-0 overflow-hidden rounded-2xl border border-border-subtle bg-surface shadow-[var(--shadow-soft)]">

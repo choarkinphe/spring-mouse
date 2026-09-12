@@ -180,9 +180,9 @@ export default function MousesClient() {
         icon="device_hub"
         action={<Button variant="secondary" icon="key" onClick={() => setTokenDrawerOpen(true)}>访问 Token</Button>}
       >
-        <Badge variant="primary" icon="dns">{mouses.length} 个节点</Badge>
-        <Badge variant={onlineCount ? "success" : "default"} dot>{onlineCount} 个在线</Badge>
-        <Badge variant={activeTokenCount ? "primary" : "default"} icon="key">{activeTokenCount} 个可用 Token</Badge>
+        <Badge size="md" variant="default" icon="dns">{mouses.length} 个节点</Badge>
+        <Badge size="md" variant={onlineCount ? "success" : "default"} icon="sensors">{onlineCount} 个在线</Badge>
+        <Badge size="md" variant={activeTokenCount ? "primary" : "default"} icon="key">{activeTokenCount} 个可用 Token</Badge>
       </DashboardHero>
 
       {error && (

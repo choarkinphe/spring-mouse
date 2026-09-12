@@ -655,9 +655,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   // the record is history, so demote it to a muted hint instead of a red alert.
   const upstreamErrorStale = status.label === "可用";
   const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
+  // Who was behind that last request — the API key's display name. Resolved
+  // server-side (apiKeyId → name); the raw key never reaches the client.
+  const lastRequestBy = connection.lastRequestBy || null;
   const recentlyActive = isRecentlyActive(connection.lastRequestAt);
   const lastRequestTitle = connection.lastRequestAt
-    ? `该账号最近一次请求：${new Date(connection.lastRequestAt).toLocaleString("zh-CN", { hour12: false })}`
+    ? [
+        `该账号最近一次请求：${new Date(connection.lastRequestAt).toLocaleString("zh-CN", { hour12: false })}`,
+        lastRequestBy ? `调用方：${lastRequestBy}` : null,
+        connection.lastRequestModel ? `模型：${connection.lastRequestModel}` : null,
+      ].filter(Boolean).join("\n")
     : "该账号还没有请求记录";
   const canReorder = !(isFirst && isLast);
   // Live in-flight count for this account, polled from the routing process. Used
@@ -811,6 +818,20 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <span className="shrink-0">最近请求</span>
             <span className="truncate font-medium">{lastRequestAt || "无记录"}</span>
           </span>
+          {/* Who called it. Sits right after the timestamp so the two read as one
+              sentence ("最近请求 3 分钟前 · 吴小龙"); the model only shows in the
+              tooltip to keep the row compact. `min-w-0` + `truncate` let a long
+              key name shrink instead of pushing 并发 off the line. */}
+          {lastRequestBy && (
+            <span
+              className="ml-2 flex min-w-0 items-center gap-1 text-[#647688]"
+              title={`该账号最近一次请求由「${lastRequestBy}」发起${connection.lastRequestModel ? `\n模型：${connection.lastRequestModel}` : ""}`}
+            >
+              <span className="shrink-0 text-[#506070]">·</span>
+              <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">person</span>
+              <span className="truncate">{lastRequestBy}</span>
+            </span>
+          )}
           {/* Live slot usage from the routing process. Shares the line with the
               last request time so the row keeps its two-line footprint. */}
           {concurrency && (

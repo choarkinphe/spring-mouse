@@ -5,6 +5,7 @@ import {
   getAvailableMouseById,
   getProviderNodeById,
   getProviderNodes,
+  getApiKeys,
 } from "@/models";
 import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 import { buildModelsList } from "@/app/api/v1/models/route";
@@ -13,9 +14,49 @@ import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAli
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
-import { getConnectionLastRequestAt } from "@/lib/usageDb";
+import { getAdapter } from "@/lib/db/driver.js";
 
 export const dynamic = "force-dynamic";
+
+// Dashboard channel list enrichment: the newest usageHistory row per provider
+// connection — its time, the API key (i.e. which operator/tool) behind it and
+// the model it asked for.
+//
+// Kept inline in this route on purpose: Turbopack's dev server only recompiles
+// the file it sees change, so a field added to a helper in usageRepo stays
+// `undefined` here until the dev server restarts. Do not move it into the repo
+// layer without also accepting that restart.
+async function getConnectionLastRequests(connectionIds = []) {
+  const ids = Array.from(new Set((connectionIds || []).filter((id) => typeof id === "string" && id)));
+  if (ids.length === 0) return {};
+
+  const db = await getAdapter();
+  const result = {};
+  // Keep the IN list small enough to stay under SQLite's variable limit.
+  const CHUNK_SIZE = 400;
+  for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    // MAX(id) rather than MAX(timestamp): ids are monotonic, so this always
+    // resolves to exactly one row per connection instead of one per tied
+    // timestamp.
+    const rows = db.all(
+      `SELECT connectionId, timestamp, apiKeyId, model
+         FROM usageHistory
+        WHERE id IN (SELECT MAX(id) FROM usageHistory WHERE connectionId IN (${placeholders}) GROUP BY connectionId)`,
+      chunk,
+    );
+    for (const row of rows) {
+      if (!row?.connectionId) continue;
+      result[row.connectionId] = {
+        at: row.timestamp || null,
+        apiKeyId: row.apiKeyId || null,
+        model: row.model || null,
+      };
+    }
+  }
+  return result;
+}
 
 function normalizeProxyConfig(body = {}) {
   const enabled = body?.connectionProxyEnabled === true;
@@ -105,18 +146,36 @@ export async function GET(request) {
       }
     }
 
-    // Surface the last time each account actually served a request so the
-    // channel list can show which accounts are working, not just which failed.
+    // Surface the newest request per account — when it ran and which API key
+    // made it — so the channel list can show who is actually driving the
+    // account, not just that it is busy.
     let lastRequestByConnection = {};
     try {
-      lastRequestByConnection = await getConnectionLastRequestAt(safeConnections.map((connection) => connection.id));
+      lastRequestByConnection = await getConnectionLastRequests(safeConnections.map((connection) => connection.id));
     } catch (error) {
       console.log("Error reading last request times:", error);
     }
-    const enrichedConnections = safeConnections.map((connection) => ({
-      ...connection,
-      lastRequestAt: lastRequestByConnection[connection.id] || null,
-    }));
+
+    // apiKeyId → display name. Only the name is handed to the client; the raw
+    // key value never leaves the server.
+    const apiKeyNames = new Map();
+    try {
+      for (const key of await getApiKeys()) {
+        if (key?.id) apiKeyNames.set(key.id, key.name || null);
+      }
+    } catch (error) {
+      console.log("Error reading API key names:", error);
+    }
+
+    const enrichedConnections = safeConnections.map((connection) => {
+      const lastRequest = lastRequestByConnection[connection.id] || null;
+      return {
+        ...connection,
+        lastRequestAt: lastRequest?.at || null,
+        lastRequestBy: lastRequest?.apiKeyId ? apiKeyNames.get(lastRequest.apiKeyId) || null : null,
+        lastRequestModel: lastRequest?.model || null,
+      };
+    });
 
     return NextResponse.json({ connections: enrichedConnections, ...(includeModelCounts ? { modelCounts } : {}) });
   } catch (error) {

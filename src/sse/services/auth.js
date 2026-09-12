@@ -15,6 +15,7 @@ import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
 import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
 import { getProviderModelBreaker } from "./providerBreaker.js";
+import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
 // every request wait behind a SQLite read and a lastUsedAt write. Assignment
@@ -136,8 +137,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Account tags do not participate in authorization or routing. Account
     // selection only excludes failed/locked connections; API-key tags above
     // remain the permission boundary for models.
+    // A node counts as usable while it holds its tunnel open. That is the whole
+    // reachability test now: Spring never dials the node, so a stored address
+    // proves nothing about whether the node is actually there.
     const onlineMouses = new Map((await getMouses())
-      .filter((mouse) => mouse.isOnline && !mouse.disabledAt && mouse.callbackUrl && mouse.executionTokenConfigured)
+      .filter((mouse) => mouse.isOnline && !mouse.disabledAt && isTunnelConnected(mouse.id))
       .map((mouse) => [mouse.id, mouse]));
     const onlineMouseIds = new Set(onlineMouses.keys());
 

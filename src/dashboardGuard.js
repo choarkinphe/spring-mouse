@@ -31,9 +31,10 @@ const PUBLIC_API_PATHS = [
   "/api/codex/usage",
   "/api/version",
   "/api/settings/require-login",
-  // Agent-facing routes; both validate one-time registration / mouse tokens.
-  "/api/mouses/register",
-  "/api/mouses/heartbeat",
+  // Agent-facing tunnel. The node authenticates with its own mouse token and
+  // both halves of the connection are outbound from it, so neither request can
+  // carry a dashboard session. A prefix match also covers /tunnel/result.
+  "/api/mouses/tunnel",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

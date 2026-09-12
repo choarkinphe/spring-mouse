@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BaseExecutor } from "open-sse/executors/base.js";
+import { registerTunnel, deliverMouseResult, unregisterTunnel } from "../../src/lib/mouse/tunnel.js";
 
 class TestExecutor extends BaseExecutor {
   constructor() {
@@ -11,45 +12,85 @@ class TestExecutor extends BaseExecutor {
   }
 }
 
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition was never met");
+}
+
 describe("Mouse-backed BaseExecutor transport", () => {
-  it("forwards the final provider request to the callback URL", async () => {
-    const providerResponse = new Response("upstream", { status: 200 });
-    const originalFetch = global.fetch;
-    let task;
-    global.fetch = async (url, init) => {
-      task = { url, init };
-      return providerResponse;
-    };
+  it("hands the provider request to the node and returns the replayed response", async () => {
+    const frames = [];
+    const mouseId = "executor-mouse";
+    registerTunnel(mouseId, {
+      send(event, data) {
+        frames.push({ event, data });
+        return true;
+      },
+    });
 
     try {
       const executor = new TestExecutor();
-      const result = await executor.execute({
+      const pending = executor.execute({
         model: "test-model",
         body: { prompt: "hello" },
         stream: false,
         signal: undefined,
         credentials: {
           apiKey: "provider-secret",
-          mouseExecution: {
-            mouseId: "mouse-1",
-            callbackUrl: "http://127.0.0.1:9101/",
-            executionToken: "msx_test",
-          },
+          mouseExecution: { mouseId },
         },
       });
 
-      expect(result.response).toBe(providerResponse);
+      await waitFor(() => frames.length > 0);
+      const task = frames[0].data;
+      // The provider request is built in full on the Spring side — the node only
+      // forwards it — so everything about the call is already decided here.
+      expect(task.request.url).toBe("https://provider.example/chat");
+      expect(task.request.headers.Authorization).toBe("Bearer provider-secret");
+      expect(JSON.parse(task.request.body)).toEqual({ prompt: "hello", upstreamModel: "test-model" });
+
+      deliverMouseResult(task.taskId, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: new Response("upstream-body").body,
+      });
+
+      const result = await pending;
       expect(result.url).toBe("https://provider.example/chat");
-      expect(result.transformedBody).toEqual({ prompt: "hello", upstreamModel: "test-model" });
-      expect(task.url).toBe("http://127.0.0.1:9101/v1/execute");
-      expect(task.init.headers.Authorization).toBe("Bearer msx_test");
-      const body = JSON.parse(task.init.body);
-      expect(body.taskId).toBeTruthy();
-      expect(body.request.url).toBe("https://provider.example/chat");
-      expect(body.request.headers.Authorization).toBe("Bearer provider-secret");
-      expect(JSON.parse(body.request.body).upstreamModel).toBe("test-model");
+      expect(result.response.status).toBe(200);
+      expect(result.response.headers.get("content-type")).toBe("text/event-stream");
+      await expect(result.response.text()).resolves.toBe("upstream-body");
     } finally {
-      global.fetch = originalFetch;
+      unregisterTunnel(mouseId);
     }
+  });
+
+  it("surfaces an offline node as a failure so the caller can fall back", async () => {
+    const executor = new TestExecutor();
+    await expect(executor.execute({
+      model: "test-model",
+      body: { prompt: "hello" },
+      stream: false,
+      signal: undefined,
+      credentials: {
+        apiKey: "provider-secret",
+        mouseExecution: { mouseId: "node-that-never-connected" },
+      },
+    })).rejects.toMatchObject({ code: "offline" });
+  });
+
+  it("refuses to run when the credential carries no node id", async () => {
+    const executor = new TestExecutor();
+    await expect(executor.execute({
+      model: "test-model",
+      body: { prompt: "hello" },
+      stream: false,
+      signal: undefined,
+      credentials: { apiKey: "provider-secret", mouseExecution: {} },
+    })).rejects.toThrow(/not ready for task execution/);
   });
 });

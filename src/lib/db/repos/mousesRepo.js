@@ -3,7 +3,6 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const MOUSE_ACCESS_TOKEN_PREFIX = "mst_";
-const MOUSE_EXECUTION_TOKEN_PREFIX = "msx_";
 export const MOUSE_ONLINE_TIMEOUT_MS = 90_000;
 
 function hashToken(value) {
@@ -12,17 +11,6 @@ function hashToken(value) {
 
 function generateAccessToken() {
   return `${MOUSE_ACCESS_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-}
-
-export function normalizeCallbackUrl(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  try {
-    const url = new URL(value.trim());
-    if (!["http:", "https:"].includes(url.protocol)) return null;
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return null;
-  }
 }
 
 export function normalizeClientId(value) {
@@ -58,7 +46,7 @@ function rowToMouse(row, now = Date.now()) {
   const disabled = Boolean(row.disabledAt);
   // A node is "registered" once it has made contact at least once. Rows created
   // from the dashboard start out unregistered: the command has been handed out
-  // but no agent has used it yet.
+  // but no agent has claimed the node with it yet.
   const registered = Boolean(row.lastHeartbeatAt);
   return {
     id: row.id,
@@ -68,8 +56,6 @@ function rowToMouse(row, now = Date.now()) {
     capabilities: parseJson(row.capabilities, []),
     metadata: parseJson(row.metadata, {}),
     registrationIp: row.registrationIp || null,
-    callbackUrl: row.callbackUrl || null,
-    executionTokenConfigured: Boolean(row.executionToken),
     registered,
     lastHeartbeatAt: row.lastHeartbeatAt || null,
     registeredAt: row.registeredAt,
@@ -105,18 +91,18 @@ export async function getMouseByClientId(clientId) {
 
 export async function getAvailableMouseById(id) {
   const mouse = await getMouseById(id);
-  return mouse && !mouse.disabledAt && mouse.isOnline && mouse.callbackUrl && mouse.executionTokenConfigured
-    ? mouse
-    : null;
+  return mouse && !mouse.disabledAt && mouse.isOnline ? mouse : null;
 }
 
+// Everything Spring needs to hand a provider request to a node. There is no
+// address here on purpose: the request leaves over the node's inbound tunnel,
+// so a reachable hostname is not part of the contract any more.
 export async function getMouseExecutionDetails(id) {
   if (!id) return null;
   const db = await getAdapter();
   const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
-  if (!row || row.disabledAt || !row.executionToken || !row.callbackUrl) return null;
-  if (!isOnline(row)) return null;
-  return { mouseId: row.id, callbackUrl: row.callbackUrl, executionToken: row.executionToken };
+  if (!row || row.disabledAt) return null;
+  return { mouseId: row.id };
 }
 
 // The access token is the node's identity: one token, one node. It is minted when
@@ -128,16 +114,10 @@ export async function getMouseByAccessToken(token) {
   return rowToMouse(db.get("SELECT * FROM mouses WHERE accessTokenHash = ?", [hashToken(token)]));
 }
 
-export async function createMouse({ name, callbackUrl } = {}) {
+export async function createMouse({ name } = {}) {
   const trimmedName = typeof name === "string" ? name.trim() : "";
   if (!trimmedName) return { validationError: "Name is required" };
   if (trimmedName.length > 80) return { validationError: "Name must be at most 80 characters" };
-
-  const rawCallbackUrl = typeof callbackUrl === "string" ? callbackUrl.trim() : "";
-  const normalizedCallbackUrl = rawCallbackUrl ? normalizeCallbackUrl(rawCallbackUrl) : null;
-  if (rawCallbackUrl && !normalizedCallbackUrl) {
-    return { validationError: "callbackUrl must be a valid HTTP or HTTPS URL" };
-  }
 
   const id = randomUUID();
   const token = generateAccessToken();
@@ -145,16 +125,17 @@ export async function createMouse({ name, callbackUrl } = {}) {
   const db = await getAdapter();
   db.run(
     `INSERT INTO mouses(
-      id, name, accessTokenHash, clientId, executionToken, callbackUrl, version,
+      id, name, accessTokenHash, clientId, executionToken, version,
       capabilities, metadata, registrationIp, lastHeartbeatAt, registeredAt, updatedAt, disabledAt
-    ) VALUES(?, ?, ?, ?, NULL, ?, NULL, '[]', '{}', NULL, NULL, ?, ?, NULL)`,
-    [id, trimmedName, hashToken(token), deriveClientId(trimmedName, id), normalizedCallbackUrl, now, now],
+    ) VALUES(?, ?, ?, ?, NULL, NULL, '[]', '{}', NULL, NULL, ?, ?, NULL)`,
+    [id, trimmedName, hashToken(token), deriveClientId(trimmedName, id), now, now],
   );
   return { mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])), token };
 }
 
 // Re-issues the access token for a node that never used the one it was given, or
-// whose command has to be handed out again. The previous token stops working.
+// whose command has to be handed out again. The previous token stops working and
+// any tunnel it was holding is dropped by the caller.
 export async function rotateMouseToken(id) {
   if (!id) return null;
   const db = await getAdapter();
@@ -165,85 +146,31 @@ export async function rotateMouseToken(id) {
   return { token, mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])) };
 }
 
-// Registration claims the row that already carries this token: the identity comes
-// from the token, not from whatever clientId the agent happens to send, so a node
-// provisioned from the dashboard can never land on a second row.
-export async function registerMouse({
-  mouseToken,
-  version,
-  capabilities,
-  metadata,
-  registrationIp,
-  callbackUrl,
-} = {}) {
-  const mouse = await getMouseByAccessToken(mouseToken);
-  if (!mouse) return { error: "invalid_mouse_token" };
-  if (mouse.disabledAt) return { error: "mouse_disabled" };
-
-  const normalizedCallbackUrl = normalizeCallbackUrl(callbackUrl);
-  if (!normalizedCallbackUrl) return { error: "invalid_callback_url" };
-
+/**
+ * Refreshes the node's liveness. Opening a tunnel — and every keepalive on it —
+ * is proof the node is running, so the stream replaces the polling heartbeat
+ * that used to be the only way a node could report in.
+ *
+ * The optional fields are the node's self-description, which it can only supply
+ * on the request that opens the tunnel: keepalives update nothing but the clock.
+ */
+export async function touchMouseHeartbeat(id, { version, registrationIp } = {}) {
+  if (!id) return null;
   const db = await getAdapter();
-  const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-  const nowMs = Date.now();
-  const now = new Date(nowMs).toISOString();
-  const nextVersion = typeof version === "string" ? version.slice(0, 80) : null;
-  const nextCapabilities = Array.isArray(capabilities)
-    ? capabilities.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
-    : [];
-  const nextMetadata = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
-
-  db.run(
-    `UPDATE mouses SET executionToken = ?, callbackUrl = ?, version = ?, capabilities = ?,
-      metadata = ?, registrationIp = ?, lastHeartbeatAt = ?, updatedAt = ?
-     WHERE id = ?`,
-    [
-      executionToken,
-      normalizedCallbackUrl,
-      nextVersion,
-      stringifyJson(nextCapabilities),
-      stringifyJson(nextMetadata),
-      registrationIp || null,
-      now,
-      now,
-      mouse.id,
-    ],
-  );
-
-  const updated = rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [mouse.id]), nowMs);
-  return { mouse: updated, executionToken };
-}
-
-export async function updateMouseHeartbeat(clientId, { version, capabilities, metadata } = {}) {
-  const db = await getAdapter();
-  const now = new Date().toISOString();
-  const row = db.get("SELECT * FROM mouses WHERE clientId = ?", [clientId]);
+  const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
   if (!row || row.disabledAt) return null;
-  const nextCallbackUrl = metadata?.callbackUrl === undefined
-    ? row.callbackUrl
-    : normalizeCallbackUrl(metadata.callbackUrl);
-  const nextVersion = version === undefined ? row.version : typeof version === "string" ? version.slice(0, 80) : null;
-  const nextCapabilities = capabilities === undefined
-    ? parseJson(row.capabilities, [])
-    : Array.isArray(capabilities)
-      ? capabilities.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
-      : [];
-  const currentMetadata = parseJson(row.metadata, {});
-  const nextMetadata = metadata === undefined
-    ? currentMetadata
-    : metadata && typeof metadata === "object" && !Array.isArray(metadata)
-      ? { ...currentMetadata, ...metadata }
-      : currentMetadata;
-
+  const now = new Date().toISOString();
+  const nextVersion = typeof version === "string" && version.trim()
+    ? version.trim().slice(0, 80)
+    : row.version;
   db.run(
-    `UPDATE mouses SET callbackUrl = ?, version = ?, capabilities = ?, metadata = ?, lastHeartbeatAt = ?, updatedAt = ?
-     WHERE clientId = ?`,
-    [nextCallbackUrl, nextVersion, stringifyJson(nextCapabilities), stringifyJson(nextMetadata), now, now, clientId],
+    "UPDATE mouses SET version = ?, registrationIp = ?, lastHeartbeatAt = ?, updatedAt = ? WHERE id = ?",
+    [nextVersion, registrationIp || row.registrationIp || null, now, now, id],
   );
-  return rowToMouse(db.get("SELECT * FROM mouses WHERE clientId = ?", [clientId]));
+  return rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id]));
 }
 
-export async function updateMouse(id, { name, disabled, callbackUrl } = {}) {
+export async function updateMouse(id, { name, disabled } = {}) {
   const db = await getAdapter();
   const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
   if (!row) return null;
@@ -251,21 +178,10 @@ export async function updateMouse(id, { name, disabled, callbackUrl } = {}) {
   const nextName = name === undefined ? row.name : String(name).trim().slice(0, 80);
   if (!nextName) return { validationError: "Name is required" };
   const nextDisabledAt = disabled === undefined ? row.disabledAt : disabled ? now : null;
-  // The start command embeds the callback URL, so it stays editable until the node
-  // actually registers (registration overwrites it with what the agent reports).
-  let nextCallbackUrl = row.callbackUrl;
-  if (callbackUrl !== undefined) {
-    if (callbackUrl === null || callbackUrl === "") {
-      nextCallbackUrl = null;
-    } else {
-      nextCallbackUrl = normalizeCallbackUrl(callbackUrl);
-      if (!nextCallbackUrl) return { validationError: "callbackUrl must be a valid HTTP or HTTPS URL" };
-    }
-  }
 
   db.run(
-    "UPDATE mouses SET name = ?, callbackUrl = ?, disabledAt = ?, updatedAt = ? WHERE id = ?",
-    [nextName, nextCallbackUrl, nextDisabledAt, now, id],
+    "UPDATE mouses SET name = ?, disabledAt = ?, updatedAt = ? WHERE id = ?",
+    [nextName, nextDisabledAt, now, id],
   );
   return { mouse: rowToMouse(db.get("SELECT * FROM mouses WHERE id = ?", [id])) };
 }
@@ -279,16 +195,4 @@ export async function deleteMouse(id) {
     deleted = (result?.changes || 0) > 0;
   });
   return deleted;
-}
-
-export async function rotateMouseExecutionToken(id) {
-  const db = await getAdapter();
-  const executionToken = `${MOUSE_EXECUTION_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
-  const now = new Date().toISOString();
-  const result = db.run(
-    "UPDATE mouses SET executionToken = ?, updatedAt = ? WHERE id = ? AND disabledAt IS NULL",
-    [executionToken, now, id],
-  );
-  if ((result?.changes || 0) === 0) return null;
-  return { executionToken };
 }

@@ -5,6 +5,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { dispatchMouseTask } from "../../src/lib/mouse/tunnel.js";
 
 function abortError(reason) {
   if (reason?.name === "AbortError") return reason;
@@ -133,7 +134,7 @@ export class BaseExecutor {
 
   async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     const mouse = credentials.mouseExecution;
-    if (!mouse?.callbackUrl || !mouse.executionToken) {
+    if (!mouse?.mouseId) {
       throw new Error("Selected Mouse is not ready for task execution");
     }
     if (proxyOptions?.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
@@ -144,37 +145,24 @@ export class BaseExecutor {
     const targetUrl = this.buildUrl(model, stream, 0, credentials);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
     const headers = this.buildHeaders(credentials, stream, targetUrl, model);
-    const endpoint = `${mouse.callbackUrl.replace(/\/$/, "")}/v1/execute`;
 
     log?.debug?.("MOUSE", `${this.provider.toUpperCase()} | task=${taskId} | mouse=${mouse.mouseId}`);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${mouse.executionToken}`,
-        "Content-Type": "application/json",
-        "X-Mouse-Task-Id": taskId,
-      },
-      body: JSON.stringify({
-        taskId,
-        attempt: 1,
-        request: {
-          method: "POST",
-          url: targetUrl,
-          headers,
-          body: JSON.stringify(transformedBody),
-          proxyOptions,
-        },
-      }),
+    // The node dialled Spring, so there is no endpoint to post to: the task goes
+    // down the node's tunnel and comes back as a replayed upstream response.
+    const upstream = await dispatchMouseTask(mouse.mouseId, {
+      taskId,
       signal,
+      request: {
+        method: "POST",
+        url: targetUrl,
+        headers,
+        body: JSON.stringify(transformedBody),
+        proxyOptions,
+      },
     });
 
-    if (response.status === 401 || response.status === 403 || response.status === 404) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`Mouse rejected execution task (${response.status}): ${text.slice(0, 300)}`);
-    }
-
     return {
-      response,
+      response: new Response(upstream.body, { status: upstream.status, headers: upstream.headers }),
       url: targetUrl,
       headers,
       transformedBody,

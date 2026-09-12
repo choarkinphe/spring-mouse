@@ -2,39 +2,44 @@
 /**
  * Spring Mouse agent.
  *
- * Start the HTTP endpoint first, register with Spring, then keep heartbeating.
- * The callback URL must be reachable from Spring; provider traffic is forwarded
- * from Spring to this process with a Mouse execution token.
+ * The node dials Spring once and holds that stream open. Spring pushes tasks
+ * down the connection it already has, and the agent answers on a second request
+ * it makes itself. Both directions are outbound, so nothing here needs to be
+ * reachable from Spring — which is what lets a node run behind NAT on a host
+ * with no public address and no port mapping.
  */
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { Readable } from "node:stream";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-const AGENT_VERSION = "1.0.0";
-const DEFAULT_PORT = 9101;
-const HEARTBEAT_INTERVAL_MS = 30_000;
+const AGENT_VERSION = "2.0.0";
+const DEFAULT_HEALTH_PORT = 9101;
+const RECONNECT_MIN_MS = 1_000;
+const RECONNECT_MAX_MS = 30_000;
+const SSE_SEPARATOR = /\r?\n\r?\n/;
+
+// Response headers that describe the transfer rather than the payload. The body
+// seen here has already been decoded by fetch, so replaying the original
+// content-encoding or content-length would make the receiver misread it.
+const UNRELAYED_HEADERS = new Set([
+  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+  "te", "trailer", "transfer-encoding", "upgrade", "host",
+  "content-encoding", "content-length",
+]);
 
 function usage(code = 0) {
   const text = `Spring Mouse agent
 
 Usage:
-  node mouse/agent.mjs --spring-url http://spring:8008 --token mst_... --client-id mouse-01 --callback-url http://mouse-host:9101
+  node mouse/agent.mjs --spring-url http://spring:8008 --token mst_...
 
 Options:
-  --spring-url URL            Base URL of Spring (or SPRING_URL)
-  --token TOKEN               Mouse access token (or MOUSE_TOKEN)
-  --client-id ID              Stable unique identity reported to Spring (or MOUSE_CLIENT_ID)
-  --callback-url URL          URL Spring uses to reach this agent (or MOUSE_CALLBACK_URL)
-  --name NAME                 Mouse display name (or MOUSE_NAME)
-  --host HOST                 HTTP bind address (default 0.0.0.0)
-  --port PORT                 HTTP port (default 9101)
-  --state-file PATH           Identity file (default ~/.spring-mouse-agent/agent.json)
-  --reset                     Ignore the saved identity and register again
+  --spring-url URL     Base URL of Spring (or SPRING_URL) — required
+  --token TOKEN        Mouse access token from the dashboard (or MOUSE_TOKEN) — required
+  --health-port PORT   Local healthcheck port (default ${DEFAULT_HEALTH_PORT})
+  --once               Connect, serve until the tunnel drops, then exit
 `;
+
   process.stdout.write(`${text}\n`);
   process.exit(code);
 }
@@ -44,8 +49,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") usage();
-    if (arg === "--reset") {
-      values.reset = true;
+    if (arg === "--once") {
+      values.once = true;
       continue;
     }
     if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
@@ -68,294 +73,272 @@ function normalizeBaseUrl(value, label) {
   }
 }
 
-function statePath() {
-  return process.env.MOUSE_STATE_FILE
-    || path.join(os.homedir(), ".spring-mouse-agent", "agent.json");
-}
-
-function loadState(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveState(file, state) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, file);
-}
-
-function hashValue(value) {
-  return createHash("sha256").update(String(value)).digest();
-}
-
-function secureEqual(left, right) {
-  if (typeof left !== "string" || typeof right !== "string") return false;
-  return timingSafeEqual(hashValue(left), hashValue(right));
-}
-
-function bearerToken(request) {
-  return request.headers.authorization?.replace(/^Bearer\s+/i, "").trim() || "";
-}
-
-function normalizeClientId(value) {
-  const clientId = String(value || "").trim();
-  if (!clientId || clientId.length > 100 || !/^[a-zA-Z0-9._:@-]+$/.test(clientId)) return null;
-  return clientId;
-}
-
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-  "te", "trailer", "transfer-encoding", "upgrade", "content-length", "host",
-]);
-
-function forwardHeaders(source) {
+function relayableHeaders(source) {
   const headers = {};
   for (const [key, value] of Object.entries(source || {})) {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) headers[key] = value;
+    if (UNRELAYED_HEADERS.has(key.toLowerCase())) continue;
+    if (typeof value !== "string") continue;
+    headers[key] = value;
   }
   return headers;
 }
 
-async function readJson(request, maxBytes = 128 * 1024 * 1024) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > maxBytes) throw Object.assign(new Error("request body too large"), { status: 413 });
-    chunks.push(chunk);
+function encodeHeaders(headers) {
+  return Buffer.from(JSON.stringify(headers), "utf8").toString("base64");
+}
+
+/**
+ * Minimal SSE reader. Frames are separated by a blank line and every field is
+ * optional; the only two this agent understands are `event` and `data`.
+ */
+async function* readSseFrames(body) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let match = SSE_SEPARATOR.exec(buffer);
+    while (match) {
+      const frame = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
+      const parsed = parseSseFrame(frame);
+      if (parsed) yield parsed;
+      match = SSE_SEPARATOR.exec(buffer);
+    }
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function parseSseFrame(raw) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) continue;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    else if (field === "data") dataLines.push(value);
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return { event, data: null };
+  }
 }
 
 class MouseAgent {
   constructor(options) {
     this.options = options;
-    this.stateFile = options.stateFile;
-    this.state = loadState(options.stateFile);
     this.startedAt = new Date().toISOString();
-    this.heartbeatTimer = null;
-    this.server = createServer((request, response) => this.handle(request, response));
-  }
-
-  get identity() {
-    const identity = this.state.identity || null;
-    return identity?.schemaVersion === 2 && identity.clientId === this.options.clientId ? identity : null;
+    this.tunnelAbort = null;
+    this.activeTasks = new Map();
+    this.stopped = false;
+    this.tunnelOpen = false;
+    this.healthServer = createServer((request, response) => this.handleHealth(request, response));
   }
 
   async start() {
     await new Promise((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(this.options.port, this.options.host, () => {
-        this.server.off("error", reject);
+      this.healthServer.once("error", reject);
+      this.healthServer.listen(this.options.healthPort, "127.0.0.1", () => {
+        this.healthServer.off("error", reject);
         resolve();
       });
     });
 
-    if (!this.identity || this.options.reset) {
-      await this.register();
-    } else {
-      console.log(`[mouse] reused identity ${this.identity.mouseId} (${this.identity.clientId})`);
-    }
+    await this.tunnelLoop();
+  }
 
-    try {
-      await this.heartbeat();
-    } catch (error) {
-      if (Number(error.status) === 404 && this.options.token) {
-        console.log("[mouse] saved identity no longer exists; registering again");
-        await this.register();
-      } else {
-        throw error;
+  // The tunnel is the node's whole job, so a drop is normal and the loop simply
+  // reconnects with a capped backoff. Spring treats a missing tunnel as an
+  // offline node, so there is nothing to report while disconnected.
+  async tunnelLoop() {
+    let backoff = RECONNECT_MIN_MS;
+    while (!this.stopped) {
+      let connectedAt = 0;
+      try {
+        connectedAt = Date.now();
+        await this.holdTunnel();
+      } catch (error) {
+        if (this.stopped) return;
+        console.error(`[mouse] tunnel error: ${error.message}`);
       }
-    }
+      if (this.stopped || this.options.once) return;
 
-    console.log(`[mouse] callback ${this.options.callbackUrl}`);
-    await this.heartbeat();
-    this.scheduleHeartbeat();
-  }
-
-  async register() {
-    if (!this.options.springUrl || !this.options.token) {
-      throw new Error("Registration requires SPRING_URL and MOUSE_TOKEN");
-    }
-    const response = await fetch(`${this.options.springUrl}/api/mouses/register`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.options.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        clientId: this.options.clientId,
-        name: this.options.name || this.options.clientId,
-        version: AGENT_VERSION,
-        capabilities: ["http-provider-execute"],
-        callbackUrl: this.options.callbackUrl,
-        metadata: { startedAt: this.startedAt, pid: process.pid },
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `Registration failed (${response.status})`);
-
-    this.state = {
-      version: 2,
-      identity: {
-        schemaVersion: 2,
-        ...data.mouse,
-        clientId: this.options.clientId,
-        executionToken: data.executionToken,
-      },
-      registeredAt: new Date().toISOString(),
-    };
-    saveState(this.stateFile, this.state);
-    console.log(`[mouse] registration complete: ${this.identity.clientId}`);
-  }
-
-  scheduleHeartbeat() {
-    this.heartbeatTimer = setTimeout(() => {
-      this.heartbeat()
-        .catch((error) => console.error(`[mouse] heartbeat failed: ${error.message}`))
-        .finally(() => this.scheduleHeartbeat());
-    }, HEARTBEAT_INTERVAL_MS);
-    this.heartbeatTimer.unref?.();
-  }
-
-  async heartbeat() {
-    const response = await fetch(`${this.options.springUrl}/api/mouses/heartbeat`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.options.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        clientId: this.options.clientId,
-        version: AGENT_VERSION,
-        capabilities: ["http-provider-execute"],
-        metadata: {
-          callbackUrl: this.options.callbackUrl,
-          startedAt: this.startedAt,
-          pid: process.pid,
-          uptimeSeconds: Math.round(process.uptime()),
-        },
-      }),
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      const error = new Error(data.error || `HTTP ${response.status}`);
-      error.status = response.status;
-      throw error;
+      // A tunnel that stayed up gets a fresh backoff: the reconnect is due to a
+      // restart or a network blip, not to a rejection worth backing off from.
+      if (connectedAt && Date.now() - connectedAt > RECONNECT_MIN_MS * 4) backoff = RECONNECT_MIN_MS;
+      console.log(`[mouse] reconnecting in ${backoff}ms`);
+      await delay(backoff);
+      backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
     }
   }
 
-  async execute(task, request, response) {
-    const upstreamRequest = task.request || {};
-    const target = new URL(upstreamRequest.url || "");
-    if (!["http:", "https:"].includes(target.protocol)) throw Object.assign(new Error("invalid target URL"), { status: 400 });
-    if (upstreamRequest.method !== "POST" || typeof upstreamRequest.body !== "string") {
-      throw Object.assign(new Error("only POST requests with a JSON string body are supported"), { status: 400 });
-    }
-
+  async holdTunnel() {
     const controller = new AbortController();
-    const onAbort = () => controller.abort(new Error("client disconnected"));
-    request.on("close", onAbort);
-    const timeout = this.options.timeoutMs > 0
-      ? setTimeout(() => controller.abort(new Error("provider timeout")), this.options.timeoutMs)
-      : null;
+    this.tunnelAbort = controller;
+
+    const url = new URL("/api/mouses/tunnel", this.options.springUrl);
+    url.searchParams.set("version", AGENT_VERSION);
+
+    console.log(`[mouse] connecting to ${url.origin}${url.pathname}`);
+    const response = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${this.options.token}`,
+        "Accept": "text/event-stream",
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`rejected (${response.status}): ${text.slice(0, 200)}`);
+    }
+    if (!response.body) throw new Error("tunnel response had no body");
+
+    this.tunnelOpen = true;
+    console.log(`[mouse] tunnel open (v${AGENT_VERSION})`);
 
     try {
+      for await (const frame of readSseFrames(response.body)) {
+        if (frame.event === "task") {
+          // Deliberately not awaited: one slow provider must not block the tasks
+          // queued behind it on the same stream.
+          void this.runTask(frame.data);
+        } else if (frame.event === "cancel") {
+          this.activeTasks.get(frame.data?.taskId)?.abort(new Error("Spring cancelled the task"));
+        }
+      }
+    } finally {
+      this.tunnelOpen = false;
+      this.tunnelAbort = null;
+      this.abortAllTasks("tunnel closed");
+      console.log("[mouse] tunnel closed");
+    }
+  }
+
+  abortAllTasks(reason) {
+    for (const controller of this.activeTasks.values()) controller.abort(new Error(reason));
+    this.activeTasks.clear();
+  }
+
+  resultUrl() {
+    return new URL("/api/mouses/tunnel/result", this.options.springUrl);
+  }
+
+  /**
+   * Runs one provider request and replays the answer to Spring: status and
+   * headers as headers, the body as the upload. Spring can only start reading
+   * once this request arrives, so a local failure is reported through the same
+   * path instead of being left to time out.
+   */
+  async runTask(task) {
+    const taskId = typeof task?.taskId === "string" ? task.taskId : randomUUID();
+    const upstream = task?.request || {};
+    const controller = new AbortController();
+    this.activeTasks.set(taskId, controller);
+
+    try {
+      const target = new URL(upstream.url || "");
+      if (!["http:", "https:"].includes(target.protocol)) throw new Error("invalid target URL");
+      if (upstream.method !== "POST" || typeof upstream.body !== "string") {
+        throw new Error("only POST requests with a JSON string body are supported");
+      }
+
       const providerResponse = await fetch(target, {
         method: "POST",
-        headers: forwardHeaders(upstreamRequest.headers),
-        body: upstreamRequest.body,
+        headers: relayableHeaders(upstream.headers),
+        body: upstream.body,
         signal: controller.signal,
       });
-      response.writeHead(providerResponse.status, forwardHeaders(Object.fromEntries(providerResponse.headers)));
-      if (request.aborted || response.writableEnded) {
-        providerResponse.body?.cancel?.();
-        return;
+
+      const relay = await fetch(this.resultUrl(), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.options.token}`,
+          "X-Mouse-Task-Id": taskId,
+          "X-Upstream-Status": String(providerResponse.status),
+          "X-Upstream-Headers": encodeHeaders(relayableHeaders(Object.fromEntries(providerResponse.headers))),
+          "Content-Type": "application/octet-stream",
+        },
+        body: providerResponse.body,
+        duplex: "half",
+        signal: controller.signal,
+      });
+      if (!relay.ok) {
+        const text = await relay.text().catch(() => "");
+        throw new Error(`Spring rejected the result (${relay.status}): ${text.slice(0, 200)}`);
       }
-      await Readable.fromWeb(providerResponse.body).pipe(response);
+    } catch (error) {
+      console.error(`[mouse] task ${taskId} failed: ${error.message}`);
+      await this.reportFailure(taskId, error).catch((reportError) => {
+        console.error(`[mouse] could not report task ${taskId}: ${reportError.message}`);
+      });
     } finally {
-      clearTimeout(timeout);
-      request.off("close", onAbort);
+      this.activeTasks.delete(taskId);
     }
   }
 
-  async handle(request, response) {
+  // Sent without the task's abort signal on purpose: the point of this call is
+  // to unblock Spring, so a cancelled or already-failed task must still reach it.
+  async reportFailure(taskId, error) {
+    const body = JSON.stringify({ error: { message: error?.message || "Mouse task failed" } });
+    const response = await fetch(this.resultUrl(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.options.token}`,
+        "X-Mouse-Task-Id": taskId,
+        "X-Upstream-Status": "502",
+        "X-Upstream-Headers": encodeHeaders({ "content-type": "application/json" }),
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    await response.arrayBuffer().catch(() => {});
+  }
+
+  handleHealth(request, response) {
     const pathname = new URL(request.url, "http://localhost").pathname;
-    try {
-      if (pathname === "/healthz") {
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({
-          ok: true,
-          version: AGENT_VERSION,
-          mouseId: this.identity?.mouseId || null,
-          clientId: this.identity?.clientId || this.options.clientId,
-          startedAt: this.startedAt,
-        }));
-        return;
-      }
-
-      if (pathname !== "/v1/execute" || request.method !== "POST") {
-        response.writeHead(404, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ error: "not found" }));
-        return;
-      }
-
-      if (!this.identity?.executionToken || !secureEqual(bearerToken(request), this.identity.executionToken)) {
-        response.writeHead(401, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ error: "invalid execution token" }));
-        return;
-      }
-
-      const task = await readJson(request);
-      const taskId = typeof task.taskId === "string" ? task.taskId : randomUUID();
-      response.setHeader("X-Mouse-Task-Id", taskId);
-      await this.execute(task, request, response);
-    } catch (error) {
-      if (!response.headersSent) {
-        response.writeHead(error.status || 502, { "Content-Type": "application/json" });
-      }
-      if (!response.writableEnded) response.end(JSON.stringify({ error: error.message }));
-      console.error(`[mouse] task failed: ${error.message}`);
+    if (pathname !== "/healthz") {
+      response.writeHead(404, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "not found" }));
+      return;
     }
+    // Always 200 while the process runs: the container healthcheck is here to
+    // catch a wedged process, and a dropped tunnel is recovered by the loop
+    // rather than by restarting the container.
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ok: true,
+      version: AGENT_VERSION,
+      tunnel: this.tunnelOpen,
+      activeTasks: this.activeTasks.size,
+      startedAt: this.startedAt,
+    }));
   }
 
   async stop() {
-    clearTimeout(this.heartbeatTimer);
+    this.stopped = true;
+    this.tunnelAbort?.abort(new Error("agent shutting down"));
+    this.abortAllTasks("agent shutting down");
     await delay(0);
-    this.server.close();
+    this.healthServer.close();
   }
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const host = args.host || process.env.MOUSE_HOST || "0.0.0.0";
-  const port = Number(args.port || process.env.MOUSE_PORT || DEFAULT_PORT);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port");
-  const callbackHost = ["0.0.0.0", "::"].includes(host) ? os.hostname() : host;
-  const callbackUrl = normalizeBaseUrl(
-    args["callback-url"] || process.env.MOUSE_CALLBACK_URL || `http://${callbackHost}:${port}`,
-    "callback URL",
-  );
-  const clientId = normalizeClientId(args["client-id"] || process.env.MOUSE_CLIENT_ID);
-  if (!clientId) throw new Error("MOUSE_CLIENT_ID or --client-id is required");
-  const token = args.token || process.env.MOUSE_TOKEN || process.env.MOUSE_REGISTRATION_TOKEN || "";
+  const token = args.token || process.env.MOUSE_TOKEN || "";
   if (!token) throw new Error("MOUSE_TOKEN or --token is required");
+  const healthPort = Number(args["health-port"] || process.env.MOUSE_HEALTH_PORT || DEFAULT_HEALTH_PORT);
+  if (!Number.isInteger(healthPort) || healthPort < 1 || healthPort > 65535) throw new Error("Invalid health port");
 
   const agent = new MouseAgent({
     springUrl: normalizeBaseUrl(args["spring-url"] || process.env.SPRING_URL, "Spring URL"),
     token,
-    clientId,
-    name: args.name || process.env.MOUSE_NAME || "",
-    callbackUrl,
-    host,
-    port,
-    stateFile: args["state-file"] || statePath(),
-    reset: args.reset === true || process.env.MOUSE_RESET === "true",
-    timeoutMs: Number(process.env.MOUSE_PROVIDER_TIMEOUT_MS || 0),
+    healthPort,
+    once: args.once === true,
   });
 
   process.on("SIGINT", () => { void agent.stop().finally(() => process.exit(0)); });

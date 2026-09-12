@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteMouse, updateMouse } from "@/lib/localDb";
+import { disconnectTunnel } from "@/lib/mouse/tunnel";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,6 @@ export async function PATCH(request, { params }) {
       updates.name = body.name;
     }
     if (body.disabled !== undefined) updates.disabled = body.disabled === true;
-    if (body.callbackUrl !== undefined) updates.callbackUrl = body.callbackUrl;
     if (!Object.keys(updates).length) {
       return NextResponse.json({ error: "No supported fields provided" }, { status: 400, headers: NO_STORE_HEADERS });
     }
@@ -29,6 +29,9 @@ export async function PATCH(request, { params }) {
     if (!result?.mouse) {
       return NextResponse.json({ error: "Mouse not found" }, { status: 404, headers: NO_STORE_HEADERS });
     }
+    // Disabling drops the tunnel too: a node Spring can still reach would keep
+    // taking work that the operator just took it out of rotation for.
+    if (updates.disabled === true) disconnectTunnel(id, "Mouse disabled");
     return NextResponse.json({ mouse: result.mouse }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     console.error("[API] Failed to update mouse:", error);

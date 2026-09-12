@@ -32,24 +32,20 @@ const STATUS_GROUPS = [
   { key: "disabled", label: "已禁用", icon: "block", accent: "text-red-600 dark:text-red-400", empty: "当前没有已禁用的 Mouse" },
 ];
 
-// The mouse container reaches Spring through host.docker.internal, so this default
-// fits the single-host case. A node on another machine needs its own address here.
-const DEFAULT_CALLBACK_URL = "http://host.docker.internal:9101";
-
 const SETUP_STEPS = [
   { icon: "add_circle", title: "新建 Mouse", body: "给节点起个名字，系统为它生成专属访问 Token。" },
   { icon: "terminal", title: "在目标服务器执行", body: "复制生成的启动命令，用 Docker 跑起来。" },
-  { icon: "sensors", title: "节点自动接入", body: "第一次心跳后，「未注册」变为「在线」。" },
+  { icon: "sensors", title: "节点自动接入", body: "节点启动后主动连上 Spring，「未注册」变为「在线」。" },
 ];
 
-// One command per node: the token in it *is* that node's identity, so the plaintext
-// is shown once only, and re-issuing it invalidates the previous command.
-function buildStartCommand({ token, clientId, springUrl, callbackUrl }) {
+// One command per node: the token in it *is* that node's identity, so the
+// plaintext is shown once only, and re-issuing it invalidates the previous
+// command. Nothing in it describes where the node lives — the agent dials out,
+// so the host needs no public address and the container publishes no port.
+function buildStartCommand({ token, springUrl }) {
   return [
     `SPRING_URL=${springUrl || "<Spring 地址>"} \\`,
     `MOUSE_TOKEN=${token} \\`,
-    `MOUSE_CLIENT_ID=${clientId} \\`,
-    `MOUSE_CALLBACK_URL=${callbackUrl || DEFAULT_CALLBACK_URL} \\`,
     "docker compose -f docker-compose.mouse.yml up -d --build",
   ].join("\n");
 }
@@ -60,7 +56,7 @@ export default function MousesClient() {
   const [error, setError] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [reissueTarget, setReissueTarget] = useState(null);
-  const [form, setForm] = useState({ name: "", springUrl: "", callbackUrl: DEFAULT_CALLBACK_URL });
+  const [form, setForm] = useState({ name: "", springUrl: "" });
   const [created, setCreated] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [commandCopied, setCommandCopied] = useState(false);
@@ -95,22 +91,18 @@ export default function MousesClient() {
     setCreated(null);
     setCommandCopied(false);
     setError("");
-    setForm({ name: "", springUrl: window.location.origin, callbackUrl: DEFAULT_CALLBACK_URL });
+    setForm({ name: "", springUrl: window.location.origin });
     setDrawerOpen(true);
   };
 
-  // Re-issuing is the recovery path for a node whose command was lost, and for one
-  // whose addresses have to change before it ever connects.
+  // Re-issuing is the recovery path for a node whose command was lost before it
+  // ever connected. It mints a fresh token, so the old command stops working.
   const openReissueDrawer = (mouse) => {
     setReissueTarget(mouse);
     setCreated(null);
     setCommandCopied(false);
     setError("");
-    setForm({
-      name: mouse.name,
-      springUrl: window.location.origin,
-      callbackUrl: mouse.callbackUrl || DEFAULT_CALLBACK_URL,
-    });
+    setForm({ name: mouse.name, springUrl: window.location.origin });
     setDrawerOpen(true);
   };
 
@@ -133,24 +125,16 @@ export default function MousesClient() {
     setSubmitting(true);
     setError("");
     try {
-      const callbackUrl = form.callbackUrl.trim();
       if (reissueTarget) {
         const rotateResponse = await fetch(`/api/mouses/${reissueTarget.id}/access-token`, { method: "POST" });
         const rotateData = await rotateResponse.json();
         if (!rotateResponse.ok) throw new Error(rotateData.error || "生成启动命令失败");
-        if ((reissueTarget.callbackUrl || "") !== callbackUrl) {
-          await fetch(`/api/mouses/${reissueTarget.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ callbackUrl }),
-          });
-        }
         setCreated({ mouse: rotateData.mouse, token: rotateData.token });
       } else {
         const response = await fetch("/api/mouses", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, callbackUrl }),
+          body: JSON.stringify({ name }),
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "新建 Mouse 失败");
@@ -194,9 +178,7 @@ export default function MousesClient() {
   const startCommand = created
     ? buildStartCommand({
         token: created.token,
-        clientId: created.mouse.clientId,
         springUrl: form.springUrl.trim(),
-        callbackUrl: form.callbackUrl.trim(),
       })
     : "";
 
@@ -345,7 +327,7 @@ export default function MousesClient() {
         {!created ? (
           <div className="flex flex-col gap-5">
             <p className="text-sm leading-6 text-text-muted">
-              为节点命名后，系统会立即为它生成专属访问 Token，并给出可复制的 Docker 启动命令。节点在第一次心跳前显示为「未注册」。
+              为节点命名后，系统会立即为它生成专属访问 Token，并给出可复制的 Docker 启动命令。节点在第一次连上 Spring 之前显示为「未注册」。
             </p>
             <Input
               label="节点名称"
@@ -360,14 +342,7 @@ export default function MousesClient() {
               placeholder="http://spring.example.com"
               value={form.springUrl}
               onChange={(event) => setForm({ ...form, springUrl: event.target.value })}
-              hint="目标服务器能访问到的 Spring 地址。"
-            />
-            <Input
-              label="回调地址"
-              placeholder={DEFAULT_CALLBACK_URL}
-              value={form.callbackUrl}
-              onChange={(event) => setForm({ ...form, callbackUrl: event.target.value })}
-              hint="Spring 访问该节点的地址。节点与 Spring 同机时可留默认值；不同机器请填目标机器可达的 IP。"
+              hint="目标服务器能访问到的 Spring 地址。节点主动向外连接，不需要公网 IP，也不需要映射任何端口。"
             />
             {error && <p className="text-sm text-red-500">{error}</p>}
           </div>

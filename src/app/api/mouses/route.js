@@ -42,10 +42,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const result = await createMouse({
-      name: body?.name,
-      callbackUrl: body?.callbackUrl,
-    });
+    const result = await createMouse({ name: body?.name });
     if (result?.validationError) {
       return NextResponse.json({ error: result.validationError }, { status: 400, headers: NO_STORE_HEADERS });
     }

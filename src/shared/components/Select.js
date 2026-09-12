@@ -14,6 +14,10 @@ export default function Select({
   required = false,
   className,
   selectClassName,
+  // By default the empty option is a non-selectable label. Pickers that need a
+  // real "none / default" value (e.g. the Mouse execution node, where leaving it
+  // empty means "run on the Spring host") pass `placeholderDisabled={false}`.
+  placeholderDisabled = true,
   ...props
 }) {
   return (
@@ -40,7 +44,7 @@ export default function Select({
           )}
           {...props}
         >
-          <option value="" disabled>
+          <option value="" disabled={placeholderDisabled}>
             {placeholder}
           </option>
           {options.map((option) => (

@@ -230,16 +230,17 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           </div>
         )}
 
-        {mouseSupported && (
+        {mouseSupported && mouses.length > 0 && (
           <Select
             label="Mouse 执行节点"
             value={formData.mouseId}
             onChange={(e) => setFormData({ ...formData, mouseId: e.target.value })}
-            placeholder="Spring 本地执行"
-            hint="可选。不选择时保持原有 Spring 执行；选择后该账号配置会绑定到在线 Mouse。"
+            placeholder="Spring 本机执行（默认）"
+            hint="不选择时由 Spring 主机本机执行；选择后该账号的请求改由所选 Mouse 节点发出，节点离线时该账号暂不可用。"
+            placeholderDisabled={false}
             options={mouses.map((mouse) => ({
               value: mouse.id,
-              label: `${mouse.name}${mouse.isOnline ? " · 在线" : ""}`,
+              label: `${mouse.name}${mouse.isOnline ? " · 在线" : " · 离线"}`,
             }))}
           />
         )}

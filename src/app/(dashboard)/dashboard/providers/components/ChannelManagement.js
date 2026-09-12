@@ -12,7 +12,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { Badge, Button, ConfirmModal, ModuleSkeleton, CursorAuthModal, DashboardHero, EditConnectionModal, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Toggle, Tooltip } from "@/shared/components";
+import { Badge, Button, ConfirmModal, ModuleSkeleton, CursorAuthModal, DashboardHero, EditConnectionModal, GitLabAuthModal, IFlowCookieModal, KiroOAuthWrapper, OAuthModal, Select, Toggle, Tooltip } from "@/shared/components";
 import Input from "@/shared/components/Input";
 import Drawer from "@/shared/components/Drawer";
 import ProviderIcon from "@/shared/components/ProviderIcon";
@@ -396,18 +396,18 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
                       <input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} placeholder="可选" className="h-10 rounded-lg border border-border bg-surface px-3 text-sm font-normal outline-none placeholder:text-text-muted focus:border-[#38bdf8]/60" />
                     </label>
                     {mouseSupported && mouses.some((mouse) => mouse.isOnline) && (
-                      <label className="grid gap-1.5 text-sm font-medium text-text-main sm:col-span-2">
-                        Mouse 执行节点
-                        <select value={mouseId} onChange={(event) => setMouseId(event.target.value)} className="h-10 rounded-lg border border-border bg-surface px-3 text-sm font-normal outline-none focus:border-[#38bdf8]/60">
-                          <option value="">Spring 本机执行（默认）</option>
-                          {mouses.filter((mouse) => mouse.isOnline).map((mouse) => (
-                            <option key={mouse.id} value={mouse.id}>
-                              {mouse.name} · 在线
-                            </option>
-                          ))}
-                        </select>
-                        <span className="text-xs font-normal text-text-muted">选择后该账号的请求由所选 Mouse 节点发出；不选则保持 Spring 本机执行。</span>
-                      </label>
+                      <Select
+                        className="sm:col-span-2"
+                        label="Mouse 执行节点"
+                        value={mouseId}
+                        onChange={(event) => setMouseId(event.target.value)}
+                        placeholder="Spring 本机执行（默认）"
+                        hint="不选择时由 Spring 主机本机执行；选择后该账号的请求改由所选 Mouse 节点发出。"
+                        placeholderDisabled={false}
+                        options={mouses
+                          .filter((mouse) => mouse.isOnline)
+                          .map((mouse) => ({ value: mouse.id, label: `${mouse.name} · 在线` }))}
+                      />
                     )}
                   </div>
                 )}

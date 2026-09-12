@@ -145,7 +145,7 @@ export default function MousesClient() {
       <DashboardHero
         eyebrow="EXECUTION NODES"
         title="Mouse 执行节点"
-        description="Mouse 是可选的远程渠道执行节点。未绑定 Mouse 的渠道账号仍由 Spring 本地执行。"
+        description="Mouse 是可选的远程渠道执行节点。未绑定 Mouse 的渠道账号仍由 Spring 本机执行。"
         icon="device_hub"
         action={<Button icon="add_link" onClick={createToken} loading={creating}>生成访问 Token</Button>}
       >
@@ -275,7 +275,7 @@ export default function MousesClient() {
       <ConfirmModal
         isOpen={Boolean(confirmDelete)}
         title="删除 Mouse"
-        message={`删除 ${confirmDelete?.name || ""} 后，绑定该节点的渠道账号会自动恢复为 Spring 本地执行。`}
+        message={`删除 ${confirmDelete?.name || ""} 后，绑定该节点的渠道账号会自动恢复为 Spring 本机执行。`}
         onConfirm={deleteMouse}
         onClose={() => setConfirmDelete(null)}
         loading={Boolean(confirmDelete && savingMouseId === confirmDelete.id)}

@@ -3,7 +3,10 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 20;
+// 21 carries no TABLES change: it exists so the legacy-mouses repair (migration
+// 019) is picked up by ensureCurrentSchema() in an already-running dev server, and
+// so a pre-repair backup is taken before that table is rebuilt.
+export const SCHEMA_VERSION = 21;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.

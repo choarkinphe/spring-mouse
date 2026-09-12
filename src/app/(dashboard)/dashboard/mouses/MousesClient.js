@@ -67,6 +67,7 @@ export default function MousesClient() {
   const [commandCopied, setCommandCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [savingMouseId, setSavingMouseId] = useState("");
+  const [upgradeCopiedMouseId, setUpgradeCopiedMouseId] = useState("");
 
   const loadData = useCallback(async () => {
     setError("");
@@ -192,6 +193,15 @@ export default function MousesClient() {
     setCommandCopied(true);
   };
 
+  // The agent downloads its runtime script every time the container starts, so
+  // restarting the existing container is enough to pick up the latest Mouse
+  // version without exposing the node token again.
+  const copyUpgradeCommand = async (mouse) => {
+    await navigator.clipboard.writeText("docker restart spring-mouse-agent");
+    setUpgradeCopiedMouseId(mouse.id);
+    window.setTimeout(() => setUpgradeCopiedMouseId((current) => (current === mouse.id ? "" : current)), 2000);
+  };
+
   const onlineCount = mouses.filter((mouse) => mouse.isOnline).length;
   const unregisteredCount = mouses.filter((mouse) => mouse.status === "unregistered").length;
   const statusGroups = STATUS_GROUPS.map((group) => {
@@ -291,9 +301,20 @@ export default function MousesClient() {
                               启动命令
                             </Button>
                           ) : (
-                            <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
-                              {mouse.status === "disabled" ? "启用" : "禁用"}
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                icon={upgradeCopiedMouseId === mouse.id ? "check" : "content_copy"}
+                                onClick={() => copyUpgradeCommand(mouse)}
+                                title="复制升级命令"
+                              >
+                                {upgradeCopiedMouseId === mouse.id ? "已复制" : "复制升级命令"}
+                              </Button>
+                              <Button size="sm" variant="secondary" loading={savingMouseId === mouse.id} onClick={() => toggleMouse(mouse)}>
+                                {mouse.status === "disabled" ? "启用" : "禁用"}
+                              </Button>
+                            </>
                           )}
                           <Button size="sm" variant="danger" onClick={() => setConfirmDelete(mouse)}>删除</Button>
                         </div>

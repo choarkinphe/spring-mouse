@@ -71,6 +71,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
   const requestAccessTags = Array.isArray(options?.accessTags) ? normalizeAccessTags(options.accessTags) : null;
+  // Short correlation id, mirroring the `reqId:` field on the dispatch line and
+  // the requestId persisted in usageHistory, so a routing decision can be tied
+  // to the exact request that caused it. Empty when the caller omits it.
+  const reqPrefix = typeof options?.requestId === "string" ? `[${options.requestId.slice(0, 8)}] ` : "";
 
   // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
   const providerId = resolveProviderId(provider);
@@ -87,7 +91,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           model,
         );
         if (!canAccessWithTags(requestAccessTags, requiredModelTags)) {
-          log.warn("AUTH", `${provider}/${model} | denied by model access tags`);
+          log.warn("AUTH", `${reqPrefix}${provider}/${model} | denied by model access tags`);
           return { accessDenied: true, resource: "model" };
         }
       }
@@ -111,7 +115,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
+      log.warn("AUTH", `${reqPrefix}No credentials for ${provider}`);
       return null;
     }
 
@@ -124,7 +128,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         model,
       );
       if (!canAccessWithTags(requestAccessTags, requiredModelTags)) {
-        log.warn("AUTH", `${provider}/${model} | denied by model access tags`);
+        log.warn("AUTH", `${reqPrefix}${provider}/${model} | denied by model access tags`);
         return { accessDenied: true, resource: "model" };
       }
     }
@@ -147,18 +151,26 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return true;
     });
 
-    const offlineMouseCount = connections.filter((c) => c.mouseId && supportsMouseExecution(c.provider) && !onlineMouseIds.has(c.mouseId)).length;
-    if (offlineMouseCount) log.debug("AUTH", `${provider} | ${offlineMouseCount} connection(s) skipped: Mouse unavailable`);
-
-    log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
-    connections.forEach(c => {
-      const excluded = excludeSet.has(c.id);
-      const locked = isModelLockActive(c, model);
-      if (excluded || locked) {
-        const lockUntil = getEarliestModelLockUntil(c);
-        log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
-      }
-    });
+    // Why an account was skipped used to be debug-only, which made routing
+    // decisions invisible at the production default LOG_LEVEL=WARN: operators
+    // could read "all N accounts locked" but not which account, or why. Emit one
+    // always-visible line (routeLine bypasses the threshold) that keeps the
+    // available count, every skip reason and the account id together.
+    const skippedAccounts = [
+      ...connections.filter((c) => excludeSet.has(c.id)).map((c) => `${c.id?.slice(0, 8)}:excluded`),
+      ...connections
+        .filter((c) => c.mouseId && supportsMouseExecution(c.provider) && !onlineMouseIds.has(c.mouseId))
+        .map((c) => `${c.id?.slice(0, 8)}:mouse-offline`),
+      ...connections.filter((c) => isModelLockActive(c, model)).map((c) => {
+        const until = getEarliestModelLockUntil(c);
+        return `${c.id?.slice(0, 8)}:locked${model ? `(${model})` : ""}${until ? `→${until}` : ""}`;
+      }),
+    ];
+    log.routeLine(
+      availableConnections.length > 0 ? "🟢" : "🔴",
+      "🎯",
+      `${reqPrefix}${provider} | available ${availableConnections.length}/${connections.length}${skippedAccounts.length ? ` · skipped ${skippedAccounts.join(" ")}` : ""}`,
+    );
 
     if (availableConnections.length === 0) {
       // Find earliest lock expiry across all connections for retry timing
@@ -167,7 +179,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
-        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
+        log.warn("AUTH", `${reqPrefix}${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
         return {
           allRateLimited: true,
           retryAfter: earliest,
@@ -176,7 +188,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           lastErrorCode: earliestConn?.errorCode || null
         };
       }
-      log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
+      log.warn("AUTH", `${reqPrefix}${provider} | all ${connections.length} accounts unavailable`);
       return null;
     }
 
@@ -185,7 +197,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const breaker = await getProviderModelBreaker(providerId, model, providerOverride);
       if (breaker.open) {
         const retryAt = new Date(Date.now() + (breaker.retryAfterMs || 60_000)).toISOString();
-        log.warn("BREAKER", `${provider}/${model} | provider/model cooling down (${formatRetryAfter(retryAt)})`);
+        log.warn("BREAKER", `${reqPrefix}${provider}/${model} | provider/model cooling down (${formatRetryAfter(retryAt)})`);
         return {
           allRateLimited: true,
           retryAfter: retryAt,

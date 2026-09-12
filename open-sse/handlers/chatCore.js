@@ -58,10 +58,13 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 5 * 1024 }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 5 * 1024, requestId: incomingRequestId = null }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
-  const requestId = randomUUID();
+  // Reuse the caller's id so the request line, the usage row and the routing
+  // WARN lines emitted upstream all share one identifier. Callers that do not
+  // supply one (open-sse consumers, tests) keep the previous behaviour.
+  const requestId = incomingRequestId || randomUUID();
   const trafficRequestId = clientRawRequest?.headers?.["x-sm-traffic-request-id"] || clientRawRequest?.headers?.["X-Sm-Traffic-Request-Id"] || null;
   const startedAt = new Date(requestStartTime).toISOString();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -252,6 +255,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (toolN) parts.push(`${toolN} TOOL`);
     if (think) parts.push(`THINK:${think}`);
     parts.push(`ACC:${acc}`);
+    // Correlate this dispatch with the routing WARN lines and usage row that
+    // share the same id — without it, concurrent failures can only be matched by
+    // guessing from timestamps.
+    parts.push(`reqId:${requestId.slice(0, 8)}`);
     writeRouteLine(reqTag, "▶", parts.join(" · "));
   }
 

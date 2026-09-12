@@ -655,6 +655,9 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   // the record is history, so demote it to a muted hint instead of a red alert.
   const upstreamErrorStale = status.label === "可用";
   const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
+  const recentSuccessRate = connection.recentSuccessRate || { total: 0, success: 0, rate: null };
+  const successRateLabel = recentSuccessRate.rate === null ? "—" : `${recentSuccessRate.rate}%`;
+  const successRateClass = recentSuccessRate.rate === null ? "text-[#647688]" : recentSuccessRate.rate >= 95 ? "text-emerald-300" : recentSuccessRate.rate >= 80 ? "text-amber-300" : "text-rose-300";
   // Who was behind that last request — the API key's display name. Resolved
   // server-side (apiKeyId → name); the raw key never reaches the client.
   const lastRequestBy = connection.lastRequestBy || null;
@@ -807,6 +810,13 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             left aligned, so the action buttons on the right can never overlap
             it (they used to spill out of the fixed 8rem action column). */}
         <div className="mt-1.5 flex min-w-0 items-center text-xs">
+          <span
+            className={cn("mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
+            title={`最近 1 小时请求成功率：${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
+          >
+            <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
+            {successRateLabel}
+          </span>
           <span
             className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
             title={lastRequestTitle}

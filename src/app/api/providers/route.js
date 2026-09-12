@@ -58,6 +58,38 @@ async function getConnectionLastRequests(connectionIds = []) {
   return result;
 }
 
+async function getConnectionSuccessRates(connectionIds = [], windowMs = 60 * 60 * 1000) {
+  const ids = Array.from(new Set((connectionIds || []).filter(Boolean)));
+  if (ids.length === 0) return {};
+  const db = getAdapter();
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const result = {};
+  const CHUNK_SIZE = 400;
+  for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = db.all(
+      `SELECT connectionId,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'error' OR status = 'cancelled' THEN 1 ELSE 0 END) AS failed
+         FROM usageHistory
+        WHERE connectionId IN (${placeholders}) AND timestamp >= ?
+        GROUP BY connectionId`,
+      [...chunk, cutoff],
+    );
+    for (const row of rows) {
+      const total = Number(row.total) || 0;
+      const failed = Number(row.failed) || 0;
+      result[row.connectionId] = {
+        total,
+        success: Math.max(0, total - failed),
+        rate: total > 0 ? Math.round(((total - failed) / total) * 100) : null,
+      };
+    }
+  }
+  return result;
+}
+
 function normalizeProxyConfig(body = {}) {
   const enabled = body?.connectionProxyEnabled === true;
   const url = typeof body?.connectionProxyUrl === "string" ? body.connectionProxyUrl.trim() : "";
@@ -150,6 +182,13 @@ export async function GET(request) {
       }
     }
 
+    let successRateByConnection = {};
+    try {
+      successRateByConnection = await getConnectionSuccessRates(safeConnections.map((connection) => connection.id));
+    } catch (error) {
+      console.log("Error reading connection success rates:", error);
+    }
+
     // Surface the newest request per account — when it ran and which API key
     // made it — so the channel list can show who is actually driving the
     // account, not just that it is busy.
@@ -178,6 +217,7 @@ export async function GET(request) {
         lastRequestAt: lastRequest?.at || null,
         lastRequestBy: lastRequest?.apiKeyId ? apiKeyNames.get(lastRequest.apiKeyId) || null : null,
         lastRequestModel: lastRequest?.model || null,
+        recentSuccessRate: successRateByConnection[connection.id] || { total: 0, success: 0, rate: null },
       };
     });
 

@@ -1,4 +1,4 @@
-import { cpSync, existsSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -36,6 +36,16 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
   if (existsSync(serverWrapperSource)) {
     cpSync(serverWrapperSource, serverWrapperDestination, { force: true });
     console.log(`[standalone-assets] Copied custom-server.js to ${serverWrapperDestination}`);
+  }
+
+  // Nodes download their runtime from /api/mouses/agent, and that route reads the
+  // file from disk instead of importing it, so tracing cannot see it.
+  const mouseAgentSource = resolve(projectRoot, "mouse", "agent.mjs");
+  const mouseAgentDestination = resolve(standaloneDir, "mouse", "agent.mjs");
+  if (existsSync(mouseAgentSource)) {
+    mkdirSync(dirname(mouseAgentDestination), { recursive: true });
+    cpSync(mouseAgentSource, mouseAgentDestination, { force: true });
+    console.log(`[standalone-assets] Copied the mouse agent to ${mouseAgentDestination}`);
   }
 }
 

@@ -348,6 +348,20 @@ async function buildCliPackage() {
     console.log("⏭️  No updater files found\n");
   }
 
+  // Step 7c: Copy the mouse agent runtime. A node downloads this file from
+  // /api/mouses/agent, and that route reads it from disk instead of importing
+  // it, so tracing never carries it into the bundle.
+  console.log("7️⃣ c Copying the mouse agent...");
+  const mouseAgentSrc = path.join(appDir, "mouse", "agent.mjs");
+  const mouseAgentDest = path.join(cliAppDir, "mouse", "agent.mjs");
+  if (fs.existsSync(mouseAgentSrc)) {
+    await fsPromises.mkdir(path.dirname(mouseAgentDest), { recursive: true });
+    await fsPromises.copyFile(mouseAgentSrc, mouseAgentDest);
+    console.log("✅ Copied the mouse agent\n");
+  } else {
+    console.log("⏭️  No mouse agent found\n");
+  }
+
   // Step 8: Build MITM server (config driven - see app/cli/scripts/buildMitm.js)
   console.log("8️⃣  Building MITM server...");
   try {

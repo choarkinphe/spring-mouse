@@ -169,6 +169,7 @@ describe("combo model schedules", () => {
   it("normalizes valid nodes, canonicalizes legacy schedules, and rejects invalid ones", () => {
     expect(normalizeComboModelsForStorage([
       "plain/model",
+      { model: "tagged/model", accessTags: [" Team-A ", "team-a", "VIP"] },
       { model: "legacy/model", schedule: { start: "09:00", end: "18:00", timezone: "Asia/Shanghai" } },
       {
         model: "multi/model",
@@ -183,6 +184,7 @@ describe("combo model schedules", () => {
       { model: "no-schedule/model" },
     ])).toEqual([
       "plain/model",
+      { model: "tagged/model", accessTags: ["team-a", "vip"] },
       {
         model: "legacy/model",
         schedule: {
@@ -220,5 +222,31 @@ describe("combo model schedules", () => {
         },
       },
     ])).toBeNull();
+  });
+
+  it("filters combo nodes by API-key access tags while keeping public nodes available", () => {
+    const models = [
+      "public/model",
+      { model: "team/model", accessTags: ["team-a"] },
+      { model: "vip/model", accessTags: ["vip"] },
+    ];
+
+    expect(getActiveComboModels(models, new Date(), [])).toEqual(["public/model"]);
+    expect(getActiveComboModels(models, new Date(), ["team-a"])).toEqual(["public/model", "team/model"]);
+    expect(getActiveComboModels(models, new Date(), ["vip"])).toEqual(["public/model", "vip/model"]);
+    expect(getActiveComboModels(models)).toEqual(["public/model", "team/model", "vip/model"]);
+  });
+
+  it("filters scheduled combo nodes by access tags", () => {
+    const combo = {
+      name: "mixed-access",
+      models: [
+        { model: "public/model", schedule: { active: [], inactive: [] } },
+        { model: "vip/model", accessTags: ["vip"], schedule: { active: [], inactive: [] } },
+      ],
+    };
+
+    expect(getComboModelsFromData("mixed-access", [combo], new Date(), ["team-a"])).toEqual(["public/model"]);
+    expect(getComboModelsFromData("mixed-access", [combo], new Date(), ["vip"])).toEqual(["public/model", "vip/model"]);
   });
 });

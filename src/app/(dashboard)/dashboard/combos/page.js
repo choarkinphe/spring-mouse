@@ -60,6 +60,20 @@ function getComboModelSchedule(entry) {
   };
 }
 
+function getComboModelAccessTags(entry) {
+  return typeof entry === "object" && entry !== null ? normalizeAccessTags(entry.accessTags) : [];
+}
+
+function buildComboModelEntry(model, schedule, accessTags) {
+  const normalizedTags = normalizeAccessTags(accessTags);
+  if (!schedule && normalizedTags.length === 0) return model;
+  return {
+    model,
+    ...(schedule ? { schedule } : {}),
+    ...(normalizedTags.length > 0 ? { accessTags: normalizedTags } : {}),
+  };
+}
+
 function isTimeWindowInvalid(window) {
   return !window?.start || !window?.end || window.start === window.end;
 }
@@ -159,6 +173,8 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [modelAliases, setModelAliases] = useState({});
+  const [savingModels, setSavingModels] = useState(false);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
   // Master-detail selection. `null` means "follow the first combo", so deleting
@@ -168,6 +184,13 @@ export default function CombosPage() {
   useEffect(() => {
     fetchData();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    fetch("/api/models/alias")
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => data && setModelAliases(data.aliases || {}))
+      .catch((error) => console.log("Error fetching model aliases:", error));
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -271,6 +294,36 @@ export default function CombosPage() {
     } catch (error) {
       console.log("Error updating combo access tags:", error);
       alert("更新权限标签失败");
+    }
+    return false;
+  };
+
+  const handleUpdateComboModels = async (id, models) => {
+    const scheduleError = getComboScheduleValidationError(models);
+    if (scheduleError) {
+      alert(scheduleError);
+      return false;
+    }
+
+    setSavingModels(true);
+    try {
+      const res = await fetch(`/api/combos/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models }),
+      });
+      const updated = await res.json().catch(() => null);
+      if (res.ok && updated) {
+        setCombos((current) => current.map((combo) => combo.id === id ? updated : combo));
+        setEditingCombo((current) => current?.id === id ? updated : current);
+        return true;
+      }
+      alert(updated?.error || "更新路由节点失败");
+    } catch (error) {
+      console.log("Error updating combo models:", error);
+      alert("更新路由节点失败");
+    } finally {
+      setSavingModels(false);
     }
     return false;
   };
@@ -411,8 +464,11 @@ export default function CombosPage() {
                 onEdit={() => setEditingCombo(activeCombo)}
                 onToggleActive={(isActive) => handleToggleComboActive(activeCombo.id, isActive)}
                 onUpdateAccessTags={(accessTags) => handleUpdateComboAccessTags(activeCombo.id, accessTags)}
+                onUpdateModels={(models) => handleUpdateComboModels(activeCombo.id, models)}
                 strategy={comboStrategies[activeCombo.name] || {}}
                 onSetStrategy={(patch) => handleSetComboStrategy(activeCombo.name, patch)}
+                modelAliases={modelAliases}
+                savingModels={savingModels}
               />
             </section>
           )}
@@ -530,11 +586,18 @@ function ComboGroupRail({ groups, strategies = {}, activeId, totalCombos, totalN
   );
 }
 
-function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, strategy = {}, onSetStrategy }) {
+function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, onUpdateModels, strategy = {}, onSetStrategy, modelAliases = {}, savingModels = false }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [showModelSelect, setShowModelSelect] = useState(false);
+  const [models, setModels] = useState(combo.models);
+  const [scheduleError, setScheduleError] = useState(null);
   const [addingAccessTag, setAddingAccessTag] = useState(false);
   const [newAccessTag, setNewAccessTag] = useState("");
   const [savingAccessTags, setSavingAccessTags] = useState(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
   const isFusion = current === "fusion";
@@ -542,6 +605,11 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   const roundRobinLimit = strategy.stickyRoundRobinLimit || 1;
   const exposedCapabilities = getComboCapabilities(combo.capabilities);
   const accessTags = Array.isArray(combo.accessTags) ? combo.accessTags : [];
+
+  useEffect(() => {
+    const syncTimer = setTimeout(() => setModels(combo.models), 0);
+    return () => clearTimeout(syncTimer);
+  }, [combo.id, combo.models]);
 
   const handleRoundRobinLimitChange = (value) => {
     const next = Number.parseInt(value, 10);
@@ -577,6 +645,51 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
     if (current === "fusion") return "并行";
     if (current === "round-robin") return "轮询";
     return index === 0 ? "首选" : `备选 ${index}`;
+  };
+
+  const modelItems = models.map((entry, index) => ({ uid: `node-${index}`, entry }));
+
+  const persistModels = async (nextModels) => {
+    setModels(nextModels);
+    const error = getComboScheduleValidationError(nextModels);
+    if (error) {
+      setScheduleError(error);
+      return;
+    }
+
+    setScheduleError(null);
+    const saved = await onUpdateModels?.(nextModels);
+    if (saved === false) setModels(combo.models);
+  };
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = modelItems.findIndex((item) => item.uid === active.id);
+    const newIndex = modelItems.findIndex((item) => item.uid === over.id);
+    if (oldIndex !== -1 && newIndex !== -1) {
+      persistModels(arrayMove(models, oldIndex, newIndex));
+    }
+  };
+
+  const updateModelAt = (index, nextEntry) => {
+    persistModels(models.map((entry, i) => i === index ? nextEntry : entry));
+  };
+
+  const removeModelAt = (index) => {
+    persistModels(models.filter((_, i) => i !== index));
+  };
+
+  const moveModel = (index, direction) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= models.length) return;
+    persistModels(arrayMove(models, index, nextIndex));
+  };
+
+  const addModel = (model) => {
+    const modelValue = model?.value || "";
+    if (!modelValue || models.some((entry) => getComboModelValue(entry) === modelValue)) return;
+    persistModels([...models, modelValue]);
   };
 
   return (
@@ -616,35 +729,58 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
             <span className="rounded-full border border-white/[0.08] bg-black/[0.12] px-2 py-0.5 font-mono text-[10px] text-text-muted">{combo.models.length} 个</span>
           </div>
 
-          {combo.models.length === 0 ? (
+          {models.length === 0 ? (
             <div className="flex min-h-20 items-center justify-center rounded-lg border border-dashed border-white/[0.09] bg-black/[0.06] text-xs italic text-text-muted">尚未添加模型</div>
           ) : (
-            <div className="overflow-hidden rounded-lg border border-white/[0.075] bg-black/[0.07]">
-              {combo.models.map((entry, index) => {
-                const model = getComboModelValue(entry);
-                const schedule = getComboModelSchedule(entry);
-                const summary = schedule ? formatModelScheduleSummary(schedule) : null;
-                return (
-                  <div key={`${model}-${index}`} className={`flex min-w-0 items-center gap-3 px-3 py-2.5 ${index > 0 ? "border-t border-white/[0.065]" : ""}`}>
-                    <span className={`flex size-6 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-semibold ${index === 0 && current === "fallback" ? "bg-[#38bdf8]/15 text-[#7dd3fc]" : "bg-white/[0.055] text-text-muted"}`}>{index + 1}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                        <code className="truncate font-mono text-[12px] font-medium text-[#c5d4e2]">{model}</code>
-                        <CapacityBadges caps={getCaps?.(model)} />
-                        {summary && (
-                          <Tooltip text={formatModelScheduleDetail(schedule)} position="top">
-                            <span className="shrink-0 rounded-full border border-[#38bdf8]/25 bg-[#38bdf8]/10 px-1.5 py-0 text-[9px] font-medium text-[#7dd3fc]" aria-label={`时段明细：${formatModelScheduleDetail(schedule).replace("\n", "，")}`}>{summary}</span>
-                          </Tooltip>
-                        )}
-                      </div>
-                      <p className="mt-0.5 text-[10px] text-text-muted">{summary ? "按配置时段参与路由" : "全天参与路由"}</p>
-                    </div>
-                    <span className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-medium ${current === "fusion" ? "bg-violet-400/[0.08] text-violet-200" : current === "round-robin" ? "bg-cyan-400/[0.08] text-cyan-200" : index === 0 ? "bg-emerald-400/[0.08] text-emerald-200" : "bg-white/[0.045] text-text-muted"}`}>{nodeRole(index)}</span>
-                  </div>
-                );
-              })}
-            </div>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis, restrictToParentElement]}>
+              <SortableContext items={modelItems.map((item) => item.uid)} strategy={verticalListSortingStrategy}>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  {modelItems.map(({ uid, entry }, index) => (
+                    <ModelItem
+                      key={uid}
+                      id={uid}
+                      index={index}
+                      entry={entry}
+                      isFirst={index === 0}
+                      isLast={index === modelItems.length - 1}
+                      disabled={savingModels}
+                      getCaps={getCaps}
+                      role={nodeRole(index)}
+                      onEdit={(newVal) => {
+                        const updated = typeof entry === "object" && entry !== null
+                          ? { ...entry, model: newVal }
+                          : newVal;
+                        updateModelAt(index, updated);
+                      }}
+                      onScheduleChange={(schedule) => {
+                        const model = getComboModelValue(entry);
+                        updateModelAt(index, buildComboModelEntry(model, schedule, getComboModelAccessTags(entry)));
+                      }}
+                      onAccessTagsChange={(accessTags) => {
+                        const model = getComboModelValue(entry);
+                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), accessTags));
+                      }}
+                      onMoveUp={() => moveModel(index, -1)}
+                      onMoveDown={() => moveModel(index, 1)}
+                      onRemove={() => removeModelAt(index)}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
           )}
+
+          <button
+            type="button"
+            onClick={() => setShowModelSelect(true)}
+            disabled={savingModels}
+            className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-white/[0.1] py-2 text-xs font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:cursor-wait disabled:opacity-45"
+          >
+            <span className="material-symbols-outlined text-[16px]">add</span>
+            添加模型
+          </button>
+          {savingModels && <p className="mt-1 text-right text-[10px] text-text-muted">正在保存节点配置...</p>}
+          {scheduleError && <p className="mt-1 text-[10px] font-medium text-red-400">{scheduleError}</p>}
         </div>
 
         <aside className="border-t border-white/[0.065] bg-black/[0.045] px-3 py-3 lg:border-l lg:border-t-0">
@@ -768,6 +904,21 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
       {showJudgeSelect && (
         <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect />
       )}
+
+      {showModelSelect && (
+        <ModelSelectModal
+          isOpen={showModelSelect}
+          onClose={() => setShowModelSelect(false)}
+          onSelect={(model) => addModel(model)}
+          activeProviders={activeProviders}
+          modelAliases={modelAliases}
+          title="添加路由节点"
+          addedModelValues={models.map(getComboModelValue)}
+          closeOnSelect={false}
+          presentation="drawer"
+          drawerWidth="lg"
+        />
+      )}
     </section>
   );
 }
@@ -882,7 +1033,7 @@ function ScheduleWindowSection({
   );
 }
 
-function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, onEdit, onScheduleChange, onAccessTagsChange, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -892,6 +1043,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
   };
   const model = getComboModelValue(entry);
   const schedule = getComboModelSchedule(entry);
+  const accessTags = getComboModelAccessTags(entry);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
   const commit = () => {
@@ -906,7 +1058,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
     if (e.key === "Escape") { setDraft(model); setEditing(false); }
   };
 
-  const [expanded, setExpanded] = useState(!!schedule);
+  const [expanded, setExpanded] = useState(!!schedule || accessTags.length > 0);
   const [expandedSections, setExpandedSections] = useState({ active: true, inactive: false });
 
   const patchSchedule = (patch) => onScheduleChange({ ...schedule, ...patch });
@@ -942,8 +1094,8 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <button
-          {...attributes}
-          {...listeners}
+          {...(disabled ? {} : { ...attributes, ...listeners })}
+          disabled={disabled}
           type="button"
           className="cursor-grab touch-none p-0.5 rounded text-text-muted hover:text-primary active:cursor-grabbing shrink-0"
           title="Drag to reorder"
@@ -976,24 +1128,33 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
           </div>
         )}
 
+        <CapacityBadges caps={getCaps?.(model)} />
+
+        {role && (
+          <span className="shrink-0 rounded-md bg-white/[0.045] px-2 py-1 text-[10px] font-medium text-text-muted">
+            {role}
+          </span>
+        )}
+
         <div className="flex shrink-0 items-center gap-0.5">
           <button
+            disabled={disabled || isFirst}
             onClick={onMoveUp}
-            disabled={isFirst}
             className={`p-0.5 rounded ${isFirst ? "text-text-muted/20 cursor-not-allowed" : "text-text-muted hover:text-primary hover:bg-black/5 dark:hover:bg-white/5"}`}
             title="Move up"
           >
             <span className="material-symbols-outlined text-[12px]">arrow_upward</span>
           </button>
           <button
+            disabled={disabled || isLast}
             onClick={onMoveDown}
-            disabled={isLast}
             className={`p-0.5 rounded ${isLast ? "text-text-muted/20 cursor-not-allowed" : "text-text-muted hover:text-primary hover:bg-black/5 dark:hover:bg-white/5"}`}
             title="Move down"
           >
             <span className="material-symbols-outlined text-[12px]">arrow_downward</span>
           </button>
           <button
+            disabled={disabled}
             onClick={onRemove}
             className="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 transition-all"
             title="Remove"
@@ -1006,10 +1167,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
       <div className="ml-8 flex min-w-0 items-center gap-2">
         <button
           type="button"
-          onClick={() => {
-            if (!schedule) onScheduleChange({ ...DEFAULT_MODEL_SCHEDULE });
-            setExpanded((v) => !v);
-          }}
+          onClick={() => setExpanded((value) => !value)}
           className="inline-flex items-center gap-1 text-[10px] font-medium text-primary transition-colors hover:text-primary/80"
         >
           <span className="material-symbols-outlined text-[13px]">
@@ -1022,10 +1180,22 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
             {formatModelScheduleSummary(schedule) || "已配置时段"}
           </span>
         )}
+        {accessTags.length > 0 && (
+          <span className="shrink-0 rounded-full border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0 text-[9px] font-medium text-violet-200">
+            {accessTags.length} 个权限标签
+          </span>
+        )}
       </div>
 
       {expanded && (
         <div className="ml-8 flex min-w-0 flex-col gap-2 rounded-lg border border-black/5 bg-black/[0.015] p-2.5 dark:border-white/5 dark:bg-white/[0.015]">
+          <AccessTagsEditor
+            value={accessTags}
+            onChange={onAccessTagsChange}
+            label="路由节点权限标签"
+            hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
+          />
+          <div className="border-t border-black/5 pt-2 dark:border-white/5">
           {schedule ? (
             <>
               <ScheduleWindowSection
@@ -1083,6 +1253,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, onEdit, onScheduleChange
               </button>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -1197,10 +1368,12 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
 
   const handleSave = async () => {
     if (!validateName(name)) return;
-    const scheduleError = getComboScheduleValidationError(models);
-    if (scheduleError) {
-      alert(scheduleError);
-      return;
+    if (!combo) {
+      const scheduleError = getComboScheduleValidationError(models);
+      if (scheduleError) {
+        alert(scheduleError);
+        return;
+      }
     }
     const normalizedSortOrder = Number(sortOrder || 0);
     if (!Number.isInteger(normalizedSortOrder)) {
@@ -1222,16 +1395,48 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
     setSaving(true);
     await onSave({
       name: name.trim(),
-      models,
       groupName: groupName.trim() || null,
       sortOrder: normalizedSortOrder,
       capabilities: { contextWindow, vision: capabilities.vision, audioInput: capabilities.audioInput },
       accessTags,
+      ...(combo ? {} : { models }),
     });
     setSaving(false);
   };
 
   const isEdit = !!combo;
+  const drawerActions = (
+    <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center">
+      {isEdit && (
+        <Button
+          type="button"
+          onClick={onDelete}
+          variant="outline"
+          icon="delete"
+          size="md"
+          fullWidth
+          className="border-red-400/20 bg-red-500/[0.035] text-red-300 hover:border-red-400/40 hover:bg-red-500/[0.08] sm:w-auto sm:min-w-28"
+        >
+          删除
+        </Button>
+      )}
+      <div className="flex flex-1 gap-2 sm:ml-auto sm:flex-initial">
+        <Button type="button" onClick={onClose} variant="secondary" fullWidth size="md" className="sm:w-auto sm:min-w-24">
+          取消
+        </Button>
+        <Button
+          type="button"
+          onClick={handleSave}
+          fullWidth
+          size="md"
+          className="sm:w-auto sm:min-w-28"
+          disabled={!name.trim() || !!nameError || saving}
+        >
+          {saving ? "保存中..." : isEdit ? "保存" : "创建"}
+        </Button>
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -1240,6 +1445,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
         onClose={onClose}
         title={isEdit ? "组合设置" : "创建组合"}
         width="lg"
+        footer={drawerActions}
       >
         <div className="flex flex-col gap-3">
           <section className="rounded-lg border border-[#38bdf8]/15 bg-[#38bdf8]/[0.035] p-3">
@@ -1247,7 +1453,11 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
               <span className="material-symbols-outlined mt-0.5 text-[18px] text-[#7dd3fc]">tune</span>
               <div className="min-w-0">
                 <h3 className="text-sm font-medium text-text-main">组合配置</h3>
-                <p className="mt-0.5 text-[11px] leading-4 text-text-muted">维护组合名称、分组、排序与对外能力声明。</p>
+                <p className="mt-0.5 text-[11px] leading-4 text-text-muted">
+                  {isEdit
+                    ? "维护组合名称、分组、排序与对外能力声明；模型排序和时段直接在路由节点列表调整。"
+                    : "维护组合名称、分组、排序与对外能力声明。"}
+                </p>
               </div>
             </div>
 
@@ -1303,17 +1513,19 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
             </div>
           </section>
 
-          {/* Models */}
-          <div>
-            <label className="text-sm font-medium mb-1.5 block">Models</label>
-            <p className="mb-1.5 text-[10px] text-text-muted">未开启时段控制的模型始终参与路由；可配置多个每日生效/失效时段，失效优先，并支持跨午夜。</p>
+          {/* New combos still choose their initial nodes here; existing nodes are
+              edited directly in the routing detail card. */}
+          {!isEdit && (
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">Models</label>
+              <p className="mb-1.5 text-[10px] text-text-muted">未开启时段控制的模型始终参与路由；可配置多个每日生效/失效时段，失效优先，并支持跨午夜。</p>
 
-            {models.length === 0 ? (
-              <div className="text-center py-4 border border-dashed border-black/10 dark:border-white/10 rounded-lg bg-black/[0.01] dark:bg-white/[0.01]">
-                <span className="material-symbols-outlined text-text-muted text-xl mb-1">layers</span>
-                <p className="text-xs text-text-muted">No models added yet</p>
-              </div>
-            ) : (
+              {models.length === 0 ? (
+                <div className="text-center py-4 border border-dashed border-black/10 dark:border-white/10 rounded-lg bg-black/[0.01] dark:bg-white/[0.01]">
+                  <span className="material-symbols-outlined text-text-muted text-xl mb-1">layers</span>
+                  <p className="text-xs text-text-muted">No models added yet</p>
+                </div>
+              ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis, restrictToParentElement]}>
               <SortableContext items={modelItems.map((m) => m.uid)} strategy={verticalListSortingStrategy}>
                 <div className="flex min-w-0 flex-col gap-1">
@@ -1325,6 +1537,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                       entry={entry}
                       isFirst={index === 0}
                       isLast={index === modelItems.length - 1}
+                      getCaps={getCaps}
                       onEdit={(newVal) => {
                         const updated = [...models];
                         updated[index] = typeof models[index] === "object" && models[index] !== null
@@ -1335,7 +1548,13 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                       onScheduleChange={(schedule) => {
                         const updated = [...models];
                         const model = getComboModelValue(updated[index]);
-                        updated[index] = schedule ? { model, schedule } : model;
+                        updated[index] = buildComboModelEntry(model, schedule, getComboModelAccessTags(updated[index]));
+                        setModels(updated);
+                      }}
+                      onAccessTagsChange={(accessTags) => {
+                        const updated = [...models];
+                        const model = getComboModelValue(updated[index]);
+                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), accessTags);
                         setModels(updated);
                       }}
                       onMoveUp={() => handleMoveUp(index)}
@@ -1356,39 +1575,9 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
               <span className="material-symbols-outlined text-[16px]">add</span>
               Add Model
             </button>
-          </div>
-
-          {/* Actions */}
-          <div className="mt-1 flex flex-col gap-2 border-t border-black/5 pt-3 dark:border-white/[0.07] sm:flex-row sm:items-center">
-            {isEdit && (
-              <Button
-                type="button"
-                onClick={onDelete}
-                variant="outline"
-                icon="delete"
-                size="md"
-                fullWidth
-                className="border-red-400/20 bg-red-500/[0.035] text-red-300 hover:border-red-400/40 hover:bg-red-500/[0.08] sm:w-auto sm:min-w-28"
-              >
-                删除
-              </Button>
-            )}
-            <div className="flex flex-1 gap-2 sm:ml-auto sm:flex-initial">
-              <Button type="button" onClick={onClose} variant="secondary" fullWidth size="md" className="sm:w-auto sm:min-w-24">
-                取消
-              </Button>
-              <Button
-                type="button"
-                onClick={handleSave}
-                fullWidth
-                size="md"
-                className="sm:w-auto sm:min-w-28"
-                disabled={!name.trim() || !!nameError || saving}
-              >
-                {saving ? "保存中..." : isEdit ? "保存" : "创建"}
-              </Button>
             </div>
-          </div>
+          )}
+
         </div>
       </Drawer>
 

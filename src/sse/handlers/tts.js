@@ -47,7 +47,7 @@ export async function handleTts(request) {
   await recordIngressUsage(request, apiKey, { model: modelStr });
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
-  const comboModels = await getComboModels(modelStr);
+  const comboModels = await getComboModels(modelStr, accessTags);
   if (comboModels) {
     const combo = await getComboByName(modelStr);
     if (!canAccessWithTags(accessTags, combo?.accessTags)) {

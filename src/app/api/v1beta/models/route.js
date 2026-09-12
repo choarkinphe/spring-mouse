@@ -2,6 +2,7 @@ import { withNetworkTraffic } from "@/lib/networkTraffic.js";
 import { getCombos, getSettings } from "@/lib/localDb";
 import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
+import { getActiveComboModels } from "open-sse/services/combo.js";
 
 /**
  * Handle CORS preflight
@@ -31,7 +32,12 @@ async function handleGET(request) {
 
     return Response.json({
       models: combos
-        .filter((combo) => combo.isActive !== false && Array.isArray(combo.models) && combo.models.length > 0 && canAccessWithTags(accessTags, combo.accessTags))
+        .filter((combo) => {
+          if (combo.isActive === false || !Array.isArray(combo.models) || combo.models.length === 0) return false;
+          if (!canAccessWithTags(accessTags, combo.accessTags)) return false;
+          const activeComboModels = getActiveComboModels(combo.models, new Date(), accessTags);
+          return Array.isArray(activeComboModels) && activeComboModels.length > 0;
+        })
         .map((combo) => ({
         name: `models/${combo.name}`,
         displayName: combo.name,

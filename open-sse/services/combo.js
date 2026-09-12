@@ -6,6 +6,7 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -275,7 +276,14 @@ export function normalizeComboModelsForStorage(models) {
     if (!model) return null;
     const schedule = normalizeScheduleForStorage(entry.schedule);
     if (schedule === null && entry.schedule != null) return null;
-    normalized.push(schedule ? { model, schedule } : model);
+    const accessTags = normalizeAccessTags(entry.accessTags);
+    normalized.push(schedule || accessTags.length > 0
+      ? {
+        model,
+        ...(schedule ? { schedule } : {}),
+        ...(accessTags.length > 0 ? { accessTags } : {}),
+      }
+      : model);
   }
   return normalized;
 }
@@ -368,11 +376,15 @@ export function getComboModelsForRequest(models, requiredCapabilities, capabilit
 }
 
 function comboModelEntry(entry) {
-  if (typeof entry === "string") return { model: entry, schedule: null };
+  if (typeof entry === "string") return { model: entry, schedule: null, accessTags: [] };
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-    return { model: String(entry.model || ""), schedule: entry.schedule || null };
+    return {
+      model: String(entry.model || ""),
+      schedule: entry.schedule || null,
+      accessTags: normalizeAccessTags(entry.accessTags),
+    };
   }
-  return { model: "", schedule: null };
+  return { model: "", schedule: null, accessTags: [] };
 }
 
 function localMinuteOfDay(timezone, now) {
@@ -437,11 +449,14 @@ export function isComboModelActive(entry, now = new Date()) {
  * Return schedule-active model IDs from a combo's mixed string/object node list.
  * A configured combo with no active nodes resolves to [] rather than null.
  */
-export function getActiveComboModels(models, now = new Date()) {
+export function getActiveComboModels(models, now = new Date(), subjectAccessTags) {
   if (!Array.isArray(models) || models.length === 0) return null;
   return models
     .map((entry) => comboModelEntry(entry))
-    .filter((entry) => entry.model && isComboModelActive(entry, now))
+    .filter((entry) => {
+      if (!entry.model || !isComboModelActive(entry, now)) return false;
+      return !Array.isArray(subjectAccessTags) || canAccessWithTags(subjectAccessTags, entry.accessTags);
+    })
     .map((entry) => entry.model);
 }
 
@@ -508,7 +523,7 @@ export function resetComboRotation(comboName) {
  * @param {Array|Object} combosData - Array of combos or object with combos
  * @returns {string[]|null} Array of models or null if not a combo
  */
-export function getComboModelsFromData(modelStr, combosData, now = new Date()) {
+export function getComboModelsFromData(modelStr, combosData, now = new Date(), subjectAccessTags) {
   // Don't check if it's in provider/model format
   if (modelStr.includes("/")) return null;
   
@@ -517,7 +532,7 @@ export function getComboModelsFromData(modelStr, combosData, now = new Date()) {
   
   const combo = combos.find(c => c.name === modelStr);
   if (combo && combo.isActive !== false && combo.models && combo.models.length > 0) {
-    return getActiveComboModels(combo.models, now);
+    return getActiveComboModels(combo.models, now, subjectAccessTags);
   }
   return null;
 }

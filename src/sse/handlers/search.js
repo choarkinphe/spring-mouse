@@ -67,7 +67,7 @@ export async function handleSearch(request) {
 
   // Combo expansion: providerInput may be a combo name → run fallback/round-robin across providers
   const combos = await getCombos();
-  const comboModels = getComboModelsFromData(providerInput, combos);
+  const comboModels = getComboModelsFromData(providerInput, combos, new Date(), accessTags);
   if (comboModels) {
     const combo = combos.find((item) => item.name === providerInput);
     if (!canAccessWithTags(accessTags, combo?.accessTags)) {

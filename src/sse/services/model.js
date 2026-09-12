@@ -95,13 +95,13 @@ export async function getModelInfo(modelStr) {
  * Check if model is a combo and get models list
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
-export async function getComboModels(modelStr) {
+export async function getComboModels(modelStr, accessTags) {
   // Only check if it's not in provider/model format
   if (modelStr.includes("/")) return null;
 
   const combo = await getComboByName(modelStr);
   if (combo && combo.isActive !== false && combo.models && combo.models.length > 0) {
-    return getActiveComboModels(combo.models);
+    return getActiveComboModels(combo.models, new Date(), Array.isArray(accessTags) ? accessTags : undefined);
   }
   return null;
 }

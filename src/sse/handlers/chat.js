@@ -106,7 +106,7 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Combo routing is self-contained: its declared capability metadata must
   // match at least one of its own members. No global cross-combo pool is used.
-  const comboModels = await getComboModels(modelStr);
+  const comboModels = await getComboModels(modelStr, accessTags);
   if (comboModels) {
     const combo = await getComboByName(modelStr);
     if (!canAccessWithTags(accessTags, combo?.accessTags)) {
@@ -201,7 +201,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
-    const comboModels = await getComboModels(modelStr);
+    const comboModels = await getComboModels(modelStr, accessTags);
     if (comboModels) {
       const combo = await getComboByName(modelStr);
       if (!canAccessWithTags(accessTags, combo?.accessTags)) {

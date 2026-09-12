@@ -21,6 +21,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags";
+import { getActiveComboModels } from "open-sse/services/combo.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -303,6 +304,8 @@ export async function buildModelsList(kindFilter, options = {}) {
     if (combo.isActive === false || !Array.isArray(combo.models) || combo.models.length === 0) continue;
     if (!comboMatchesKinds(combo, kindFilter)) continue;
     if (accessTags !== null && !canAccessWithTags(accessTags, combo.accessTags)) continue;
+    const activeComboModels = getActiveComboModels(combo.models, new Date(), accessTags === null ? undefined : accessTags);
+    if (!activeComboModels || activeComboModels.length === 0) continue;
     const groupName = combo.groupName?.trim() || null;
     const entry = {
       id: combo.name,

@@ -58,24 +58,29 @@ async function getConnectionLastRequests(connectionIds = []) {
   return result;
 }
 
-async function getConnectionSuccessRates(connectionIds = [], windowMs = 20 * 60 * 1000) {
+async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
   const ids = Array.from(new Set((connectionIds || []).filter(Boolean)));
   if (ids.length === 0) return {};
-  const db = getAdapter();
-  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const db = await getAdapter();
   const result = {};
   const CHUNK_SIZE = 400;
   for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
     const chunk = ids.slice(start, start + CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(", ");
     const rows = db.all(
-      `SELECT connectionId,
+      `WITH recent AS (
+         SELECT connectionId, status,
+                ROW_NUMBER() OVER (PARTITION BY connectionId ORDER BY id DESC) AS requestRank
+           FROM usageHistory
+          WHERE connectionId IN (${placeholders})
+       )
+       SELECT connectionId,
               COUNT(*) AS total,
               SUM(CASE WHEN status = 'error' OR status = 'cancelled' THEN 1 ELSE 0 END) AS failed
-         FROM usageHistory
-        WHERE connectionId IN (${placeholders}) AND timestamp >= ?
+         FROM recent
+        WHERE requestRank <= ?
         GROUP BY connectionId`,
-      [...chunk, cutoff],
+      [...chunk, limit],
     );
     for (const row of rows) {
       const total = Number(row.total) || 0;

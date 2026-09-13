@@ -2095,11 +2095,14 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         title="渠道管理"
         description="集中查看每个渠道的连接状态、可用模型与配额信息。"
         icon="hub"
-      >
-        <Badge variant="primary" size="md" icon="hub">{loading ? "—" : `${channelGroups.length} 个渠道`}</Badge>
-        <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
-        <Badge variant="default" size="md" icon="database">{loading ? "—" : `${connections.length} 个账号配置`}</Badge>
-      </DashboardHero>
+        action={(
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Badge variant="primary" size="md" icon="hub">{loading ? "—" : `${channelGroups.length} 个渠道`}</Badge>
+            <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
+            <Badge variant="default" size="md" icon="database">{loading ? "—" : `${connections.length} 个账号配置`}</Badge>
+          </div>
+        )}
+      />
 
       {loading ? (
         <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">

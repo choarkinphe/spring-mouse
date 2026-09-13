@@ -31,15 +31,12 @@ export default function DashboardHero({
           <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">{eyebrow}</p>
           <h1 className="mt-1 text-xl font-semibold tracking-tight text-text-main sm:text-2xl">{title}</h1>
           <p className="mt-1.5 max-w-2xl text-sm leading-5 text-text-muted">{description}</p>
-          {/* Counters describe the page, so they sit with the description; the
-              action keeps its own column. Stacking them in one right-hand row
-              made a badge row and a button compete at two different heights. */}
-          {children && (
-            <div className="mt-2.5 flex flex-wrap items-center gap-2">{children}</div>
-          )}
         </div>
-        {action && (
-          <div className="relative z-10 flex shrink-0 items-center gap-2">{action}</div>
+        {(children || action) && (
+          <div className="relative z-10 flex shrink-0 flex-wrap items-center justify-end gap-2 sm:max-w-[52%]">
+            {children && <div className="flex flex-wrap items-center justify-end gap-2">{children}</div>}
+            {action && <div className="flex flex-wrap items-center justify-end gap-2">{action}</div>}
+          </div>
         )}
       </div>
     </section>

@@ -292,7 +292,15 @@ class MouseAgent {
       });
       if (!relay.ok) {
         const text = await relay.text().catch(() => "");
-        throw new Error(`Spring rejected the result (${relay.status}): ${text.slice(0, 200)}`);
+        const upstreamStatus = providerResponse.status;
+        // This status belongs to the Mouse → Spring result-upload request, not
+        // necessarily to the provider request. Keep both statuses explicit so a
+        // dashboard error cannot be mistaken for an upstream model failure.
+        throw new Error(
+          `Spring result relay rejected (${relay.status}); provider response was HTTP ${upstreamStatus}. `
+          + `The failure is in the Mouse → Spring relay path. `
+          + `Relay response: ${text.slice(0, 200)}`,
+        );
       }
     } catch (error) {
       console.error(`[mouse] task ${taskId} failed: ${error.message}`);

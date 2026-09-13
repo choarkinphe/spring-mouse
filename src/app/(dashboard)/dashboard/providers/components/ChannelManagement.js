@@ -670,6 +670,23 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         connection.lastRequestModel ? `模型：${connection.lastRequestModel}` : null,
       ].filter(Boolean).join("\n")
     : "该账号还没有请求记录";
+  const copyUpstreamError = async (event) => {
+    event.stopPropagation();
+    const details = [
+      `账号：${getConnectionName(connection)}`,
+      `渠道：${getProviderName(connection.provider)}`,
+      connection.mouseId ? `Mouse：${connection.mouseId}` : null,
+      connection.lastUpstreamAt ? `时间：${new Date(connection.lastUpstreamAt).toLocaleString("zh-CN", { hour12: false })}` : null,
+      getUpstreamErrorTitle(connection),
+    ].filter(Boolean).join("\n");
+    try {
+      await navigator.clipboard.writeText(details);
+      window.dispatchEvent(new CustomEvent("toast", { detail: { type: "success", message: "错误详情已复制" } }));
+    } catch {
+      // Clipboard may be unavailable in insecure contexts; keep the error visible.
+    }
+  };
+
   const canReorder = !(isFirst && isLast);
   // Live in-flight count for this account, polled from the routing process. Used
   // to light up the provider icon while the account is actually serving traffic.
@@ -793,7 +810,10 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           {connection.lastUpstreamError && connection.isActive !== false ? (
             <div
               className={cn("flex min-w-0 flex-1 items-center gap-1.5", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
-              title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}`}
+              title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}\n双击复制完整错误详情`}
+              onDoubleClick={copyUpstreamError}
+              role="button"
+              tabIndex={0}
             >
               <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{upstreamErrorStale ? "history" : "error"}</span>
               <span className="min-w-0 flex-1 truncate">

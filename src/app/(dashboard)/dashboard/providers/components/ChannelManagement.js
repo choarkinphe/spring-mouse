@@ -662,6 +662,21 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
     ? `失败 ${recentSuccessRate.failed} 次${recentSuccessRate.rateLimited ? ` · GPT 限流 ${recentSuccessRate.rateLimited}` : ""}${recentSuccessRate.relayErrors ? ` · 中转异常 ${recentSuccessRate.relayErrors}` : ""}${recentSuccessRate.clientAborts ? ` · 客户端取消 ${recentSuccessRate.clientAborts}` : ""}${recentSuccessRate.unknownFailures ? ` · 其他失败 ${recentSuccessRate.unknownFailures}` : ""}${recentSuccessRate.rejected ? ` · 路由拒绝 ${recentSuccessRate.rejected}` : ""}`
     : "近 100 次暂无失败";
   const successRateClass = recentSuccessRate.rate === null ? "text-[#647688]" : recentSuccessRate.rate >= 95 ? "text-emerald-300" : recentSuccessRate.rate >= 80 ? "text-amber-300" : "text-rose-300";
+  // The failure chip used to print every non-zero category, so its width grew
+  // with the data and shoved the rest of the line around. It now shows the total
+  // plus a fixed-width stacked bar over the same five categories in a fixed
+  // order, so the chip occupies the same slot on every account and every poll.
+  const failureMix = [
+    { key: "rateLimited", label: "GPT 限流", className: "bg-amber-400/80" },
+    { key: "relayErrors", label: "中转异常", className: "bg-rose-400/80" },
+    { key: "clientAborts", label: "客户端取消", className: "bg-sky-400/70" },
+    { key: "unknownFailures", label: "其他失败", className: "bg-slate-400/70" },
+    { key: "rejected", label: "路由拒绝", className: "bg-violet-400/80" },
+  ]
+    .map((entry) => ({ ...entry, value: Math.max(0, Number(recentSuccessRate[entry.key]) || 0) }))
+    .filter((entry) => entry.value > 0);
+  const failureMixTotal = failureMix.reduce((total, entry) => total + entry.value, 0);
+  const failureMixHint = failureMix.map((entry) => `${entry.label} ${entry.value}`).join(" · ");
   // Who was behind that last request — the API key's display name. Resolved
   // server-side (apiKeyId → name); the raw key never reaches the client.
   const lastRequestBy = connection.lastRequestBy || null;
@@ -829,56 +844,74 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>
           )}
         </div>
-        {/* Last request time (success or failure) — tells apart idle accounts
-            from ones that are actively serving traffic. It gets its own line,
-            left aligned, so the action buttons on the right can never overlap
-            it (they used to spill out of the fixed 8rem action column). */}
-        <div className="mt-1.5 flex min-w-0 items-center text-xs">
+        {/* Signal line: three fixed zones, left to right — health (成功率 +
+            失败构成), activity (最近请求 + 调用方) and capacity (加权并发). Each
+            zone owns a single idea, the zones are split by a hairline, and the
+            failure chip is capped at "总数 + 定宽构成条" instead of printing every
+            non-zero category. Before that the chip's width grew with the data,
+            so a busy account and an idle one laid out completely differently. */}
+        <div className="mt-2 flex min-w-0 items-center gap-2 text-xs">
           <span
-            className={cn("mr-1.5 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
+            className={cn("flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.035] px-1.5 text-[11px] tabular-nums", successRateClass)}
             title={`最近 100 次请求：${failureHint}；成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
           >
             <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
             {successRateLabel}
           </span>
           {recentSuccessRate.total > 0 && recentSuccessRate.failed > 0 && (
-            <span className="mr-1.5 shrink-0 whitespace-nowrap rounded border border-rose-400/20 bg-rose-400/[0.08] px-1.5 py-0.5 text-[11px] leading-none text-rose-200" title={failureHint}>
-              {failureHint}
-            </span>
-          )}
-          <span
-            className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
-            title={lastRequestTitle}
-          >
-            {/* `!` is required: globals.css sets a 24px font-size on
-                .material-symbols-outlined outside any cascade layer, which beats
-                every Tailwind text-[Npx] utility. */}
-            <span className="material-symbols-outlined text-[14px]! leading-none">schedule</span>
-            <span className="shrink-0">最近请求</span>
-            <span className="truncate font-medium">{lastRequestAt || "无记录"}</span>
-          </span>
-          {/* Who called it. Sits right after the timestamp so the two read as one
-              sentence ("最近请求 3 分钟前 · 吴小龙"); the model only shows in the
-              tooltip to keep the row compact. `min-w-0` + `truncate` let a long
-              key name shrink instead of pushing 并发 off the line. */}
-          {lastRequestBy && (
             <span
-              className="ml-2 flex min-w-0 items-center gap-1 text-[#647688]"
-              title={`该账号最近一次请求由「${lastRequestBy}」发起${connection.lastRequestModel ? `\n模型：${connection.lastRequestModel}` : ""}`}
+              className="flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-rose-400/20 bg-rose-400/[0.08] px-1.5 text-[11px] text-rose-200"
+              title={failureHint}
+              aria-label={`最近 100 次请求失败 ${recentSuccessRate.failed} 次：${failureMixHint}`}
             >
-              <span className="shrink-0 text-[#506070]">·</span>
-              <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">person</span>
-              <span className="truncate">{lastRequestBy}</span>
+              <span className="tabular-nums">失败 {recentSuccessRate.failed} 次</span>
+              {failureMixTotal > 0 && (
+                <span className="flex h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-white/[0.10]" aria-hidden="true">
+                  {failureMix.map((entry) => (
+                    <span key={entry.key} className={cn("h-full shrink-0", entry.className)} style={{ width: `${(entry.value / failureMixTotal) * 100}%` }} />
+                  ))}
+                </span>
+              )}
             </span>
           )}
-          {/* Live slot usage from the routing process. Shares the line with the
-              last request time so the row keeps its two-line footprint. */}
+          <span className="flex min-w-0 items-center gap-1.5 border-l border-white/[0.08] pl-2.5">
+            <span
+              className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
+              title={lastRequestTitle}
+            >
+              {/* `!` is required: globals.css sets a 24px font-size on
+                  .material-symbols-outlined outside any cascade layer, which beats
+                  every Tailwind text-[Npx] utility. */}
+              <span className="material-symbols-outlined text-[14px]! leading-none">schedule</span>
+              <span className="shrink-0">最近请求</span>
+              <span className="truncate font-medium">{lastRequestAt || "无记录"}</span>
+            </span>
+            {/* Who called it. Sits right after the timestamp so the two read as one
+                sentence ("最近请求 3 分钟前 · 吴小龙"); the model only shows in the
+                tooltip to keep the row compact. `min-w-0` + `truncate` let a long
+                key name shrink instead of pushing 并发 off the line. */}
+            {lastRequestBy && (
+              <span
+                className="flex min-w-0 items-center gap-1 text-[#647688]"
+                title={`该账号最近一次请求由「${lastRequestBy}」发起${connection.lastRequestModel ? `\n模型：${connection.lastRequestModel}` : ""}`}
+              >
+                <span className="shrink-0 text-[#506070]">·</span>
+                <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">person</span>
+                <span className="truncate">{lastRequestBy}</span>
+              </span>
+            )}
+          </span>
+          {/* Live slot usage from the routing process. Pinned to the right edge so
+              the number lines up with the action column on every row, and chipped
+              like the health zone so the line reads as three peer groups rather
+              than a run-on sentence. */}
           {concurrency && (
             <span
               className={cn(
-                "ml-auto flex shrink-0 items-center gap-1 pl-3 tabular-nums",
-                concurrency.active >= concurrency.limit ? "text-amber-300"
-                  : concurrency.active > 0 ? "text-sky-300" : "text-[#647688]",
+                "ml-auto flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] tabular-nums",
+                concurrency.active >= concurrency.limit ? "border-amber-400/25 bg-amber-400/[0.10] text-amber-300"
+                  : concurrency.active > 0 ? "border-sky-400/25 bg-sky-400/[0.10] text-sky-300"
+                    : "border-white/[0.08] bg-white/[0.025] text-[#647688]",
               )}
               title={`当前加权并发 ${concurrency.active} / ${concurrency.limit}\n账号达到上限后会等待，不再继续分配；长上下文请求按权重占用多个并发额度，数据来自本进程实时租约${concurrency.active === 0 ? "（当前空闲）" : ""}`}
             >

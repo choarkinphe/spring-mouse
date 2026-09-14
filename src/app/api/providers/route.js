@@ -75,11 +75,12 @@ async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
           WHERE connectionId IN (${placeholders})
        )
        SELECT connectionId,
-              SUM(CASE WHEN status = 'success' OR status LIKE 'upstream:%' OR status LIKE 'error:%' THEN 1 ELSE 0 END) AS total,
+              SUM(CASE WHEN status IN ('success', 'ok', 'error') OR status LIKE 'upstream:%' OR status LIKE 'error:%' THEN 1 ELSE 0 END) AS total,
               SUM(CASE WHEN status LIKE 'upstream:%' OR status LIKE 'error:%' THEN 1 ELSE 0 END) AS failed,
               SUM(CASE WHEN status IN ('upstream:429', 'error:429') THEN 1 ELSE 0 END) AS rateLimited,
               SUM(CASE WHEN status IN ('upstream:502', 'upstream:503', 'upstream:504', 'error:502', 'error:503', 'error:504') THEN 1 ELSE 0 END) AS relayErrors,
-              SUM(CASE WHEN status IN ('upstream:499', 'error:499') THEN 1 ELSE 0 END) AS clientAborts
+              SUM(CASE WHEN status IN ('upstream:499', 'error:499') THEN 1 ELSE 0 END) AS clientAborts,
+              SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected
          FROM recent
         WHERE requestRank <= ?
         GROUP BY connectionId`,
@@ -99,6 +100,7 @@ async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
         relayErrors,
         clientAborts,
         unknownFailures: Math.max(0, failed - rateLimited - relayErrors - clientAborts),
+        rejected: Number(row.rejected) || 0,
         rate: total > 0 ? Math.round(((total - failed) / total) * 100) : null,
       };
     }

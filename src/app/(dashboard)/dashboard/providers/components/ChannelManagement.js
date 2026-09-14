@@ -659,7 +659,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const recentSuccessRate = connection.recentSuccessRate || { total: 0, success: 0, rate: null };
   const successRateLabel = recentSuccessRate.rate === null ? "—" : `${recentSuccessRate.rate}%`;
   const failureHint = recentSuccessRate.failed > 0
-    ? `失败 ${recentSuccessRate.failed} 次${recentSuccessRate.rateLimited ? ` · GPT 限流 ${recentSuccessRate.rateLimited}` : ""}${recentSuccessRate.relayErrors ? ` · 中转异常 ${recentSuccessRate.relayErrors}` : ""}${recentSuccessRate.clientAborts ? ` · 客户端取消 ${recentSuccessRate.clientAborts}` : ""}${recentSuccessRate.unknownFailures ? ` · 原因未明 ${recentSuccessRate.unknownFailures}` : ""}`
+    ? `失败 ${recentSuccessRate.failed} 次${recentSuccessRate.rateLimited ? ` · GPT 限流 ${recentSuccessRate.rateLimited}` : ""}${recentSuccessRate.relayErrors ? ` · 中转异常 ${recentSuccessRate.relayErrors}` : ""}${recentSuccessRate.clientAborts ? ` · 客户端取消 ${recentSuccessRate.clientAborts}` : ""}${recentSuccessRate.unknownFailures ? ` · 其他失败 ${recentSuccessRate.unknownFailures}` : ""}${recentSuccessRate.rejected ? ` · 路由拒绝 ${recentSuccessRate.rejected}` : ""}`
     : "近 100 次暂无失败";
   const successRateClass = recentSuccessRate.rate === null ? "text-[#647688]" : recentSuccessRate.rate >= 95 ? "text-emerald-300" : recentSuccessRate.rate >= 80 ? "text-amber-300" : "text-rose-300";
   // Who was behind that last request — the API key's display name. Resolved
@@ -835,14 +835,14 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             it (they used to spill out of the fixed 8rem action column). */}
         <div className="mt-1.5 flex min-w-0 items-center text-xs">
           <span
-            className={cn("mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
+            className={cn("mr-1.5 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
             title={`最近 100 次请求：${failureHint}；成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
           >
             <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
             {successRateLabel}
           </span>
           {recentSuccessRate.total > 0 && recentSuccessRate.failed > 0 && (
-            <span className="min-w-0 truncate text-[11px] text-rose-300/85" title={failureHint}>
+            <span className="mr-1.5 shrink-0 whitespace-nowrap rounded border border-rose-400/20 bg-rose-400/[0.08] px-1.5 py-0.5 text-[11px] leading-none text-rose-200" title={failureHint}>
               {failureHint}
             </span>
           )}

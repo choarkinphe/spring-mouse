@@ -658,25 +658,31 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
   const recentSuccessRate = connection.recentSuccessRate || { total: 0, success: 0, rate: null };
   const successRateLabel = recentSuccessRate.rate === null ? "—" : `${recentSuccessRate.rate}%`;
-  const failureHint = recentSuccessRate.failed > 0
-    ? `失败 ${recentSuccessRate.failed} 次${recentSuccessRate.rateLimited ? ` · GPT 限流 ${recentSuccessRate.rateLimited}` : ""}${recentSuccessRate.relayErrors ? ` · 中转异常 ${recentSuccessRate.relayErrors}` : ""}${recentSuccessRate.clientAborts ? ` · 客户端取消 ${recentSuccessRate.clientAborts}` : ""}${recentSuccessRate.unknownFailures ? ` · 其他失败 ${recentSuccessRate.unknownFailures}` : ""}${recentSuccessRate.rejected ? ` · 路由拒绝 ${recentSuccessRate.rejected}` : ""}`
-    : "近 100 次暂无失败";
   const successRateClass = recentSuccessRate.rate === null ? "text-[#647688]" : recentSuccessRate.rate >= 95 ? "text-emerald-300" : recentSuccessRate.rate >= 80 ? "text-amber-300" : "text-rose-300";
-  // The failure chip used to print every non-zero category, so its width grew
-  // with the data and shoved the rest of the line around. It now shows the total
-  // plus a fixed-width stacked bar over the same five categories in a fixed
-  // order, so the chip occupies the same slot on every account and every poll.
-  const failureMix = [
-    { key: "rateLimited", label: "GPT 限流", className: "bg-amber-400/80" },
-    { key: "relayErrors", label: "中转异常", className: "bg-rose-400/80" },
-    { key: "clientAborts", label: "客户端取消", className: "bg-sky-400/70" },
-    { key: "unknownFailures", label: "其他失败", className: "bg-slate-400/70" },
-    { key: "rejected", label: "路由拒绝", className: "bg-violet-400/80" },
-  ]
-    .map((entry) => ({ ...entry, value: Math.max(0, Number(recentSuccessRate[entry.key]) || 0) }))
-    .filter((entry) => entry.value > 0);
-  const failureMixTotal = failureMix.reduce((total, entry) => total + entry.value, 0);
-  const failureMixHint = failureMix.map((entry) => `${entry.label} ${entry.value}`).join(" · ");
+  // The failure breakdown is no longer printed next to the success rate: that
+  // chip was the only one whose width grew with the data, so a busy account and
+  // an idle one laid out completely differently. It now lives in the
+  // success-rate chip's hover tooltip, styled like the model-cooldown lock.
+  // One category per line on purpose — Tooltip caps its box at 256px, so packing
+  // them onto one line just wraps mid-word ("客户" / "取消 5").
+  const failureMixLines = recentSuccessRate.failed > 0
+    ? [
+        `失败 ${recentSuccessRate.failed} 次`,
+        ...[
+          ["GPT 限流", recentSuccessRate.rateLimited],
+          ["中转异常", recentSuccessRate.relayErrors],
+          ["客户端取消", recentSuccessRate.clientAborts],
+          ["其他失败", recentSuccessRate.unknownFailures],
+          ["路由拒绝", recentSuccessRate.rejected],
+        ]
+          .filter(([, value]) => Number(value) > 0)
+          .map(([label, value]) => `· ${label} ${value}`),
+      ]
+    : ["近 100 次暂无失败"];
+  const successRateHint = [
+    `最近 100 次请求成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`,
+    ...failureMixLines,
+  ].join("\n");
   // Who was behind that last request — the API key's display name. Resolved
   // server-side (apiKeyId → name); the raw key never reaches the client.
   const lastRequestBy = connection.lastRequestBy || null;
@@ -844,36 +850,22 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>
           )}
         </div>
-        {/* Signal line: three fixed zones, left to right — health (成功率 +
-            失败构成), activity (最近请求 + 调用方) and capacity (加权并发). Each
-            zone owns a single idea, the zones are split by a hairline, and the
-            failure chip is capped at "总数 + 定宽构成条" instead of printing every
-            non-zero category. Before that the chip's width grew with the data,
-            so a busy account and an idle one laid out completely differently. */}
+        {/* Signal line: three fixed zones, left to right — health (成功率),
+            activity (最近请求 + 调用方) and capacity (加权并发). Each zone owns a
+            single idea and the zones are split by a hairline. The failure
+            breakdown is deliberately not printed inline: it is the only part
+            whose width grew with the data, so it now lives in the success-rate
+            chip's hover tooltip — the same box style as the cooldown lock. */}
         <div className="mt-2 flex min-w-0 items-center gap-2 text-xs">
-          <span
-            className={cn("flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.035] px-1.5 text-[11px] tabular-nums", successRateClass)}
-            title={`最近 100 次请求：${failureHint}；成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
-          >
-            <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
-            {successRateLabel}
-          </span>
-          {recentSuccessRate.total > 0 && recentSuccessRate.failed > 0 && (
+          <Tooltip text={successRateHint}>
             <span
-              className="flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-rose-400/20 bg-rose-400/[0.08] px-1.5 text-[11px] text-rose-200"
-              title={failureHint}
-              aria-label={`最近 100 次请求失败 ${recentSuccessRate.failed} 次：${failureMixHint}`}
+              className={cn("flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.035] px-1.5 text-[11px] tabular-nums", successRateClass)}
+              aria-label={successRateHint.replace(/\n/g, "；")}
             >
-              <span className="tabular-nums">失败 {recentSuccessRate.failed} 次</span>
-              {failureMixTotal > 0 && (
-                <span className="flex h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-white/[0.10]" aria-hidden="true">
-                  {failureMix.map((entry) => (
-                    <span key={entry.key} className={cn("h-full shrink-0", entry.className)} style={{ width: `${(entry.value / failureMixTotal) * 100}%` }} />
-                  ))}
-                </span>
-              )}
+              <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
+              {successRateLabel}
             </span>
-          )}
+          </Tooltip>
           <span className="flex min-w-0 items-center gap-1.5 border-l border-white/[0.08] pl-2.5">
             <span
               className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}

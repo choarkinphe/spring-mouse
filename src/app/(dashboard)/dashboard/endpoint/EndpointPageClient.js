@@ -145,8 +145,14 @@ function LiveActivityCell({ activity }) {
             "仅统计携带该密钥且已通过准入的请求；被拒绝或排队超时的请求不计入",
           ].join("\n")}
         >
-          {capped ? `${requests}/${limit}` : requests}
-          <span className="font-sans text-[10px] opacity-70">请求</span>
+          {busy ? (
+            <>
+              {capped ? `${requests}/${limit}` : requests}
+              <span className="font-sans text-[10px] opacity-70">请求</span>
+            </>
+          ) : (
+            <span className="font-sans">暂无请求</span>
+          )}
         </span>
         {queued > 0 && (
           <span
@@ -678,7 +684,7 @@ export default function APIPageClient({ machineId }) {
             <div className={`${styles.header} border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688]`}>
               <span>密钥信息</span>
               <span>额度使用</span>
-              <span>实时请求</span>
+              <span title="滚动 60 秒内已受理的业务请求数（不是累计总数）。不含被拒绝、排队超时的请求，也不含 /v1/models 等元数据端点；服务重启后清零。">实时请求</span>
               <span>最近访问</span>
               <span className="text-right">状态与操作</span>
             </div>

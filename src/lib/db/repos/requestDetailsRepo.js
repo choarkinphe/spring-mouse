@@ -217,7 +217,7 @@ export async function getRequestDetailByRequestId(requestId) {
   const byRequestId = db.get(`SELECT data FROM requestDetails WHERE json_extract(data, '$.requestId') = ? LIMIT 1`, [requestId]);
   if (byRequestId) return parseJson(byRequestId.data, null);
 
-  const usage = db.get(`SELECT timestamp, provider, model, connectionId FROM usageHistory WHERE requestId = ? LIMIT 1`, [requestId]);
+  const usage = db.get(`SELECT timestamp, startedAt, completedAt, provider, model, connectionId FROM usageHistory WHERE requestId = ? LIMIT 1`, [requestId]);
   if (!usage) return null;
   return {
     id: requestId,
@@ -226,7 +226,12 @@ export async function getRequestDetailByRequestId(requestId) {
     model: usage.model,
     connectionId: usage.connectionId,
     status: "usage-only",
-    latency: {},
+    latency: {
+      ttft: null,
+      total: usage.startedAt && usage.completedAt
+        ? Math.max(0, new Date(usage.completedAt).getTime() - new Date(usage.startedAt).getTime())
+        : null,
+    },
     request: null,
     providerRequest: null,
     providerResponse: null,

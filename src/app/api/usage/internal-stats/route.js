@@ -8,7 +8,7 @@ export async function GET(request) {
     const db = await getAdapter();
     const since = new URL(request.url).searchParams.get("since");
     const sinceIso = since ? new Date(since).toISOString() : null;
-    const recent = db.all(`SELECT requestId AS id, timestamp, provider, model, status, promptTokens, completionTokens FROM usageHistory WHERE (? IS NULL OR timestamp >= ?) ORDER BY usageHistory.id DESC LIMIT 10`, [sinceIso, sinceIso]);
+    const recent = db.all(`SELECT requestId AS id, timestamp, startedAt, completedAt, provider, model, status, promptTokens, completionTokens FROM usageHistory WHERE (? IS NULL OR timestamp >= ?) ORDER BY usageHistory.id DESC LIMIT 10`, [sinceIso, sinceIso]);
     const rows = db.all(
       `SELECT status, COUNT(*) AS count
          FROM (SELECT status FROM usageHistory WHERE (? IS NULL OR timestamp >= ?) ORDER BY id DESC LIMIT 100)

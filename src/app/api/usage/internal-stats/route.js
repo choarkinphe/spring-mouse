@@ -6,15 +6,14 @@ export const dynamic = "force-dynamic";
 export async function GET(request) {
   try {
     const db = await getAdapter();
-    const since = new URL(request.url).searchParams.get("since");
-    const sinceIso = since ? new Date(since).toISOString() : null;
-    const recent = db.all(`SELECT requestId AS id, timestamp, startedAt, completedAt, provider, model, status, promptTokens, completionTokens FROM usageHistory WHERE (? IS NULL OR timestamp >= ?) ORDER BY usageHistory.id DESC LIMIT 10`, [sinceIso, sinceIso]);
+    // Keep statistics tied to the same retained window as request details.
+    const recent = db.all(`SELECT usageHistory.requestId AS id, usageHistory.timestamp, usageHistory.startedAt, usageHistory.completedAt, usageHistory.provider, usageHistory.model, usageHistory.status, usageHistory.promptTokens, usageHistory.completionTokens, COALESCE(apiKeys.name, CASE WHEN usageHistory.apiKeyId = 'local-no-key' THEN '本地请求' ELSE '已删除的密钥' END) AS caller, CASE WHEN usageHistory.startedAt IS NOT NULL AND usageHistory.completedAt IS NOT NULL THEN MAX(0, ROUND((julianday(usageHistory.completedAt) - julianday(usageHistory.startedAt)) * 86400000)) ELSE NULL END AS durationMs FROM usageHistory LEFT JOIN apiKeys ON apiKeys.id = usageHistory.apiKeyId ORDER BY usageHistory.id DESC LIMIT 100`);
     const rows = db.all(
       `SELECT status, COUNT(*) AS count
-         FROM (SELECT status FROM usageHistory WHERE (? IS NULL OR timestamp >= ?) ORDER BY id DESC LIMIT 100)
+         FROM (SELECT status FROM usageHistory ORDER BY id DESC LIMIT 100)
         GROUP BY status
         ORDER BY count DESC`,
-      [sinceIso, sinceIso]);
+      );
     const stats = { total: 0, success: 0, upstream: 0, blocked: 0, internal: 0, cancelled: 0, byStatus: [] };
     for (const row of rows) {
       const count = Number(row.count) || 0;

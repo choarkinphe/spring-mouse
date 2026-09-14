@@ -300,7 +300,10 @@ export async function acquireApiKeyRateSlot({
   }
 
   // code 0: queued. Poll until a slot opens, the queue budget runs out, or the
-  // client goes away.
+  // client goes away. The local gauge is the only record of "waiting" the UI can
+  // read without a Redis round trip per key, so it is driven here rather than
+  // derived from the shared counter.
+  noteApiKeyQueue(keyId, 1);
   let settled = false;
   let promoteFailures = 0;
   try {
@@ -336,6 +339,7 @@ export async function acquireApiKeyRateSlot({
     if (signal?.aborted) return { allowed: false, reason: "aborted", retryAfterMs: 0 };
     throw error;
   } finally {
+    noteApiKeyQueue(keyId, -1);
     if (!settled) await gates.release().catch(() => {});
   }
 }
@@ -386,4 +390,121 @@ export async function getApiKeyRateLimitSnapshot(keyId, limit, burst) {
     windowMs: API_KEY_RATE_WINDOW_MS,
     source: "local",
   };
+}
+
+// ── Live request activity ────────────────────────────────────────────────────
+//
+// Observability, not admission. The snapshot above answers "how much of the
+// allowance is spent"; this answers "what is the key doing right now" — how
+// many requests are inside the window and which models they asked for. It is
+// deliberately process-local, exactly like `getConnectionSlotCounts()` in
+// connectionSlots.js: these describe the traffic THIS process is serving, and a
+// restart should blank the panel rather than change any behaviour.
+//
+// Storage is a ring of one-second buckets holding per-model tallies rather than
+// individual requests, so a hot key costs a fixed amount of memory and the read
+// path stays O(buckets) instead of O(requests). Buckets are aligned to
+// wall-clock seconds and reused cyclically, which lets the stamp array double
+// as the expiry record: a slot is stale once its stamp falls behind the window.
+
+const LIVE_BUCKET_COUNT = Math.max(2, Math.ceil(API_KEY_RATE_WINDOW_MS / 1000));
+export const UNKNOWN_MODEL_LABEL = "未指定模型";
+
+const liveState = globalThis.__smApiKeyActivity ||= { keys: new Map() };
+
+function liveBucket(keyId) {
+  let bucket = liveState.keys.get(keyId);
+  if (!bucket) {
+    bucket = {
+      slots: new Array(LIVE_BUCKET_COUNT).fill(null),
+      stamps: new Array(LIVE_BUCKET_COUNT).fill(0),
+      queued: 0,
+      lastAt: 0,
+      lastModel: null,
+    };
+    liveState.keys.set(keyId, bucket);
+  }
+  return bucket;
+}
+
+function liveSlotFor(bucket, now) {
+  const second = Math.floor(now / 1000);
+  const index = ((second % LIVE_BUCKET_COUNT) + LIVE_BUCKET_COUNT) % LIVE_BUCKET_COUNT;
+  if (bucket.stamps[index] !== second) {
+    bucket.stamps[index] = second;
+    bucket.slots[index] = null;
+  }
+  return index;
+}
+
+function modelLabel(model) {
+  const text = typeof model === "string" ? model.trim() : "";
+  return text || UNKNOWN_MODEL_LABEL;
+}
+
+/**
+ * Note one admitted request for a key. Called after admission, so requests that
+ * were rejected — or queued and then timed out — never inflate the live numbers.
+ */
+export function recordApiKeyActivity(keyId, { model = null } = {}) {
+  if (!keyId) return;
+  const now = Date.now();
+  const bucket = liveBucket(keyId);
+  const slot = bucket.slots[liveSlotFor(bucket, now)] ||= new Map();
+  const label = modelLabel(model);
+  slot.set(label, (slot.get(label) || 0) + 1);
+  bucket.lastAt = now;
+  bucket.lastModel = label;
+}
+
+/** Move the live queue gauge by `delta` (+1 on joining the queue, -1 on leaving). */
+export function noteApiKeyQueue(keyId, delta = 0) {
+  if (!keyId || !delta) return;
+  const bucket = liveBucket(keyId);
+  bucket.queued = Math.max(0, bucket.queued + delta);
+}
+
+/**
+ * Live view of every key this process has seen, keyed by key id.
+ *
+ * `requests` counts admissions inside the rolling window — the same window the
+ * allowance is expressed in — so it lines up with the configured per-minute
+ * limit instead of guessing at in-flight work (a stream held open for two
+ * minutes is one admitted request, not a lingering one).
+ */
+export function getApiKeyLiveSnapshot() {
+  const now = Date.now();
+  const oldestSecond = Math.floor((now - API_KEY_RATE_WINDOW_MS) / 1000);
+  const snapshot = {};
+  for (const [keyId, bucket] of liveState.keys) {
+    const models = new Map();
+    let requests = 0;
+    for (let i = 0; i < LIVE_BUCKET_COUNT; i++) {
+      if (bucket.stamps[i] < oldestSecond) continue;
+      const slot = bucket.slots[i];
+      if (!slot) continue;
+      for (const [label, count] of slot) {
+        requests += count;
+        models.set(label, (models.get(label) || 0) + count);
+      }
+    }
+    // An entry deliberately outlives its window: `lastModel` / `lastAt` are
+    // what the panel shows for a key that is momentarily quiet. Only a bucket
+    // that never admitted anything — it exists because something queued on it —
+    // is dropped, so the map stays bounded by the number of keys, not by uptime.
+    if (requests === 0 && bucket.queued === 0 && bucket.lastAt === 0) {
+      liveState.keys.delete(keyId);
+      continue;
+    }
+    snapshot[keyId] = {
+      requests,
+      queued: bucket.queued,
+      lastAt: bucket.lastAt || null,
+      lastModel: bucket.lastModel,
+      models: [...models]
+        .map(([model, count]) => ({ model, count }))
+        .sort((a, b) => b.count - a.count || a.model.localeCompare(b.model)),
+    };
+  }
+  return snapshot;
 }

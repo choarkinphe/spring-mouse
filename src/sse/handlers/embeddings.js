@@ -60,7 +60,7 @@ export async function handleEmbeddings(request) {
 
   // Enforce API key if enabled in settings
   const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal });
+  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model: modelStr });
   if (authFailure) return authFailure;
   const accessTags = await resolveApiKeyAccessTags(apiKey);
 

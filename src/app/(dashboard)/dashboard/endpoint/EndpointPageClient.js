@@ -99,6 +99,82 @@ function QuotaWindow({ window, onReset, resetting = false }) {
   );
 }
 
+// Model ids run long ("anthropic/claude-3-5-sonnet-20241022") and the live
+// column is narrow, so the chip keeps only the recognisable tail: the provider
+// prefix is implied by the key's own configuration and the dated suffix is
+// noise. The full id stays available in the tooltip.
+function shortModelLabel(model) {
+  const tail = String(model || "").split("/").pop() || "";
+  return tail.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "") || tail;
+}
+
+// Live activity for one key, mirroring the concurrency chip on the channel
+// page: how much of the per-minute allowance is spent, whether anything is
+// queued behind it, and which models those requests are asking for. Fed by
+// /api/keys/activity, which reads the same counters admission uses.
+function LiveActivityCell({ activity }) {
+  if (!activity) {
+    return (
+      <span className="rounded-md border border-white/[.08] bg-black/[.12] px-2 py-1 text-[11px] text-text-muted" title="正在读取实时请求数据">
+        —
+      </span>
+    );
+  }
+
+  const { requests = 0, queued = 0, limit = null, enabled = false, models = [], windowMs = 0, lastModel = null } = activity;
+  const windowLabel = windowMs ? `${Math.round(windowMs / 1000)} 秒` : "滚动窗口";
+  const capped = Boolean(enabled && limit);
+  const atCeiling = capped && requests >= limit;
+  const busy = requests > 0;
+  const top = models[0] || null;
+
+  return (
+    <div className="flex min-w-0 flex-col items-start gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-none tabular-nums ${
+            atCeiling
+              ? "border-amber-400/25 bg-amber-400/[.10] text-amber-200"
+              : busy
+                ? "border-sky-400/25 bg-sky-400/[.10] text-sky-200"
+                : "border-white/[.08] bg-black/[.12] text-text-muted"
+          }`}
+          title={[
+            `最近 ${windowLabel}内该密钥已受理 ${requests} 个业务请求`,
+            capped ? `限流上限 ${limit} 个/分钟` : "未设置请求限流，此处只显示实时用量",
+            "仅统计携带该密钥且已通过准入的请求；被拒绝或排队超时的请求不计入",
+          ].join("\n")}
+        >
+          {capped ? `${requests}/${limit}` : requests}
+          <span className="font-sans text-[10px] opacity-70">请求</span>
+        </span>
+        {queued > 0 && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/25 bg-amber-400/[.10] px-1.5 py-0.5 font-mono text-[11px] leading-none tabular-nums text-amber-200"
+            title={`当前有 ${queued} 个请求正在排队，等待限流窗口腾出名额`}
+          >
+            {queued}
+            <span className="font-sans text-[10px] opacity-70">排队</span>
+          </span>
+        )}
+      </div>
+      {(top || lastModel) && (
+        <span
+          className="min-w-0 truncate rounded-md border border-white/[.08] bg-black/[.12] px-1.5 py-0.5 font-mono text-[10px] text-text-muted"
+          title={
+            models.length
+              ? `最近 ${windowLabel}的模型分布：\n${models.map((m) => `${m.model} ×${m.count}`).join("\n")}`
+              : `最近一次请求的模型：${lastModel}`
+          }
+        >
+          {top ? `${shortModelLabel(top.model)} ×${top.count}` : shortModelLabel(lastModel)}
+          {models.length > 1 ? ` +${models.length - 1}` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function QuotaCell({ quota, onReset, resettingWindow = null }) {
   if (quota?.mode === "off") {
     return (
@@ -172,6 +248,9 @@ export default function APIPageClient({ machineId }) {
   // API key visibility toggle state
   const [visibleKeys, setVisibleKeys] = useState(new Set());
 
+  // Live per-key request activity, keyed by key id (see /api/keys/activity)
+  const [activity, setActivity] = useState({});
+
   // Client-side local/remote detection (UI hint only, not a security gate)
   const [isRemoteHost, setIsRemoteHost] = useState(false);
   useEffect(() => {
@@ -188,6 +267,31 @@ export default function APIPageClient({ machineId }) {
   useEffect(() => {
     fetchData();
     loadSettings();
+  }, []);
+
+  // Live activity rides its own poll, exactly like the channel page's
+  // /api/providers/concurrency: refreshing a counter every couple of seconds
+  // must not re-read the key list, its quotas and the settings blob each tick.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const response = await fetch("/api/keys/activity", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        if (!cancelled && payload?.keys) setActivity(payload.keys);
+      } catch {
+        // Transient failure: keep the last known numbers rather than blanking
+        // every row back to zero.
+      }
+    };
+    load();
+    const timer = window.setInterval(load, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
 
@@ -574,6 +678,7 @@ export default function APIPageClient({ machineId }) {
             <div className={`${styles.header} border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688]`}>
               <span>密钥信息</span>
               <span>额度使用</span>
+              <span>实时请求</span>
               <span>最近访问</span>
               <span className="text-right">状态与操作</span>
             </div>
@@ -618,6 +723,10 @@ export default function APIPageClient({ machineId }) {
                       : null}
                     onReset={(window) => requestResetKeyQuota(key, window)}
                   /></div>
+                  <div className={styles.live}>
+                    <span className={styles.mobileLabel}>实时请求</span>
+                    <LiveActivityCell activity={activity[key.id]} />
+                  </div>
                   <div className={styles.lastAccess}>
                     <span className={styles.mobileLabel}>最近访问</span>
                     <p className="truncate text-xs font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>

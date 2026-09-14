@@ -28,10 +28,12 @@ const CREATE_ROTATION_STATUSES = new Set([
   HTTP_STATUS.RATE_LIMITED,
 ]);
 
-async function getRequestAccess(request) {
+// `model` only feeds the live-activity panel; a polling GET has no model in
+// scope and passes none, while admission itself never reads it.
+async function getRequestAccess(request, model = null) {
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal });
+  const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model });
   return { error, apiKey, accessTags: error ? [] : await resolveApiKeyAccessTags(apiKey) };
 }
 
@@ -90,15 +92,18 @@ function withConnectionHeader(response, connectionId) {
  * POST /v1/videos/{generations|edits|extensions} — async job creation proxy.
  */
 export async function handleVideoCreate(request, action) {
-  const requestAccess = await getRequestAccess(request);
-  if (requestAccess.error) return requestAccess.error;
-
   const bodyInfo = await readForwardableBody(request);
   if (bodyInfo.error) return bodyInfo.error;
 
   const resolved = await resolveVideoProvider(bodyInfo.parsed);
   if (resolved.error) return resolved.error;
   const { provider, model } = resolved;
+
+  // Credentials are resolved after the body purely so the live-activity panel
+  // can attribute the job to the requested model; the request is still rejected
+  // with 401 before anything reaches an upstream account.
+  const requestAccess = await getRequestAccess(request, bodyInfo.parsed?.model || model);
+  if (requestAccess.error) return requestAccess.error;
 
   await recordIngressUsage(request, extractApiKey(request), { model: bodyInfo.parsed?.model || model });
 

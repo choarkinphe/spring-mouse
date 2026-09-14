@@ -4,7 +4,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
-import { acquireApiKeyRateSlot, resolveApiKeyRateLimit } from "@/lib/apiKeyRateLimit.js";
+import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
 import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -729,19 +729,32 @@ function rateLimitResponse(outcome, rules) {
 // Request-rate gate: admit now, wait for the rolling minute to free a slot, or
 // reject. Runs after the token quota so an already over-quota key is never also
 // charged against the request rate.
-async function enforceApiKeyRateLimit(apiKey, signal) {
+async function enforceApiKeyRateLimit(apiKey, signal, model = null) {
   const [key, settings] = await Promise.all([getApiKeyByValue(apiKey), getSettings()]);
   const rules = resolveApiKeyRateLimit(key, settings.apiKeyRateLimitRules);
-  if (!rules.enabled) return null;
+  const keyId = key?.id || apiKey;
+
+  // Activity is recorded for ungoverned keys too, otherwise the live panel on
+  // the credentials page stays blank for every key without an allowance — which
+  // is most of them, and exactly the ones an operator wants to watch.
+  if (!rules.enabled) {
+    recordApiKeyActivity(keyId, { model });
+    return null;
+  }
 
   const outcome = await acquireApiKeyRateSlot({
-    keyId: key?.id || apiKey,
+    keyId,
     limit: rules.limit,
     burst: rules.burst,
     queueTimeoutMs: rules.queueTimeoutMs,
     signal,
   });
-  if (outcome.allowed) return null;
+  // Only admitted requests are live traffic; a 429 is a rejected request and
+  // must not be counted as work in progress.
+  if (outcome.allowed) {
+    recordApiKeyActivity(keyId, { model });
+    return null;
+  }
 
   log.warn(
     "RATELIMIT",
@@ -755,10 +768,12 @@ async function enforceApiKeyRateLimit(apiKey, signal) {
  * has opted in. Returns a Response only when the request must be rejected.
  *
  * `meter: true` additionally charges the request against the key's per-minute
- * rate limit. Metadata endpoints (model listing, token counting) leave it off so
- * they never consume a caller's allowance.
+ * rate limit and feeds the live-activity panel on the credentials page — which
+ * is why callers should pass `model`: it is what that panel attributes each key
+ * to. Metadata endpoints (model listing, token counting) leave it off so they
+ * never consume a caller's allowance.
  */
-export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = false, signal = null } = {}) {
+export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = false, signal = null, model = null } = {}) {
   if (!apiKey) return requireApiKey ? errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key") : null;
 
   // A supplied credential must always resolve to a configured key. Otherwise a
@@ -772,7 +787,7 @@ export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = f
   if (!quota.allowed) return quotaResponse(quota.status);
 
   if (meter) {
-    const rateFailure = await enforceApiKeyRateLimit(apiKey, signal);
+    const rateFailure = await enforceApiKeyRateLimit(apiKey, signal, model);
     if (rateFailure) return rateFailure;
   }
 

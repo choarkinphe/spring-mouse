@@ -95,7 +95,7 @@ export async function handleChat(request, clientRawRequest = null) {
   // optional guard accurate, this records last-used time and lets the live
   // topology show the configured API key name instead of an anonymous caller.
   const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal });
+  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model: modelStr });
   if (authFailure) return authFailure;
   const accessTags = await resolveApiKeyAccessTags(apiKey);
 

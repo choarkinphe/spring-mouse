@@ -12,7 +12,7 @@ import Select from "@/shared/components/Select";
 import AccountScheduleEditor from "@/shared/components/AccountScheduleEditor";
 import { findInvalidScheduleField } from "@/shared/utils/schedule.js";
 
-export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, channelAccountCount = null, onSave, onDelete, onClose }) {
+export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, channelAccountCount = null, channelBaseUrl = "", onSave, onDelete, onClose }) {
   // Providers whose executor bypasses BaseExecutor.execute() cannot route
   // through a Mouse node — hide the picker instead of offering a no-op choice.
   const mouseSupported = supportsMouseExecution(connection?.provider);
@@ -86,7 +86,7 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
       setTestResult(null);
       setValidationResult(null);
     }
-  }, [connection]);
+  }, [connection, channelBaseUrl]);
 
   const isOAuth = connection?.authType === "oauth";
   const isAzure = connection?.provider === "azure";

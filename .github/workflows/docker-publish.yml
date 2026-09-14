@@ -41,6 +41,7 @@ jobs:
           unit/fetch-success-clears-account.test.js
           unit/xai-video-handler.test.js
           unit/mouse-tunnel.test.js
+          unit/account-schedule.test.js
 
   build:
     needs: test

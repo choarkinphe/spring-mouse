@@ -84,9 +84,15 @@ async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
               -- scored as a success and inflated every account's success rate.
               SUM(CASE WHEN status LIKE 'upstream:%' OR status LIKE 'error:%' OR status = 'error' THEN 1 ELSE 0 END) AS failed,
               SUM(CASE WHEN status IN ('upstream:429', 'error:429') THEN 1 ELSE 0 END) AS rateLimited,
+              -- Relay/upstream 5xx only. Spring-mouse's own terminal states are
+              -- namespaced "blocked:<reason>" now and never land here, so this
+              -- bucket can no longer be mistaken for a spring-mouse fault.
               SUM(CASE WHEN status IN ('upstream:502', 'upstream:503', 'upstream:504', 'error:502', 'error:503', 'error:504') THEN 1 ELSE 0 END) AS relayErrors,
               SUM(CASE WHEN status IN ('upstream:499', 'error:499') THEN 1 ELSE 0 END) AS clientAborts,
-              SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected
+              -- Local policy interceptions (queue timeout, account lock, breaker,
+              -- model throttle). Previously all of them were the bare "rejected"
+              -- status, which read as an upstream failure in the panel.
+              SUM(CASE WHEN status LIKE 'blocked:%' OR status = 'rejected' THEN 1 ELSE 0 END) AS rejected
          FROM recent
         WHERE requestRank <= ?
         GROUP BY connectionId`,

@@ -241,6 +241,15 @@ export async function PATCH(request) {
       if (breakerWindowMs) result.breakerWindowMs = breakerWindowMs;
       const breakerCooldownMs = durationMs(entry.breakerCooldownSeconds, entry.breakerCooldownMs);
       if (breakerCooldownMs != null) result.breakerCooldownMs = breakerCooldownMs;
+      // Model-level overload throttle. Separate from the breaker above on purpose:
+      // an overloaded model needs a few seconds of breathing room, not a minute of
+      // whole-model outage. Tunable here so it can be adjusted without a release.
+      const overloadThreshold = entry.overloadThreshold == null ? null : positiveInt(entry.overloadThreshold);
+      if (overloadThreshold) result.overloadThreshold = overloadThreshold;
+      const overloadCooldownMs = durationMs(entry.overloadCooldownSeconds, entry.overloadCooldownMs);
+      if (overloadCooldownMs != null) result.overloadCooldownMs = overloadCooldownMs;
+      const overloadWaitMs = durationMs(entry.overloadWaitSeconds, entry.overloadWaitMs);
+      if (overloadWaitMs != null) result.overloadWaitMs = overloadWaitMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

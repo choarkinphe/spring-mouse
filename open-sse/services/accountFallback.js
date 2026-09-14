@@ -18,7 +18,10 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
- * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number, modelLevel: boolean }}
+ *   `modelLevel` marks a signal about the upstream *model*, not the account. The
+ *   caller rotates accounts (shouldFallback) but must not quarantine the account
+ *   it landed on — see the ERROR_RULES contract in ../config/errorConfig.js.
  */
 export function checkFallbackError(status, errorText, backoffLevel = 0) {
   const lowerError = errorText
@@ -28,20 +31,22 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
   for (const rule of ERROR_RULES) {
     // Text-based rule: match substring in error message
     if (rule.text && lowerError && lowerError.includes(rule.text)) {
+      const modelLevel = rule.modelLevel === true;
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
+        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel, modelLevel };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return { shouldFallback: true, cooldownMs: rule.cooldownMs, modelLevel };
     }
 
     // Status-based rule: match HTTP status code
     if (rule.status && rule.status === status) {
+      const modelLevel = rule.modelLevel === true;
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
+        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel, modelLevel };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return { shouldFallback: true, cooldownMs: rule.cooldownMs, modelLevel };
     }
   }
 
@@ -50,11 +55,11 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
   // or oversized requests; retrying the same request on every account only
   // amplifies the client error and can incorrectly quarantine the whole pool.
   if (Number(status) >= 400 && Number(status) < 500) {
-    return { shouldFallback: false, cooldownMs: 0 };
+    return { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   }
 
   // Default: transient cooldown for any unmatched server/network error.
-  return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+  return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS, modelLevel: false };
 }
 
 /**

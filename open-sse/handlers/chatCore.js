@@ -511,7 +511,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
-    const { statusCode, message, resetsAtMs, upstreamError } = await parseUpstreamError(providerResponse, executor);
+    const parsed = await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs } = parsed;
+    // An executor that produced this error by translating an upstream *in-stream*
+    // failure (HTTP 200 carrying an SSE error event) attaches the original
+    // payload. Prefer it over the HTTP-shaped one so the record keeps the raw
+    // upstream body and the true origin, instead of being indistinguishable from
+    // a real upstream HTTP error status.
+    const upstreamError = providerResponse.__smUpstreamError || parsed.upstreamError;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveFailedUsage("upstream", statusCode);
     saveRequestDetail(buildRequestDetail({

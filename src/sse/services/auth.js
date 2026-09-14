@@ -14,7 +14,7 @@ import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/sh
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
 import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
-import { getProviderModelBreaker } from "./providerBreaker.js";
+import { getProviderModelBreaker, getModelOverloadThrottle } from "./providerBreaker.js";
 import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
@@ -24,6 +24,34 @@ import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 const providerUserAssignments = new Map();
 const providerLocalCursors = new Map();
 const MAX_USER_ASSIGNMENTS_PER_PROVIDER = 1000;
+
+// How long a request may sit in the model-overload queue before it gives up and
+// reports "upstream busy". Waiting a few seconds is strictly better than the old
+// behaviour for a busy model: it used to reject immediately after the account
+// pool had been locked, which is why "rejected" was the largest failure class in
+// production. Kept below the concurrency queue timeout on purpose.
+const DEFAULT_OVERLOAD_WAIT_MS = positiveEnvMs(process.env.SPRING_MOUSE_OVERLOAD_WAIT_MS, 15_000);
+
+function positiveEnvMs(raw, fallback) {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Sleep that honours client aborts, so a queued request never outlives its caller. */
+function waitForOverload(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason || new DOMException("Request aborted", "AbortError"));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason || new DOMException("Request aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 export function resetProviderUserAssignments(providerId = null) {
   if (providerId) providerUserAssignments.delete(providerId);
@@ -211,6 +239,37 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           breakerOpen: true,
         };
       }
+
+      // Model-level overload is a throttle, not an outage, so the request waits
+      // it out inside the concurrency lease instead of being rejected on the
+      // spot. That converts a large share of the former "rejected" bucket into
+      // ordinary successes without adding pressure on the upstream.
+      const throttle = await getModelOverloadThrottle(providerId, model, providerOverride);
+      if (throttle.open) {
+        const waitMs = Number(throttle.retryAfterMs) || 0;
+        const budgetMs = Number(providerOverride.overloadWaitMs) > 0
+          ? Number(providerOverride.overloadWaitMs)
+          : DEFAULT_OVERLOAD_WAIT_MS;
+        const retryAt = new Date(Date.now() + waitMs).toISOString();
+        if (waitMs > 0 && waitMs <= budgetMs) {
+          log.routeLine("⏳", "🕒", `${reqPrefix}${provider}/${model} | upstream model busy · queued ${waitMs}ms, retrying after back-off`);
+          try {
+            await waitForOverload(waitMs, options.signal);
+          } catch {
+            return { aborted: true };
+          }
+        } else {
+          log.warn("THROTTLE", `${reqPrefix}${provider}/${model} | upstream model busy, back-off ${formatRetryAfter(retryAt)} exceeds the ${budgetMs}ms queue budget`);
+          return {
+            allRateLimited: true,
+            retryAfter: retryAt,
+            retryAfterHuman: formatRetryAfter(retryAt),
+            lastError: "Upstream model is busy (overloaded)",
+            lastErrorCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+            modelOverloaded: true,
+          };
+        }
+      }
     }
 
     // Account allocation belongs to the current provider/channel. A provider
@@ -383,15 +442,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, upstreamError = null) {
-  if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
+  if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   const isUpstream = upstreamError?.source === "http" || upstreamError?.source === "sse";
 
-  let decision = { shouldFallback: false, cooldownMs: 0 };
+  let decision = { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   const applyFailure = (conn) => {
     const backoffLevel = conn?.backoffLevel || 0;
     const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
-    let shouldFallback, cooldownMs, newBackoffLevel;
+    let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
     if (githubResetAtMs) {
       shouldFallback = true;
       cooldownMs = githubResetAtMs - Date.now();
@@ -405,12 +464,38 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       cooldownMs = Math.min(upstreamError.retryAfterMs, MAX_RATE_LIMIT_COOLDOWN_MS);
       newBackoffLevel = 0;
     } else {
-      ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+      ({ shouldFallback, cooldownMs, newBackoffLevel, modelLevel } = checkFallbackError(status, errorText, backoffLevel));
     }
-    decision = { shouldFallback, cooldownMs };
+    // A model-level signal (upstream capacity/overload) is not this account's
+    // fault, so it must not produce a modelLock and must not downgrade
+    // testStatus — locking every account in turn on a 5-second upstream hiccup
+    // is what starved the pool and turned the hiccup into a 60s outage.
+    // The upstream evidence is still persisted, because the channel panel has to
+    // answer "upstream error, or a local policy block?".
+    const modelLevelSignal = modelLevel === true && !(cooldownMs > 0);
+    decision = { shouldFallback, cooldownMs, modelLevel: modelLevelSignal };
     if (!shouldFallback) return { value: decision };
 
     const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+    const evidence = isUpstream ? {
+      lastUpstreamError: String(upstreamError.message || reason).slice(0, 2000),
+      lastUpstreamStatus: upstreamError.status ?? status,
+      lastUpstreamSource: upstreamError.source,
+      lastUpstreamLayer: upstreamError.layer || "provider",
+      lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
+      lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
+      lastError: String(upstreamError.message || reason).slice(0, 2000),
+      errorCode: upstreamError.status ?? status,
+      lastErrorAt: upstreamError.receivedAt || new Date().toISOString(),
+    } : {
+      gatewayError: reason,
+      gatewayErrorCode: status,
+      gatewayErrorAt: new Date().toISOString(),
+    };
+
+    // Model-level: record the evidence, keep the account's health untouched.
+    if (modelLevelSignal) return { value: decision, update: evidence };
+
     const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
     const lockKey = Object.keys(lockUpdate)[0];
     const oldExpiry = conn?.[lockKey];
@@ -425,21 +510,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
         testStatus: status === 429 ? "limited" : status >= 500 ? "degraded" : "unavailable",
         backoffLevel: newBackoffLevel ?? backoffLevel,
         healthRevision: (conn?.healthRevision || 0) + 1,
-        ...(isUpstream ? {
-          lastUpstreamError: String(upstreamError.message || reason).slice(0, 2000),
-          lastUpstreamStatus: upstreamError.status ?? status,
-          lastUpstreamSource: upstreamError.source,
-          lastUpstreamLayer: upstreamError.layer || "provider",
-          lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
-          lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
-          lastError: String(upstreamError.message || reason).slice(0, 2000),
-          errorCode: upstreamError.status ?? status,
-          lastErrorAt: upstreamError.receivedAt || new Date().toISOString(),
-        } : {
-          gatewayError: reason,
-          gatewayErrorCode: status,
-          gatewayErrorAt: new Date().toISOString(),
-        }),
+        ...evidence,
       },
     };
   };
@@ -447,15 +518,20 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   if (typeof updateProviderConnectionHealth === "function") {
     const result = await updateProviderConnectionHealth(connectionId, applyFailure);
     if (!result || !decision.shouldFallback) return decision;
-    const connName = result.reason ? (result.connectionName || connectionId.slice(0, 8)) : connectionId.slice(0, 8);
-    log.warn("AUTH", `${connName} locked ${result.lockKey} for ${Math.round(result.cooldownMs / 1000)}s [${status}]`);
+    if (result.lockKey) {
+      const connName = result.reason ? (result.connectionName || connectionId.slice(0, 8)) : connectionId.slice(0, 8);
+      log.warn("AUTH", `${connName} locked ${result.lockKey} for ${Math.round(result.cooldownMs / 1000)}s [${status}]`);
+    } else if (decision.modelLevel) {
+      log.routeLine("⚠️", "🔁", `${provider || "?"}/${model || "?"} | upstream ${status} is a model-level signal · rotated ${connectionId.slice(0, 8)} without locking it`);
+    }
   } else {
     // Compatibility fallback for isolated test doubles and older route bundles.
     const connections = await getProviderConnections({ provider });
     const result = applyFailure(connections.find(c => c.id === connectionId));
     if (!result.update) return decision;
     await updateProviderConnection(connectionId, result.update);
-    log.warn("AUTH", `${connectionId.slice(0, 8)} locked ${Object.keys(result.update).find(k => k.startsWith("modelLock_"))} for ${Math.round(decision.cooldownMs / 1000)}s [${status}]`);
+    const lockedKey = Object.keys(result.update).find(k => k.startsWith("modelLock_"));
+    if (lockedKey) log.warn("AUTH", `${connectionId.slice(0, 8)} locked ${lockedKey} for ${Math.round(decision.cooldownMs / 1000)}s [${status}]`);
   }
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";

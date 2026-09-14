@@ -180,8 +180,26 @@ function extractSseErrorMessage(text, fallback) {
   return fallback || CODEX_MODEL_CAPACITY_MESSAGE;
 }
 
-function codexSseErrorResponse(status, message) {
-  return new Response(JSON.stringify({
+// Retry-After advertised by the upstream response, in ms, clamped so a hostile or
+// buggy value cannot park a request slot for hours.
+function upstreamRetryAfterMs(response) {
+  const raw = response?.headers?.get?.("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30_000);
+  const dateMs = new Date(raw).getTime();
+  return Number.isFinite(dateMs) ? Math.max(0, Math.min(dateMs - Date.now(), 30_000)) : null;
+}
+
+/**
+ * Build the client-facing 503 for an error that arrived *inside* a 200-OK SSE
+ * stream. The status code deliberately stays 503 (clients already handle it), but
+ * the original in-stream payload is attached to the response object so chatCore
+ * can record it. Without that attachment the raw upstream body was thrown away
+ * and every such failure was indistinguishable from a real upstream HTTP 503.
+ */
+function codexSseErrorResponse(status, message, origin = null, upstreamError = null) {
+  const response = new Response(JSON.stringify({
     error: {
       message,
       type: status >= 500 ? "server_error" : "invalid_request_error",
@@ -191,6 +209,18 @@ function codexSseErrorResponse(status, message) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+  const evidence = upstreamError || {
+    source: "sse",
+    status,
+    message,
+    body: "",
+    retryAfterMs: null,
+    receivedAt: new Date().toISOString(),
+  };
+  // `layer: "provider"` is stated explicitly: the condition originated upstream,
+  // spring-mouse only translated the transport (SSE event → HTTP status).
+  response.__smUpstreamError = { ...evidence, origin, layer: "provider" };
+  return response;
 }
 
 /**
@@ -200,9 +230,12 @@ function codexSseErrorResponse(status, message) {
 export class CodexExecutor extends BaseExecutor {
   constructor() {
     super("codex", PROVIDERS.codex);
-    // Obvious upstream overload should fail over quickly instead of occupying a
-    // long-lived request slot with three same-account retries.
-    this.config = { ...PROVIDERS.codex, retry: { ...(PROVIDERS.codex?.retry || {}), 503: { attempts: 1, delayMs: 1000 } } };
+    // Upstream overload arrives as a 200-OK SSE error event, so this budget is
+    // the only same-account retry the request gets before accounts rotate. One
+    // attempt with a 1s delay gave a saturated upstream a single second to
+    // recover, which is why almost every overload surfaced to the client as a
+    // 503. Two attempts with jitter ride out the short bursts instead.
+    this.config = { ...PROVIDERS.codex, retry: { ...(PROVIDERS.codex?.retry || {}), 503: { attempts: 2, delayMs: 1500 } } };
     this._currentSessionId = null;
   }
 
@@ -299,18 +332,28 @@ export class CodexExecutor extends BaseExecutor {
       }
       if (peek.accountFallback) {
         args.log?.warn?.("RETRY", `CODEX | SSE account fallback "${peek.message}"`);
-        result.response = codexSseErrorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE);
+        result.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE, "model_at_capacity", peek.upstreamError);
         return result;
       }
       if (attempt >= attempts) {
         args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt}/${attempts})`);
-        result.response = codexSseErrorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched);
+        result.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
         return result;
       }
       attempt++;
-      args.log?.debug?.("RETRY", `CODEX | SSE "${peek.matched}" retry ${attempt}/${attempts} after ${delayMs / 1000}s`);
-      dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt}/${attempts} in ${delayMs}ms`);
-      await new Promise(r => setTimeout(r, delayMs));
+      // Full jitter. Concurrent requests that all observed the same overload event
+      // must not wake up in lockstep and re-create the very burst that overloaded
+      // the upstream. An upstream Retry-After, when present, wins over the local
+      // delay because it is the only authoritative recovery estimate we get.
+      const upstreamDelayMs = Number.isFinite(peek.upstreamError?.retryAfterMs) && peek.upstreamError.retryAfterMs > 0
+        ? peek.upstreamError.retryAfterMs
+        : delayMs;
+      const waitMs = Math.max(250, Math.round(upstreamDelayMs * (0.5 + Math.random() * 0.5)));
+      args.log?.debug?.("RETRY", `CODEX | SSE "${peek.matched}" retry ${attempt}/${attempts} after ${waitMs}ms`);
+      dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt}/${attempts} in ${waitMs}ms`);
+      await new Promise(r => setTimeout(r, waitMs));
     }
   }
 
@@ -356,7 +399,7 @@ export class CodexExecutor extends BaseExecutor {
           status: response.status,
           message,
           body: text.slice(0, 4000),
-          retryAfterMs: null,
+          retryAfterMs: upstreamRetryAfterMs(response),
           receivedAt: new Date().toISOString(),
         },
       };

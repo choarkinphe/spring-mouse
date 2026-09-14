@@ -51,11 +51,18 @@ const COOLDOWN = {
 /**
  * Unified error classification rules.
  * Checked top-to-bottom: text rules first (by order), then status rules.
- * Each rule: { text?, status?, cooldownMs?, backoff? }
+ * Each rule: { text?, status?, cooldownMs?, backoff?, modelLevel? }
  *   - text: substring match (case-insensitive) on error message
  *   - status: HTTP status code match
  *   - cooldownMs: fixed cooldown duration
  *   - backoff: true = use exponential backoff (rate limit)
+ *   - modelLevel: true = the upstream *model* is busy, not the account. Such a
+ *     failure must not quarantine the account: with a 30s account lock per
+ *     overload every account in the pool locked in turn, which then tripped the
+ *     provider/model breaker and turned a 5-second upstream hiccup into a
+ *     60-second whole-model outage plus a queue of rejected requests. Model-level
+ *     rules rotate to the next account (cooldownMs 0) and are throttled by their
+ *     own short, model-scoped cooldown in ../services/providerBreaker.js.
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
@@ -65,8 +72,8 @@ export const ERROR_RULES = [
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
-  { text: "capacity",                 cooldownMs: COOLDOWN.medium },
-  { text: "overloaded",               cooldownMs: COOLDOWN.medium },
+  { text: "capacity",                 cooldownMs: 0, modelLevel: true },
+  { text: "overloaded",               cooldownMs: 0, modelLevel: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },

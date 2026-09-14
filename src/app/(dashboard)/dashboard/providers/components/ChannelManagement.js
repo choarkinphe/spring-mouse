@@ -670,7 +670,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         `失败 ${recentSuccessRate.failed} 次`,
         ...[
           ["GPT 限流", recentSuccessRate.rateLimited],
-          ["中转异常", recentSuccessRate.relayErrors],
+          ["上游 5xx", recentSuccessRate.relayErrors],
           ["客户端取消", recentSuccessRate.clientAborts],
           ["其他失败", recentSuccessRate.unknownFailures],
           ["路由拒绝", recentSuccessRate.rejected],

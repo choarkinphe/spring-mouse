@@ -6,13 +6,23 @@ const FAILURE_WINDOW_MS = positive(process.env.SPRING_MOUSE_PROVIDER_BREAKER_WIN
 const COOLDOWN_MS = positive(process.env.SPRING_MOUSE_PROVIDER_BREAKER_COOLDOWN_MS, 60_000);
 const THRESHOLD = positive(process.env.SPRING_MOUSE_PROVIDER_BREAKER_THRESHOLD, 3);
 
-const g = globalThis.__smProviderBreakers ||= { providers: new Map() };
+// Model-level capacity/overload signals get their own, much gentler throttle.
+// The account breaker exists to stop hammering a *broken* upstream for a minute;
+// an overloaded model is not broken, it is busy, and a 60s whole-model outage is
+// a wildly disproportionate response to a few seconds of upstream back-pressure.
+// Six signals inside the window earn a five second breather instead.
+const OVERLOAD_THRESHOLD = positive(process.env.SPRING_MOUSE_OVERLOAD_THRESHOLD, 6);
+const OVERLOAD_COOLDOWN_MS = positive(process.env.SPRING_MOUSE_OVERLOAD_COOLDOWN_MS, 5_000);
 
-function keyParts(providerId, model) {
+const g = globalThis.__smProviderBreakers ||= { providers: new Map(), overloads: new Map() };
+// Reloads / route bundles created before this change may lack the second map.
+g.overloads ||= new Map();
+
+function keyParts(providerId, model, scope = "breaker") {
   const digest = createHash("sha256").update(`${providerId}\n${model || ""}`).digest("hex").slice(0, 32);
   return {
-    failures: `spring-mouse:routing:{routing}:breaker:v1:${digest}:failures`,
-    open: `spring-mouse:routing:{routing}:breaker:v1:${digest}:open`,
+    failures: `spring-mouse:routing:{routing}:${scope}:v1:${digest}:failures`,
+    open: `spring-mouse:routing:{routing}:${scope}:v1:${digest}:open`,
   };
 }
 
@@ -21,19 +31,19 @@ function positiveOption(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function readLocal(providerId, model, now = Date.now()) {
+function readLocal(store, providerId, model, now = Date.now()) {
   const key = `${providerId}\n${model || ""}`;
-  const state = g.providers.get(key);
+  const state = store.get(key);
   if (!state) return { open: false };
   if (state.openUntil > now) return { open: true, retryAfterMs: state.openUntil - now };
-  if (state.openUntil && state.openUntil <= now) g.providers.delete(key);
+  if (state.openUntil && state.openUntil <= now) store.delete(key);
   return { open: false };
 }
 
 /** Check the shared breaker without making availability depend on Redis. */
 export async function getProviderModelBreaker(providerId, model, strategy = {}) {
   if (!providerId || !model || strategy.enableModelBreaker === false) return { open: false };
-  const local = readLocal(providerId, model);
+  const local = readLocal(g.providers, providerId, model);
   if (local.open) return local;
 
   const keys = keyParts(providerId, model);
@@ -48,17 +58,47 @@ export async function getProviderModelBreaker(providerId, model, strategy = {}) 
 }
 
 /**
+ * Read the model-level overload throttle. Kept separate from the account breaker
+ * so an overloaded model can be slowed down without quarantining accounts or
+ * tripping the long provider outage breaker.
+ */
+export async function getModelOverloadThrottle(providerId, model, strategy = {}) {
+  if (!providerId || !model || strategy.enableModelBreaker === false) return { open: false };
+  const local = readLocal(g.overloads, providerId, model);
+  if (local.open) return local;
+
+  const keys = keyParts(providerId, model, "overload");
+  const raw = await routingRedis((client) => client.get(keys.open));
+  if (!raw) return local;
+  const ttlMs = await routingRedis((client) => client.pTTL(keys.open));
+  const cooldownMs = positiveOption(strategy.overloadCooldownMs, OVERLOAD_COOLDOWN_MS);
+  return { open: true, retryAfterMs: Number.isFinite(ttlMs) && ttlMs >= 0 ? ttlMs : cooldownMs };
+}
+
+/**
  * Count consecutive routable upstream failures. Once the threshold is reached,
  * stop scanning every account and cool the provider/model pair down together.
+ *
+ * `options.modelLevel` routes the failure into the overload throttle instead:
+ * the account breaker is deliberately not touched, because no account is at
+ * fault and blocking the whole model for a minute is the behaviour that made a
+ * short upstream hiccup look like a total outage.
  */
-export async function recordProviderModelFailure(providerId, model, strategy = {}) {
+export async function recordProviderModelFailure(providerId, model, strategy = {}, options = {}) {
   if (!providerId || !model || strategy.enableModelBreaker === false) return { open: false };
-  const threshold = positiveOption(strategy.breakerThreshold, THRESHOLD);
+  const modelLevel = options.modelLevel === true;
+  const scope = modelLevel ? "overload" : "breaker";
+  const store = modelLevel ? g.overloads : g.providers;
+  const threshold = modelLevel
+    ? positiveOption(strategy.overloadThreshold, OVERLOAD_THRESHOLD)
+    : positiveOption(strategy.breakerThreshold, THRESHOLD);
   const failureWindowMs = positiveOption(strategy.breakerWindowMs, FAILURE_WINDOW_MS);
-  const cooldownMs = positiveOption(strategy.breakerCooldownMs, COOLDOWN_MS);
+  const cooldownMs = modelLevel
+    ? positiveOption(strategy.overloadCooldownMs, OVERLOAD_COOLDOWN_MS)
+    : positiveOption(strategy.breakerCooldownMs, COOLDOWN_MS);
   const now = Date.now();
   const localKey = `${providerId}\n${model}`;
-  const local = g.providers.get(localKey) || { count: 0, windowStartedAt: now, openUntil: 0 };
+  const local = store.get(localKey) || { count: 0, windowStartedAt: now, openUntil: 0 };
   if (now - local.windowStartedAt > failureWindowMs) {
     local.count = 0;
     local.windowStartedAt = now;
@@ -68,9 +108,9 @@ export async function recordProviderModelFailure(providerId, model, strategy = {
     local.openUntil = now + cooldownMs;
     local.count = 0;
   }
-  g.providers.set(localKey, local);
+  store.set(localKey, local);
 
-  const keys = keyParts(providerId, model);
+  const keys = keyParts(providerId, model, scope);
   const opened = await routingRedis((client) => client.eval(`
     local failures = KEYS[1]
     local open = KEYS[2]
@@ -87,7 +127,7 @@ export async function recordProviderModelFailure(providerId, model, strategy = {
   const sharedOpen = opened === 1;
   if (sharedOpen && local.openUntil <= now) local.openUntil = now + cooldownMs;
   if (!sharedOpen && local.openUntil <= now) return { open: false };
-  return { open: true, retryAfterMs: cooldownMs };
+  return { open: true, retryAfterMs: cooldownMs, modelLevel };
 }
 
 /**

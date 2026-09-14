@@ -15,13 +15,18 @@ export async function GET(request) {
         GROUP BY status
         ORDER BY count DESC`,
       [sinceIso, sinceIso]);
-    const stats = { total: 0, success: 0, upstream: 0, internal: 0, cancelled: 0, byStatus: [] };
+    const stats = { total: 0, success: 0, upstream: 0, blocked: 0, internal: 0, cancelled: 0, byStatus: [] };
     for (const row of rows) {
       const count = Number(row.count) || 0;
       const status = row.status || "unknown";
       stats.total += count;
       if (["success", "ok"].includes(status)) stats.success += count;
+      // Terminally statuses are namespaced by origin, which is the distinction the
+      // panel needs: did the upstream answer with an error, or did our own routing
+      // policy stop the request? Legacy rows written before the split used the
+      // bare "rejected" status for policy blocks, so they are folded in here.
       else if (status.startsWith("upstream:")) stats.upstream += count;
+      else if (status.startsWith("blocked:") || status === "rejected") stats.blocked += count;
       else if (status === "cancelled") stats.cancelled += count;
       else stats.internal += count;
       stats.byStatus.push({ status, count });

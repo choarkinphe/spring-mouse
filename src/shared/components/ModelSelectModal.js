@@ -52,8 +52,9 @@ export default function ModelSelectModal({
   // Filter active providers by serviceKinds when kindFilter set (e.g. "webSearch", "webFetch").
   // The selector owns a refreshed copy so a long-lived routing page cannot keep stale connections.
   const filteredActiveProviders = useMemo(() => {
-    if (!kindFilter) return providerConnections;
-    return providerConnections.filter((p) => {
+    const activeConnections = providerConnections.filter((p) => p.isActive !== false);
+    if (!kindFilter) return activeConnections;
+    return activeConnections.filter((p) => {
       const info = AI_PROVIDERS[p.provider];
       const kinds = info?.serviceKinds || ["llm"];
       return kinds.includes(kindFilter);
@@ -106,14 +107,16 @@ export default function ModelSelectModal({
       setDisabledModels(disabledResult.status === "fulfilled" ? disabledResult.value.disabled || {} : {});
 
       const catalogConnections = [];
-      const seenProviders = new Set();
-      for (const connection of connections) {
-        if (!connection?.id || connection.isActive === false || !supportsLiveModelSync(connection.provider)) continue;
-        // Cursor entitlements can differ per account; other providers only need one
-        // active account to avoid fan-out when many credentials are configured.
-        if (connection.provider !== "cursor" && seenProviders.has(connection.provider)) continue;
-        seenProviders.add(connection.provider);
-        catalogConnections.push(connection);
+      if (!availableModelsOnly) {
+        const seenProviders = new Set();
+        for (const connection of connections) {
+          if (!connection?.id || connection.isActive === false || !supportsLiveModelSync(connection.provider)) continue;
+          // Cursor entitlements can differ per account; other providers only need one
+          // active account to avoid fan-out when many credentials are configured.
+          if (connection.provider !== "cursor" && seenProviders.has(connection.provider)) continue;
+          seenProviders.add(connection.provider);
+          catalogConnections.push(connection);
+        }
       }
 
       const normalizeModels = (models) => {
@@ -166,7 +169,7 @@ export default function ModelSelectModal({
     });
 
     return () => { cancelled = true; };
-  }, [isOpen, activeProviders]);
+  }, [availableModelsOnly, isOpen, activeProviders]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -412,7 +415,7 @@ export default function ModelSelectModal({
         if (availableModelsOnly) {
           hardcodedModels = Array.isArray(explicitEnabledModels) && explicitEnabledModels.length > 0
             ? explicitEnabledModels.map((id) => ({ id, name: id }))
-            : liveProviderModels;
+            : [];
           const seenCatalogIds = new Set(hardcodedModels.map((m) => m.id));
           hardcodedModels = [
             ...hardcodedModels,
@@ -445,7 +448,7 @@ export default function ModelSelectModal({
         // Custom models registered via /api/models/custom (provider "Add Model" button)
         const customAliasIds = new Set(customAliasModels.map((m) => m.id));
         const customRegisteredModels = customModels
-          .filter((m) => m.providerAlias === alias && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
+          .filter((m) => [alias, providerId].includes(m.providerAlias) && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
           .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, isCustom: true }));
 
         const merged = [

@@ -27,6 +27,7 @@ export async function GET() {
         enabled: rules.enabled,
         limit: rules.limit,
         queueMax: rules.queueMax,
+        queueTimeoutMs: rules.queueTimeoutMs,
         windowMs: API_KEY_RATE_WINDOW_MS,
         requests: activity?.requests || 0,
         queued: activity?.queued || 0,

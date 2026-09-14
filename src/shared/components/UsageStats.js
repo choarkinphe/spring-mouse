@@ -51,22 +51,44 @@ function TimeAgo({ timestamp }) {
 
 function UsageMetricSkeletons() {
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 sm:gap-4" aria-label="正在加载概览指标">
-      {Array.from({ length: 6 }, (_, index) => (
-        <div key={index} className="rounded-xl border border-border bg-surface/70 p-4 shadow-[var(--shadow-soft)]">
-          <div className="flex items-center justify-between gap-3">
-            <Skeleton className="h-3 w-20" />
-            <span className="size-2 rounded-full bg-primary/35" />
-          </div>
-          <Skeleton className="mt-4 h-7 w-16" />
-          <Skeleton className="mt-3 h-2.5 w-4/5" />
+    <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-3 sm:gap-4 2xl:grid-cols-[1.4fr_1fr_1fr_1fr]" aria-label="正在加载概览指标">
+      <div className="rounded-xl border border-border bg-surface/70 px-4 py-3 shadow-[var(--shadow-soft)]">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="mt-3 h-7 w-20" />
+        <div className="mt-3 grid grid-cols-3 gap-1.5">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div key={index} className="rounded-md border border-border/70 px-1.5 py-1">
+              <Skeleton className="mx-auto h-3 w-10" />
+              <Skeleton className="mx-auto mt-1 h-2 w-8" />
+            </div>
+          ))}
+        </div>
+      </div>
+      {[
+        { subMetrics: 3 },
+        { subMetrics: 2 },
+        { subMetrics: 0 },
+      ].map(({ subMetrics }, index) => (
+        <div key={index} className="rounded-xl border border-border bg-surface/70 px-4 py-3 shadow-[var(--shadow-soft)]">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="mt-3 h-7 w-20" />
+          {subMetrics > 0 && (
+            <div className={`mt-3 grid ${subMetrics === 3 ? "grid-cols-3" : "grid-cols-2"} gap-1.5`}>
+              {Array.from({ length: subMetrics }, (_, metricIndex) => (
+                <div key={metricIndex} className="rounded-md border border-border/70 px-1.5 py-1">
+                  <Skeleton className="mx-auto h-3 w-10" />
+                  <Skeleton className="mx-auto mt-1 h-2 w-8" />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
   );
 }
 
-function UsageDashboardSkeleton({ showOverview, showBreakdowns }) {
+export function UsageDashboardSkeleton({ showOverview, showBreakdowns }) {
   return (
     <div className="flex min-w-0 flex-col gap-6" aria-live="polite">
       {showOverview && (

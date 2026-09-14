@@ -20,13 +20,27 @@ export default function DashboardLoading() {
           </div>
         </div>
       </section>
-      <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
-        <ModuleSkeleton title="正在装载页面模块" icon="view_quilt" lines={6} className="min-h-[360px]" />
-        <div className="flex flex-col gap-4">
-          <ModuleSkeleton title="正在同步服务状态" icon="sync" lines={4} className="min-h-[170px]" />
-          <ModuleSkeleton title="正在准备辅助数据" icon="dataset" lines={4} className="min-h-[170px]" />
+      <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 xl:h-[min(58rem,calc(100vh-8rem))] xl:grid-cols-[minmax(0,1fr)_minmax(360px,400px)]">
+        <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:min-h-0">
+          <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-3 sm:gap-4 2xl:grid-cols-[1.4fr_1fr_1fr_1fr]">
+            {Array.from({ length: 4 }, (_, index) => (
+              <div key={index} className="rounded-xl border border-border bg-surface/70 px-4 py-3 shadow-[var(--shadow-soft)]">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="mt-3 h-7 w-20" />
+                {index < 3 && <div className={`mt-3 grid ${index === 2 ? "grid-cols-2" : "grid-cols-3"} gap-1.5`}>
+                  {Array.from({ length: index === 2 ? 2 : 3 }, (_, metricIndex) => <Skeleton key={metricIndex} className="h-8 w-full rounded-md" />)}
+                </div>}
+              </div>
+            ))}
+          </div>
+          <ModuleSkeleton title="正在汇总实时调用" icon="account_tree" lines={5} className="min-h-[320px] xl:min-h-0 xl:flex-1" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:min-h-0">
+          <ModuleSkeleton title="正在读取渠道余量" icon="account_balance_wallet" lines={4} className="min-h-[230px] xl:min-h-0 xl:flex-1" />
+          <ModuleSkeleton title="正在读取最近请求" icon="receipt_long" lines={5} className="min-h-[240px]" />
         </div>
       </div>
+      <ModuleSkeleton title="正在生成使用趋势" icon="monitoring" lines={6} className="min-h-[440px]" />
     </div>
   );
 }

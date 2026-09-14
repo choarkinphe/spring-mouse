@@ -108,6 +108,38 @@ function shortModelLabel(model) {
   return tail.replace(/-\d{4}-\d{2}-\d{2}$/, "").replace(/-\d{8}$/, "") || tail;
 }
 
+function RateLimitPolicyCell({ activity }) {
+  if (!activity) {
+    return <span className="text-[11px] text-text-muted">正在读取限流策略…</span>;
+  }
+
+  if (!activity.enabled || !activity.limit) {
+    return (
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="text-[11px] text-text-muted">未设置请求限流</span>
+        <span className="text-[10px] text-text-muted">当前密钥不受每分钟请求数限制</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="rounded-md border border-amber-400/25 bg-amber-400/[.10] px-1.5 py-0.5 font-mono text-[11px] text-amber-200">
+          {activity.limit} 请求/分钟
+        </span>
+        <span className="text-[10px] text-text-muted">滚动窗口</span>
+      </div>
+      <span className="text-[10px] text-text-muted">
+        {activity.queueMax > 0 ? `超出后最多排队 ${activity.queueMax} 个` : "超出后立即返回 429"}
+      </span>
+      {activity.queueMax > 0 && activity.queueTimeoutMs != null && (
+        <span className="text-[10px] text-text-muted">最长等待 {activity.queueTimeoutMs / 1000} 秒</span>
+      )}
+    </div>
+  );
+}
+
 // Live activity for one key, mirroring the concurrency chip on the channel
 // page: how much of the per-minute allowance is spent, whether anything is
 // queued behind it, and which models those requests are asking for. Fed by
@@ -684,7 +716,7 @@ export default function APIPageClient({ machineId }) {
             <div className={`${styles.header} border-b border-white/[0.065] px-4 py-2 text-[10px] font-mono uppercase tracking-[0.15em] text-[#647688]`}>
               <span>密钥信息</span>
               <span>额度使用</span>
-              <span title="滚动 60 秒内已受理的业务请求数（不是累计总数）。不含被拒绝、排队超时的请求，也不含 /v1/models 等元数据端点；服务重启后清零。">实时请求</span>
+              <span title="滚动 60 秒内已受理的业务请求数（不是累计总数）。不含被拒绝、排队超时的请求，也不含 /v1/models 等元数据端点；服务重启后清零。">限流策略 / 实时请求</span>
               <span>最近访问</span>
               <span className="text-right">状态与操作</span>
             </div>
@@ -730,8 +762,12 @@ export default function APIPageClient({ machineId }) {
                     onReset={(window) => requestResetKeyQuota(key, window)}
                   /></div>
                   <div className={styles.live}>
-                    <span className={styles.mobileLabel}>实时请求</span>
-                    <LiveActivityCell activity={activity[key.id]} />
+                    <span className={styles.mobileLabel}>限流策略</span>
+                    <RateLimitPolicyCell activity={activity[key.id]} />
+                    <div className="mt-2 border-t border-white/[.06] pt-2">
+                      <span className="mb-1 block text-[10px] text-text-muted">实时请求</span>
+                      <LiveActivityCell activity={activity[key.id]} />
+                    </div>
                   </div>
                   <div className={styles.lastAccess}>
                     <span className={styles.mobileLabel}>最近访问</span>

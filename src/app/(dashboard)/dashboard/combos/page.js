@@ -902,7 +902,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
       </footer>
 
       {showJudgeSelect && (
-        <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect />
+        <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect availableModelsOnly />
       )}
 
       {showModelSelect && (
@@ -914,6 +914,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           modelAliases={modelAliases}
           title="添加路由节点"
           addedModelValues={models.map(getComboModelValue)}
+          availableModelsOnly
           closeOnSelect={false}
           presentation="drawer"
           drawerWidth="lg"
@@ -1592,6 +1593,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
           modelAliases={modelAliases}
           title="Add Model to Combo"
           kindFilter={kindFilter}
+          availableModelsOnly
           addedModelValues={modelValues}
           closeOnSelect={false}
           presentation="drawer"

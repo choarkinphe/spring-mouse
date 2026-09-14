@@ -8,7 +8,7 @@ import ProviderIcon from "./ProviderIcon";
 import CapacityBadges from "./CapacityBadges";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias, supportsLiveModelSync } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, ALIAS_TO_ID, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias, supportsLiveModelSync } from "@/shared/constants/providers";
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
 const PROVIDER_ORDER = [
@@ -35,6 +35,7 @@ export default function ModelSelectModal({
   capFilter = null,
   addedModelValues = [],
   closeOnSelect = true,
+  availableModelsOnly = false,
   presentation = "modal",
   drawerWidth = "lg",
 }) {
@@ -184,6 +185,32 @@ export default function ModelSelectModal({
 
   const allProviders = useMemo(() => ({ ...OAUTH_PROVIDERS, ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...APIKEY_PROVIDERS }), []);
 
+  // In strict mode the static vendor catalog is not a routing capability. Leaf
+  // models must come from an actual channel sync, explicit enabled list, custom
+  // model row, alias, or another combo that already routes to them.
+  const comboModelIdsByProvider = useMemo(() => {
+    const modelsByProvider = new Map();
+    const addModel = (providerKey, modelId) => {
+      if (!providerKey || !modelId) return;
+      if (!modelsByProvider.has(providerKey)) modelsByProvider.set(providerKey, new Set());
+      modelsByProvider.get(providerKey).add(modelId);
+    };
+
+    for (const combo of combos) {
+      if (combo.isActive === false || !Array.isArray(combo.models)) continue;
+      for (const entry of combo.models) {
+        const fullModel = typeof entry === "object" && entry !== null ? entry.model : entry;
+        if (typeof fullModel !== "string" || !fullModel.includes("/")) continue;
+        const separator = fullModel.indexOf("/");
+        const alias = fullModel.slice(0, separator);
+        const modelId = fullModel.slice(separator + 1);
+        addModel(ALIAS_TO_ID[alias] || alias, modelId);
+        addModel(alias, modelId);
+      }
+    }
+    return modelsByProvider;
+  }, [combos]);
+
   // Group models by provider with priority order
   const groupedModels = useMemo(() => {
     const groups = {};
@@ -230,6 +257,11 @@ export default function ModelSelectModal({
       const alias = getProviderAlias(providerId);
       const providerInfo = allProviders[providerId] || { name: providerId, color: "#666" };
       const isCustomProvider = isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId);
+      const comboModelIds = [
+        ...(comboModelIdsByProvider.get(providerId) || []),
+        ...(comboModelIdsByProvider.get(alias) || []),
+      ];
+      const comboCatalogModels = comboModelIds.map((id) => ({ id, name: id }));
 
       // For provider-as-model kinds (webSearch/webFetch): emit a single entry where value === providerId
       if (kindFilter && PROVIDER_AS_MODEL_KINDS.has(kindFilter)) {
@@ -243,9 +275,14 @@ export default function ModelSelectModal({
       }
 
       if (providerInfo.passthroughModels) {
+        const connection = providerConnections.find((p) => p.provider === providerId);
+        const explicitEnabledModels = connection?.providerSpecificData?.enabledModels;
         const providerCatalog = liveModelsByProvider[providerId]?.length
           ? liveModelsByProvider[providerId]
-          : getModelsByProviderId(providerId);
+          : (availableModelsOnly ? [] : getModelsByProviderId(providerId));
+        const effectiveCatalog = availableModelsOnly && Array.isArray(explicitEnabledModels) && explicitEnabledModels.length > 0
+          ? explicitEnabledModels.map((id) => ({ id, name: id }))
+          : providerCatalog;
         const aliasModels = Object.entries(modelAliases)
           .filter(([, fullModel]) => fullModel.startsWith(`${alias}/`))
           .map(([aliasName, fullModel]) => ({
@@ -283,7 +320,7 @@ export default function ModelSelectModal({
           // LLM/null kind: merge hardcoded models (e.g. mimo-free → mimo-auto) with user-added models
           const registeredLlms = customRegisteredModels.filter((m) => !getModelKind(m) || getModelKind(m) === "llm");
           const seen = new Set([...aliasModels, ...registeredLlms].map((m) => m.value));
-          const hardcoded = providerCatalog
+          const hardcoded = [...effectiveCatalog, ...comboCatalogModels]
             .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
             .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
             .filter((m) => !seen.has(m.value));
@@ -369,12 +406,26 @@ export default function ModelSelectModal({
         // picker even though the channel page still lists them.
         const staticCatalogModels = getModelsByProviderId(providerId);
         const liveProviderModels = liveModelsByProvider[providerId] || [];
-        const hardcodedModels = liveProviderModels.length
-          ? [
-            ...liveProviderModels,
-            ...staticCatalogModels.filter((s) => !liveProviderModels.some((l) => l.id === s.id)),
-          ]
-          : staticCatalogModels;
+        const connection = providerConnections.find((p) => p.provider === providerId);
+        const explicitEnabledModels = connection?.providerSpecificData?.enabledModels;
+        let hardcodedModels;
+        if (availableModelsOnly) {
+          hardcodedModels = Array.isArray(explicitEnabledModels) && explicitEnabledModels.length > 0
+            ? explicitEnabledModels.map((id) => ({ id, name: id }))
+            : liveProviderModels;
+          const seenCatalogIds = new Set(hardcodedModels.map((m) => m.id));
+          hardcodedModels = [
+            ...hardcodedModels,
+            ...comboCatalogModels.filter((m) => !seenCatalogIds.has(m.id)),
+          ];
+        } else {
+          hardcodedModels = liveProviderModels.length
+            ? [
+              ...liveProviderModels,
+              ...staticCatalogModels.filter((s) => !liveProviderModels.some((l) => l.id === s.id)),
+            ]
+            : staticCatalogModels;
+        }
         const hardcodedIds = new Set(hardcodedModels.map((m) => m.id));
 
         // Custom models: if no hardcoded models (e.g. openrouter), show all aliases for this provider
@@ -443,7 +494,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, providerConnections, liveModelsByProvider]);
+  }, [availableModelsOnly, comboModelIdsByProvider, filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, providerConnections, liveModelsByProvider]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {
@@ -530,7 +581,11 @@ export default function ModelSelectModal({
         <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
           <span className="material-symbols-outlined text-[15px]">info</span>
         </span>
-        <span className="min-w-0 flex-1 leading-5">Click to add, click again to remove. Changes are saved automatically.</span>
+        <span className="min-w-0 flex-1 leading-5">
+          {availableModelsOnly
+            ? "仅显示渠道同步、显式启用、自定义或已有组合启用的模型；点击添加，再次点击移除。"
+            : "Click to add, click again to remove. Changes are saved automatically."}
+        </span>
         {isRefreshingCatalog && (
           <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-[10px] text-[#7dd3fc]" title="Refreshing provider model catalogs">
             <span className="material-symbols-outlined animate-spin text-[13px]">progress_activity</span>
@@ -664,6 +719,7 @@ ModelSelectModal.propTypes = {
   kindFilter: PropTypes.string,
   addedModelValues: PropTypes.arrayOf(PropTypes.string),
   closeOnSelect: PropTypes.bool,
+  availableModelsOnly: PropTypes.bool,
   presentation: PropTypes.oneOf(["modal", "drawer"]),
   drawerWidth: PropTypes.oneOf(["sm", "md", "lg", "xl", "2xl", "full"]),
 };

@@ -87,7 +87,7 @@ async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
               -- Relay/upstream 5xx only. Spring-mouse's own terminal states are
               -- namespaced "blocked:<reason>" now and never land here, so this
               -- bucket can no longer be mistaken for a spring-mouse fault.
-              SUM(CASE WHEN status IN ('upstream:502', 'upstream:503', 'upstream:504', 'error:502', 'error:503', 'error:504') THEN 1 ELSE 0 END) AS relayErrors,
+              SUM(CASE WHEN status IN ('upstream:502', 'upstream:503', 'upstream:504', 'error:502', 'error:503', 'error:504') THEN 1 ELSE 0 END) AS upstream5xx,
               SUM(CASE WHEN status IN ('upstream:499', 'error:499') THEN 1 ELSE 0 END) AS clientAborts,
               -- Local policy interceptions (queue timeout, account lock, breaker,
               -- model throttle). Previously all of them were the bare "rejected"
@@ -102,16 +102,16 @@ async function getConnectionSuccessRates(connectionIds = [], limit = 100) {
       const total = Number(row.total) || 0;
       const failed = Number(row.failed) || 0;
       const rateLimited = Number(row.rateLimited) || 0;
-      const relayErrors = Number(row.relayErrors) || 0;
+      const upstream5xx = Number(row.upstream5xx) || 0;
       const clientAborts = Number(row.clientAborts) || 0;
       result[row.connectionId] = {
         total,
         success: Math.max(0, total - failed),
         failed,
         rateLimited,
-        relayErrors,
+        upstream5xx,
         clientAborts,
-        unknownFailures: Math.max(0, failed - rateLimited - relayErrors - clientAborts),
+        unknownFailures: Math.max(0, failed - rateLimited - upstream5xx - clientAborts),
         rejected: Number(row.rejected) || 0,
         rate: total > 0 ? Math.round(((total - failed) / total) * 100) : null,
       };

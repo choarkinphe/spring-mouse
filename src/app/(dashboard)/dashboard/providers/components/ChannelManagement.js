@@ -669,8 +669,8 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
     ? [
         `失败 ${recentSuccessRate.failed} 次`,
         ...[
-          ["GPT 限流", recentSuccessRate.rateLimited],
-          ["上游 5xx", recentSuccessRate.relayErrors],
+          ["上游限流", recentSuccessRate.rateLimited],
+          ["模型上游 5xx", recentSuccessRate.upstream5xx],
           ["客户端取消", recentSuccessRate.clientAborts],
           ["其他失败", recentSuccessRate.unknownFailures],
           ["路由拒绝", recentSuccessRate.rejected],
@@ -680,7 +680,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       ]
     : ["近 100 次暂无失败"];
   const successRateHint = [
-    `最近 100 次请求成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`,
+    `本账号最近 100 次请求成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`,
     ...failureMixLines,
   ].join("\n");
   // Who was behind that last request — the API key's display name. Resolved
@@ -841,7 +841,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             >
               <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{upstreamErrorStale ? "history" : "error"}</span>
               <span className="min-w-0 flex-1 truncate">
-                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamLayer === "gateway" ? "中间网关 · " : connection.lastUpstreamLayer === "network" ? "网络层 · " : connection.lastUpstreamSource === "sse" ? "模型 SSE · " : `模型 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
+                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamLayer === "gateway" ? "中间网关 · " : connection.lastUpstreamLayer === "network" ? "网络层 · " : connection.lastUpstreamSource === "sse" ? "模型上游 SSE · " : `模型 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
                 {connection.lastUpstreamError}
               </span>
               {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}
@@ -856,7 +856,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             breakdown is deliberately not printed inline: it is the only part
             whose width grew with the data, so it now lives in the success-rate
             chip's hover tooltip — the same box style as the cooldown lock. */}
-        <div className="mt-2 flex min-w-0 items-center gap-2 text-xs">
+        <div className="mt-2 flex min-w-0 items-center gap-2 text-xs" onDoubleClick={copyUpstreamError} role="button" tabIndex={0} title="双击复制错误详情">
           <Tooltip text={successRateHint}>
             <span
               className={cn("flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.035] px-1.5 text-[11px] tabular-nums", successRateClass)}
@@ -1768,6 +1768,25 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
     const timer = window.setInterval(load, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
+
+  // Success rate and last-request info live in the providers payload, so they
+  // need a background refresh too — otherwise they go stale the moment a new
+  // request lands but the user hasn't navigated away. 10s is a good balance:
+  // fast enough to feel live, slow enough not to drag the full provider payload
+  // (quotas, model counts, etc.) too often.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        await fetchConnections({ silent: true });
+      } catch {
+        // Keep the last known data; a transient network error shouldn't blank rows.
+      }
+    };
+    const timer = window.setInterval(() => { if (!cancelled) load(); }, 10_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [fetchConnections]);
 
   const openChannelDetail = (providerId) => {
     setDetailProviderId(providerId);

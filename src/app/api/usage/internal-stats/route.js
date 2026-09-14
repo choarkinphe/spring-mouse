@@ -25,9 +25,9 @@ export async function GET(request) {
       // panel needs: did the upstream answer with an error, or did our own routing
       // policy stop the request? Legacy rows written before the split used the
       // bare "rejected" status for policy blocks, so they are folded in here.
-      else if (status.startsWith("upstream:")) stats.upstream += count;
+      else if (status.startsWith("upstream:") || /^error:(429|5\d\d)$/.test(status)) stats.upstream += count;
       else if (status.startsWith("blocked:") || status === "rejected") stats.blocked += count;
-      else if (status === "cancelled") stats.cancelled += count;
+      else if (status === "cancelled" || status === "error:499") stats.cancelled += count;
       else stats.internal += count;
       stats.byStatus.push({ status, count });
     }

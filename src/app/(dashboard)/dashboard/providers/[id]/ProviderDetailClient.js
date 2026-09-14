@@ -52,6 +52,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [showEditNodeIconModal, setShowEditNodeIconModal] = useState(false);
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
+  const [customModelsLoaded, setCustomModelsLoaded] = useState(false);
   const [headerImgError, setHeaderImgError] = useState(false);
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
@@ -261,7 +262,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const fetchCustomModels = useCallback(async () => {
     const cacheKey = "__smCustomModelsCache";
     const cached = typeof window !== "undefined" ? window[cacheKey] : null;
-    if (Array.isArray(cached)) setCustomModels(cached);
+    if (Array.isArray(cached)) {
+      setCustomModels(cached);
+      setCustomModelsLoaded(true);
+    }
     try {
       const res = await fetch("/api/models/custom", { cache: "no-store" });
       const data = await res.json();
@@ -272,6 +276,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       }
     } catch (error) {
       console.log("Error fetching custom models:", error);
+    } finally {
+      setCustomModelsLoaded(true);
     }
   }, []);
 
@@ -1146,7 +1152,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     );
   };
 
-  if (loading) {
+  if (loading || !customModelsLoaded) {
     return (
       <div className="flex flex-col gap-8">
         <CardSkeleton />

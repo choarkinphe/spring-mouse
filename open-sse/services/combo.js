@@ -7,6 +7,7 @@ import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
+import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/utils/schedule.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -189,71 +190,9 @@ function normalizeStickyLimit(stickyLimit) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-const TIME_OF_DAY_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
-
-function parseTimeOfDay(value) {
-  const match = TIME_OF_DAY_REGEX.exec(String(value || ""));
-  if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
-}
-
-function normalizeTimeWindows(windows) {
-  if (!Array.isArray(windows)) return null;
-
-  const normalized = [];
-  const seen = new Set();
-  for (const window of windows) {
-    if (!window || typeof window !== "object" || Array.isArray(window)) return null;
-    const start = String(window.start || "").trim();
-    const end = String(window.end || "").trim();
-    if (!TIME_OF_DAY_REGEX.test(start) || !TIME_OF_DAY_REGEX.test(end) || start === end) return null;
-    const key = `${start}-${end}`;
-    if (seen.has(key)) return null;
-    seen.add(key);
-    normalized.push({ start, end });
-  }
-  return normalized;
-}
-
-function normalizeScheduleForStorage(schedule) {
-  if (schedule == null) return null;
-  if (typeof schedule !== "object" || Array.isArray(schedule)) return null;
-
-  const timezone = String(schedule.timezone || "").trim();
-  if (timezone) {
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: timezone });
-    } catch {
-      return null;
-    }
-  }
-
-  // Legacy shape: { start, end }. Canonicalize it to one active window.
-  if (schedule.start !== undefined || schedule.end !== undefined) {
-    const active = normalizeTimeWindows([{ start: schedule.start, end: schedule.end }]);
-    const inactive = normalizeTimeWindows(schedule.inactive || []);
-    if (!active || !inactive) return null;
-    return {
-      ...(timezone ? { timezone } : {}),
-      active,
-      inactive,
-      activeEnabled: schedule.activeEnabled !== false,
-      inactiveEnabled: schedule.inactiveEnabled === true || (schedule.inactiveEnabled === undefined && inactive.length > 0),
-    };
-  }
-
-  if (!Array.isArray(schedule.active) && !Array.isArray(schedule.inactive)) return null;
-  const active = normalizeTimeWindows(schedule.active || []);
-  const inactive = normalizeTimeWindows(schedule.inactive || []);
-  if (!active || !inactive) return null;
-  return {
-    ...(timezone ? { timezone } : {}),
-    active,
-    inactive,
-    activeEnabled: schedule.activeEnabled !== false,
-    inactiveEnabled: schedule.inactiveEnabled === true || (schedule.inactiveEnabled === undefined && inactive.length > 0),
-  };
-}
+// Time-window parsing and validation live in src/shared/utils/schedule.js: the
+// dashboard has to accept exactly what this path accepts, and a second copy of
+// these rules is how the two ends drift apart.
 
 /**
  * Normalize combo model nodes for storage. Plain strings remain unchanged;
@@ -387,62 +326,14 @@ function comboModelEntry(entry) {
   return { model: "", schedule: null, accessTags: [] };
 }
 
-function localMinuteOfDay(timezone, now) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone || undefined,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
-    const hour = Number(parts.find((part) => part.type === "hour")?.value);
-    const minute = Number(parts.find((part) => part.type === "minute")?.value);
-    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-    return ((hour % 24) * 60) + minute;
-  } catch {
-    return null;
-  }
-}
-
-function scheduleWindows(schedule) {
-  if (schedule.start !== undefined || schedule.end !== undefined) {
-    return {
-      active: Array.isArray(schedule.active) ? schedule.active : [{ start: schedule.start, end: schedule.end }],
-      inactive: Array.isArray(schedule.inactive) ? schedule.inactive : [],
-    };
-  }
-  return {
-    active: Array.isArray(schedule.active) ? schedule.active : [],
-    inactive: Array.isArray(schedule.inactive) ? schedule.inactive : [],
-  };
-}
-
-function isInDailyWindow(current, window) {
-  const start = parseTimeOfDay(window?.start);
-  const end = parseTimeOfDay(window?.end);
-  if (start === null || end === null) return false;
-
-  // Equal boundaries mean the full day. Windows may also cross midnight.
-  if (start === end) return true;
-  return start < end
-    ? current >= start && current < end
-    : current >= start || current < end;
-}
-
 export function isComboModelActive(entry, now = new Date()) {
   const { model, schedule } = comboModelEntry(entry);
-  if (!model || !schedule || typeof schedule !== "object") return Boolean(model);
-
-  const current = localMinuteOfDay(schedule.timezone, now);
-  if (current === null) return false;
-
-  const windows = scheduleWindows(schedule);
-  const active = schedule.activeEnabled === false ? [] : windows.active;
-  const inactive = schedule.inactiveEnabled === false ? [] : windows.inactive;
-  // Empty active means all day. Inactive always wins over active.
-  const activeMatch = active.length === 0 || active.some((window) => isInDailyWindow(current, window));
-  const inactiveMatch = inactive.some((window) => isInDailyWindow(current, window));
-  return activeMatch && !inactiveMatch;
+  if (!model) return false;
+  // No schedule means all day. An unusable schedule fails closed on this path:
+  // the model list is a permission boundary, so admitting an unschedulable model
+  // is worse than hiding it. Account routing makes the opposite call, and
+  // schedule.js documents why.
+  return isScheduleActive(schedule, now);
 }
 
 /**

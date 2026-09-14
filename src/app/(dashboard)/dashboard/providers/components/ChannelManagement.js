@@ -2409,6 +2409,13 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
             ? (channelGroups.find((group) => group.provider === editingConnection.provider)?.connections.length ?? null)
             : null
         }
+        // The address this account inherits while it has no override of its own.
+        // Empty for built-in channels, which have no channel-level address.
+        channelBaseUrl={
+          editingConnection
+            ? (providerNodes.find((node) => node.id === editingConnection.provider)?.baseUrl || "")
+            : ""
+        }
         mouses={mouses.filter((mouse) => mouse.isOnline || mouse.id === editingConnection?.mouseId)}
         onSave={handleSaveConnection}
         onDelete={(connection) => {

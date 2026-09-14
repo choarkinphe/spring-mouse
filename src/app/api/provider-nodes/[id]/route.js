@@ -95,19 +95,25 @@ export async function PUT(request, { params }) {
 
     const updated = await updateProviderNode(id, updates);
 
+    const previousBaseUrl = String(node.baseUrl || "").trim().replace(/\/+$/, "");
     const connections = await getProviderConnections({ provider: id });
-    await Promise.all(connections.map((connection) => (
-      updateProviderConnection(connection.id, {
+    await Promise.all(connections.map((connection) => {
+      // An account whose address differs from the channel's previous one has been
+      // pinned on purpose, so a channel edit must not drag it along. Everything
+      // else is still inheriting and keeps following the channel.
+      const currentBaseUrl = String(connection.providerSpecificData?.baseUrl || "").trim().replace(/\/+$/, "");
+      const inheritsChannelBaseUrl = !currentBaseUrl || currentBaseUrl === previousBaseUrl;
+      return updateProviderConnection(connection.id, {
         providerSpecificData: {
           ...(connection.providerSpecificData || {}),
           prefix: prefix.trim(),
           apiType: node.type === "openai-compatible" ? apiType : undefined,
-          baseUrl: sanitizedBaseUrl,
+          ...(inheritsChannelBaseUrl ? { baseUrl: sanitizedBaseUrl } : {}),
           nodeName: updated.name,
           nodeIcon: updated.icon || "",
         }
-      })
-    )));
+      });
+    }));
 
     return NextResponse.json({ node: updated });
   } catch (error) {

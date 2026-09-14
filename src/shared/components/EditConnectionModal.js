@@ -9,6 +9,8 @@ import Badge from "@/shared/components/Badge";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
+import AccountScheduleEditor from "@/shared/components/AccountScheduleEditor";
+import { findInvalidScheduleField } from "@/shared/utils/schedule.js";
 
 export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, channelAccountCount = null, onSave, onDelete, onClose }) {
   // Providers whose executor bypasses BaseExecutor.execute() cannot route
@@ -36,6 +38,11 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
   // Kept as a string so "empty" stays distinguishable from a real number: an
   // empty field means "follow the channel", which must not collapse into a 0.
   const [concurrency, setConcurrency] = useState("");
+  // The account's own upstream address. Empty means "follow the channel".
+  const [accountBaseUrl, setAccountBaseUrl] = useState("");
+  // The account's enable window, stored in the same shape the combo scheduler
+  // uses so both read from one implementation of the rules.
+  const [schedule, setSchedule] = useState(null);
 
   useEffect(() => {
     if (connection) {
@@ -67,6 +74,15 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
       // behind by a previous "reset to channel" stays blank.
       const savedConcurrency = Number.parseInt(connection.providerSpecificData?.maxConcurrentStreams, 10);
       setConcurrency(Number.isFinite(savedConcurrency) && savedConcurrency > 0 ? String(savedConcurrency) : "");
+      // An address equal to the channel's is inheritance, not an override: it is
+      // surfaced as a placeholder rather than a value, so the field keeps saying
+      // "follow the channel" until someone actually types a different one.
+      const storedBaseUrl = String(connection.providerSpecificData?.baseUrl || "").trim();
+      const channelBase = String(channelBaseUrl || "").trim().replace(/\/+$/, "");
+      setAccountBaseUrl(
+        storedBaseUrl && storedBaseUrl.replace(/\/+$/, "") !== channelBase ? storedBaseUrl : "",
+      );
+      setSchedule(connection.schedule || null);
       setTestResult(null);
       setValidationResult(null);
     }
@@ -216,7 +232,17 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
       const perAccountLimit = Number.parseInt(concurrency, 10);
       specificData.maxConcurrentStreams =
         Number.isFinite(perAccountLimit) && perAccountLimit > 0 ? perAccountLimit : null;
+      // Clearing the field means "back to the channel". The executor can only
+      // fall back to an address it can see, and for a custom channel that is the
+      // channel value mirrored into this account — so an empty field writes the
+      // channel's address back instead of blanking it.
+      const trimmedAccountBaseUrl = String(accountBaseUrl || "").trim().replace(/\/+$/, "");
+      const channelBase = String(channelBaseUrl || "").trim().replace(/\/+$/, "");
+      if (trimmedAccountBaseUrl) specificData.baseUrl = trimmedAccountBaseUrl;
+      else if (channelBase) specificData.baseUrl = channelBase;
       updates.providerSpecificData = specificData;
+      // null clears the window server-side, which is how "always on" is stored.
+      updates.schedule = schedule;
       
       await onSave(updates);
     } finally {
@@ -259,6 +285,20 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
           placeholder={hasChannelLimit ? `渠道默认（${channelLimit}）` : "渠道默认"}
           hint={concurrencyHint}
         />
+        {/* Only a custom channel has an address to inherit; a built-in channel
+            keeps its endpoint in code, so there is nothing to override here. */}
+        {Boolean(String(channelBaseUrl || "").trim()) && (
+          <Input
+            label="Base URL"
+            value={accountBaseUrl}
+            onChange={(e) => setAccountBaseUrl(e.target.value)}
+            placeholder={`跟随渠道（${String(channelBaseUrl).trim()}）`}
+            hint={accountBaseUrl.trim()
+              ? "本账号单独使用该地址，渠道地址变更不会影响它；清空即恢复跟随渠道。"
+              : "留空则使用渠道配置的地址；填写后本账号单独使用该地址。"}
+          />
+        )}
+        <AccountScheduleEditor schedule={schedule} onChange={setSchedule} />
         {!isOAuth && (
           <>
             <div className="flex gap-2">
@@ -380,7 +420,11 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
         )}
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving}>{saving ? "Saving..." : "Save"}</Button>
+          {/* A malformed window is rejected by the API, which would take the rest
+              of the form down with it — so it has to block the submit here. */}
+          <Button onClick={handleSubmit} fullWidth disabled={saving || Boolean(findInvalidScheduleField(schedule))}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
         </div>
       </div>
@@ -402,6 +446,9 @@ EditConnectionModal.propTypes = {
   // Channel-level per-account ceiling, shown as the fallback this account
   // inherits while its own override is blank.
   channelConcurrencyLimit: PropTypes.number,
+  // The channel's own upstream address, shown as the value this account inherits
+  // while its own override is blank. Empty for built-in channels.
+  channelBaseUrl: PropTypes.string,
   // How many accounts the channel has — bounds the slot picker.
   channelAccountCount: PropTypes.number,
   onSave: PropTypes.func.isRequired,

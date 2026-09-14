@@ -12,6 +12,7 @@ import { supportsMouseExecution } from "@/shared/constants/mouseSupport.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
+import { isScheduleActive, describeSchedule } from "@/shared/utils/schedule.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
 import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
@@ -174,6 +175,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       .map((mouse) => [mouse.id, mouse]));
     const onlineMouseIds = new Set(onlineMouses.keys());
 
+    // One instant for both the filter and the skip report, so the two can never
+    // disagree about an account sitting exactly on a window boundary.
+    const scheduleNow = new Date();
+    const isOffSchedule = (connection) => !isScheduleActive(connection.schedule, scheduleNow, { onInvalid: true });
+
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       // A binding on a provider whose executor bypasses BaseExecutor.execute()
@@ -181,6 +187,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // "node offline" would wrongly take the account out of rotation.
       if (c.mouseId && supportsMouseExecution(c.provider) && !onlineMouseIds.has(c.mouseId)) return false;
       if (isModelLockActive(c, model)) return false;
+      // The account's own enable window. An account that never configured one is
+      // always on, so this stays a no-op until someone opts in.
+      if (isOffSchedule(c)) return false;
       return true;
     });
 
@@ -188,7 +197,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // decisions invisible at the production default LOG_LEVEL=WARN: operators
     // could read "all N accounts locked" but not which account, or why. Emit one
     // always-visible line (routeLine bypasses the threshold) that keeps the
-    // available count, every skip reason and the account id together.
+    // available count, every skip reason and the account id together. The window
+    // travels with the reason so a closed account is not read as a broken one.
     const skippedAccounts = [
       ...connections.filter((c) => excludeSet.has(c.id)).map((c) => `${c.id?.slice(0, 8)}:excluded`),
       ...connections
@@ -198,6 +208,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const until = getEarliestModelLockUntil(c);
         return `${c.id?.slice(0, 8)}:locked${model ? `(${model})` : ""}${until ? `→${until}` : ""}`;
       }),
+      ...connections.filter(isOffSchedule).map((c) => `${c.id?.slice(0, 8)}:schedule-off(${describeSchedule(c.schedule)})`),
     ];
     log.routeLine(
       availableConnections.length > 0 ? "🟢" : "🔴",
@@ -221,7 +232,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           lastErrorCode: earliestConn?.errorCode || null
         };
       }
-      log.warn("AUTH", `${reqPrefix}${provider} | all ${connections.length} accounts unavailable`);
+      // "All accounts unavailable" reads as an outage, which is the wrong story
+      // when the enable window is the only reason nothing is eligible.
+      const everyAccountClosed = connections.every(isOffSchedule);
+      log.warn("AUTH", everyAccountClosed
+        ? `${reqPrefix}${provider} | all ${connections.length} accounts are outside their enable window (${describeSchedule(connections[0]?.schedule)})`
+        : `${reqPrefix}${provider} | all ${connections.length} accounts unavailable`);
       return null;
     }
 

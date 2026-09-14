@@ -8,6 +8,16 @@ import {
 } from "@/models";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { moveProviderConnectionToPosition } from "@/lib/db/repos/connectionOrdering";
+import { normalizeScheduleForStorage } from "@/shared/utils/schedule.js";
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -81,6 +91,7 @@ export async function PUT(request, { params }) {
       lastError,
       lastErrorAt,
       providerSpecificData,
+      schedule,
     } = body;
 
     const existing = await getProviderConnectionById(id);
@@ -138,6 +149,43 @@ export async function PUT(request, { params }) {
     if (lastError !== undefined) updateData.lastError = lastError;
     if (lastErrorAt !== undefined) updateData.lastErrorAt = lastErrorAt;
 
+    // The account's enable window. `null` clears it (back to always-on); a
+    // malformed window is rejected here instead of stored, because the request
+    // path reads an unreadable window as "open" and would hide the typo.
+    if (schedule !== undefined) {
+      if (schedule === null) {
+        updateData.schedule = null;
+      } else {
+        const normalizedSchedule = normalizeScheduleForStorage(schedule);
+        if (!normalizedSchedule) {
+          return NextResponse.json(
+            { error: "Enable window must use HH:MM windows with distinct start and end times" },
+            { status: 400 },
+          );
+        }
+        updateData.schedule = normalizedSchedule;
+      }
+    }
+
+    // An account-level upstream address. Empty means "no instruction" rather than
+    // "no address": a custom node mirrors its address into every account, so
+    // blanking the field would drop the request to the library default instead
+    // of back to the channel's value.
+    const incomingSpecificData = { ...(providerSpecificData || {}) };
+    if (incomingSpecificData.baseUrl !== undefined) {
+      const candidate = String(incomingSpecificData.baseUrl ?? "").trim();
+      if (!candidate) {
+        delete incomingSpecificData.baseUrl;
+      } else if (!isHttpUrl(candidate)) {
+        return NextResponse.json(
+          { error: "Base URL must be a valid http(s) URL" },
+          { status: 400 },
+        );
+      } else {
+        incomingSpecificData.baseUrl = candidate.replace(/\/+$/, "");
+      }
+    }
+
     if (
       shouldMergeProviderSpecificData(
         existing.providerSpecificData,
@@ -147,7 +195,7 @@ export async function PUT(request, { params }) {
     ) {
       updateData.providerSpecificData = {
         ...(existing.providerSpecificData || {}),
-        ...(providerSpecificData || {}),
+        ...incomingSpecificData,
       };
 
       if (proxyConfig.hasAnyProxyField) {

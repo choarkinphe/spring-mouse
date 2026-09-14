@@ -58,6 +58,9 @@ export default function ProfilePage() {
   const [apiKeyQuotaForm, setApiKeyQuotaForm] = useState({ fiveHourTokenLimitM: "", weeklyTokenLimitM: "" });
   const [apiKeyQuotaStatus, setApiKeyQuotaStatus] = useState({ type: "", message: "" });
   const [apiKeyQuotaLoading, setApiKeyQuotaLoading] = useState(false);
+  const [apiKeyRateLimitForm, setApiKeyRateLimitForm] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
+  const [apiKeyRateLimitStatus, setApiKeyRateLimitStatus] = useState({ type: "", message: "" });
+  const [apiKeyRateLimitLoading, setApiKeyRateLimitLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -73,6 +76,13 @@ export default function ProfilePage() {
         setApiKeyQuotaForm({
           fiveHourTokenLimitM: data?.apiKeyQuotaRules?.fiveHourTokenLimitM?.toString() || "",
           weeklyTokenLimitM: data?.apiKeyQuotaRules?.weeklyTokenLimitM?.toString() || "",
+        });
+        setApiKeyRateLimitForm({
+          rpmLimit: data?.apiKeyRateLimitRules?.rpmLimit?.toString() || "",
+          rpmQueueMax: data?.apiKeyRateLimitRules?.rpmQueueMax?.toString() ?? "",
+          queueTimeoutSeconds: data?.apiKeyRateLimitRules?.queueTimeoutMs
+            ? Math.round(data.apiKeyRateLimitRules.queueTimeoutMs / 1000).toString()
+            : "",
         });
         const ipAccessMode = data?.ipAccessMode === "blocklist" ? "blocklist" : "allowlist";
         setIpAccessForm({
@@ -495,6 +505,44 @@ export default function ProfilePage() {
       setApiKeyQuotaStatus({ type: "error", message: err.message || "An error occurred" });
     } finally {
       setApiKeyQuotaLoading(false);
+    }
+  };
+
+  // The editor takes seconds because that is how people reason about a queue
+  // wait; the API and the gate take milliseconds.
+  const updateApiKeyRateLimitRules = async (event) => {
+    event.preventDefault();
+    setApiKeyRateLimitLoading(true);
+    setApiKeyRateLimitStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKeyRateLimitRules: {
+            rpmLimit: apiKeyRateLimitForm.rpmLimit || null,
+            rpmQueueMax: apiKeyRateLimitForm.rpmQueueMax === "" ? 0 : apiKeyRateLimitForm.rpmQueueMax,
+            queueTimeoutMs: apiKeyRateLimitForm.queueTimeoutSeconds
+              ? Number(apiKeyRateLimitForm.queueTimeoutSeconds) * 1000
+              : null,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update API key rate limit rules");
+      setSettings((prev) => ({ ...prev, ...data }));
+      setApiKeyRateLimitForm({
+        rpmLimit: data.apiKeyRateLimitRules?.rpmLimit?.toString() || "",
+        rpmQueueMax: data.apiKeyRateLimitRules?.rpmQueueMax?.toString() ?? "",
+        queueTimeoutSeconds: data.apiKeyRateLimitRules?.queueTimeoutMs
+          ? Math.round(data.apiKeyRateLimitRules.queueTimeoutMs / 1000).toString()
+          : "",
+      });
+      setApiKeyRateLimitStatus({ type: "success", message: "API key rate limit rules updated" });
+    } catch (err) {
+      setApiKeyRateLimitStatus({ type: "error", message: err.message || "An error occurred" });
+    } finally {
+      setApiKeyRateLimitLoading(false);
     }
   };
 
@@ -978,6 +1026,59 @@ export default function ProfilePage() {
               </p>
             )}
           </Card>
+
+          <div className="mt-5">
+            <Card>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500 shrink-0">
+                  <span className="material-symbols-outlined text-[20px]">speed</span>
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-semibold">每分钟请求限流</h3>
+                  <p className="text-xs sm:text-sm text-text-muted">
+                    按滚动 60 秒窗口统计请求数：前 x 个请求直接放行，其后的请求进入队列等待窗口腾出位置；队列超过 y 个、或等待超过设定秒数即返回 429。留空表示不限制，单把密钥可在集成与凭据页单独覆盖。
+                  </p>
+                </div>
+              </div>
+              <form onSubmit={updateApiKeyRateLimitRules} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                <Input
+                  label="每分钟请求数上限 (x)"
+                  type="number"
+                  min="1"
+                  placeholder="不限制"
+                  value={apiKeyRateLimitForm.rpmLimit}
+                  onChange={(event) => setApiKeyRateLimitForm((prev) => ({ ...prev, rpmLimit: event.target.value }))}
+                  disabled={loading || apiKeyRateLimitLoading}
+                />
+                <Input
+                  label="等待队列长度 (y)"
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={apiKeyRateLimitForm.rpmQueueMax}
+                  onChange={(event) => setApiKeyRateLimitForm((prev) => ({ ...prev, rpmQueueMax: event.target.value }))}
+                  disabled={loading || apiKeyRateLimitLoading}
+                />
+                <Input
+                  label="队列最大等待 (秒)"
+                  type="number"
+                  min="1"
+                  placeholder="60"
+                  value={apiKeyRateLimitForm.queueTimeoutSeconds}
+                  onChange={(event) => setApiKeyRateLimitForm((prev) => ({ ...prev, queueTimeoutSeconds: event.target.value }))}
+                  disabled={loading || apiKeyRateLimitLoading}
+                />
+                <Button type="submit" size="field" loading={apiKeyRateLimitLoading} disabled={loading}>
+                  Save
+                </Button>
+              </form>
+              {apiKeyRateLimitStatus.message && (
+                <p className={`mt-4 border-t border-border/50 pt-4 text-xs sm:text-sm ${apiKeyRateLimitStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+                  {apiKeyRateLimitStatus.message}
+                </p>
+              )}
+            </Card>
+          </div>
         </SettingsZone>
 
         <SettingsZone

@@ -4,6 +4,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
+import { acquireApiKeyRateSlot, resolveApiKeyRateLimit } from "@/lib/apiKeyRateLimit.js";
 import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -700,11 +701,64 @@ function quotaResponse(status) {
   );
 }
 
+function rateLimitResponse(outcome, rules) {
+  const retryAfterSeconds = Math.max(1, Math.ceil((outcome.retryAfterMs || 0) / 1000));
+  const queued = outcome.reason === "queue_timeout";
+
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: queued
+          ? `API key request queue timed out after ${Math.round((outcome.waitedMs || 0) / 1000)}s; the ${rules.limit}/min request limit stayed saturated`
+          : `API key request rate limit exceeded (${rules.limit} requests per minute, burst ${rules.burst})`,
+        type: "rate_limit_error",
+        code: "api_key_rate_limited",
+      },
+    }),
+    {
+      status: HTTP_STATUS.RATE_LIMITED,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfterSeconds),
+        "Access-Control-Allow-Origin": "*",
+      },
+    },
+  );
+}
+
+// Request-rate gate: admit now, wait for the rolling minute to free a slot, or
+// reject. Runs after the token quota so an already over-quota key is never also
+// charged against the request rate.
+async function enforceApiKeyRateLimit(apiKey, signal) {
+  const [key, settings] = await Promise.all([getApiKeyByValue(apiKey), getSettings()]);
+  const rules = resolveApiKeyRateLimit(key, settings.apiKeyRateLimitRules);
+  if (!rules.enabled) return null;
+
+  const outcome = await acquireApiKeyRateSlot({
+    keyId: key?.id || apiKey,
+    limit: rules.limit,
+    burst: rules.burst,
+    queueTimeoutMs: rules.queueTimeoutMs,
+    signal,
+  });
+  if (outcome.allowed) return null;
+
+  log.warn(
+    "RATELIMIT",
+    `API key ${key?.name || "(unnamed)"} | ${outcome.reason} after ${outcome.waitedMs || 0}ms (limit ${rules.limit}/min, burst ${rules.burst})`,
+  );
+  return rateLimitResponse(outcome, rules);
+}
+
 /**
  * Validate an ingress key and enforce the instance-wide key quota when that key
  * has opted in. Returns a Response only when the request must be rejected.
+ *
+ * `meter: true` additionally charges the request against the key's per-minute
+ * rate limit. Metadata endpoints (model listing, token counting) leave it off so
+ * they never consume a caller's allowance.
  */
-export async function authorizeApiKey(apiKey, { requireApiKey = false } = {}) {
+export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = false, signal = null } = {}) {
   if (!apiKey) return requireApiKey ? errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key") : null;
 
   // A supplied credential must always resolve to a configured key. Otherwise a
@@ -715,5 +769,12 @@ export async function authorizeApiKey(apiKey, { requireApiKey = false } = {}) {
   }
 
   const quota = await checkApiKeyQuota(apiKey);
-  return quota.allowed ? null : quotaResponse(quota.status);
+  if (!quota.allowed) return quotaResponse(quota.status);
+
+  if (meter) {
+    const rateFailure = await enforceApiKeyRateLimit(apiKey, signal);
+    if (rateFailure) return rateFailure;
+  }
+
+  return null;
 }

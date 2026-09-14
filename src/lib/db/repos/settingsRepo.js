@@ -44,6 +44,10 @@ const DEFAULT_SETTINGS = {
   totpPendingSecretEncrypted: null,
   totpPendingRecoveryCodeHashes: [],
   apiKeyQuotaRules: { fiveHourTokenLimitM: null, weeklyTokenLimitM: null },
+  // Instance-wide default request-rate limit, in three parts: requests per
+  // minute, how many may wait once that is used up, and how long a queued
+  // request waits. A key may override any of them; all null = gate disabled.
+  apiKeyRateLimitRules: { rpmLimit: null, rpmQueueMax: 0, queueTimeoutMs: null },
   tunnelDashboardAccess: true,
   enableObservability: false,
   enableRequestLogFileDumps: process.env.ENABLE_REQUEST_LOG_FILE_DUMPS === "true",

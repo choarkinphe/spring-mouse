@@ -157,6 +157,10 @@ export default function APIPageClient({ machineId }) {
   const [keyNameDraft, setKeyNameDraft] = useState("");
   const [savingKeyName, setSavingKeyName] = useState(false);
   const [keyNameError, setKeyNameError] = useState("");
+  const [rateLimitKey, setRateLimitKey] = useState(null);
+  const [rateLimitDraft, setRateLimitDraft] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
+  const [savingRateLimit, setSavingRateLimit] = useState(false);
+  const [rateLimitError, setRateLimitError] = useState("");
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -307,6 +311,46 @@ export default function APIPageClient({ machineId }) {
       setKeyNameError("保存失败，请稍后重试");
     } finally {
       setSavingKeyName(false);
+    }
+  };
+
+  const openRateLimitDialog = (key) => {
+    setRateLimitKey(key);
+    setRateLimitError("");
+    setRateLimitDraft({
+      rpmLimit: key.rpmLimit?.toString() || "",
+      rpmQueueMax: key.rpmQueueMax?.toString() ?? "",
+      queueTimeoutSeconds: key.queueTimeoutMs ? Math.round(key.queueTimeoutMs / 1000).toString() : "",
+    });
+  };
+
+  // Empty fields are sent as null so the key falls back to the instance default.
+  // Queue length uses "" -> null too: an explicit 0 means "never queue".
+  const handleSaveKeyRateLimit = async (event) => {
+    event.preventDefault();
+    if (!rateLimitKey || savingRateLimit) return;
+
+    setSavingRateLimit(true);
+    setRateLimitError("");
+    try {
+      const res = await fetch(`/api/keys/${rateLimitKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rpmLimit: rateLimitDraft.rpmLimit === "" ? null : rateLimitDraft.rpmLimit,
+          rpmQueueMax: rateLimitDraft.rpmQueueMax === "" ? null : rateLimitDraft.rpmQueueMax,
+          queueTimeoutMs: rateLimitDraft.queueTimeoutSeconds
+            ? Math.round(Number(rateLimitDraft.queueTimeoutSeconds) * 1000)
+            : null,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update key rate limit");
+      await fetchData();
+      setRateLimitKey(null);
+    } catch {
+      setRateLimitError("保存失败，请稍后重试");
+    } finally {
+      setSavingRateLimit(false);
     }
   };
 
@@ -591,6 +635,7 @@ export default function APIPageClient({ machineId }) {
                         <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sync</span>
                       </button>
                       <button type="button" onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className={`${styles.actionButton} hover:bg-violet-400/10 hover:text-violet-300`} title="配置密钥标签" aria-label="配置密钥标签"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sell</span></button>
+                      <button type="button" onClick={() => openRateLimitDialog(key)} className={`${styles.actionButton} hover:bg-amber-400/10 hover:text-amber-300`} title={key.rpmLimit ? `请求限流：${key.rpmLimit}/分钟` : "请求限流：继承全局"} aria-label="配置请求限流"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>speed</span></button>
                       <button type="button" onClick={() => handleDeleteKey(key.id)} className={`${styles.actionButton} hover:bg-red-500/10 hover:text-red-400`} title="删除密钥" aria-label="删除密钥"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span></button>
                     </div>
                     <SegmentedControl
@@ -683,6 +728,55 @@ export default function APIPageClient({ machineId }) {
               取消
             </Button>
             <Button type="submit" loading={savingKeyName} disabled={!keyNameDraft.trim() || savingKeyName}>
+              保存
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!rateLimitKey}
+        title={rateLimitKey ? `请求限流 · ${rateLimitKey.name || "未命名密钥"}` : "请求限流"}
+        onClose={() => { if (!savingRateLimit) setRateLimitKey(null); }}
+        closeOnOverlay={!savingRateLimit}
+      >
+        <form onSubmit={handleSaveKeyRateLimit} className="flex flex-col gap-4">
+          <p className="text-xs text-text-muted">
+            三个字段留空即继承「设置 · API Key 配额」里的全局规则。队列长度填 0 表示不排队；超出每分钟上限且无法及时腾出位置的请求会返回 429。
+          </p>
+          <Input
+            label="每分钟请求数上限 (x)"
+            type="number"
+            min="1"
+            placeholder="继承全局"
+            value={rateLimitDraft.rpmLimit}
+            onChange={(event) => setRateLimitDraft((prev) => ({ ...prev, rpmLimit: event.target.value }))}
+            disabled={savingRateLimit}
+          />
+          <Input
+            label="等待队列长度 (y)"
+            type="number"
+            min="0"
+            placeholder="继承全局"
+            value={rateLimitDraft.rpmQueueMax}
+            onChange={(event) => setRateLimitDraft((prev) => ({ ...prev, rpmQueueMax: event.target.value }))}
+            disabled={savingRateLimit}
+          />
+          <Input
+            label="队列最大等待 (秒)"
+            type="number"
+            min="1"
+            placeholder="继承全局"
+            value={rateLimitDraft.queueTimeoutSeconds}
+            onChange={(event) => setRateLimitDraft((prev) => ({ ...prev, queueTimeoutSeconds: event.target.value }))}
+            disabled={savingRateLimit}
+          />
+          {rateLimitError && <p role="alert" className="text-xs text-red-500">{rateLimitError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" disabled={savingRateLimit} onClick={() => setRateLimitKey(null)}>
+              取消
+            </Button>
+            <Button type="submit" loading={savingRateLimit}>
               保存
             </Button>
           </div>

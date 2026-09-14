@@ -6,7 +6,10 @@
 // 21 carries no TABLES change: it exists so the legacy-mouses repair (migration
 // 019) is picked up by ensureCurrentSchema() in an already-running dev server, and
 // so a pre-repair backup is taken before that table is rebuilt.
-export const SCHEMA_VERSION = 21;
+// 22 adds the per-key request-rate override on apiKeys
+// (rpmLimit / rpmQueueMax / queueTimeoutMs).
+// The columns themselves are additive, so syncSchemaFromTables() backfills them.
+export const SCHEMA_VERSION = 22;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -120,6 +123,13 @@ export const TABLES = {
       quotaResetAt: "TEXT",
       fiveHourQuotaResetAt: "TEXT",
       weeklyQuotaResetAt: "TEXT",
+      // Per-key request-rate override. NULL inherits the instance-wide
+      // apiKeyRateLimitRules. rpmLimit = requests admitted per rolling minute,
+      // rpmQueueMax = how many may wait once that limit is used up,
+      // queueTimeoutMs = how long one queued request waits before rejection.
+      rpmLimit: "INTEGER",
+      rpmQueueMax: "INTEGER",
+      queueTimeoutMs: "INTEGER",
       createdAt: "TEXT NOT NULL",
       lastUsedAt: "TEXT",
     },

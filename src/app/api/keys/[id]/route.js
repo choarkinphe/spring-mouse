@@ -26,7 +26,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags } = body;
+    const { name, isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags, rpmLimit, rpmQueueMax, queueTimeoutMs } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -44,6 +44,11 @@ export async function PUT(request, { params }) {
     if (name !== undefined) updateData.name = name.trim();
     if (isActive !== undefined) updateData.isActive = isActive === true;
     if (quotaMode !== undefined) updateData.quotaMode = quotaMode;
+    // Request-rate override. null / "" / "0" from the editor all mean "clear the
+    // override and inherit the instance default"; the repo normalizes the value.
+    if (rpmLimit !== undefined) updateData.rpmLimit = rpmLimit;
+    if (rpmQueueMax !== undefined) updateData.rpmQueueMax = rpmQueueMax;
+    if (queueTimeoutMs !== undefined) updateData.queueTimeoutMs = queueTimeoutMs;
 
     const resetAll = resetQuota === true;
     const windowId = resetQuotaWindow || (typeof resetQuota === "string" ? resetQuota : null);

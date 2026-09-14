@@ -68,6 +68,32 @@ function normalizeApiKeyQuotaRules(rules) {
   };
 }
 
+function normalizeApiKeyRateLimitRules(rules) {
+  if (!rules || typeof rules !== "object" || Array.isArray(rules)) {
+    return { rpmLimit: null, rpmQueueMax: 0, queueTimeoutMs: null };
+  }
+
+  const parsePositive = (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  // Zero queue is a valid, meaningful setting: reject instead of waiting.
+  const parseQueueMax = (value) => {
+    if (value === null || value === undefined || value === "") return 0;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+
+  const rpmLimit = parsePositive(rules.rpmLimit);
+  // No limit means no gate at all, so the other two knobs are meaningless.
+  if (rpmLimit === null) return { rpmLimit: null, rpmQueueMax: 0, queueTimeoutMs: null };
+  return {
+    rpmLimit,
+    rpmQueueMax: parseQueueMax(rules.rpmQueueMax),
+    queueTimeoutMs: parsePositive(rules.queueTimeoutMs) ?? 60000,
+  };
+}
+
 export async function GET() {
   try {
     const settings = await getSettings();
@@ -190,6 +216,10 @@ export async function PATCH(request) {
 
     if (Object.prototype.hasOwnProperty.call(body, "apiKeyQuotaRules")) {
       body.apiKeyQuotaRules = normalizeApiKeyQuotaRules(body.apiKeyQuotaRules);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "apiKeyRateLimitRules")) {
+      body.apiKeyRateLimitRules = normalizeApiKeyRateLimitRules(body.apiKeyRateLimitRules);
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "cloudflareTunnelToken")) {

@@ -93,7 +93,7 @@ export async function exportDb() {
     settings: await exportSettings(),
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, mouseId: r.mouseId || null, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, quotaMode: r.quotaMode || "unlimited", quotaResetAt: r.quotaResetAt || null, fiveHourQuotaResetAt: r.fiveHourQuotaResetAt || null, weeklyQuotaResetAt: r.weeklyQuotaResetAt || null, createdAt: r.createdAt, lastUsedAt: r.lastUsedAt || null })),
+    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, quotaMode: r.quotaMode || "unlimited", quotaResetAt: r.quotaResetAt || null, fiveHourQuotaResetAt: r.fiveHourQuotaResetAt || null, weeklyQuotaResetAt: r.weeklyQuotaResetAt || null, rpmLimit: r.rpmLimit ?? null, rpmQueueMax: r.rpmQueueMax ?? null, queueTimeoutMs: r.queueTimeoutMs ?? null, createdAt: r.createdAt, lastUsedAt: r.lastUsedAt || null })),
     openPlatformApiKeys: db.all(`SELECT * FROM openPlatformApiKeys`).map((r) => ({ id: r.id, name: r.name, keyPrefix: r.keyPrefix, keyHash: r.keyHash, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt, lastUsedAt: r.lastUsedAt || null })),
     openPlatformApiCallLogs: db.all(`SELECT * FROM openPlatformApiCallLogs`),
     mouses: db.all(`SELECT * FROM mouses`).map((r) => ({
@@ -184,8 +184,8 @@ export async function importDb(payload) {
     }
     for (const k of payload.apiKeys || []) {
       db.run(
-        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, normalizeApiKeyQuotaMode(k.quotaMode), k.quotaResetAt || null, k.fiveHourQuotaResetAt || null, k.weeklyQuotaResetAt || null, k.createdAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, rpmLimit, rpmQueueMax, queueTimeoutMs, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, normalizeApiKeyQuotaMode(k.quotaMode), k.quotaResetAt || null, k.fiveHourQuotaResetAt || null, k.weeklyQuotaResetAt || null, k.rpmLimit ?? null, k.rpmQueueMax ?? null, k.queueTimeoutMs ?? null, k.createdAt || new Date().toISOString()]
       );
     }
     for (const k of payload.openPlatformApiKeys || []) {

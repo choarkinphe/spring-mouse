@@ -49,7 +49,7 @@ export async function handleSearch(request) {
 
   // Enforce API key if enabled in settings
   const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal });
   if (authFailure) return authFailure;
   const accessTags = await resolveApiKeyAccessTags(apiKey);
 

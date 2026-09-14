@@ -40,6 +40,21 @@ function normalizeQuotaMode(mode) {
   return ["off", "limited", "unlimited"].includes(mode) ? mode : "unlimited";
 }
 
+// A stored request-rate override. Absent or junk values mean "inherit the
+// instance default", never zero — a 0 would read as "block everything".
+function positiveIntOrNull(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// Queue length is the one knob where zero is meaningful: it means "do not
+// queue, reject as soon as the per-minute limit is spent".
+function nonNegativeIntOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function rowToKey(row) {
   if (!row) return null;
   return {
@@ -52,6 +67,9 @@ function rowToKey(row) {
     quotaResetAt: row.quotaResetAt || null,
     fiveHourQuotaResetAt: row.fiveHourQuotaResetAt || null,
     weeklyQuotaResetAt: row.weeklyQuotaResetAt || null,
+    rpmLimit: positiveIntOrNull(row.rpmLimit),
+    rpmQueueMax: nonNegativeIntOrNull(row.rpmQueueMax),
+    queueTimeoutMs: positiveIntOrNull(row.queueTimeoutMs),
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt || null,
   };
@@ -95,6 +113,9 @@ export async function createApiKey(name, machineId) {
     quotaResetAt: null,
     fiveHourQuotaResetAt: null,
     weeklyQuotaResetAt: null,
+    rpmLimit: null,
+    rpmQueueMax: null,
+    queueTimeoutMs: null,
     createdAt: new Date().toISOString(),
     lastUsedAt: null,
   };
@@ -102,8 +123,8 @@ export async function createApiKey(name, machineId) {
   apiKey.fiveHourQuotaResetAt = new Date(createdAtMs + 5 * 60 * 60 * 1000).toISOString();
   apiKey.weeklyQuotaResetAt = new Date(createdAtMs + 7 * 24 * 60 * 60 * 1000).toISOString();
   db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, createdAt, lastUsedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.quotaMode, apiKey.quotaResetAt, apiKey.fiveHourQuotaResetAt, apiKey.weeklyQuotaResetAt, apiKey.createdAt, apiKey.lastUsedAt]
+    `INSERT INTO apiKeys(id, key, name, machineId, isActive, quotaMode, quotaResetAt, fiveHourQuotaResetAt, weeklyQuotaResetAt, rpmLimit, rpmQueueMax, queueTimeoutMs, createdAt, lastUsedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.quotaMode, apiKey.quotaResetAt, apiKey.fiveHourQuotaResetAt, apiKey.weeklyQuotaResetAt, apiKey.rpmLimit, apiKey.rpmQueueMax, apiKey.queueTimeoutMs, apiKey.createdAt, apiKey.lastUsedAt]
   );
   cacheApiKey(apiKey.key, apiKey).catch(() => {});
   return apiKey;
@@ -122,11 +143,16 @@ export async function updateApiKey(id, data) {
     // `off` replaces the legacy standalone enable/disable switch: a closed key
     // must not authenticate, while either usable mode reactivates it.
     const isActive = data.quotaMode !== undefined ? quotaMode !== "off" : merged.isActive;
+    // Clearing an override sends null/""/0 from the editor; all of them must
+    // store NULL so the key falls back to the instance default again.
+    const rpmLimit = positiveIntOrNull(merged.rpmLimit);
+    const rpmQueueMax = nonNegativeIntOrNull(merged.rpmQueueMax);
+    const queueTimeoutMs = positiveIntOrNull(merged.queueTimeoutMs);
     db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, lastUsedAt = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, merged.lastUsedAt || null, id]
+      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, rpmLimit = ?, rpmQueueMax = ?, queueTimeoutMs = ?, lastUsedAt = ? WHERE id = ?`,
+      [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, rpmLimit, rpmQueueMax, queueTimeoutMs, merged.lastUsedAt || null, id]
     );
-    result = { ...merged, quotaMode, isActive };
+    result = { ...merged, quotaMode, isActive, rpmLimit, rpmQueueMax, queueTimeoutMs };
   });
   if (result?.key) {
     invalidateQuotaCache(result.key);

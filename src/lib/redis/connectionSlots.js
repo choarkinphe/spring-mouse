@@ -227,33 +227,24 @@ async function reserveLocalHard(providerId, candidates, options, weight, leaseId
 /**
  * Ordered eligible candidates, one Redis round trip, unique lease.
  *
- * Without `options.providerLimit`, retain the historical soft overflow account
- * balancer. With a provider limit, wait for provider *and* account capacity;
- * requests are weighted and never overflow the configured hard caps.
+ * Wait for provider *and* account capacity; requests are weighted and never
+ * overflow the configured hard caps. When no channel-wide limit is configured,
+ * the sum of account limits is used as the provider ceiling.
  */
 export async function reserveConnectionSlot(candidates, options = {}) {
   if (!candidates.length) throw new Error("No eligible accounts for reservation");
   const id = randomUUID();
 
-  // Legacy path preserves balancing behavior for callers that have not opted
-  // into a provider-wide hard cap.
+  // Account limits are hard caps even when a channel-wide cap is not
+  // configured. The old legacy path intentionally selected an overflowing
+  // account once every account was full, which produced misleading states such
+  // as 14/8 and 7/4 in the dashboard. Use the same queued hard reservation path
+  // for every caller; an omitted provider limit becomes the sum of account caps.
   if (!Number.isFinite(options.providerLimit)) {
-    const index = await routingRedis((client) => client.eval(RESERVE_SCRIPT, {
-      keys: candidates.map((candidate) => slotKey(candidate.id)),
-      arguments: [id, String(LEASE_MS), ...candidates.map((candidate) => String(candidate.limit))],
-    }));
-    const redis = Number.isInteger(index) && index >= 1 && index <= candidates.length;
-    const chosen = redis ? index - 1 : localChoice(candidates);
-    const lease = { id, connectionId: candidates[chosen].id, redis, renewKeys: [slotKey(candidates[chosen].id)], renewMembers: [id], weight: 1 };
-    active.set(id, lease);
-    armRenewal();
-    return {
-      connectionId: lease.connectionId,
-      async release() {
-        if (!active.delete(id)) return;
-        if (!active.size) { clearInterval(state.renewalTimer); state.renewalTimer = null; }
-        if (redis) await routingRedis((client) => client.zRem(slotKey(lease.connectionId), id));
-      },
+    options = {
+      ...options,
+      providerId: options.providerId || candidates[0].providerId || "provider",
+      providerLimit: candidates.reduce((sum, candidate) => sum + positive(candidate.limit, DEFAULT_LIMIT), 0),
     };
   }
 

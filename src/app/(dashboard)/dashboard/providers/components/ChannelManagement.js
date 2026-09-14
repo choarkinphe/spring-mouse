@@ -658,6 +658,9 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
   const recentSuccessRate = connection.recentSuccessRate || { total: 0, success: 0, rate: null };
   const successRateLabel = recentSuccessRate.rate === null ? "—" : `${recentSuccessRate.rate}%`;
+  const failureHint = recentSuccessRate.failed > 0
+    ? `失败 ${recentSuccessRate.failed} 次${recentSuccessRate.rateLimited ? ` · GPT 限流 ${recentSuccessRate.rateLimited}` : ""}${recentSuccessRate.relayErrors ? ` · 中转异常 ${recentSuccessRate.relayErrors}` : ""}${recentSuccessRate.clientAborts ? ` · 客户端取消 ${recentSuccessRate.clientAborts}` : ""}${recentSuccessRate.unknownFailures ? ` · 原因未明 ${recentSuccessRate.unknownFailures}` : ""}`
+    : "近 100 次暂无失败";
   const successRateClass = recentSuccessRate.rate === null ? "text-[#647688]" : recentSuccessRate.rate >= 95 ? "text-emerald-300" : recentSuccessRate.rate >= 80 ? "text-amber-300" : "text-rose-300";
   // Who was behind that last request — the API key's display name. Resolved
   // server-side (apiKeyId → name); the raw key never reaches the client.
@@ -833,11 +836,16 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         <div className="mt-1.5 flex min-w-0 items-center text-xs">
           <span
             className={cn("mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.10] bg-white/[0.035] px-1.5 py-0.5 tabular-nums", successRateClass)}
-            title={`最近 100 次请求成功率：${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
+            title={`最近 100 次请求：${failureHint}；成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`}
           >
             <span className="material-symbols-outlined text-[13px]! leading-none">monitor_heart</span>
             {successRateLabel}
           </span>
+          {recentSuccessRate.total > 0 && recentSuccessRate.failed > 0 && (
+            <span className="min-w-0 truncate text-[11px] text-rose-300/85" title={failureHint}>
+              {failureHint}
+            </span>
+          )}
           <span
             className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
             title={lastRequestTitle}
@@ -872,10 +880,10 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                 concurrency.active >= concurrency.limit ? "text-amber-300"
                   : concurrency.active > 0 ? "text-sky-300" : "text-[#647688]",
               )}
-              title={`当前并发 ${concurrency.active} / ${concurrency.limit}\n长上下文请求按权重占用多个并发额度，数据来自本进程实时租约${concurrency.active === 0 ? "（当前空闲）" : ""}`}
+              title={`当前加权并发 ${concurrency.active} / ${concurrency.limit}\n账号达到上限后会等待，不再继续分配；长上下文请求按权重占用多个并发额度，数据来自本进程实时租约${concurrency.active === 0 ? "（当前空闲）" : ""}`}
             >
               <span className="material-symbols-outlined text-[14px]! leading-none">call_split</span>
-              <span>并发</span>
+              <span>加权并发</span>
               <span className="font-medium">{concurrency.active}/{concurrency.limit}</span>
             </span>
           )}

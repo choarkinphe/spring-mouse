@@ -310,16 +310,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
       lease = await reserveConnectionSlot(candidates.map((candidate) => ({
         id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
-      })), Number.isFinite(Number(providerConfiguredLimit)) ? {
+      })), {
         providerId,
-        providerLimit: Number(providerConfiguredLimit),
+        ...(Number.isFinite(Number(providerConfiguredLimit))
+          ? { providerLimit: Number(providerConfiguredLimit) }
+          : {}),
         weight: options.requestWeight ?? estimateRequestWeight(options.body),
         queueTimeoutMs: providerOverride.queueTimeoutMs
           ?? PROVIDERS[providerId]?.transport?.queueTimeoutMs,
         maxQueueSize: providerOverride.maxQueueSize
           ?? PROVIDERS[providerId]?.transport?.maxQueueSize,
         signal: options.signal,
-      } : {});
+      });
       connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
     const usesMouse = Boolean(connection.mouseId) && supportsMouseExecution(connection.provider);

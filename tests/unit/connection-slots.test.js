@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ eval: vi.fn(), zRem: vi.fn(async () => 1), offline: false }));
+const mocks = vi.hoisted(() => ({
+  eval: vi.fn(), zRem: vi.fn(async () => 1), zRemRangeByScore: vi.fn(async () => 0),
+  zCard: vi.fn(async () => 0), zAdd: vi.fn(async () => 1), pExpire: vi.fn(async () => 1),
+  offline: false,
+}));
 vi.mock("../../src/lib/redis/routingClient.js", () => ({ routingRedis: async (fn) => mocks.offline ? null : fn(mocks) }));
 const slots = await import("../../src/lib/redis/connectionSlots.js");
 const candidates = [{ id: "a", limit: 2 }, { id: "b", limit: 2 }];
@@ -11,9 +15,9 @@ describe("unique account leases", () => {
     mocks.eval.mockResolvedValue(2);
     const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);
     expect(lease.connectionId).toBe("b"); expect(mocks.eval).toHaveBeenCalledOnce();
-    expect(mocks.eval.mock.calls[0][1].keys).toHaveLength(2);
+    expect(mocks.eval.mock.calls[0][1].keys).toHaveLength(3);
     await lease.release(); await lease.release();
-    expect(mocks.zRem).toHaveBeenCalledOnce();
+    expect(mocks.zRem).toHaveBeenCalled();
     expect(slots.getLocalSlotStatus().active).toBe(0);
   });
   it("uses different release tokens for overlapping requests", async () => {
@@ -22,12 +26,17 @@ describe("unique account leases", () => {
     expect(new Set(tokens).size).toBe(100);
     expect(slots.getLocalSlotStatus().active).toBe(100);
   });
-  it("balances AND counts overflow during Redis outage", async () => {
+  it("keeps account caps during Redis outage", async () => {
     mocks.offline = true;
-    leases = await Promise.all(Array.from({length: 20}, () => slots.reserveConnectionSlot(candidates)));
-    expect(leases.filter((l) => l.connectionId === "a")).toHaveLength(10);
-    expect(leases.filter((l) => l.connectionId === "b")).toHaveLength(10);
-    expect(slots.getLocalSlotStatus()).toEqual({active: 20, redis: 0, queued: 0});
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => slots.reserveConnectionSlot(candidates, {
+      queueTimeoutMs: 20,
+    })));
+    const admitted = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+    leases.push(...admitted);
+    expect(admitted.filter((lease) => lease.connectionId === "a")).toHaveLength(2);
+    expect(admitted.filter((lease) => lease.connectionId === "b")).toHaveLength(2);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(2);
+    expect(slots.getLocalSlotStatus()).toEqual({ active: 4, redis: 0, queued: 0 });
   });
   it("shares live accounting across module reloads / route bundles", async () => {
     const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);

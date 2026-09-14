@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getEffectiveConnectionStatus } from "../src/shared/utils/connectionStatus.js";
 
 const argv = process.argv.slice(2);
 const arg = (name, fallback) => {
@@ -65,7 +66,12 @@ for (const [prov, list] of byProv) {
     if (c.isActive !== 1) flags.push("已停用");
     if (locks.length) flags.push("LOCK " + locks.join(" / "));
     if (d.backoffLevel) flags.push(`退避${d.backoffLevel}级`);
-    if (d.testStatus && d.testStatus !== "active") flags.push(`test=${d.testStatus}`);
+    // Report the status the badge shows, not the raw stored value: a cooldown
+    // derived status (degraded / limited / unavailable) stops counting once its
+    // cooldown has run out. Without this one upstream blip keeps every account
+    // flagged for days after the panel has long read 可用.
+    const status = getEffectiveConnectionStatus(d, now);
+    if (status && status !== "active") flags.push(`test=${status}`);
     if (d.lastError) flags.push(`err=${String(d.lastError).slice(0, 48)}`);
     const dot = c.isActive === 1 ? "●" : "○";
     console.log(`  ${dot} ${String(c.name || c.id).slice(0, 30).padEnd(30)} ${flags.join("  ") || "正常"}`);

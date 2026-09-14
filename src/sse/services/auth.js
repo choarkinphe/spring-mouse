@@ -470,10 +470,31 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // fault, so it must not produce a modelLock and must not downgrade
     // testStatus — locking every account in turn on a 5-second upstream hiccup
     // is what starved the pool and turned the hiccup into a 60s outage.
-    // The upstream evidence is still persisted, because the channel panel has to
-    // answer "upstream error, or a local policy block?".
+    //
+    // A transport failure is the same story one layer further out. `isUpstream`
+    // is false exactly when we never received an HTTP answer at all (DNS, connect
+    // timeout, socket reset, or a Mouse node that never picked the task up) and
+    // chatCore synthesised a 502 for it. That is our host's or our node's fault,
+    // never the account's — and charging it to the account locked the *entire
+    // pool* inside a single rotation pass, so one host-wide network blip painted
+    // every channel 「过载」at once.
+    //
+    // Either way the evidence is still persisted, because the channel panel has
+    // to answer "upstream error, or a local policy block?".
+    //
+    // `transport` is kept separate from `modelLevel` on purpose: a model-level
+    // signal means the model really is busy and may consume the bounded
+    // fan-out budget, while a transport failure says nothing about the model.
+    // Counting it as model-level would let two dead nodes in front of a healthy
+    // account fail the request instead of rotating to that account.
+    const transportFailure = !isUpstream && Number(status) >= 500 && shouldFallback;
     const modelLevelSignal = modelLevel === true && !(cooldownMs > 0);
-    decision = { shouldFallback, cooldownMs, modelLevel: modelLevelSignal };
+    decision = {
+      shouldFallback,
+      cooldownMs: transportFailure ? 0 : cooldownMs,
+      modelLevel: modelLevelSignal,
+      transport: transportFailure,
+    };
     if (!shouldFallback) return { value: decision };
 
     const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
@@ -494,7 +515,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     };
 
     // Model-level: record the evidence, keep the account's health untouched.
-    if (modelLevelSignal) return { value: decision, update: evidence };
+    // A transport failure gets the same treatment — we never heard from the
+    // upstream, so there is no account fault to record.
+    if (modelLevelSignal || decision.transport) return { value: decision, update: evidence };
 
     const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
     const lockKey = Object.keys(lockUpdate)[0];
@@ -508,6 +531,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       update: {
         ...lockUpdate,
         testStatus: status === 429 ? "limited" : status >= 500 ? "degraded" : "unavailable",
+        // The badge is derived from a cooldown, so it has to expire with it.
+        // `testStatus` alone never did: the lock above ran out after 30s while
+        // the account kept rendering 「过载」until some later request happened to
+        // succeed on it, which on an idle channel is never.
+        testStatusUntil: new Date(Date.now() + cooldownMs).toISOString(),
         backoffLevel: newBackoffLevel ?? backoffLevel,
         healthRevision: (conn?.healthRevision || 0) + 1,
         ...evidence,
@@ -521,6 +549,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     if (result.lockKey) {
       const connName = result.reason ? (result.connectionName || connectionId.slice(0, 8)) : connectionId.slice(0, 8);
       log.warn("AUTH", `${connName} locked ${result.lockKey} for ${Math.round(result.cooldownMs / 1000)}s [${status}]`);
+    } else if (decision.transport) {
+      log.routeLine("⚠️", "🔁", `${provider || "?"}/${model || "?"} | no HTTP answer from upstream (transport ${status}) · rotated ${connectionId.slice(0, 8)} without locking it`);
     } else if (decision.modelLevel) {
       log.routeLine("⚠️", "🔁", `${provider || "?"}/${model || "?"} | upstream ${status} is a model-level signal · rotated ${connectionId.slice(0, 8)} without locking it`);
     }
@@ -568,13 +598,18 @@ export async function clearAccountError(connectionId, currentConnection, model =
       if (model && (k === `modelLock_${model}` || k === "modelLock___all")) return true;
       return conn[k] && new Date(conn[k]).getTime() <= now;
     });
-    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return { value: null };
+    // `limited` / `degraded` / `unavailable` are all cooldown-derived, so a
+    // success on this account ends them even when the row carries no modelLock
+    // key left to expire. Requiring a lock key here left rows that only ever
+    // recorded a gateway failure (no lock was written) stuck on 「过载」forever.
+    if (keysToClear.length === 0 && !["limited", "degraded", "unavailable"].includes(conn.testStatus) && !conn.lastError) return { value: null };
 
     const remainingActiveLocks = allLockKeys.filter(k => !keysToClear.includes(k) && conn[k] && new Date(conn[k]).getTime() > now);
     const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
     if (remainingActiveLocks.length === 0) {
       Object.assign(clearObj, {
         testStatus: "active",
+        testStatusUntil: null,
         lastError: null,
         errorCode: null,
         lastErrorAt: null,

@@ -21,6 +21,7 @@ import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelI
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
 import { cn } from "@/shared/utils/cn";
+import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
 import AddApiKeyModal from "../[id]/AddApiKeyModal";
@@ -96,15 +97,6 @@ function getChannelIconSrc(providerId, connections = []) {
   return normalizeCustomChannelIconSrc(customIcon) || getProviderIconSrc(providerId);
 }
 
-function hasActiveModelLock(connection) {
-  const now = Date.now();
-  return Object.entries(connection || {}).some(([key, value]) => {
-    if (!key.startsWith("modelLock_") || !value) return false;
-    const at = new Date(value).getTime();
-    return Number.isFinite(at) && at > now;
-  });
-}
-
 // Cooldown countdown for the account badge. The remaining time is computed by
 // the concurrency route, so render never reads the clock (which would trip
 // react-hooks/purity) — a fresh value rides on the existing 2s poll.
@@ -116,28 +108,72 @@ function formatLockCountdown(remainingMs) {
   return rest ? `${minutes}m${rest}s` : `${minutes}m`;
 }
 
+const ACCOUNT_STATUS_CLASS = {
+  muted: "border-white/10 text-text-muted",
+  warning: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+  error: "border-rose-400/25 bg-rose-400/10 text-rose-300",
+  success: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
+};
+
+// The rule itself lives in src/shared/utils/connectionStatus.js so the account
+// rows and the channel list cannot disagree, and so "does this cooldown still
+// count?" has exactly one answer. Rendering the raw testStatus here is what let
+// a two-minute network blip keep every channel reading 「过载」indefinitely.
 function getAccountStatus(connection) {
-  if (connection.isActive === false) return { label: "已停用", className: "border-white/10 text-text-muted" };
-  if (connection.testStatus === "limited") return { label: "限流", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
-  if (connection.testStatus === "degraded") return { label: "过载", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
-  if (["error", "expired"].includes(connection.testStatus)) return { label: "异常", className: "border-rose-400/25 bg-rose-400/10 text-rose-300" };
-  if (connection.testStatus === "unavailable" && hasActiveModelLock(connection)) {
-    const code = Number(connection.errorCode ?? connection.lastUpstreamStatus);
-    if (code === 429) return { label: "限流", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
-    if (code >= 500) return { label: "过载", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
-    return { label: "异常", className: "border-rose-400/25 bg-rose-400/10 text-rose-300" };
-  }
-  if (["active", "success", "unavailable"].includes(connection.testStatus)) return { label: "可用", className: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300" };
-  return { label: "待检测", className: "border-amber-400/25 bg-amber-400/10 text-amber-200" };
+  const { label, variant } = getAccountStatusInfo(connection);
+  return { label, className: ACCOUNT_STATUS_CLASS[variant] };
 }
 
-function getUpstreamErrorTitle(connection) {
-  const error = connection?.lastUpstreamError;
-  if (!error) return "";
-  const layer = connection.lastUpstreamLayer === "gateway" ? "中间网关" : connection.lastUpstreamLayer === "network" ? "网络层" : "模型上游";
-  const source = `${layer} · ${connection.lastUpstreamSource === "sse" ? "HTTP SSE" : `HTTP ${connection.lastUpstreamStatus ?? ""}`}`.trim();
-  const raw = connection.lastUpstreamRaw && connection.lastUpstreamRaw !== error ? `\n${connection.lastUpstreamRaw}` : "";
-  return `${source}\n${error}${raw}`;
+// A connection carries two independent failure records, written by different
+// branches of markAccountUnavailable (auth.js):
+//   lastUpstream* — the upstream really answered with an error (HTTP / SSE)
+//   gatewayError* — Spring itself failed: tunnel timeout, fetch failed, ...
+// This row has to answer "why did the last attempt fail?", so we render
+// whichever record is fresher. gatewayError* used to be written but never
+// displayed, which made every tunnel / network outage invisible here even
+// though it is the most common failure mode in production.
+function getConnectionErrorEvidence(connection) {
+  const upstreamAt = Date.parse(connection?.lastUpstreamAt || "") || 0;
+  const gatewayAt = Date.parse(connection?.gatewayErrorAt || "") || 0;
+  const upstream = connection?.lastUpstreamError ? {
+    kind: "upstream",
+    text: connection.lastUpstreamError,
+    iso: connection.lastUpstreamAt || null,
+    at: upstreamAt,
+    status: connection.lastUpstreamStatus ?? null,
+    source: connection.lastUpstreamSource || null,
+    layer: connection.lastUpstreamLayer || "provider",
+    raw: connection.lastUpstreamRaw || null,
+  } : null;
+  const gateway = connection?.gatewayError ? {
+    kind: "gateway",
+    text: connection.gatewayError,
+    iso: connection.gatewayErrorAt || null,
+    at: gatewayAt,
+    status: connection.gatewayErrorCode ?? null,
+    source: null,
+    layer: "gateway",
+    raw: null,
+  } : null;
+  if (!upstream) return gateway;
+  if (!gateway) return upstream;
+  return gatewayAt > upstreamAt ? gateway : upstream;
+}
+
+// Inline prefix: says which hop failed, so a tunnel timeout is not misread as
+// "the model rejected us".
+function getErrorEvidenceLayerLabel(evidence) {
+  if (!evidence) return "";
+  if (evidence.layer === "gateway") return "中间网关";
+  if (evidence.layer === "network") return "网络层";
+  if (evidence.source === "sse") return "模型上游 SSE";
+  return `模型 HTTP ${evidence.status ?? ""}`.trim();
+}
+
+function getErrorEvidenceTitle(evidence) {
+  if (!evidence) return "";
+  const raw = evidence.raw && evidence.raw !== evidence.text ? `\n${evidence.raw}` : "";
+  return `${getErrorEvidenceLayerLabel(evidence)} · HTTP ${evidence.status ?? ""}\n${evidence.text}${raw}`;
 }
 
 function formatRelativeTime(isoString) {
@@ -651,10 +687,13 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const quotaAvailable = canTrackQuota(connection);
   const isCodex = connection.provider === "codex";
   const status = getAccountStatus(connection);
-  const upstreamErrorAt = formatRelativeTime(connection.lastUpstreamAt);
-  // A healthy badge means the account has recovered. Any upstream error kept in
-  // the record is history, so demote it to a muted hint instead of a red alert.
-  const upstreamErrorStale = status.label === "可用";
+  // Two failure records can coexist (a tunnel timeout followed by an upstream
+  // 503); only the fresher one is worth the single line this row can spare.
+  const errorEvidence = getConnectionErrorEvidence(connection);
+  const errorEvidenceAt = formatRelativeTime(errorEvidence?.iso);
+  // A healthy badge means the account has recovered. Any error kept in the
+  // record is history, so demote it to a muted hint instead of a red alert.
+  const errorEvidenceStale = status.label === "可用";
   const lastRequestAt = formatRelativeTime(connection.lastRequestAt);
   const recentSuccessRate = connection.recentSuccessRate || { total: 0, success: 0, rate: null };
   const successRateLabel = recentSuccessRate.rate === null ? "—" : `${recentSuccessRate.rate}%`;
@@ -694,14 +733,14 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         connection.lastRequestModel ? `模型：${connection.lastRequestModel}` : null,
       ].filter(Boolean).join("\n")
     : "该账号还没有请求记录";
-  const copyUpstreamError = async (event) => {
+  const copyErrorEvidence = async (event) => {
     event.stopPropagation();
     const details = [
       `账号：${getConnectionName(connection)}`,
       `渠道：${getProviderName(connection.provider)}`,
       connection.mouseId ? `Mouse：${connection.mouseId}` : null,
-      connection.lastUpstreamAt ? `时间：${new Date(connection.lastUpstreamAt).toLocaleString("zh-CN", { hour12: false })}` : null,
-      getUpstreamErrorTitle(connection),
+      errorEvidence?.iso ? `时间：${new Date(errorEvidence.iso).toLocaleString("zh-CN", { hour12: false })}` : null,
+      getErrorEvidenceTitle(errorEvidence),
     ].filter(Boolean).join("\n");
     try {
       await navigator.clipboard.writeText(details);
@@ -831,20 +870,20 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
         <div className="mt-2 flex min-w-0 items-center text-xs">
-          {connection.lastUpstreamError && connection.isActive !== false ? (
+          {errorEvidence && connection.isActive !== false ? (
             <div
-              className={cn("flex min-w-0 flex-1 items-center gap-1.5", upstreamErrorStale ? "text-[#647688]" : "text-rose-400")}
-              title={`${upstreamErrorAt ? `记录于 ${upstreamErrorAt}\n` : ""}${getUpstreamErrorTitle(connection)}\n双击复制完整错误详情`}
-              onDoubleClick={copyUpstreamError}
+              className={cn("flex min-w-0 flex-1 items-center gap-1.5", errorEvidenceStale ? "text-[#647688]" : "text-rose-400")}
+              title={`${errorEvidenceAt ? `记录于 ${errorEvidenceAt}\n` : ""}${getErrorEvidenceTitle(errorEvidence)}\n双击复制完整错误详情`}
+              onDoubleClick={copyErrorEvidence}
               role="button"
               tabIndex={0}
             >
-              <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{upstreamErrorStale ? "history" : "error"}</span>
+              <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{errorEvidenceStale ? "history" : "error"}</span>
               <span className="min-w-0 flex-1 truncate">
-                {upstreamErrorStale ? "上次错误 · " : connection.lastUpstreamLayer === "gateway" ? "中间网关 · " : connection.lastUpstreamLayer === "network" ? "网络层 · " : connection.lastUpstreamSource === "sse" ? "模型上游 SSE · " : `模型 HTTP ${connection.lastUpstreamStatus ?? ""} · `}
-                {connection.lastUpstreamError}
+                {errorEvidenceStale ? "上次错误 · " : `${getErrorEvidenceLayerLabel(errorEvidence)} · `}
+                {errorEvidence.text}
               </span>
-              {upstreamErrorAt && <span className="shrink-0 tabular-nums">{upstreamErrorAt}</span>}
+              {errorEvidenceAt && <span className="shrink-0 tabular-nums">{errorEvidenceAt}</span>}
             </div>
           ) : (
             <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>
@@ -856,7 +895,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
             breakdown is deliberately not printed inline: it is the only part
             whose width grew with the data, so it now lives in the success-rate
             chip's hover tooltip — the same box style as the cooldown lock. */}
-        <div className="mt-2 flex min-w-0 items-center gap-2 text-xs" onDoubleClick={copyUpstreamError} role="button" tabIndex={0} title="双击复制错误详情">
+        <div className="mt-2 flex min-w-0 items-center gap-2 text-xs" onDoubleClick={copyErrorEvidence} role="button" tabIndex={0} title="双击复制错误详情">
           <Tooltip text={successRateHint}>
             <span
               className={cn("flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.035] px-1.5 text-[11px] tabular-nums", successRateClass)}

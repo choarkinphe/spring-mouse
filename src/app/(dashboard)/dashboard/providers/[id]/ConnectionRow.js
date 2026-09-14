@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { getStatusVariant as getConnectionStatusVariant, getEffectiveConnectionStatus } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
@@ -54,10 +54,10 @@ export default function ConnectionRow({ connection, mouse, isOAuth, isFirst, isL
     };
   }, [modelLockUntil]);
 
-  // Determine effective status (override unavailable if cooldown expired)
-  const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
-    ? "active"  // Cooldown expired → treat as active
-    : connection.testStatus;
+  // Every cooldown-derived status (unavailable / degraded / limited) is history
+  // once its cooldown runs out — not just `unavailable`. See
+  // src/shared/utils/connectionStatus.js for the single rule.
+  const effectiveStatus = getEffectiveConnectionStatus(connection);
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
 

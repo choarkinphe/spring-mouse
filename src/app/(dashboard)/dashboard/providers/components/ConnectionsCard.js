@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { getStatusVariant as getConnectionStatusVariant, getEffectiveConnectionStatus } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Drawer, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 
@@ -50,7 +50,9 @@ function ConnectionRow({ connection, isOAuth, isFirst, isLast, onMoveUp, onMoveD
   }, [modelLockUntil]);
 
 
-  const effectiveStatus = connection.testStatus === "unavailable" && !isCooldown ? "active" : connection.testStatus;
+  // Cooldown-derived statuses expire with their cooldown; see
+  // src/shared/utils/connectionStatus.js.
+  const effectiveStatus = getEffectiveConnectionStatus(connection);
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
 

@@ -95,7 +95,7 @@ export async function handleChat(request, clientRawRequest = null) {
   // optional guard accurate, this records last-used time and lets the live
   // topology show the configured API key name instead of an anonymous caller.
   const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal });
   if (authFailure) return authFailure;
   const accessTags = await resolveApiKeyAccessTags(apiKey);
 
@@ -421,19 +421,29 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (request?.signal?.aborted || result.status === 499) return errorResponse(499, "Request aborted");
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
-    const { shouldFallback, modelLevel } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
+    const { shouldFallback, modelLevel, transport } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
       // Model-level failures (upstream busy) are accounted separately: they must
       // not trip the long provider outage breaker, which is reserved for an
       // upstream that is actually broken rather than merely saturated.
-      const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel });
+      //
+      // A transport failure — we never received an HTTP answer at all (our own
+      // network, or a node that never picked the task up) — borrows that same
+      // short, model-scoped throttle for the same reason: it is not the
+      // account's fault, so it must neither quarantine accounts nor open the
+      // long breaker. It deliberately does NOT increment modelLevelFailures,
+      // because it says nothing about the model and must not consume the
+      // bounded fan-out budget: two dead nodes in front of a healthy account
+      // must still rotate to that account.
+      const throttled = modelLevel || transport;
+      const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel: throttled });
       if (breaker.open) {
         const retryAfterMs = breaker.retryAfterMs || 60_000;
         const retryAt = new Date(Date.now() + retryAfterMs).toISOString();
         const human = `retry after ${Math.max(1, Math.round(retryAfterMs / 1000))}s`;
-        log.warn(modelLevel ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
-        saveOutcome(modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
+        log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
+        saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
         return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
           result.error || "Provider model is temporarily unavailable", retryAt, human);
       }

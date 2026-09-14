@@ -160,8 +160,8 @@ const getPageInfo = (pathname) => {
     };
   if (pathname.includes("/console-log"))
     return {
-      title: "Console Log",
-      description: "Live server console output",
+      title: "控制台",
+      description: "Live server console output and request diagnostics",
       icon: "monitor",
       breadcrumbs: [],
     };

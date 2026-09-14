@@ -36,6 +36,12 @@ export default function ConsoleLogClient() {
   const [requestLogData, setRequestLogData] = useState(null);
   const [expandedSessions, setExpandedSessions] = useState({});
   const [activeView, setActiveView] = useState({ type: "console" });
+  const [internalStats, setInternalStats] = useState(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [recentRequests, setRecentRequests] = useState([]);
+  const [selectedRequest, setSelectedRequest] = useState(null);
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  const [loadingRequest, setLoadingRequest] = useState(false);
   const [filePreview, setFilePreview] = useState(null);
   const [loadingStorage, setLoadingStorage] = useState(true);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -44,6 +50,12 @@ export default function ConsoleLogClient() {
   const [clearTarget, setClearTarget] = useState(null);
   const [clearing, setClearing] = useState(false);
   const logRef = useRef(null);
+  const statsSinceRef = useRef(new Date().toISOString());
+  useEffect(() => {
+    const saved = window.sessionStorage.getItem("spring-mouse-console-stats-since");
+    if (saved) statsSinceRef.current = saved;
+    else window.sessionStorage.setItem("spring-mouse-console-stats-since", statsSinceRef.current);
+  }, []);
 
   const loadRequestLogStorage = useCallback(async () => {
     setLoadingStorage(true);
@@ -63,6 +75,57 @@ export default function ConsoleLogClient() {
   useEffect(() => {
     loadRequestLogStorage();
   }, [loadRequestLogStorage]);
+
+  const loadInternalStats = useCallback(async () => {
+    setLoadingStats(true);
+    try {
+      const response = await fetch(`/api/usage/internal-stats?since=${encodeURIComponent(statsSinceRef.current)}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "无法读取请求统计");
+      setInternalStats(payload);
+      setRecentRequests(payload.recent || []);
+    } catch (error) {
+      setStorageError(error.message || "无法读取请求统计");
+    } finally {
+      setLoadingStats(false);
+    }
+  }, []);
+
+  const openRequestDetail = async (request) => {
+    const id = request?.id;
+    setSelectedRequest({ ...request, status: request.status || "usage-only", latency: {}, request: null, providerRequest: null, providerResponse: null, response: null, _notice: "正在读取完整请求明细…" });
+    if (!id) return;
+    setLoadingRequest(true);
+    try {
+      let detail = null;
+      // requestDetails is flushed in a short batch after usageHistory is written.
+      // Retry briefly so clicking "查看" immediately after a request does not
+      // show a permanent "payload unavailable" state.
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const response = await fetch(`/api/usage/request-details?id=${encodeURIComponent(id)}&includePayload=1`, { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || "无法读取请求明细");
+        detail = payload.detail || null;
+        if (detail && detail.status !== "usage-only") break;
+        if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      setSelectedRequest(detail && detail.status !== "usage-only"
+        ? detail
+        : { ...request, ...(detail || {}), _notice: detail?._notice || "仅找到基础请求记录，完整报文未保存或已被清理。" });
+    } catch (error) {
+      setSelectedRequest((current) => current ? { ...current, _notice: `完整报文读取失败：${error.message || "未知错误"}` } : current);
+    } finally {
+      setLoadingRequest(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeView.type !== "internal-stats") return undefined;
+    const timer = setInterval(() => {
+      loadInternalStats();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [activeView.type, loadInternalStats]);
 
   const handleClearConsole = async () => {
     try {
@@ -182,9 +245,10 @@ export default function ConsoleLogClient() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
-      <div className="shrink-0 px-1">
-        <h2 className="font-semibold">日志中心</h2>
-        <p className="mt-0.5 text-sm text-text-muted">默认查看当前控制台；从左侧文件列表选择日志即可预览内容。</p>
+      <div className="flex shrink-0 items-center justify-between px-1">
+        <div><h2 className="font-semibold">控制台</h2>
+        <p className="mt-0.5 text-sm text-text-muted">实时查看服务日志、请求统计与请求调试文件。</p></div>
+        <button type="button" onClick={() => { const next = !debugEnabled; setDebugEnabled(next); window.dispatchEvent(new CustomEvent("spring-mouse-debug-toggle", { detail: { enabled: next } })); }} className="flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 px-3 py-2 text-sm text-brand-400 hover:bg-brand-500/20"><span className="material-symbols-outlined text-[17px]">forum</span>{debugEnabled ? "关闭调试" : "调试开关"}</button>
       </div>
 
       {storageError && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">{storageError}</p>}
@@ -203,11 +267,17 @@ export default function ConsoleLogClient() {
                 <button type="button" onClick={() => { setActiveView({ type: "console" }); setFilePreview(null); }} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left text-sm">
                   <span className={`h-2 w-2 rounded-full ${connected ? "bg-green-500" : "bg-text-muted"}`} />
                   <span className="material-symbols-outlined text-[18px]">terminal</span>
-                  <span className="min-w-0 flex-1 font-medium">当前控制台</span>
+                  <span className="min-w-0 flex-1 font-medium">控制台</span>
                   <span className="text-[11px] text-text-muted">实时</span>
                 </button>
                 <button type="button" onClick={handleClearConsole} title="清空当前控制台显示" aria-label="清空当前控制台显示" className="mr-1 rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-main"><span className="material-symbols-outlined text-[15px]">delete</span></button>
               </div>
+
+              <button type="button" onClick={() => { setActiveView({ type: "internal-stats" }); setFilePreview(null); loadInternalStats(); }} className={`mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm ${activeView.type === "internal-stats" ? "bg-brand-500/15 text-brand-500" : "text-text-main hover:bg-surface-2"}`}>
+                <span className="material-symbols-outlined text-[18px]">analytics</span>
+                <span className="min-w-0 flex-1 font-medium">请求统计</span>
+                <span className="text-[11px] text-text-muted">近100次</span>
+              </button>
 
               <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-4">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">请求调试文件</span>
@@ -247,6 +317,11 @@ export default function ConsoleLogClient() {
                 <div ref={logRef} className="custom-scrollbar min-h-0 flex-1 overflow-auto overscroll-contain bg-black p-4 font-mono text-xs leading-5">{logs.length === 0 ? <span className="text-text-muted">暂无控制台日志。</span> : <div>{logs.map((line, index) => <div key={index}>{colorLine(line)}</div>)}</div>}</div>
                 <p className="shrink-0 border-t border-border px-4 py-2 text-xs text-text-muted">清空显示仅清理当前服务进程的内存缓冲，不会删除请求调试文件。</p>
               </>
+            ) : activeView.type === "internal-stats" ? (
+              <>
+                <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求统计</h3><p className="text-xs text-text-muted">本次打开控制台后的请求；仅统计真实写入的 Spring Mouse 处理结果</p></div><button type="button" onClick={loadInternalStats} className="rounded p-1 text-text-muted hover:bg-surface-2"><span className={`material-symbols-outlined text-[18px] ${loadingStats ? "animate-spin" : ""}`}>refresh</span></button></div>
+                {loadingStats && !internalStats ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取统计…</div> : internalStats ? <div className="custom-scrollbar min-h-0 flex-1 overflow-auto p-4"><div className="grid grid-cols-2 gap-3 md:grid-cols-4"><div className="rounded-lg border border-border p-3"><p className="text-xs text-text-muted">总请求</p><p className="mt-1 text-2xl font-semibold">{internalStats.total}</p></div><div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="text-xs text-text-muted">成功</p><p className="mt-1 text-2xl font-semibold text-emerald-400">{internalStats.success}</p></div><div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3"><p className="text-xs text-text-muted">Spring Mouse 自身错误</p><p className="mt-1 text-2xl font-semibold text-rose-400">{internalStats.internal}</p></div><div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"><p className="text-xs text-text-muted">上游错误</p><p className="mt-1 text-2xl font-semibold text-amber-400">{internalStats.upstream}</p></div></div><h4 className="mt-6 mb-2 text-sm font-semibold">状态明细</h4><div className="space-y-2">{internalStats.byStatus.map((item) => <div key={item.status} className="flex items-center justify-between rounded border border-border px-3 py-2 text-sm"><span className="font-mono text-text-muted">{item.status}</span><span className="font-semibold tabular-nums">{item.count}</span></div>)}</div><h4 className="mt-6 mb-2 text-sm font-semibold">最新 10 条请求</h4><div className="overflow-x-auto rounded-lg border border-border"><table className="w-full text-left text-xs"><thead className="bg-surface-2 text-text-muted"><tr><th className="px-3 py-2">时间</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">提供商</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">Token</th><th className="px-3 py-2">明细</th></tr></thead><tbody>{recentRequests.map((item) => <tr key={item.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => openRequestDetail(item)}><td className="whitespace-nowrap px-3 py-2 text-text-muted">{item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="max-w-[14rem] truncate px-3 py-2 font-mono" title={item.model}>{item.model || "-"}</td><td className="px-3 py-2">{item.provider || "-"}</td><td className="px-3 py-2 font-mono">{item.status || "-"}</td><td className="px-3 py-2 tabular-nums">{(Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0)}</td><td className="px-3 py-2 text-brand-400">查看</td></tr>)}</tbody></table>{recentRequests.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">暂无请求记录。</p>}</div></div> : <div className="flex flex-1 items-center justify-center text-sm text-text-muted">暂无统计。</div>}
+              </>
             ) : (
               <>
                 <div className="shrink-0 border-b border-border px-4 py-3"><h3 className="truncate font-mono text-sm font-semibold">{activeView.name}</h3><p className="mt-1 text-xs text-text-muted">{activeView.session} {filePreview ? `· ${formatBytes(filePreview.bytes)}` : ""}</p></div>
@@ -257,7 +332,9 @@ export default function ConsoleLogClient() {
         </div>
       </Card>
 
-      <p className="shrink-0 px-1 text-xs text-text-muted">完整请求/响应副本可能含敏感内容并快速占用磁盘。仅在排障时临时开启，完成后及时关闭和清理。</p>
+      <p className="shrink-0 px-1 text-xs text-text-muted">请求明细仅保留最近 100 条；完整请求和响应可能包含敏感内容。</p>
+
+      {selectedRequest && <div className="fixed inset-y-0 right-0 z-[90] flex w-[min(760px,96vw)] flex-col border-l border-border bg-surface shadow-2xl"><div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求明细</h3><p className="text-xs text-text-muted">{selectedRequest.timestamp ? new Date(selectedRequest.timestamp).toLocaleString("zh-CN", { hour12: false }) : ""} · {selectedRequest.model || "未知模型"}</p></div><button type="button" onClick={() => setSelectedRequest(null)} className="rounded p-1 text-text-muted hover:bg-surface-2" aria-label="关闭请求明细"><span className="material-symbols-outlined">close</span></button></div>{loadingRequest ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取…</div> : <div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-auto p-4">{selectedRequest._notice && <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{selectedRequest._notice}</div>}<div className="grid grid-cols-2 gap-2 text-xs"><div className="rounded border border-border p-2"><span className="text-text-muted">状态</span><p className="mt-1 font-mono">{selectedRequest.status || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">提供商 / 模型</span><p className="mt-1 break-all font-mono">{selectedRequest.provider || "-"} / {selectedRequest.model || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">TTFT</span><p className="mt-1">{selectedRequest.latency?.ttft ?? "-"} ms</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">总耗时</span><p className="mt-1">{selectedRequest.latency?.total ?? "-"} ms</p></div></div>{["request", "providerRequest", "providerResponse", "response"].map((key) => <section key={key}><h4 className="mb-1 text-sm font-semibold">{key}</h4><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-black/30 p-3 font-mono text-[11px] leading-5">{JSON.stringify(selectedRequest[key] ?? null, null, 2)}</pre></section>)}</div>}</div>}
 
       <ConfirmModal
         isOpen={clearTarget !== null}

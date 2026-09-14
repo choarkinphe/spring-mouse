@@ -2,10 +2,10 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { compactJsonField } from "@/lib/requestDetailCompact.js";
 
-const DEFAULT_MAX_RECORDS = 200;
+const DEFAULT_MAX_RECORDS = 100;
 const DEFAULT_BATCH_SIZE = 20;
-const DEFAULT_FLUSH_INTERVAL_MS = 5000;
-const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
+const DEFAULT_FLUSH_INTERVAL_MS = 500;
+const DEFAULT_MAX_JSON_SIZE = 128 * 1024;
 const CONFIG_CACHE_TTL_MS = 5000;
 
 let cachedConfig = null;
@@ -24,10 +24,10 @@ async function getObservabilityConfig() {
 
     cachedConfig = {
       enabled,
-      maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
+      maxRecords: Math.min(100, settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10)),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
-      flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-      maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
+      flushIntervalMs: Math.min(500, settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10)),
+      maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "128", 10)) * 1024,
     };
   } catch {
     cachedConfig = {
@@ -72,6 +72,7 @@ function prepareRecord(item, config) {
 
   return {
     id: item.id || generateDetailId(item.model),
+    requestId: item.requestId || null,
     provider: item.provider || null,
     model: item.model || null,
     connectionId: item.connectionId || null,
@@ -115,6 +116,8 @@ async function flushToDatabase() {
             [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
           );
         }
+        const latest = items[items.length - 1];
+        console.log(`[RequestDetail] persisted ${items.length} record(s) · ${latest.requestId || latest.id} · ${latest.provider || "-"}/${latest.model || "-"} · ${latest.status || "-"}`);
 
         const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
         if (cnt && cnt.c > config.maxRecords) {
@@ -134,7 +137,10 @@ async function flushToDatabase() {
 
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
-  if (!config.enabled) {return;}
+  console.log(`[RequestDetail] queued ${detail.requestId || detail.id || "-"} · ${detail.provider || "-"}/${detail.model || "-"} · ${detail.status || "-"}`);
+  // The console's request-detail drawer and "view last 10 requests" rely on a
+  // bounded rolling history. Keep writing it even when verbose request/response
+  // file dumps are disabled; retention is capped at 100 records below.
 
   // Bound large payloads before they enter the delayed write queue. Otherwise
   // long-context requests remain strongly referenced until the next flush.
@@ -204,6 +210,29 @@ export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
+}
+
+export async function getRequestDetailByRequestId(requestId) {
+  const db = await getAdapter();
+  const byRequestId = db.get(`SELECT data FROM requestDetails WHERE json_extract(data, '$.requestId') = ? LIMIT 1`, [requestId]);
+  if (byRequestId) return parseJson(byRequestId.data, null);
+
+  const usage = db.get(`SELECT timestamp, provider, model, connectionId FROM usageHistory WHERE requestId = ? LIMIT 1`, [requestId]);
+  if (!usage) return null;
+  return {
+    id: requestId,
+    timestamp: usage.timestamp,
+    provider: usage.provider,
+    model: usage.model,
+    connectionId: usage.connectionId,
+    status: "usage-only",
+    latency: {},
+    request: null,
+    providerRequest: null,
+    providerResponse: null,
+    response: null,
+    _notice: "仅找到基础请求记录，完整报文未保存或已被清理。",
+  };
 }
 
 const _shutdownHandler = async () => {

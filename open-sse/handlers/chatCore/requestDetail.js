@@ -74,6 +74,7 @@ export function buildRequestDetail(base, overrides = {}) {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
+    requestId: base.requestId || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
@@ -105,7 +106,7 @@ export function formatDoneLine({ usage, latency }) {
   return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
 }
 
-export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", label = "USAGE", silent = false }) {
+export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", errorStatus = null, label = "USAGE", silent = false }) {
   tokens = tokens && typeof tokens === "object" ? tokens : {};
 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
@@ -138,6 +139,6 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     appName: appName || null,
     userAgent: userAgent || null,
     sourceUrl: sourceUrl || null,
-    status,
+    status: status === "error" && errorStatus ? `error:${errorStatus}` : status,
   }).catch(() => {});
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequestDetails } from "@/lib/usageDb";
+import { getRequestDetails, getRequestDetailById, getRequestDetailByRequestId } from "@/lib/usageDb";
 
 /**
  * GET /api/usage/request-details
@@ -9,6 +9,13 @@ export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     
+    const detailId = searchParams.get("id");
+    if (detailId) {
+      const detail = await getRequestDetailById(detailId) || await getRequestDetailByRequestId(detailId);
+      if (!detail) return NextResponse.json({ error: "Request detail not found" }, { status: 404 });
+      return NextResponse.json({ detail });
+    }
+
     const pageRaw = parseInt(searchParams.get("page"));
     const page = Number.isNaN(pageRaw) ? 1 : pageRaw;
     const pageSizeRaw = parseInt(searchParams.get("pageSize"));

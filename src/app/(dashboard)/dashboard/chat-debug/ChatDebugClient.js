@@ -370,6 +370,7 @@ export default function ChatDebugClient() {
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          "X-Spring-Mouse-Debug": "1",
           Authorization: `Bearer ${activeKey}`,
         },
         body: JSON.stringify({

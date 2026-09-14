@@ -6,6 +6,7 @@ import { useNotificationStore } from "@/store/notificationStore";
 import Sidebar from "../Sidebar";
 import Header from "../Header";
 import DashboardPageFrame from "./DashboardPageFrame";
+import ChatDebugWidget from "../ChatDebugWidget";
 
 function getToastStyle(type) {
   if (type === "success") {
@@ -40,6 +41,7 @@ export default function DashboardLayout({ children }) {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-bg">
+      <ChatDebugWidget />
       <div className="fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2">
         {notifications.map((n) => {
           const style = getToastStyle(n.type);

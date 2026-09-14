@@ -544,6 +544,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  * - Clears modelLock_${model} (the model that just succeeded)
  * - Lazy-cleans any other expired modelLock_* keys
  * - Resets error state only if no active locks remain
+ * - Never clears lastUpstream*: it is a retained evidence snapshot, matching
+ *   gatewayError* (which is likewise never cleared). Live state says "可用",
+ *   the snapshot still answers "what did the upstream last say?".
  * @param {string} connectionId
  * @param {object} currentConnection - credentials object (has _connection) or raw connection
  * @param {string|null} model - model that succeeded
@@ -556,14 +559,16 @@ export async function clearAccountError(connectionId, currentConnection, model =
     const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
     const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
     const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
-    if (!conn.testStatus && !conn.lastError && !conn.lastUpstreamError && allLockKeys.length === 0) return { value: null };
+    // `lastUpstream*` is a retained evidence snapshot, not live state — it must
+    // not keep this function awake, or every success would rewrite the row.
+    if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return { value: null };
 
     const keysToClear = allLockKeys.filter(k => {
       if (newerFailureInFlight) return conn[k] && new Date(conn[k]).getTime() <= now;
       if (model && (k === `modelLock_${model}` || k === "modelLock___all")) return true;
       return conn[k] && new Date(conn[k]).getTime() <= now;
     });
-    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError && !conn.lastUpstreamError) return { value: null };
+    if (keysToClear.length === 0 && conn.testStatus !== "unavailable" && !conn.lastError) return { value: null };
 
     const remainingActiveLocks = allLockKeys.filter(k => !keysToClear.includes(k) && conn[k] && new Date(conn[k]).getTime() > now);
     const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
@@ -574,16 +579,12 @@ export async function clearAccountError(connectionId, currentConnection, model =
         errorCode: null,
         lastErrorAt: null,
         backoffLevel: 0,
-        // The account has fully recovered, so the upstream error snapshot is
-        // stale. Clear it in lockstep with the status fields, otherwise the
-        // channel panel keeps rendering a red banner for a resolved failure
-        // while the status badge already reads "可用".
-        lastUpstreamError: null,
-        lastUpstreamStatus: null,
-        lastUpstreamSource: null,
-        lastUpstreamLayer: null,
-        lastUpstreamRaw: null,
-        lastUpstreamAt: null,
+        // Keep the lastUpstream* snapshot on purpose. It is evidence of what
+        // the upstream last said, not live state. Once the status badge reads
+        // "可用" the channel panel renders it as a grey history line
+        // ("上次错误 ·", see upstreamErrorStale in ChannelManagement) instead of
+        // a red live banner, so operators still see the last upstream failure
+        // right after a recovery rather than an empty placeholder.
       });
     }
     return { value: true, update: clearObj };

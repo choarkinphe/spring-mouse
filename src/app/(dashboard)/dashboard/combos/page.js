@@ -1193,6 +1193,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
           <AccessTagsEditor
             value={accessTags}
             onChange={onAccessTagsChange}
+            compact
             label="路由节点权限标签"
             hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
           />

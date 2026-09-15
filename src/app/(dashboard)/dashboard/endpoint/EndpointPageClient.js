@@ -115,27 +115,19 @@ function RateLimitPolicyCell({ activity }) {
 
   if (!activity.enabled || !activity.limit) {
     return (
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="text-[11px] text-text-muted">未设置请求限流</span>
-        <span className="text-[10px] text-text-muted">当前密钥不受每分钟请求数限制</span>
+      <div className="flex min-w-0 items-center gap-2 text-[11px] text-text-muted">
+        <span>不限流</span>
       </div>
     );
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="rounded-md border border-amber-400/25 bg-amber-400/[.10] px-1.5 py-0.5 font-mono text-[11px] text-amber-200">
-          {activity.limit} 请求/分钟
-        </span>
-        <span className="text-[10px] text-text-muted">滚动窗口</span>
-      </div>
-      <span className="text-[10px] text-text-muted">
-        {activity.queueMax > 0 ? `超出后最多排队 ${activity.queueMax} 个` : "超出后立即返回 429"}
-      </span>
-      {activity.queueMax > 0 && activity.queueTimeoutMs != null && (
-        <span className="text-[10px] text-text-muted">最长等待 {activity.queueTimeoutMs / 1000} 秒</span>
-      )}
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-5 text-text-muted">
+      <span className="font-mono tabular-nums text-text-main">{activity.limit}/分钟</span>
+      <span aria-hidden="true" className="text-border">|</span>
+      <span className="truncate tabular-nums">队列 {activity.queueMax > 0 ? activity.queueMax : "—"}</span>
+      <span aria-hidden="true" className="text-border">|</span>
+      <span className="truncate tabular-nums">等待 {activity.queueMax > 0 && activity.queueTimeoutMs != null ? `${activity.queueTimeoutMs / 1000}s` : "—"}</span>
     </div>
   );
 }
@@ -144,6 +136,71 @@ function RateLimitPolicyCell({ activity }) {
 // page: how much of the per-minute allowance is spent, whether anything is
 // queued behind it, and which models those requests are asking for. Fed by
 // /api/keys/activity, which reads the same counters admission uses.
+function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const closeOnOutside = (event) => {
+      if (!menuRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const runAction = (action) => {
+    setOpen(false);
+    action();
+  };
+
+  return (
+    <div ref={menuRef} className={styles.actionMenuRoot}>
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className={`${styles.actionButton} hover:bg-sky-400/10 hover:text-sky-300`}
+        title="更多操作"
+        aria-label="更多操作"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>more_horiz</span>
+      </button>
+      {open && (
+        <div role="menu" className={styles.actionMenu}>
+          <button type="button" role="menuitem" onClick={() => runAction(onRotate)} className={styles.actionMenuItem}>
+            <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sync</span>
+            <span>轮换密钥</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => runAction(onTags)} className={styles.actionMenuItem}>
+            <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sell</span>
+            <span>配置密钥权限</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => runAction(onRateLimit)} className={styles.actionMenuItem}>
+            <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>speed</span>
+            <span>配置请求限流</span>
+          </button>
+          <div className={styles.actionMenuDivider} />
+          <button type="button" role="menuitem" onClick={() => runAction(onDelete)} className={`${styles.actionMenuItem} ${styles.actionMenuDanger}`}>
+            <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span>
+            <span>删除密钥</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LiveActivityCell({ activity }) {
   if (!activity) {
     return (
@@ -717,8 +774,7 @@ export default function APIPageClient({ machineId }) {
               <span>密钥信息</span>
               <span>额度使用</span>
               <span title="滚动 60 秒内已受理的业务请求数（不是累计总数）。不含被拒绝、排队超时的请求，也不含 /v1/models 等元数据端点；服务重启后清零。">限流策略 / 实时请求</span>
-              <span>最近访问</span>
-              <span className="text-right">状态与操作</span>
+              <span className="text-right">操作 / 最近访问</span>
             </div>
             <div className="divide-y divide-white/[0.065]">
               {keys.map((key) => (
@@ -754,52 +810,50 @@ export default function APIPageClient({ machineId }) {
                       </div>
                     )}
                   </div>
-                  <div className={styles.quota}><QuotaCell
-                    quota={key.quota}
-                    resettingWindow={resettingKeyQuotaId?.startsWith(`${key.id}:`)
-                      ? resettingKeyQuotaId.split(":").pop()
-                      : null}
-                    onReset={(window) => requestResetKeyQuota(key, window)}
-                  /></div>
+                  <div className={styles.quota}>
+                    <div className={styles.quotaLayout}>
+                      <QuotaCell
+                        quota={key.quota}
+                        resettingWindow={resettingKeyQuotaId?.startsWith(`${key.id}:`)
+                          ? resettingKeyQuotaId.split(":").pop()
+                          : null}
+                        onReset={(window) => requestResetKeyQuota(key, window)}
+                      />
+                      <SegmentedControl
+                        className={styles.quotaModeControl}
+                        size="xs"
+                        value={key.quotaMode || "unlimited"}
+                        onChange={(mode) => handleSetKeyQuotaMode(key.id, mode)}
+                        options={[
+                          { value: "off", label: "关闭" },
+                          { value: "limited", label: "限额" },
+                          { value: "unlimited", label: "无限制" },
+                        ]}
+                      />
+                    </div>
+                  </div>
                   <div className={styles.live}>
                     <span className={styles.mobileLabel}>限流策略</span>
                     <RateLimitPolicyCell activity={activity[key.id]} />
-                    <div className="mt-2 border-t border-white/[.06] pt-2">
-                      <span className="mb-1 block text-[10px] text-text-muted">实时请求</span>
+                    <div className={styles.liveActivity}>
+                      <span className={styles.liveLabel}>实时</span>
                       <LiveActivityCell activity={activity[key.id]} />
                     </div>
                   </div>
-                  <div className={styles.lastAccess}>
-                    <span className={styles.mobileLabel}>最近访问</span>
-                    <p className="truncate text-xs font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>
-                    <p className="mt-0.5 truncate text-[10px] text-text-muted">{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "首次成功验证后开始记录"}</p>
-                  </div>
                   <div className={styles.actions}>
                     <div className={styles.actionButtons}>
-                      <button
-                        type="button"
-                        onClick={() => { setRotationKey(key); setRotationError(""); }}
-                        className={`${styles.actionButton} hover:bg-sky-400/10 hover:text-sky-300`}
-                        title="轮换密钥"
-                        aria-label={`轮换密钥：${key.name}`}
-                      >
-                        <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sync</span>
-                      </button>
-                      <button type="button" onClick={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }} className={`${styles.actionButton} hover:bg-violet-400/10 hover:text-violet-300`} title="配置密钥标签" aria-label="配置密钥标签"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sell</span></button>
-                      <button type="button" onClick={() => openRateLimitDialog(key)} className={`${styles.actionButton} hover:bg-amber-400/10 hover:text-amber-300`} title={key.rpmLimit ? `请求限流：${key.rpmLimit}/分钟` : "请求限流：继承全局"} aria-label="配置请求限流"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>speed</span></button>
-                      <button type="button" onClick={() => handleDeleteKey(key.id)} className={`${styles.actionButton} hover:bg-red-500/10 hover:text-red-400`} title="删除密钥" aria-label="删除密钥"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span></button>
+                      <KeyActionMenu
+                        onRotate={() => { setRotationKey(key); setRotationError(""); }}
+                        onTags={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }}
+                        onRateLimit={() => openRateLimitDialog(key)}
+                        onDelete={() => handleDeleteKey(key.id)}
+                      />
                     </div>
-                    <SegmentedControl
-                      className={styles.statusControl}
-                      size="xs"
-                      value={key.quotaMode || "unlimited"}
-                      onChange={(mode) => handleSetKeyQuotaMode(key.id, mode)}
-                      options={[
-                        { value: "off", label: "关闭" },
-                        { value: "limited", label: "限额" },
-                        { value: "unlimited", label: "无限制" },
-                      ]}
-                    />
+                    <div className={styles.lastAccess}>
+                      <span className={styles.mobileLabel}>最近访问</span>
+                      <p className="truncate text-xs font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>
+                      <p className="mt-0.5 truncate text-[10px] text-text-muted">{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "首次成功验证后开始记录"}</p>
+                    </div>
                   </div>
                 </div>
               ))}

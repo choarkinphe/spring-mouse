@@ -126,7 +126,9 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
     function armResultTimeout() {
       const timeout = resultTimeoutMs(resultOverride);
       entry.resultTimer = setTimeout(() => {
-        tunnel.send("cancel", { taskId });
+        // The reason travels with the cancel frame so the node can say why it was
+        // told to stop, instead of the agent guessing from a bare "cancelled".
+        tunnel.send("cancel", { taskId, reason: "result_timeout" });
         entry.settle(new MouseTunnelError("timeout", `Mouse took the task but returned no result within ${timeout}ms`));
       }, timeout);
       entry.resultTimer.unref?.();
@@ -161,7 +163,7 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
         return;
       }
       const onAbort = () => {
-        tunnel.send("cancel", { taskId });
+        tunnel.send("cancel", { taskId, reason: "client_abort" });
         entry.settle(abortAsTunnelError(signal.reason));
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -170,7 +172,7 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
 
     const timeout = ackTimeoutMs(ackOverride);
     entry.timer = setTimeout(() => {
-      tunnel.send("cancel", { taskId });
+      tunnel.send("cancel", { taskId, reason: "ack_timeout" });
       entry.settle(new MouseTunnelError("timeout", `Mouse did not start the task within ${timeout}ms`));
     }, timeout);
     entry.timer.unref?.();

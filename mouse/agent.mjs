@@ -127,6 +127,42 @@ function parseSseFrame(raw) {
   }
 }
 
+const MAX_ERROR_CHAIN = 5;
+
+/**
+ * Flattens an error and its `cause` chain into a single line.
+ *
+ * Node reports every network failure as the same bare `TypeError: fetch failed`,
+ * which on its own says nothing about what went wrong — the errno and the real
+ * message sit one or more `cause` levels down. Logging `error.message` alone threw
+ * that away, so a DNS failure, a refused connection and a reset socket were
+ * indistinguishable in the node's log. `AggregateError` is walked too, because
+ * that is how a connect attempt that fails across several addresses is reported.
+ */
+function describeError(error) {
+  const parts = [];
+  const seen = new Set();
+
+  const walk = (current, depth) => {
+    if (!current || depth >= MAX_ERROR_CHAIN || parts.length >= MAX_ERROR_CHAIN) return;
+    if (typeof current === "object") {
+      if (seen.has(current)) return;
+      seen.add(current);
+    }
+    const code = current.code || current.errno || "";
+    const message = current.message || String(current);
+    parts.push(code && !message.includes(String(code)) ? `${code} (${message})` : message);
+    if (Array.isArray(current.errors) && current.errors.length) {
+      for (const nested of current.errors) walk(nested, depth + 1);
+      return;
+    }
+    walk(current.cause, depth + 1);
+  };
+
+  walk(error, 0);
+  return parts.join(" <- ") || "unknown error";
+}
+
 class MouseAgent {
   constructor(options) {
     this.options = options;
@@ -207,7 +243,14 @@ class MouseAgent {
           // queued behind it on the same stream.
           void this.runTask(frame.data);
         } else if (frame.event === "cancel") {
-          this.activeTasks.get(frame.data?.taskId)?.abort(new Error("Spring cancelled the task"));
+          // A newer Spring names the reason; an older one sends none, so the bare
+          // wording stays. Either way this text ends up on the task's failure line,
+          // which is what tells an operator whether the node or the caller gave up.
+          const cancelReason = typeof frame.data?.reason === "string" ? frame.data.reason : "";
+          const cancelMessage = cancelReason
+            ? `Spring cancelled the task (${cancelReason})`
+            : "Spring cancelled the task";
+          this.activeTasks.get(frame.data?.taskId)?.abort(new Error(cancelMessage));
         }
       }
     } finally {
@@ -237,14 +280,32 @@ class MouseAgent {
    * killed even though the node was working normally.
    */
   async reportStarted(taskId) {
-    await fetch(this.resultUrl(), {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.options.token}`,
-        "X-Mouse-Task-Id": taskId,
-        "X-Mouse-Phase": "started",
-      },
-    }).then((response) => response.arrayBuffer()).catch(() => {});
+    let response;
+    try {
+      response = await fetch(this.resultUrl(), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.options.token}`,
+          "X-Mouse-Task-Id": taskId,
+          "X-Mouse-Phase": "started",
+        },
+      });
+      await response.arrayBuffer().catch(() => {});
+    } catch (error) {
+      // Swallowing this used to make a node that cannot reach Spring look exactly
+      // like one that reported normally: Spring would still be sitting on its ack
+      // budget while the node carried on to the provider.
+      console.error(`[mouse] task ${taskId} could not report started: ${describeError(error)}`);
+      return;
+    }
+    // A 404 is Spring saying it is no longer waiting on this task — the handshake
+    // budget already expired, or the caller went away. The provider call that
+    // follows is then work nobody will collect, and the result upload fails too.
+    // It is only logged: the task is still attempted, because the reachability of
+    // Spring must not silently change how the node behaves.
+    if (!response.ok) {
+      console.error(`[mouse] task ${taskId} started report rejected (HTTP ${response.status}); Spring is no longer waiting on this task`);
+    }
   }
 
   /**
@@ -259,17 +320,24 @@ class MouseAgent {
     const controller = new AbortController();
     this.activeTasks.set(taskId, controller);
 
+    // Named so the failure line says which of the two outbound calls broke. Both are
+    // `fetch`, both report the same bare "fetch failed", and they mean very different
+    // things: one is the provider, the other is Spring itself.
+    let stage = "handshake";
+
     try {
       // Announce the task before touching the network: this handshake is what Spring
       // stops its ack budget on, so it must not wait on the provider.
       await this.reportStarted(taskId);
 
+      stage = "target-validation";
       const target = new URL(upstream.url || "");
       if (!["http:", "https:"].includes(target.protocol)) throw new Error("invalid target URL");
       if (upstream.method !== "POST" || typeof upstream.body !== "string") {
         throw new Error("only POST requests with a JSON string body are supported");
       }
 
+      stage = "provider-fetch";
       const providerResponse = await fetch(target, {
         method: "POST",
         headers: relayableHeaders(upstream.headers),
@@ -277,6 +345,7 @@ class MouseAgent {
         signal: controller.signal,
       });
 
+      stage = "result-relay";
       const relay = await fetch(this.resultUrl(), {
         method: "POST",
         headers: {
@@ -303,9 +372,9 @@ class MouseAgent {
         );
       }
     } catch (error) {
-      console.error(`[mouse] task ${taskId} failed: ${error.message}`);
-      await this.reportFailure(taskId, error).catch((reportError) => {
-        console.error(`[mouse] could not report task ${taskId}: ${reportError.message}`);
+      console.error(`[mouse] task ${taskId} failed during ${stage}: ${describeError(error)}`);
+      await this.reportFailure(taskId, error, stage).catch((reportError) => {
+        console.error(`[mouse] could not report task ${taskId}: ${describeError(reportError)}`);
       });
     } finally {
       this.activeTasks.delete(taskId);
@@ -314,8 +383,12 @@ class MouseAgent {
 
   // Sent without the task's abort signal on purpose: the point of this call is
   // to unblock Spring, so a cancelled or already-failed task must still reach it.
-  async reportFailure(taskId, error) {
-    const body = JSON.stringify({ error: { message: error?.message || "Mouse task failed" } });
+  // The message carries the stage and the whole cause chain: Spring cannot read this
+  // node's stderr, so what travels here is the only copy of the reason it will get.
+  async reportFailure(taskId, error, stage = "") {
+    const detail = describeError(error);
+    const message = stage ? `Mouse task failed during ${stage}: ${detail}` : `Mouse task failed: ${detail}`;
+    const body = JSON.stringify({ error: { message } });
     const response = await fetch(this.resultUrl(), {
       method: "POST",
       headers: {

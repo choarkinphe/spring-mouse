@@ -188,9 +188,11 @@ function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
   useEffect(() => {
     if (!open) return undefined;
 
-    // Re-anchoring on every scroll frame is churn, so a scroll simply closes
-    // the menu the same way Escape and an outside click do. The panel is a
-    // portal, so the trigger and the panel are two separate containment checks.
+    // A scroll moves the anchor out from under a viewport-anchored panel, so
+    // the menu closes the same way Escape and an outside click do. A resize is
+    // rare and changes how much room is left, so it re-measures instead of
+    // throwing the menu away. The panel is a portal, so the trigger and the
+    // panel need two separate containment checks.
     const closeOnOutside = (event) => {
       if (rootRef.current?.contains(event.target)) return;
       if (menuRef.current?.contains(event.target)) return;
@@ -199,16 +201,25 @@ function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
     const closeOnEscape = (event) => {
       if (event.key === "Escape") close();
     };
+    let frame = 0;
+    const remeasure = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setPlacement(null);
+      });
+    };
 
     document.addEventListener("pointerdown", closeOnOutside);
     document.addEventListener("keydown", closeOnEscape);
     window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
+    window.addEventListener("resize", remeasure);
     return () => {
+      if (frame) cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
       window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("resize", remeasure);
     };
   }, [open, close]);
 

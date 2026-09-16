@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import PropTypes from "prop-types";
 import { AccessTagsEditor, Badge, Button, DashboardHero, Input, Modal, CardSkeleton, ConfirmModal, SegmentedControl, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -136,38 +137,92 @@ function RateLimitPolicyCell({ activity }) {
 // page: how much of the per-minute allowance is spent, whether anything is
 // queued behind it, and which models those requests are asking for. Fed by
 // /api/keys/activity, which reads the same counters admission uses.
+
+// The credentials section clips its overflow so the rounded corners stay
+// clean, which also cut off any dropdown that opened near the last row. The
+// menu therefore renders through a portal onto the body and is positioned from
+// the trigger's rect at open time, flipping above the button when the viewport
+// leaves no room below.
+const MENU_GAP = 8;
+const MENU_VIEWPORT_MARGIN = 12;
+
 function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState(null);
+  const rootRef = useRef(null);
+  const buttonRef = useRef(null);
   const menuRef = useRef(null);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setPlacement(null);
+  }, []);
+
+  // Measured while the panel is still invisible, so it never flashes at the
+  // wrong spot before the flip decision is made.
+  useEffect(() => {
+    if (!open || placement) return;
+    const button = buttonRef.current;
+    const menu = menuRef.current;
+    if (!button || !menu) return;
+
+    const rect = button.getBoundingClientRect();
+    const height = menu.offsetHeight;
+    const width = menu.offsetWidth;
+    const roomBelow = window.innerHeight - rect.bottom - MENU_GAP - MENU_VIEWPORT_MARGIN;
+    const roomAbove = rect.top - MENU_GAP - MENU_VIEWPORT_MARGIN;
+    const flipUp = height > roomBelow && roomAbove > roomBelow;
+
+    setPlacement({
+      top: Math.max(
+        MENU_VIEWPORT_MARGIN,
+        flipUp ? rect.top - MENU_GAP - height : rect.bottom + MENU_GAP
+      ),
+      left: Math.min(
+        Math.max(MENU_VIEWPORT_MARGIN, rect.right - width),
+        Math.max(MENU_VIEWPORT_MARGIN, window.innerWidth - width - MENU_VIEWPORT_MARGIN)
+      ),
+    });
+  }, [open, placement]);
 
   useEffect(() => {
     if (!open) return undefined;
 
+    // Re-anchoring on every scroll frame is churn, so a scroll simply closes
+    // the menu the same way Escape and an outside click do. The panel is a
+    // portal, so the trigger and the panel are two separate containment checks.
     const closeOnOutside = (event) => {
-      if (!menuRef.current?.contains(event.target)) setOpen(false);
+      if (rootRef.current?.contains(event.target)) return;
+      if (menuRef.current?.contains(event.target)) return;
+      close();
     };
     const closeOnEscape = (event) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") close();
     };
 
     document.addEventListener("pointerdown", closeOnOutside);
     document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
     };
-  }, [open]);
+  }, [open, close]);
 
   const runAction = (action) => {
-    setOpen(false);
+    close();
     action();
   };
 
   return (
-    <div ref={menuRef} className={styles.actionMenuRoot}>
+    <div ref={rootRef} className={styles.actionMenuRoot}>
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => (open ? close() : setOpen(true))}
         className={`${styles.actionButton} hover:bg-sky-400/10 hover:text-sky-300`}
         title="更多操作"
         aria-label="更多操作"
@@ -176,8 +231,17 @@ function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
       >
         <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>more_horiz</span>
       </button>
-      {open && (
-        <div role="menu" className={styles.actionMenu}>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className={styles.actionMenu}
+          style={{
+            top: placement ? placement.top : -9999,
+            left: placement ? placement.left : -9999,
+            visibility: placement ? "visible" : "hidden",
+          }}
+        >
           <button type="button" role="menuitem" onClick={() => runAction(onRotate)} className={styles.actionMenuItem}>
             <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>sync</span>
             <span>轮换密钥</span>
@@ -195,7 +259,8 @@ function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
             <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span>
             <span>删除密钥</span>
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

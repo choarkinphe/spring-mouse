@@ -162,10 +162,14 @@ export function computeRunStats({ ttft, totalMs, chunkTimes, usage, textLen }) {
 
 function sanitizeRunHistoryEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
+  const mouse = entry.mouse && typeof entry.mouse === "object" && typeof entry.mouse.id === "string"
+    ? { id: entry.mouse.id, name: typeof entry.mouse.name === "string" ? entry.mouse.name : null }
+    : null;
   return {
     id: typeof entry.id === "string" ? entry.id : createId(),
     time: typeof entry.time === "string" ? entry.time : new Date().toISOString(),
     model: typeof entry.model === "string" ? entry.model : "",
+    mouse,
     status: ["done", "error", "aborted"].includes(entry.status) ? entry.status : "done",
     error: typeof entry.error === "string" ? entry.error : null,
     httpStatus: Number.isFinite(entry.httpStatus) ? entry.httpStatus : null,

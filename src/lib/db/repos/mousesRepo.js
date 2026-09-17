@@ -97,12 +97,17 @@ export async function getAvailableMouseById(id) {
 // Everything Spring needs to hand a provider request to a node. There is no
 // address here on purpose: the request leaves over the node's inbound tunnel,
 // so a reachable hostname is not part of the contract any more.
+//
+// `name` is carried along purely as a label: an operator reading a route line, a
+// request-detail row or the debug panel has to be able to tell which node served
+// the request, and a uuid does not do that. The executor still keys everything
+// off `mouseId`.
 export async function getMouseExecutionDetails(id) {
   if (!id) return null;
   const db = await getAdapter();
   const row = db.get("SELECT * FROM mouses WHERE id = ?", [id]);
   if (!row || row.disabledAt) return null;
-  return { mouseId: row.id };
+  return { mouseId: row.id, name: row.name };
 }
 
 // The access token is the node's identity: one token, one node. It is minted when

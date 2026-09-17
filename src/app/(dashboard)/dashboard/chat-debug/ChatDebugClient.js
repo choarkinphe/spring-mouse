@@ -52,7 +52,7 @@ async function ensureApiKey() {
 // Best-effort server-side view: requestDetails writes are batched (~5s flush),
 // so query a little after completion and match by time window (+ model suffix
 // when a member model was selected). Purely informational when it misses.
-function scheduleServerReconciliation(setLiveRun, selectedModel, t0Wall, totalMs) {
+function scheduleServerReconciliation(setLiveRun, setHistory, historyId, selectedModel, t0Wall, totalMs) {
   setTimeout(async () => {
     try {
       const endIso = new Date(new Date(t0Wall).getTime() + totalMs + 5000).toISOString();
@@ -67,14 +67,17 @@ function scheduleServerReconciliation(setLiveRun, selectedModel, t0Wall, totalMs
         return inWindow && modelOk;
       });
       if (hit) {
-        setLiveRun((prev) => (prev ? {
-          ...prev,
-          server: {
-            ttft: hit.latency?.ttft,
-            total: hit.latency?.total,
-            connectionId: hit.connectionId,
-          },
-        } : prev));
+        const server = {
+          ttft: hit.latency?.ttft,
+          total: hit.latency?.total,
+          connectionId: hit.connectionId,
+          mouse: hit.mouse,
+        };
+        setLiveRun((prev) => (prev ? { ...prev, server } : prev));
+        // The history row is written at finalize, before the batched detail
+        // lands, so backfill the node onto it — otherwise the table would
+        // forget which node ran the request as soon as it scrolled into history.
+        setHistory((prev) => prev.map((run) => (run.id === historyId ? { ...run, mouse: hit.mouse } : run)));
       }
     } catch {
       // Observability may be disabled or the query may race — ignore.
@@ -349,11 +352,14 @@ export default function ChatDebugClient() {
         error: errorMessage,
         httpStatus,
       }));
+      // Minted up front so the deferred server reconciliation can backfill the
+      // node onto this exact row once the batched request detail lands.
+      const historyId = createId();
       if (status === "done") {
-        scheduleServerReconciliation(setLiveRun, selectedModel, t0Wall, totalMs);
+        scheduleServerReconciliation(setLiveRun, setHistory, historyId, selectedModel, t0Wall, totalMs);
       }
       setHistory((prev) => [{
-        id: createId(),
+        id: historyId,
         time: t0Wall,
         model: selectedModel,
         status,

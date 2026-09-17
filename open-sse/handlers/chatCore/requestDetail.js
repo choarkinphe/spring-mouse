@@ -74,6 +74,7 @@ export function buildRequestDetail(base, overrides = {}) {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
+    mouse: base.mouse || undefined,
     requestId: base.requestId || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },

@@ -51,7 +51,7 @@ function estimateInputTokensFromHeaders(headers) {
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -100,7 +100,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   if (observabilityEnabled) {
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId, requestId,
+      provider, model, connectionId, requestId, mouse,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -150,6 +150,7 @@ function createObservedCompletion(context) {
       provider: context.provider,
       model: context.model,
       connectionId: context.connectionId,
+      mouse: context.mouse,
       requestId: context.requestId,
       latency,
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
@@ -170,7 +171,7 @@ function createObservedCompletion(context) {
   };
 }
 
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
+export function buildOnStreamComplete({ provider, model, connectionId, mouse, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   // Capture only small source metadata. clientRawRequest also contains the full
   // request body and must not stay referenced for the lifetime of the stream.
@@ -199,6 +200,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
   const observedContext = {
     ...usageContext,
     streamDetailId,
+    mouse,
     request: compactJsonField(extractRequestConfig(body, stream), maxChars),
     providerRequest: compactJsonField(finalBody || translatedBody || null, maxChars),
     pxpipe,

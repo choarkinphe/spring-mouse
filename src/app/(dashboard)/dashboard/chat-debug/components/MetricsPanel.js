@@ -76,10 +76,12 @@ Timeline.propTypes = {
 function ServerRow({ server }) {
   if (!server) return null;
   const connection = server.connectionId ? String(server.connectionId).slice(0, 8) : "";
+  const mouse = server.mouse?.name || (server.mouse?.id ? String(server.mouse.id).slice(0, 8) : "");
   return (
     <div className="mt-2 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-text-muted">
       服务端视角：TTFT {formatMs(server.ttft)} · 总 {formatMs(server.total)}
       {connection ? ` · 连接 ${connection}` : ""}
+      {mouse ? ` · 节点 ${mouse}` : ""}
     </div>
   );
 }
@@ -89,6 +91,10 @@ ServerRow.propTypes = {
     ttft: PropTypes.number,
     total: PropTypes.number,
     connectionId: PropTypes.string,
+    mouse: PropTypes.shape({
+      id: PropTypes.string,
+      name: PropTypes.string,
+    }),
   }),
 };
 
@@ -117,7 +123,7 @@ function HistorySection({ history, onClear }) {
             <thead>
               <tr className="text-text-muted">
                 <th className="w-14 px-1 py-1 text-left font-medium">时间</th>
-                <th className="px-1 py-1 text-left font-medium">模型</th>
+                <th className="px-1 py-1 text-left font-medium">模型 / 节点</th>
                 <th className="w-16 px-1 py-1 text-right font-medium">TTFT</th>
                 <th className="w-16 px-1 py-1 text-right font-medium">总时长</th>
                 <th className="w-14 px-1 py-1 text-right font-medium">tok/s</th>
@@ -125,14 +131,19 @@ function HistorySection({ history, onClear }) {
               </tr>
             </thead>
             <tbody>
-              {history.map((run) => (
+              {history.map((run) => {
+                const mouse = run.mouse?.name || (run.mouse?.id ? String(run.mouse.id).slice(0, 8) : "");
+                return (
                 <tr
                   key={run.id}
                   className={`border-t border-border-subtle ${run.status === "error" ? "text-red-500" : "text-text-main"}`}
                   title={run.error ? `${run.model}\n${run.error}` : run.model}
                 >
                   <td className="px-1 py-1 tabular-nums text-text-muted">{formatTime(run.time)}</td>
-                  <td className="truncate px-1 py-1 font-mono text-[11px]">{run.model}</td>
+                  <td className="truncate px-1 py-1 font-mono text-[11px]">
+                    {run.model}
+                    {mouse ? <span className="ml-1 text-text-muted" title={`执行节点 ${mouse}`}>· {mouse}</span> : null}
+                  </td>
                   <td className="px-1 py-1 text-right tabular-nums">{formatMs(run.ttft)}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{formatMs(run.total)}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{formatTokPerSec(run.tokPerSec)}</td>
@@ -140,7 +151,8 @@ function HistorySection({ history, onClear }) {
                     {run.status === "done" ? "✓" : run.status === "aborted" ? "■" : "✕"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -163,6 +175,7 @@ HistorySection.propTypes = {
     id: PropTypes.string.isRequired,
     time: PropTypes.string,
     model: PropTypes.string,
+    mouse: PropTypes.shape({ id: PropTypes.string, name: PropTypes.string }),
     ttft: PropTypes.number,
     total: PropTypes.number,
     tokPerSec: PropTypes.number,
@@ -261,7 +274,12 @@ MetricsPanel.propTypes = {
     tokPerSec: PropTypes.number,
     error: PropTypes.string,
     timeline: PropTypes.arrayOf(PropTypes.number),
-    server: PropTypes.shape({ ttft: PropTypes.number, total: PropTypes.number, connectionId: PropTypes.string }),
+    server: PropTypes.shape({
+      ttft: PropTypes.number,
+      total: PropTypes.number,
+      connectionId: PropTypes.string,
+      mouse: PropTypes.shape({ id: PropTypes.string, name: PropTypes.string }),
+    }),
     startedAtPerf: PropTypes.number,
   }),
   history: PropTypes.arrayOf(PropTypes.object).isRequired,

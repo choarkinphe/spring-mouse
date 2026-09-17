@@ -77,6 +77,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   })();
   const reqTag = log?.tagForSession ? log.tagForSession(sessionSeed) : (log?.nextTag ? log.nextTag() : "");
 
+  // The node that serves this attempt is fixed when the account is selected, so
+  // it is already known here — before dispatch. It is carried into the request
+  // detail, the ▶ route line and the console drawer so an operator can tell
+  // which node ran the work; a request that fails over across accounts keeps one
+  // record per attempt, each naming the node it actually used. `mouseExecution`
+  // itself (the executor's contract) is untouched.
+  const mouseRecord = credentials?.mouseExecution?.mouseId
+    ? { id: credentials.mouseExecution.mouseId, name: credentials.mouseExecution.name || null }
+    : null;
+
   const sourceFormat = sourceFormatOverride || detectFormat(body);
   const saveFailedUsage = (status, errorStatus = null) => saveRequestUsage({
     requestId,
@@ -255,6 +265,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     if (toolN) parts.push(`${toolN} TOOL`);
     if (think) parts.push(`THINK:${think}`);
     parts.push(`ACC:${acc}`);
+    if (mouseRecord) parts.push(`MOUSE:${mouseRecord.name || mouseRecord.id.slice(0, 8)}`);
     // Correlate this dispatch with the routing WARN lines and usage row that
     // share the same id — without it, concurrent failures can only be matched by
     // guessing from timestamps.
@@ -450,7 +461,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY);
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId, requestId,
+      provider, model, connectionId, requestId, mouse: mouseRecord,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -522,7 +533,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveFailedUsage("upstream", statusCode);
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId, requestId,
+      provider, model, connectionId, requestId, mouse: mouseRecord,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -547,7 +558,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
   const captureRequestDetails = true;
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 

@@ -72,9 +72,11 @@ describe("mouse nodes are reachable without an address", () => {
     expect(await mousesRepo.getMouseByAccessToken("mst_not_a_real_token")).toBeNull();
   });
 
-  it("returns only the node id as execution details", async () => {
+  it("returns the node id and its name as execution details", async () => {
     const { mouse } = await mousesRepo.createMouse({ name: "details-node" });
-    expect(await mousesRepo.getMouseExecutionDetails(mouse.id)).toEqual({ mouseId: mouse.id });
+    // The id is what the executor dispatches on; the name is carried purely so a
+    // route line or request-detail row can name the node instead of showing a uuid.
+    expect(await mousesRepo.getMouseExecutionDetails(mouse.id)).toEqual({ mouseId: mouse.id, name: "details-node" });
     expect(await mousesRepo.getMouseExecutionDetails("missing")).toBeNull();
   });
 });

@@ -76,6 +76,7 @@ function prepareRecord(item, config) {
     provider: item.provider || null,
     model: item.model || null,
     connectionId: item.connectionId || null,
+    mouse: item.mouse || undefined,
     timestamp: item.timestamp || new Date().toISOString(),
     status: item.status || null,
     latency: item.latency || {},

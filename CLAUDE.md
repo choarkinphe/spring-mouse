@@ -52,6 +52,7 @@ npx vitest run unit/capabilities.test.js   # single file (path relative to tests
 
 Two authoritative docs already exist — read them before working in these areas rather than re-deriving:
 - `docs/ARCHITECTURE.md` — full system: request lifecycle, combo/account fallback, OAuth + token refresh, cloud sync, data model.
+- `AGENTS.md` (repo root) — release versioning rules. **Read this before any `git push`.**
 - `open-sse/AGENTS.md` — the routing/translation engine's own conventions and "how to add a provider/executor/translator". **Read this before editing anything under `open-sse/`.**
 
 ### Request flow (the thing to understand first)
@@ -89,6 +90,7 @@ Pre-translate hooks that compress `tool_result` content in-place to cut tokens. 
 - Security-sensitive env: `JWT_SECRET` (session cookie), `INITIAL_PASSWORD` (default `123456` — must override), `API_KEY_SECRET`, `MACHINE_ID_SALT`. Full env contract in `.env.example` and ARCHITECTURE.md's env matrix.
 - Binary/protobuf upstreams (kiro EventStream, cursor protobuf, commandcode NDJSON) don't round-trip through OpenAI — they're handled inside their own executor, not the translator.
 - Versioning: root and `cli/` are versioned independently; changes are logged in `CHANGELOG.md`. Commit style is Conventional Commits (`fix(translator): …`, `feat(...)`).
+  **Every push must carry a root patch bump** (`npm version patch --no-git-tag-version`, which also updates `package-lock.json`). See `AGENTS.md` — including why you must not tag.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

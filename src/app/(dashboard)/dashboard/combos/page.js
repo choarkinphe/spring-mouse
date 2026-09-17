@@ -594,6 +594,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   const [addingAccessTag, setAddingAccessTag] = useState(false);
   const [newAccessTag, setNewAccessTag] = useState("");
   const [savingAccessTags, setSavingAccessTags] = useState(false);
+  const [rrDraft, setRrDraft] = useState(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -603,6 +604,9 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   const isFusion = current === "fusion";
   const isActive = combo.isActive !== false;
   const roundRobinLimit = strategy.stickyRoundRobinLimit || 1;
+  // The draft only applies while round-robin is selected; switching strategies drops it.
+  const activeRrDraft = current === "round-robin" ? rrDraft : null;
+  const effectiveRoundRobinLimit = Number.parseInt(activeRrDraft ?? roundRobinLimit, 10) || 1;
   const exposedCapabilities = getComboCapabilities(combo.capabilities);
   const accessTags = Array.isArray(combo.accessTags) ? combo.accessTags : [];
 
@@ -611,9 +615,36 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
     return () => clearTimeout(syncTimer);
   }, [combo.id, combo.models]);
 
-  const handleRoundRobinLimitChange = (value) => {
-    const next = Number.parseInt(value, 10);
-    if (Number.isFinite(next) && next > 0) onSetStrategy({ stickyRoundRobinLimit: next });
+  // Release the local round-robin echo once the persisted strategy catches up.
+  useEffect(() => {
+    setRrDraft((draft) => (draft !== null && draft === String(roundRobinLimit) ? null : draft));
+  }, [roundRobinLimit]);
+
+  // Release the local round-robin echo once the persisted strategy catches up.
+  useEffect(() => {
+    setRrDraft((draft) => (draft !== null && draft === String(roundRobinLimit) ? null : draft));
+  }, [roundRobinLimit]);
+
+  // Commit the round-robin draft on blur/Enter instead of every keystroke, so
+  // typing "10" doesn't fire two settings PATCHes and the field stays clearable.
+  // A valid commit keeps echoing locally until the persisted strategy catches up.
+  const commitRoundRobinLimit = () => {
+    if (rrDraft === null) return;
+    const next = Number.parseInt(rrDraft, 10);
+    if (Number.isFinite(next) && next > 0 && next !== roundRobinLimit) {
+      setRrDraft(String(next));
+      onSetStrategy({ stickyRoundRobinLimit: next });
+    } else {
+      setRrDraft(null);
+    }
+  };
+
+  const stepRoundRobinLimit = (delta) => {
+    const draft = rrDraft === null ? null : Number.parseInt(rrDraft, 10);
+    const base = Number.isFinite(draft) && draft > 0 ? draft : roundRobinLimit;
+    const next = Math.max(1, base + delta);
+    setRrDraft(String(next));
+    if (next !== roundRobinLimit) onSetStrategy({ stickyRoundRobinLimit: next });
   };
 
   const persistAccessTags = async (nextTags) => {
@@ -812,13 +843,47 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                   </button>
 
                   {selected && option.value === "round-robin" && (
-                    <label className="flex items-center justify-between gap-3 border-t border-[#38bdf8]/15 px-2 py-1.5 text-[9px] text-text-muted" title="每个节点连续处理多少次请求后，再轮换到下一个节点">
-                      <span>每个节点连续请求</span>
+                    <div className="flex items-center justify-between gap-3 border-t border-[#38bdf8]/15 px-2 py-1.5 text-[9px] text-text-muted" title="每个节点连续处理多少次请求后，再轮换到下一个节点">
+                      <span className="shrink-0">每个节点连续请求</span>
                       <span className="inline-flex items-center gap-1">
-                        <input type="number" min="1" value={roundRobinLimit} onChange={(event) => handleRoundRobinLimitChange(event.target.value)} className="h-6 w-8 rounded-md border border-[#38bdf8]/25 bg-black/[0.12] text-center font-mono text-[11px] text-[#bae6fd] outline-none focus:border-[#38bdf8]/50" aria-label={`${combo.name} 每个模型的轮询次数`} />
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => stepRoundRobinLimit(-1)}
+                          disabled={effectiveRoundRobinLimit <= 1}
+                          className="flex size-6 items-center justify-center rounded-md border border-[#38bdf8]/25 bg-black/[0.12] text-[#7dd3fc] transition-colors hover:border-[#38bdf8]/50 hover:bg-[#38bdf8]/10 disabled:cursor-not-allowed disabled:opacity-35"
+                          title="减少 1 次"
+                          aria-label={`${combo.name} 减少连续请求数`}
+                        >
+                          <span className="material-symbols-outlined text-[13px]">remove</span>
+                        </button>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={rrDraft ?? String(roundRobinLimit)}
+                          onChange={(event) => setRrDraft(event.target.value)}
+                          onFocus={(event) => event.target.select()}
+                          onBlur={commitRoundRobinLimit}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                            if (event.key === "Escape") setRrDraft(null);
+                          }}
+                          className="h-6 w-10 rounded-md border border-[#38bdf8]/25 bg-black/[0.12] text-center font-mono text-[11px] text-[#bae6fd] outline-none focus:border-[#38bdf8]/50"
+                          aria-label={`${combo.name} 每个模型的轮询次数`}
+                        />
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => stepRoundRobinLimit(1)}
+                          className="flex size-6 items-center justify-center rounded-md border border-[#38bdf8]/25 bg-black/[0.12] text-[#7dd3fc] transition-colors hover:border-[#38bdf8]/50 hover:bg-[#38bdf8]/10"
+                          title="增加 1 次"
+                          aria-label={`${combo.name} 增加连续请求数`}
+                        >
+                          <span className="material-symbols-outlined text-[13px]">add</span>
+                        </button>
                         <span>次</span>
                       </span>
-                    </label>
+                    </div>
                   )}
 
                   {selected && option.value === "fusion" && (

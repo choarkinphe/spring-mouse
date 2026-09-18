@@ -20,6 +20,23 @@ function normalizeTools(tools) {
 }
 
 describe("CodexExecutor tool normalization", () => {
+  it("strips Unicode property escape patterns from nested tool schemas", () => {
+    const tools = normalizeTools([{
+      type: "function",
+      name: "artifact",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", pattern: "^[\\p{Cc}]+$" },
+          safe: { type: "string", pattern: "^[a-z]+$" },
+        },
+      },
+    }]);
+
+    expect(tools[0].parameters.properties.name.pattern).toBeUndefined();
+    expect(tools[0].parameters.properties.safe.pattern).toBe("^[a-z]+$");
+  });
+
   it("preserves Responses text.format for structured outputs", () => {
     const executor = new CodexExecutor();
     const schema = {

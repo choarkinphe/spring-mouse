@@ -21,6 +21,10 @@ function isTruthyEnv(value) {
   return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
+function isCodexBackgroundRefreshEnabled() {
+  return isTruthyEnv(process.env.ENABLE_CODEX_BACKGROUND_TOKEN_REFRESH);
+}
+
 function isNonServerRuntime() {
   if (typeof window !== "undefined") return true;
   const phase = process.env.NEXT_PHASE || "";
@@ -97,7 +101,17 @@ export async function runBackgroundTokenRefreshTick(deps = {}) {
     const refresh = deps.refreshConnection || refreshOne;
 
     const connections = await load();
-    const due = selectConnectionsNeedingRefresh(connections, Date.now());
+    const allDue = selectConnectionsNeedingRefresh(connections, Date.now());
+    const skippedCodex = allDue.filter((connection) => connection.provider === "codex");
+    const due = allDue.filter((connection) => connection.provider !== "codex" || isCodexBackgroundRefreshEnabled());
+
+    // Codex refresh tokens rotate and can be invalidated by another instance.
+    // Keep their refresh request demand-driven unless explicitly opted in.
+    if (skippedCodex.length > 0 && !isCodexBackgroundRefreshEnabled()) {
+      log.info("BG_TOKEN_REFRESH", "Skipping Codex background refresh; opt in with ENABLE_CODEX_BACKGROUND_TOKEN_REFRESH", {
+        skipped: skippedCodex.length,
+      });
+    }
 
     if (due.length === 0) {
       log.debug("BG_TOKEN_REFRESH", "No connections due for refresh", {

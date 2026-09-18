@@ -102,6 +102,7 @@ describe("runBackgroundTokenRefreshTick", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("calls refresh only for due connections and swallows per-connection errors", async () => {
@@ -136,6 +137,49 @@ describe("runBackgroundTokenRefreshTick", () => {
     expect(loadConnections).toHaveBeenCalledTimes(1);
     expect(refreshConnection).toHaveBeenCalledTimes(1);
     expect(refreshConnection.mock.calls[0][0].id).toBe("due");
+  });
+
+  it("skips due codex connections unless background refresh is opted in", async () => {
+    const grok = conn({
+      id: "grok-due",
+      expiresAt: new Date(NOW + 10 * 60 * 1000).toISOString(),
+    });
+    const codex = conn({
+      id: "codex-due",
+      provider: "codex",
+      expiresAt: new Date(NOW + 10 * 60 * 1000).toISOString(),
+    });
+    const refreshConnection = vi.fn(async () => ({}));
+    const loadConnections = vi.fn(async () => [grok, codex]);
+
+    const { runBackgroundTokenRefreshTick } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+
+    await runBackgroundTokenRefreshTick({ loadConnections, refreshConnection });
+
+    expect(refreshConnection).toHaveBeenCalledTimes(1);
+    expect(refreshConnection.mock.calls[0][0].id).toBe("grok-due");
+  });
+
+  it("refreshes codex when ENABLE_CODEX_BACKGROUND_TOKEN_REFRESH is set", async () => {
+    vi.stubEnv("ENABLE_CODEX_BACKGROUND_TOKEN_REFRESH", "true");
+    const codex = conn({
+      id: "codex-due",
+      provider: "codex",
+      expiresAt: new Date(NOW + 10 * 60 * 1000).toISOString(),
+    });
+    const refreshConnection = vi.fn(async () => ({}));
+    const loadConnections = vi.fn(async () => [codex]);
+
+    const { runBackgroundTokenRefreshTick } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+
+    await runBackgroundTokenRefreshTick({ loadConnections, refreshConnection });
+
+    expect(refreshConnection).toHaveBeenCalledTimes(1);
+    expect(refreshConnection.mock.calls[0][0].id).toBe("codex-due");
   });
 
   it("does not call refresh when nothing is due", async () => {

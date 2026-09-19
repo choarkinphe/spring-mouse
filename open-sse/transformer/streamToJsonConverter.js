@@ -36,6 +36,15 @@ function processSSEMessage(msg, state) {
     }
   } else if (eventType === "response.failed") {
     state.status = "failed";
+    // Keep the failure reason: without it a failed turn is indistinguishable from
+    // an empty one, and the non-streaming path returned it to the client as success.
+    state.error = parsed.response?.error || parsed.error || state.error;
+  } else if (eventType === "error") {
+    // Responses-API in-stream errors (e.g. server_is_overloaded) arrive as a bare
+    // `event: error` frame. Mark the turn failed so the caller can fall back instead
+    // of returning an empty "completed" response.
+    state.status = "failed";
+    state.error = parsed.error || parsed.response?.error || state.error;
   }
 }
 
@@ -59,6 +68,7 @@ export async function convertResponsesStreamToJson(stream) {
     responseId: "",
     created: Math.floor(Date.now() / 1000),
     status: "in_progress",
+    error: null,
     usage: { ...EMPTY_RESPONSE },
     items: new Map()
   };
@@ -97,6 +107,7 @@ export async function convertResponsesStreamToJson(stream) {
     object: "response",
     created_at: state.created,
     status: state.status || "completed",
+    error: state.error || null,
     output,
     usage: state.usage
   };

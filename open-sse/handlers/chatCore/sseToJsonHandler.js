@@ -216,6 +216,29 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     try {
       const jsonResponse = await readBody(() => convertResponsesStreamToJson(providerResponse.body));
       finishPending();
+
+      // A failed turn is NOT a success. The upstream can fail a Responses stream
+      // after emitting a few deltas (e.g. server_is_overloaded), and the previous
+      // code recorded usage and returned that empty/partial body as 200 OK — so the
+      // combo never rotated to the next model. Surface it as an error result instead,
+      // tagged as an upstream SSE failure so account/breaker bookkeeping is correct.
+      if (jsonResponse.status === "failed") {
+        const message = jsonResponse.error?.message
+          || jsonResponse.error?.code
+          || "Upstream Responses stream failed";
+        saveUsageStats({ provider, model, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
+        if (log?.errorLine) log.errorLine(reqTag, "✗", `UPSTREAM ${HTTP_STATUS.SERVICE_UNAVAILABLE} · provider · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    [${HTTP_STATUS.SERVICE_UNAVAILABLE}]: ${message}`);
+        return createErrorResult(HTTP_STATUS.SERVICE_UNAVAILABLE, message, undefined, {
+          source: "sse",
+          status: providerResponse.status || 200,
+          message,
+          body: jsonResponse.error ? JSON.stringify(jsonResponse.error) : "",
+          retryAfterMs: null,
+          receivedAt: new Date().toISOString(),
+          layer: "provider",
+        });
+      }
+
       if (onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};

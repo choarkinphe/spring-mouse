@@ -32,6 +32,24 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   '"type":"response.function_call_arguments.delta"',
 ];
 const CODEX_SSE_PEEK_BYTES = 256 * 1024;
+// A capacity/overload rejection is not always the first frame: Codex can stream a
+// few output deltas and only then fail the turn. Breaking out on the first delta
+// (the previous behaviour) let that error through as a 200-OK stream, so the combo
+// accepted it as a success and never rotated to the next model — the overload was
+// reported to the client instead of being routed around. After the first delta we
+// now keep scanning for a short, bounded grace window: long enough to catch a
+// same-turn capacity rejection, short enough that normal streaming still starts
+// promptly. SPRING_MOUSE_CODEX_SSE_GRACE_MS=0 restores the old fast path.
+const CODEX_SSE_OUTPUT_GRACE_MS = (() => {
+  const raw = process.env.SPRING_MOUSE_CODEX_SSE_GRACE_MS;
+  if (raw == null || raw === "") return 150;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 150;
+})();
+const CODEX_SSE_OUTPUT_GRACE_BYTES = 16 * 1024;
+// Once a terminal frame is seen the turn already ended normally; no later frame can
+// turn it into a retryable error, so the scan stops buffering immediately.
+const CODEX_SSE_TERMINAL_PATTERNS = ["response.completed", "response.done", "data: [done]"];
 const CODEX_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model.";
 
 // Server-generated item id prefixes that Codex /responses cannot resolve when store=false
@@ -169,14 +187,50 @@ function findNestedMessage(value, depth = 0) {
   return null;
 }
 
-function extractSseErrorMessage(text, fallback) {
-  const exact = text?.match(/Selected model is at capacity\. Please try a different model\./i)?.[0];
-  if (exact) return exact;
-
+// Concatenate only the payloads of *error* frames (`event: error` / `response.failed`)
+// from an SSE buffer, in their original case. Pattern matching and message extraction
+// must run against this, not the raw stream: the model's own output text also travels
+// as SSE data, and a reply that merely quotes an error string (very likely when the
+// user is debugging this exact message) must not be mistaken for an upstream failure.
+//
+// A `data:` line is treated as an error payload when it sits inside an error frame
+// or when its JSON carries a top-level `error` object — the latter covers upstreams
+// that omit the `event:` line. A cheap substring gate keeps JSON.parse off the hot
+// path for ordinary output deltas.
+function errorFramePayloads(text) {
+  const out = [];
+  let inError = false;
   for (const line of String(text || "").split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const data = line.slice(5).trim();
-    if (!data || data === "[DONE]") continue;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("event:")) {
+      const name = trimmed.slice(6).trim();
+      inError = name === "error" || name === "response.failed";
+      continue;
+    }
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    if (inError) { out.push(payload); continue; }
+    if (!payload.includes('"error"')) continue;
+    try {
+      const parsed = JSON.parse(payload);
+      if (parsed && typeof parsed === "object" && parsed.error) out.push(payload);
+    } catch {
+      // Not a JSON error payload — ignore.
+    }
+  }
+  return out;
+}
+
+// Pull the human-readable message out of an SSE error payload. Only error frames are
+// inspected, for the reason documented on errorFramePayloads.
+function extractSseErrorMessage(text, fallback) {
+  const payloads = errorFramePayloads(text);
+  if (payloads.length === 0) return fallback || CODEX_MODEL_CAPACITY_MESSAGE;
+
+  for (const data of payloads) {
+    const exact = data.match(/Selected model is at capacity\. Please try a different model\./i)?.[0];
+    if (exact) return exact;
     try {
       const message = findNestedMessage(JSON.parse(data));
       if (message) return message;
@@ -376,18 +430,63 @@ export class CodexExecutor extends BaseExecutor {
     let text = "";
     let matched = null;
     let accountFallback = false;
+    // Bounded post-output scan: see CODEX_SSE_OUTPUT_GRACE_MS. 0 disables it.
+    const graceEnabled = CODEX_SSE_OUTPUT_GRACE_MS > 0;
+    let graceDeadline = 0;
+    let graceBytesAt = 0;
+    // A read that the grace deadline raced past is NOT abandoned: it is carried into
+    // the reassembled stream below, so the same reader keeps serving the client and
+    // no lock is left dangling.
+    let pendingRead = null;
     try {
       while (text.length < CODEX_SSE_PEEK_BYTES) {
-        const { done, value } = await reader.read();
+        const remainingMs = graceDeadline > 0 ? graceDeadline - Date.now() : 0;
+        if (graceDeadline > 0 && remainingMs <= 0) break;
+        if (!pendingRead) pendingRead = reader.read();
+        // Once output has started, a silent upstream must not hold the request open:
+        // race the read against the remaining grace budget so the stream can begin
+        // flowing to the client even if the turn never completes.
+        let result;
+        if (graceDeadline > 0) {
+          let graceTimer;
+          result = await Promise.race([
+            pendingRead,
+            new Promise((resolve) => { graceTimer = setTimeout(() => resolve({ timedOut: true }), remainingMs); }),
+          ]);
+          clearTimeout(graceTimer);
+        } else {
+          result = await pendingRead;
+        }
+        if (result.timedOut) break; // pendingRead stays pending; handed off below
+        pendingRead = null;
+        const { done, value } = result;
         if (done) break;
         chunks.push(value);
         text += decoder.decode(value, { stream: true });
+        // Match against error-frame payloads only (see errorFramePayloads): a normal
+        // output delta that quotes an error string must not trigger a fallback.
+        const errorText = errorFramePayloads(text).join("\n").toLowerCase();
+        if (errorText) {
+          const accountHit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS.find(p => errorText.includes(p));
+          if (accountHit) { matched = accountHit; accountFallback = true; break; }
+          const retryHit = CODEX_SSE_RETRY_PATTERNS.find(p => errorText.includes(p));
+          if (retryHit) { matched = retryHit; break; }
+        }
         const lowerText = text.toLowerCase();
-        const accountHit = CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS.find(p => lowerText.includes(p));
-        if (accountHit) { matched = accountHit; accountFallback = true; break; }
-        const retryHit = CODEX_SSE_RETRY_PATTERNS.find(p => lowerText.includes(p));
-        if (retryHit) { matched = retryHit; break; }
-        if (CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => lowerText.includes(p))) break;
+        if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) break;
+        if (graceDeadline > 0) {
+          if (Date.now() >= graceDeadline || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
+          continue;
+        }
+        if (CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => lowerText.includes(p))) {
+          // Output already started. Do not stop here: keep scanning briefly so a
+          // same-turn capacity/overload rejection still triggers fallback. The
+          // deadline is measured from the first output delta, and a byte cap keeps
+          // a pathological stream from being buffered in full.
+          if (!graceEnabled) break;
+          graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
+          graceBytesAt = text.length;
+        }
       }
     } catch (e) {
       dbg("CODEX", `peek read error: ${e.message}`);
@@ -413,25 +512,24 @@ export class CodexExecutor extends BaseExecutor {
       };
     }
 
-    reader.releaseLock();
-
-    // Re-assemble stream: prefix chunks + remaining upstream body
-    const upstream = response.body;
-    let upstreamReader = null;
+    // Re-assemble stream: prefix chunks + remaining upstream body. The SAME reader is
+    // reused (never released) so a read the grace deadline interrupted is simply
+    // awaited on the next pull instead of being lost.
+    let carry = pendingRead;
     const replacementBody = new ReadableStream({
       start(controller) {
         for (const c of chunks) controller.enqueue(c);
-        upstreamReader = upstream.getReader();
       },
       async pull(controller) {
         try {
-          const { done, value } = await upstreamReader.read();
+          const { done, value } = carry ? await carry : await reader.read();
+          carry = null;
           if (done) { controller.close(); return; }
           controller.enqueue(value);
         } catch (e) { controller.error(e); }
       },
       cancel(reason) {
-        try { upstreamReader?.cancel(reason); } catch { /* noop */ }
+        try { reader.cancel(reason); } catch { /* noop */ }
       },
     });
     return { matched: null, message: null, accountFallback: false, replacementBody };

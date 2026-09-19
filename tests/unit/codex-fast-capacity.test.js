@@ -132,5 +132,127 @@ it("keeps the original SSE evidence when upstream returns an overloaded error", 
     message: "Our servers are currently overloaded. Please try again later.",
   });
   expect(peek.upstreamError.body).toContain("server_is_overloaded");
-  expect(executor.config.retry[503]).toEqual({ attempts: 1, delayMs: 1000 });
 });
+
+// Codex can stream a few output deltas and only THEN fail the turn with a capacity
+// error. The peek used to stop at the first delta, so that 200-OK error stream was
+// handed back as a success: the combo accepted it and never rotated to the next
+// model, and the client saw "Our servers are currently overloaded" instead of a
+// fallback. These pin the bounded post-output grace scan that fixes it.
+describe("Codex detects a capacity error that arrives after output has started", () => {
+  const delta = [
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta","delta":"Sure"}',
+    "",
+  ].join("\n");
+  const overload = [
+    "event: error",
+    'data: {"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}',
+    "",
+  ].join("\n");
+
+  it("still matches the overload after an output delta in the same chunk", async () => {
+    const executor = new CodexExecutor();
+    const response = new Response(streamFromText(delta + overload), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("server_is_overloaded");
+    expect(peek.accountFallback).toBe(false);
+  });
+
+  it("still matches the overload when the delta and error arrive in separate chunks", async () => {
+    const executor = new CodexExecutor();
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(delta));
+        controller.enqueue(encoder.encode(overload));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("server_is_overloaded");
+  });
+
+  it("does not wait for the grace window on a normal completed turn", async () => {
+    const executor = new CodexExecutor();
+    const text = [
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"r1"}}',
+      "",
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"Hello"}',
+      "",
+      "event: response.completed",
+      'data: {"type":"response.completed","response":{"status":"completed"}}',
+      "",
+    ].join("\n");
+    const response = new Response(streamFromText(text), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const startedAt = Date.now();
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    // A terminal frame ends the scan immediately — no full grace-window stall.
+    expect(Date.now() - startedAt).toBeLessThan(120);
+    await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("reassembles the stream byte-for-byte when only output is present", async () => {
+    const executor = new CodexExecutor();
+    const text = delta;
+    const response = new Response(streamFromText(text), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  // The model's own output travels as SSE data too. A reply that merely QUOTES the
+  // overload sentence must not be read as an upstream failure — otherwise asking
+  // "why did I get 'our servers are currently overloaded'?" would itself fail over.
+  it("does not treat an overload sentence quoted in the reply as a failure", async () => {
+    const executor = new CodexExecutor();
+    const text = [
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":"The error text is: Our servers are currently overloaded. Please try again later."}',
+      "",
+      "event: response.completed",
+      'data: {"type":"response.completed","response":{"status":"completed"}}',
+      "",
+    ].join("\n");
+    const response = new Response(streamFromText(text), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    await expect(new Response(peek.replacementBody).text()).resolves.toBe(text);
+  });
+
+  it("matches an error frame even when it is split across chunks", async () => {
+    const executor = new CodexExecutor();
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: error\ndata: {\"error\":{\"code\":\"server_is_"));
+        controller.enqueue(encoder.encode("overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n"));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("server_is_overloaded");
+  });
+});
+

@@ -436,16 +436,32 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       // because it says nothing about the model and must not consume the
       // bounded fan-out budget: two dead nodes in front of a healthy account
       // must still rotate to that account.
+      //
+      // Only upstream-side signals may open a breaker. An account-level failure
+      // (bad key, unpaid plan, per-account rate limit) is this account's problem,
+      // not the upstream's: recording it here opened the breaker after three
+      // accounts *within a single rotation*, which aborted the loop before the
+      // healthy accounts further down the list were ever tried — and then cooled
+      // the whole channel down for later requests too. The account is already
+      // locked for its own cooldown by markAccountUnavailable, so the next account
+      // is the correct next step, never the whole channel.
+      //
+      //   throttled    → model busy / our transport died → short, model-scoped throttle
+      //   upstream 5xx → the upstream itself answered with a server error → long breaker
+      //   anything else (4xx) → account-scoped → no breaker at all, just rotate
       const throttled = modelLevel || transport;
-      const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel: throttled });
-      if (breaker.open) {
-        const retryAfterMs = breaker.retryAfterMs || 60_000;
-        const retryAt = new Date(Date.now() + retryAfterMs).toISOString();
-        const human = `retry after ${Math.max(1, Math.round(retryAfterMs / 1000))}s`;
-        log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
-        saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
-        return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
-          result.error || "Provider model is temporarily unavailable", retryAt, human);
+      const upstreamOutage = !throttled && Number(result.status) >= 500;
+      if (throttled || upstreamOutage) {
+        const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel: throttled });
+        if (breaker.open) {
+          const retryAfterMs = breaker.retryAfterMs || 60_000;
+          const retryAt = new Date(Date.now() + retryAfterMs).toISOString();
+          const human = `retry after ${Math.max(1, Math.round(retryAfterMs / 1000))}s`;
+          log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
+          saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
+          return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
+            result.error || "Provider model is temporarily unavailable", retryAt, human);
+        }
       }
 
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);

@@ -1,0 +1,206 @@
+// A channel with several accounts must keep rotating to the next account after
+// an *account-level* failure (bad key, unpaid plan, per-account rate limit).
+//
+// Before the fix, every failed account was charged to the provider/model breaker
+// inside the same rotation. Three accounts later the breaker opened and chat.js
+// returned early, so on a 4+ account channel the accounts at the bottom of the
+// list were never tried — and the open breaker then cooled the whole channel
+// down for later requests, including ones that would have hit a healthy account.
+//
+// These drive the REAL chat.js loop, the REAL markAccountUnavailable lock logic
+// and the REAL provider/model breaker against a REAL database, so the routing
+// decision under test is the production one. Only the upstream call is stubbed.
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// DATA_DIR is resolved when src/ modules are first imported, so pin it before any
+// of them load.
+const PROBE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sm-fanout-"));
+process.env.DATA_DIR = PROBE_DIR;
+delete global._dbAdapter;
+
+const mocks = vi.hoisted(() => ({
+  handleChatCore: vi.fn(),
+  getModelInfo: vi.fn(),
+  getComboModels: vi.fn(async () => null),
+  getComboByName: vi.fn(async () => null),
+  checkAndRefreshToken: vi.fn(async (_p, c) => c),
+  updateProviderCredentials: vi.fn(async () => {}),
+  attempts: [],
+}));
+
+// Keep the REAL auth.js (getProviderCredentials, markAccountUnavailable); only
+// the API-key gate is stubbed so the test key needs no registration.
+vi.mock("../../src/sse/services/auth.js", async (orig) => {
+  const actual = await orig();
+  return {
+    ...actual,
+    extractApiKey: vi.fn(() => null),
+    authorizeApiKey: vi.fn(async () => null),
+    resolveApiKeyAccessTags: vi.fn(async () => []),
+  };
+});
+vi.mock("../../src/sse/services/model.js", () => ({
+  getModelInfo: mocks.getModelInfo,
+  getComboModels: mocks.getComboModels,
+}));
+vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
+  checkAndRefreshToken: mocks.checkAndRefreshToken,
+  updateProviderCredentials: mocks.updateProviderCredentials,
+}));
+vi.mock("open-sse/index.js", () => ({}));
+vi.mock("open-sse/handlers/chatCore.js", () => ({ handleChatCore: mocks.handleChatCore }));
+vi.mock("open-sse/utils/bypassHandler.js", () => ({ handleBypassRequest: vi.fn(() => null) }));
+vi.mock("open-sse/services/combo.js", () => ({
+  handleComboChat: vi.fn(),
+  handleFusionChat: vi.fn(),
+  detectRequiredCapabilities: vi.fn(() => []),
+  getComboModelsForRequest: vi.fn(() => []),
+  getUnsupportedComboRequestCapability: vi.fn(() => null),
+}));
+vi.mock("@/lib/modelCapabilityOverrides", () => ({
+  refreshModelCapabilityOverrides: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/headroom/detect", () => ({ DEFAULT_HEADROOM_URL: "" }));
+vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn(async () => null) }));
+vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
+
+const { handleChat } = await import("../../src/sse/handlers/chat.js");
+const connectionsRepo = await import("../../src/lib/db/repos/connectionsRepo.js");
+
+const UPSTREAM = (status, message) => ({
+  source: "http", status, message, body: message,
+  retryAfterMs: null, receivedAt: new Date().toISOString(), layer: "provider",
+});
+
+function clearBreakers() {
+  const g = globalThis.__smProviderBreakers;
+  if (g?.providers) g.providers.clear();
+  if (g?.overloads) g.overloads.clear();
+}
+
+function request(model = "probe/model-x") {
+  return new Request("https://router.test/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer router-key" },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+  });
+}
+
+/** Seed `n` active accounts for a throwaway provider, one per priority. */
+async function seedAccounts(n, provider = "probe") {
+  const existing = await connectionsRepo.getProviderConnections({ provider });
+  for (const c of existing) await connectionsRepo.deleteProviderConnection(c.id);
+  for (let i = 1; i <= n; i += 1) {
+    await connectionsRepo.createProviderConnection({
+      provider, authType: "apikey", name: String(i),
+      apiKey: `key-${i}`, isActive: true, priority: i,
+    });
+  }
+  const conns = await connectionsRepo.getProviderConnections({ provider, isActive: true });
+  return [...conns].sort((a, b) => (a.priority || 0) - (b.priority || 0));
+}
+
+/** Make every upstream call fail the same way and record which account ran. */
+function failEveryAccount({ status, error }) {
+  mocks.attempts.length = 0;
+  mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+    mocks.attempts.push(credentials.connectionId);
+    return {
+      success: false, status, error,
+      upstreamError: UPSTREAM(status, error),
+      response: new Response("upstream error", { status }),
+    };
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.attempts.length = 0;
+  clearBreakers();
+  mocks.getModelInfo.mockResolvedValue({ provider: "probe", model: "model-x" });
+  mocks.checkAndRefreshToken.mockImplementation(async (_p, c) => c);
+});
+
+describe("multi-account fan-out", () => {
+  it("tries every account when an account-level error hits each one", async () => {
+    for (const n of [2, 3, 4, 5, 6]) {
+      await seedAccounts(n);
+      failEveryAccount({ status: 401, error: "invalid api key" });
+
+      const res = await handleChat(request());
+
+      expect(mocks.attempts.length, `${n} accounts, all 401`).toBe(n);
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it("does not cap the rotation at the breaker threshold for per-account limits", async () => {
+    // 429 is the classic per-account rate limit: it must not open a channel-wide
+    // breaker, so all four accounts get their turn.
+    await seedAccounts(4);
+    failEveryAccount({ status: 429, error: "rate limit exceeded" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(4);
+    expect(res.status).toBe(429);
+  });
+
+  it("rotates to a healthy account sitting below several failed ones", async () => {
+    const accounts = await seedAccounts(4);
+    const healthyId = accounts[3].id;
+
+    // First three accounts are broken; the fourth works.
+    mocks.attempts.length = 0;
+    mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+      mocks.attempts.push(credentials.connectionId);
+      if (credentials.connectionId === healthyId) {
+        return { success: true, response: new Response("ok", { status: 200 }) };
+      }
+      return {
+        success: false, status: 401, error: "invalid api key",
+        upstreamError: UPSTREAM(401, "invalid api key"),
+        response: new Response("nope", { status: 401 }),
+      };
+    });
+
+    const res = await handleChat(request());
+
+    expect(res.status).toBe(200);
+    expect(mocks.attempts.at(-1)).toBe(healthyId);
+    expect(mocks.attempts.length).toBe(4);
+  });
+
+  it("does not open a channel-wide breaker on account-level failures", async () => {
+    // The account locks that follow a 401 are correct and expected; what must NOT
+    // happen is the provider/model breaker opening, because that is what cooled the
+    // whole channel down for later requests. Assert the breaker state directly so
+    // the account cooldowns do not confound the check.
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+
+    await seedAccounts(6);
+    failEveryAccount({ status: 401, error: "invalid api key" });
+    await handleChat(request());
+
+    const breaker = await getProviderModelBreaker("probe", "model-x");
+    expect(breaker.open).toBe(false);
+  });
+
+  it("still opens the breaker for a genuine upstream outage (5xx)", async () => {
+    // A real upstream server error is channel-level, not account-level: the long
+    // breaker is the intended protection and must survive this fix.
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+
+    await seedAccounts(6);
+    failEveryAccount({ status: 500, error: "internal server error" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBeLessThan(6);
+    expect(res.status).toBe(500);
+    expect((await getProviderModelBreaker("probe", "model-x")).open).toBe(true);
+  });
+});

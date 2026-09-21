@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
+import { deleteHotJson, fillHotJson, getHotJson } from "@/lib/redis/hotCache.js";
 
 function rowToCombo(row) {
   if (!row) return null;
@@ -32,7 +32,7 @@ export async function getCombos() {
   if (Array.isArray(cached)) return cached;
   const db = await getAdapter();
   const combos = db.all(`SELECT * FROM combos ORDER BY COALESCE(groupName, '') ASC, sortOrder ASC, createdAt ASC`).map(rowToCombo);
-  setHotJson(COMBOS_CACHE_KEY, combos, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+  fillHotJson(COMBOS_CACHE_KEY, combos, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
   return combos;
 }
 
@@ -48,12 +48,12 @@ export async function getComboByName(name) {
   const cached = await getHotJson(COMBOS_CACHE_KEY);
   if (Array.isArray(cached)) {
     const result = cached.find((combo) => combo.name === name) || null;
-    if (result) setHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+    if (result) fillHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
     return result;
   }
   const db = await getAdapter();
   const result = rowToCombo(db.get(`SELECT * FROM combos WHERE name = ?`, [name]));
-  if (result) setHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
+  if (result) fillHotJson(comboCacheKey(name), result, COMBOS_CACHE_TTL_SECONDS).catch(() => {});
   return result;
 }
 

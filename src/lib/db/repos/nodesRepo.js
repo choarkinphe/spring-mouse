@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
+import { deleteHotJson, fillHotJson, getHotJson } from "@/lib/redis/hotCache.js";
 
 function rowToNode(row) {
   if (!row) return null;
@@ -47,7 +47,7 @@ export async function getProviderNodes(filter = {}) {
   if (Array.isArray(cached)) return filter.type ? cached.filter((node) => node.type === filter.type) : cached;
   const db = await getAdapter();
   const nodes = db.all(`SELECT * FROM providerNodes`).map(rowToNode);
-  setHotJson(PROVIDER_NODES_CACHE_KEY, nodes, PROVIDER_NODES_CACHE_TTL_SECONDS).catch(() => {});
+  fillHotJson(PROVIDER_NODES_CACHE_KEY, nodes, PROVIDER_NODES_CACHE_TTL_SECONDS).catch(() => {});
   return filter.type ? nodes.filter((node) => node.type === filter.type) : nodes;
 }
 

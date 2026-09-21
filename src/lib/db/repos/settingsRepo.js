@@ -1,7 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
-import { getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
+import { fillHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:8008";
 const DEFAULT_HEADROOM_URL = process.env.HEADROOM_URL || "http://localhost:8787";
@@ -125,7 +125,9 @@ export async function getSettings() {
   const raw = await readRaw();
   settingsCache = mergeWithDefaults(raw);
   settingsCacheExpire = now + SETTINGS_TTL_MS;
-  setHotJson(SETTINGS_CACHE_KEY, settingsCache, SETTINGS_REDIS_TTL_SECONDS).catch(() => {});
+  // fillHotJson: a concurrent updateSettings may have written newer settings
+  // while this read was in flight; this snapshot predates it.
+  fillHotJson(SETTINGS_CACHE_KEY, settingsCache, SETTINGS_REDIS_TTL_SECONDS).catch(() => {});
   return settingsCache;
 }
 

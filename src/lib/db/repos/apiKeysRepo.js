@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 import { createHash } from "node:crypto";
-import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
+import { deleteHotJson, fillHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
 // lastUsedAt写节流缓存，避免每请求写数据库
 const lastUsedAtCache = new Map();
@@ -14,12 +14,22 @@ function apiKeyCacheKey(key) {
   return `api-key:${createHash("sha256").update(String(key)).digest("hex")}`;
 }
 
+// Authoritative cache write: the caller just persisted this exact record, so it
+// must win over a read-through fill or an invalidation marker.
 function cacheApiKey(key, apiKey) {
   if (!apiKey) return Promise.resolve(false);
   // Redis keys and values never contain the raw ingress credential. The caller
   // already has it and can reattach it after a cache hit when needed.
   const { key: _rawKey, ...safeValue } = apiKey;
   return setHotJson(apiKeyCacheKey(key), safeValue, API_KEY_CACHE_TTL_SECONDS);
+}
+
+// Read-through fill: only used on the "cache miss -> read DB -> populate" path,
+// where a concurrent update/delete may already have invalidated the key.
+function fillApiKeyCache(key, apiKey) {
+  if (!apiKey) return Promise.resolve(false);
+  const { key: _rawKey, ...safeValue } = apiKey;
+  return fillHotJson(apiKeyCacheKey(key), safeValue, API_KEY_CACHE_TTL_SECONDS);
 }
 
 function restoreApiKey(cached, key) {
@@ -94,7 +104,7 @@ export async function getApiKeyByValue(key) {
   if (cached && typeof cached === "object") return restoreApiKey(cached, key);
   const db = await getAdapter();
   const result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE key = ?`, [key]));
-  if (result) cacheApiKey(key, result).catch(() => {});
+  if (result) fillApiKeyCache(key, result).catch(() => {});
   return result;
 }
 

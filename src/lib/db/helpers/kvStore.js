@@ -1,6 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "./jsonCol.js";
-import { deleteHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
+import { deleteHotJson, fillHotJson, getHotJson } from "@/lib/redis/hotCache.js";
 
 export function makeKv(scope) {
   const cacheKey = `kv:${scope}`;
@@ -19,15 +19,17 @@ export function makeKv(scope) {
       const rows = db.all(`SELECT key, value FROM kv WHERE scope = ?`, [scope]);
       const out = {};
       for (const r of rows) out[r.key] = parseJson(r.value);
-      setHotJson(cacheKey, out, 120).catch(() => {});
+      // fillHotJson (not setHotJson): a concurrent writer may have invalidated the
+      // scope while this read was in flight, and this snapshot predates that write.
+      fillHotJson(cacheKey, out, 120).catch(() => {});
       return out;
     },
     async set(key, value) {
       const db = await getAdapter();
       db.run(`INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value`, [scope, key, stringifyJson(value)]);
-      const cached = await getHotJson(cacheKey);
-      if (cached && typeof cached === "object" && !Array.isArray(cached)) { cached[key] = value; await setHotJson(cacheKey, cached, 120); }
-      else await deleteHotJson(cacheKey);
+      // Invalidate rather than patch the cached object: a read-modify-write here
+      // would race other writers and can resurrect a snapshot invalidated mid-read.
+      await deleteHotJson(cacheKey);
     },
     async setMany(obj) {
       const db = await getAdapter();
@@ -41,9 +43,7 @@ export function makeKv(scope) {
     async remove(key) {
       const db = await getAdapter();
       db.run(`DELETE FROM kv WHERE scope = ? AND key = ?`, [scope, key]);
-      const cached = await getHotJson(cacheKey);
-      if (cached && typeof cached === "object" && !Array.isArray(cached)) { delete cached[key]; await setHotJson(cacheKey, cached, 120); }
-      else await deleteHotJson(cacheKey);
+      await deleteHotJson(cacheKey);
     },
     async clear() {
       const db = await getAdapter();

@@ -1,0 +1,2570 @@
+{
+  "all": {
+    "totalRequests": 7,
+    "completedRequests": 5,
+    "failedRequests": 1,
+    "cancelledRequests": 1,
+    "meteredRequests": 7,
+    "totalPromptTokens": 2110,
+    "totalCompletionTokens": 855,
+    "totalCachedTokens": 120,
+    "totalCost": 0.21100000000000002,
+    "totalRequestBytes": 600,
+    "totalResponseBytes": 1200,
+    "totalTrafficBytes": 1800,
+    "trafficSummary": {
+      "today": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "week": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "month": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "recent": [
+        {
+          "requestId": "traffic-0",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 100,
+          "responseBytes": 200,
+          "totalBytes": 300,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-1",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 200,
+          "responseBytes": 400,
+          "totalBytes": 600,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-2",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 300,
+          "responseBytes": 600,
+          "totalBytes": 900,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        }
+      ]
+    },
+    "byProvider": {
+      "codex": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06
+      },
+      "deepseek": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09
+      },
+      "glm": {
+        "requests": 2,
+        "promptTokens": 610,
+        "completionTokens": 245,
+        "cachedTokens": 0,
+        "cost": 0.061
+      }
+    },
+    "byModel": {
+      "gpt-5 (codex)": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek)": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm)": {
+        "requests": 2,
+        "promptTokens": 610,
+        "completionTokens": 245,
+        "cachedTokens": 0,
+        "cost": 0.061,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byAccount": {
+      "gpt-5 (codex - Account conn-a...)": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      },
+      "gpt-5 (codex - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-c...)": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-c",
+        "accountName": "Account conn-c...",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm - Account conn-a...)": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm - Account conn-c...)": {
+        "requests": 1,
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "cachedTokens": 0,
+        "cost": 0.06,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "connectionId": "conn-c",
+        "accountName": "Account conn-c...",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApiKey": {
+      "local-no-key|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Local (No API Key)",
+        "apiKeyKey": "local-no-key",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-beta|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Deleted API Key",
+        "apiKeyKey": "key-beta",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-beta|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "cachedTokens": 0,
+        "cost": 0.06,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "apiKeyMasked": null,
+        "keyName": "Deleted API Key",
+        "apiKeyKey": "key-beta",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byEndpoint": {
+      "/v1/chat/completions|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 400,
+        "completionTokens": 170,
+        "cachedTokens": 60,
+        "cost": 0.04,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "cachedTokens": 0,
+        "cost": 0.02,
+        "endpoint": "/v1/messages",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "endpoint": "/v1/messages",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "cachedTokens": 0,
+        "cost": 0.06,
+        "endpoint": "/v1/messages",
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "bySourceIp": {
+      "1.1.1.1": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "lastUsed": "<TS>"
+      },
+      "2.2.2.2": {
+        "requests": 2,
+        "promptTokens": 700,
+        "completionTokens": 280,
+        "cachedTokens": 40,
+        "cost": 0.07,
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "lastUsed": "<TS>"
+      },
+      "4.4.4.4": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "lastUsed": "<TS>"
+      },
+      "3.3.3.3": {
+        "requests": 1,
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "cachedTokens": 0,
+        "cost": 0.06,
+        "sourceIp": "3.3.3.3",
+        "sourceGeo": "CN",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApp": {
+      "Cursor": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "appName": "Cursor",
+        "lastUsed": "<TS>"
+      },
+      "claude code": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "appName": "claude code",
+        "lastUsed": "<TS>"
+      },
+      "curl": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "appName": "curl",
+        "lastUsed": "<TS>"
+      },
+      "未知客户端": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "appName": "未知客户端",
+        "lastUsed": "<TS>"
+      },
+      "Aider": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "appName": "Aider",
+        "lastUsed": "<TS>"
+      },
+      "Cline": {
+        "requests": 1,
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "cachedTokens": 0,
+        "cost": 0.06,
+        "appName": "Cline",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byUser": {
+      "local-no-key": {
+        "requests": 2,
+        "completedRequests": 1,
+        "failedRequests": 1,
+        "cancelledRequests": 0,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "requestDurationMs": 2000,
+        "durationRequestCount": 2,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "sourceIps": {
+          "1.1.1.1": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "apps": {
+          "Cursor": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "periods": [
+          0,
+          0,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "local-no-key",
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "sessionCount": 2,
+        "activeSessionDurationMs": 2000,
+        "activeDays": 1
+      },
+      "key-alpha": {
+        "requests": 3,
+        "completedRequests": 2,
+        "failedRequests": 0,
+        "cancelledRequests": 1,
+        "promptTokens": 710,
+        "completionTokens": 285,
+        "cachedTokens": 40,
+        "cost": 0.07100000000000001,
+        "requestDurationMs": 3000,
+        "durationRequestCount": 3,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "glm-5 (glm)": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "sourceIps": {
+          "2.2.2.2": {
+            "requests": 2,
+            "promptTokens": 700,
+            "completionTokens": 280,
+            "cachedTokens": 40,
+            "cost": 0.07
+          },
+          "4.4.4.4": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "apps": {
+          "claude code": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "curl": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "Aider": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "periods": [
+          0,
+          1,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          1,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-alpha",
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "sessionCount": 3,
+        "activeSessionDurationMs": 3000,
+        "activeDays": 2
+      },
+      "key-beta": {
+        "requests": 2,
+        "completedRequests": 2,
+        "failedRequests": 0,
+        "cancelledRequests": 0,
+        "promptTokens": 1100,
+        "completionTokens": 440,
+        "cachedTokens": 60,
+        "cost": 0.11,
+        "requestDurationMs": 2000,
+        "durationRequestCount": 2,
+        "models": {
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          },
+          "glm-5 (glm)": {
+            "requests": 1,
+            "promptTokens": 600,
+            "completionTokens": 240,
+            "cachedTokens": 0,
+            "cost": 0.06
+          }
+        },
+        "sourceIps": {
+          "3.3.3.3": {
+            "requests": 1,
+            "promptTokens": 600,
+            "completionTokens": 240,
+            "cachedTokens": 0,
+            "cost": 0.06
+          }
+        },
+        "apps": {
+          "未知客户端": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          },
+          "Cline": {
+            "requests": 1,
+            "promptTokens": 600,
+            "completionTokens": 240,
+            "cachedTokens": 0,
+            "cost": 0.06
+          }
+        },
+        "periods": [
+          0,
+          1,
+          0,
+          1,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-beta",
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "sessionCount": 2,
+        "activeSessionDurationMs": 2000,
+        "activeDays": 2
+      }
+    },
+    "sourceCapture": {
+      "ipEnabled": true,
+      "mode": "development",
+      "appEnabled": true,
+      "geoip": {
+        "dataDir": "<TMPDIR>/geoip",
+        "cityPath": "<TMPDIR>/geoip/GeoLite2-City.mmdb",
+        "asnPath": "<TMPDIR>/geoip/GeoLite2-ASN.mmdb",
+        "cityAvailable": false,
+        "asnAvailable": false
+      }
+    },
+    "requestRhythm": {
+      "periods": [
+        {
+          "label": "00:00–03:59",
+          "requests": 0
+        },
+        {
+          "label": "04:00–07:59",
+          "requests": 2
+        },
+        {
+          "label": "08:00–11:59",
+          "requests": 4
+        },
+        {
+          "label": "12:00–15:59",
+          "requests": 1
+        },
+        {
+          "label": "16:00–19:59",
+          "requests": 0
+        },
+        {
+          "label": "20:00–23:59",
+          "requests": 0
+        }
+      ],
+      "weekdays": [
+        {
+          "label": "周一",
+          "requests": 1
+        },
+        {
+          "label": "周二",
+          "requests": 5
+        },
+        {
+          "label": "周三",
+          "requests": 1
+        },
+        {
+          "label": "周四",
+          "requests": 0
+        },
+        {
+          "label": "周五",
+          "requests": 0
+        },
+        {
+          "label": "周六",
+          "requests": 0
+        },
+        {
+          "label": "周日",
+          "requests": 0
+        }
+      ]
+    },
+    "recentCallDetails": [
+      {
+        "id": 7,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "glm-5",
+        "provider": "glm",
+        "appName": "Aider",
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "totalTokens": 15,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.001,
+        "status": "success"
+      },
+      {
+        "id": 6,
+        "timestamp": "<TS>",
+        "userId": "key-beta",
+        "durationMs": 1000,
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "model": "glm-5",
+        "provider": "glm",
+        "appName": "Cline",
+        "sourceIp": "3.3.3.3",
+        "sourceGeo": "CN",
+        "endpoint": "/v1/messages",
+        "promptTokens": 600,
+        "completionTokens": 240,
+        "totalTokens": 840,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.06,
+        "status": "success"
+      },
+      {
+        "id": 5,
+        "timestamp": "<TS>",
+        "userId": "key-beta",
+        "durationMs": 1000,
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "未知客户端",
+        "sourceIp": null,
+        "sourceGeo": null,
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "totalTokens": 700,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.05,
+        "status": "success"
+      },
+      {
+        "id": 4,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "curl",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/messages",
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "totalTokens": 560,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.04,
+        "status": "cancelled"
+      },
+      {
+        "id": 3,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "claude code",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "totalTokens": 420,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.03,
+        "status": "success"
+      },
+      {
+        "id": 2,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/messages",
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "totalTokens": 280,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.02,
+        "status": "error"
+      },
+      {
+        "id": 1,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 100,
+        "completionTokens": 50,
+        "totalTokens": 150,
+        "requestBytes": 100,
+        "responseBytes": 200,
+        "totalBytes": 300,
+        "cost": 0.01,
+        "status": "success"
+      }
+    ]
+  },
+  "7d": {
+    "totalRequests": 6,
+    "completedRequests": 4,
+    "failedRequests": 1,
+    "cancelledRequests": 1,
+    "meteredRequests": 6,
+    "totalPromptTokens": 1510,
+    "totalCompletionTokens": 615,
+    "totalCachedTokens": 120,
+    "totalCost": 0.15100000000000002,
+    "totalRequestBytes": 0,
+    "totalResponseBytes": 0,
+    "totalTrafficBytes": 0,
+    "trafficSummary": {
+      "today": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "week": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "month": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "recent": [
+        {
+          "requestId": "traffic-0",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 100,
+          "responseBytes": 200,
+          "totalBytes": 300,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-1",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 200,
+          "responseBytes": 400,
+          "totalBytes": 600,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-2",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 300,
+          "responseBytes": 600,
+          "totalBytes": 900,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        }
+      ]
+    },
+    "byProvider": {
+      "codex": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06
+      },
+      "deepseek": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09
+      },
+      "glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001
+      }
+    },
+    "byModel": {
+      "gpt-5 (codex)": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek)": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm)": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byAccount": {
+      "gpt-5 (codex - Account conn-a...)": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      },
+      "gpt-5 (codex - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-c...)": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-c",
+        "accountName": "Account conn-c...",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm - Account conn-a...)": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApiKey": {
+      "local-no-key|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Local (No API Key)",
+        "apiKeyKey": "local-no-key",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-beta|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Deleted API Key",
+        "apiKeyKey": "key-beta",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byEndpoint": {
+      "/v1/chat/completions|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 400,
+        "completionTokens": 170,
+        "cachedTokens": 60,
+        "cost": 0.04,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "cachedTokens": 0,
+        "cost": 0.02,
+        "endpoint": "/v1/messages",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "endpoint": "/v1/messages",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "bySourceIp": {
+      "1.1.1.1": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "lastUsed": "<TS>"
+      },
+      "2.2.2.2": {
+        "requests": 2,
+        "promptTokens": 700,
+        "completionTokens": 280,
+        "cachedTokens": 40,
+        "cost": 0.07,
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "lastUsed": "<TS>"
+      },
+      "4.4.4.4": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApp": {
+      "Cursor": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "appName": "Cursor",
+        "lastUsed": "<TS>"
+      },
+      "claude code": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "appName": "claude code",
+        "lastUsed": "<TS>"
+      },
+      "curl": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "appName": "curl",
+        "lastUsed": "<TS>"
+      },
+      "未知客户端": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "appName": "未知客户端",
+        "lastUsed": "<TS>"
+      },
+      "Aider": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "appName": "Aider",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byUser": {
+      "local-no-key": {
+        "requests": 2,
+        "completedRequests": 1,
+        "failedRequests": 1,
+        "cancelledRequests": 0,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "requestDurationMs": 2000,
+        "durationRequestCount": 2,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "sourceIps": {
+          "1.1.1.1": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "apps": {
+          "Cursor": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "periods": [
+          0,
+          0,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "local-no-key",
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "sessionCount": 2,
+        "activeSessionDurationMs": 2000,
+        "activeDays": 1
+      },
+      "key-alpha": {
+        "requests": 3,
+        "completedRequests": 2,
+        "failedRequests": 0,
+        "cancelledRequests": 1,
+        "promptTokens": 710,
+        "completionTokens": 285,
+        "cachedTokens": 40,
+        "cost": 0.07100000000000001,
+        "requestDurationMs": 3000,
+        "durationRequestCount": 3,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "glm-5 (glm)": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "sourceIps": {
+          "2.2.2.2": {
+            "requests": 2,
+            "promptTokens": 700,
+            "completionTokens": 280,
+            "cachedTokens": 40,
+            "cost": 0.07
+          },
+          "4.4.4.4": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "apps": {
+          "claude code": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "curl": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "Aider": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "periods": [
+          0,
+          1,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          1,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-alpha",
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "sessionCount": 3,
+        "activeSessionDurationMs": 3000,
+        "activeDays": 2
+      },
+      "key-beta": {
+        "requests": 1,
+        "completedRequests": 1,
+        "failedRequests": 0,
+        "cancelledRequests": 0,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "requestDurationMs": 1000,
+        "durationRequestCount": 1,
+        "models": {
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          }
+        },
+        "sourceIps": {},
+        "apps": {
+          "未知客户端": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          }
+        },
+        "periods": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-beta",
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "sessionCount": 1,
+        "activeSessionDurationMs": 1000,
+        "activeDays": 1
+      }
+    },
+    "sourceCapture": {
+      "ipEnabled": true,
+      "mode": "development",
+      "appEnabled": true,
+      "geoip": {
+        "dataDir": "<TMPDIR>/geoip",
+        "cityPath": "<TMPDIR>/geoip/GeoLite2-City.mmdb",
+        "asnPath": "<TMPDIR>/geoip/GeoLite2-ASN.mmdb",
+        "cityAvailable": false,
+        "asnAvailable": false
+      }
+    },
+    "requestRhythm": {
+      "periods": [
+        {
+          "label": "00:00–03:59",
+          "requests": 0
+        },
+        {
+          "label": "04:00–07:59",
+          "requests": 2
+        },
+        {
+          "label": "08:00–11:59",
+          "requests": 4
+        },
+        {
+          "label": "12:00–15:59",
+          "requests": 0
+        },
+        {
+          "label": "16:00–19:59",
+          "requests": 0
+        },
+        {
+          "label": "20:00–23:59",
+          "requests": 0
+        }
+      ],
+      "weekdays": [
+        {
+          "label": "周一",
+          "requests": 1
+        },
+        {
+          "label": "周二",
+          "requests": 5
+        },
+        {
+          "label": "周三",
+          "requests": 0
+        },
+        {
+          "label": "周四",
+          "requests": 0
+        },
+        {
+          "label": "周五",
+          "requests": 0
+        },
+        {
+          "label": "周六",
+          "requests": 0
+        },
+        {
+          "label": "周日",
+          "requests": 0
+        }
+      ]
+    },
+    "recentCallDetails": [
+      {
+        "id": 7,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "glm-5",
+        "provider": "glm",
+        "appName": "Aider",
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "totalTokens": 15,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.001,
+        "status": "success"
+      },
+      {
+        "id": 5,
+        "timestamp": "<TS>",
+        "userId": "key-beta",
+        "durationMs": 1000,
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "未知客户端",
+        "sourceIp": null,
+        "sourceGeo": null,
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "totalTokens": 700,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.05,
+        "status": "success"
+      },
+      {
+        "id": 4,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "curl",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/messages",
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "totalTokens": 560,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.04,
+        "status": "cancelled"
+      },
+      {
+        "id": 3,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "claude code",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "totalTokens": 420,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.03,
+        "status": "success"
+      },
+      {
+        "id": 2,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/messages",
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "totalTokens": 280,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.02,
+        "status": "error"
+      },
+      {
+        "id": 1,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 100,
+        "completionTokens": 50,
+        "totalTokens": 150,
+        "requestBytes": 100,
+        "responseBytes": 200,
+        "totalBytes": 300,
+        "cost": 0.01,
+        "status": "success"
+      }
+    ]
+  },
+  "24h": {
+    "totalRequests": 6,
+    "completedRequests": 4,
+    "failedRequests": 1,
+    "cancelledRequests": 1,
+    "meteredRequests": 6,
+    "totalPromptTokens": 1510,
+    "totalCompletionTokens": 615,
+    "totalCachedTokens": 120,
+    "totalCost": 0.15100000000000002,
+    "totalRequestBytes": 0,
+    "totalResponseBytes": 0,
+    "totalTrafficBytes": 0,
+    "trafficSummary": {
+      "today": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "week": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "month": {
+        "requests": 0,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0
+      },
+      "recent": [
+        {
+          "requestId": "traffic-0",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 100,
+          "responseBytes": 200,
+          "totalBytes": 300,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-1",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 200,
+          "responseBytes": 400,
+          "totalBytes": 600,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        },
+        {
+          "requestId": "traffic-2",
+          "timestamp": "<TS>",
+          "completedAt": "<TS>",
+          "method": "POST",
+          "endpoint": "/v1/chat/completions",
+          "statusCode": 200,
+          "requestBytes": 300,
+          "responseBytes": 600,
+          "totalBytes": 900,
+          "durationMs": 10,
+          "aborted": false,
+          "appName": "Cursor"
+        }
+      ]
+    },
+    "byProvider": {
+      "codex": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06
+      },
+      "deepseek": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09
+      },
+      "glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001
+      }
+    },
+    "byModel": {
+      "gpt-5 (codex)": {
+        "requests": 3,
+        "promptTokens": 600,
+        "completionTokens": 250,
+        "cachedTokens": 60,
+        "cost": 0.06,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek)": {
+        "requests": 2,
+        "promptTokens": 900,
+        "completionTokens": 360,
+        "cachedTokens": 60,
+        "cost": 0.09,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm)": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byAccount": {
+      "gpt-5 (codex - Account conn-a...)": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      },
+      "gpt-5 (codex - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-b...)": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-b",
+        "accountName": "Account conn-b...",
+        "lastUsed": "<TS>"
+      },
+      "ds-chat (deepseek - Account conn-c...)": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "connectionId": "conn-c",
+        "accountName": "Account conn-c...",
+        "lastUsed": "<TS>"
+      },
+      "glm-5 (glm - Account conn-a...)": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "connectionId": "conn-a",
+        "accountName": "Account conn-a...",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApiKey": {
+      "local-no-key|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Local (No API Key)",
+        "apiKeyKey": "local-no-key",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      },
+      "key-beta|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "apiKeyMasked": null,
+        "keyName": "Deleted API Key",
+        "apiKeyKey": "key-beta",
+        "lastUsed": "<TS>"
+      },
+      "key-alpha|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "apiKeyMasked": null,
+        "keyName": "Alpha Key",
+        "apiKeyKey": "key-alpha",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byEndpoint": {
+      "/v1/chat/completions|gpt-5|codex": {
+        "requests": 2,
+        "promptTokens": 400,
+        "completionTokens": 170,
+        "cachedTokens": 60,
+        "cost": 0.04,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|gpt-5|codex": {
+        "requests": 1,
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "cachedTokens": 0,
+        "cost": 0.02,
+        "endpoint": "/v1/messages",
+        "rawModel": "gpt-5",
+        "provider": "codex",
+        "lastUsed": "<TS>"
+      },
+      "/v1/messages|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "endpoint": "/v1/messages",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|ds-chat|deepseek": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "ds-chat",
+        "provider": "deepseek",
+        "lastUsed": "<TS>"
+      },
+      "/v1/chat/completions|glm-5|glm": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "endpoint": "/v1/chat/completions",
+        "rawModel": "glm-5",
+        "provider": "glm",
+        "lastUsed": "<TS>"
+      }
+    },
+    "bySourceIp": {
+      "1.1.1.1": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "lastUsed": "<TS>"
+      },
+      "2.2.2.2": {
+        "requests": 2,
+        "promptTokens": 700,
+        "completionTokens": 280,
+        "cachedTokens": 40,
+        "cost": 0.07,
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "lastUsed": "<TS>"
+      },
+      "4.4.4.4": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byApp": {
+      "Cursor": {
+        "requests": 2,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "appName": "Cursor",
+        "lastUsed": "<TS>"
+      },
+      "claude code": {
+        "requests": 1,
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "cachedTokens": 40,
+        "cost": 0.03,
+        "appName": "claude code",
+        "lastUsed": "<TS>"
+      },
+      "curl": {
+        "requests": 1,
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "cachedTokens": 0,
+        "cost": 0.04,
+        "appName": "curl",
+        "lastUsed": "<TS>"
+      },
+      "未知客户端": {
+        "requests": 1,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "appName": "未知客户端",
+        "lastUsed": "<TS>"
+      },
+      "Aider": {
+        "requests": 1,
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "cachedTokens": 0,
+        "cost": 0.001,
+        "appName": "Aider",
+        "lastUsed": "<TS>"
+      }
+    },
+    "byUser": {
+      "local-no-key": {
+        "requests": 2,
+        "completedRequests": 1,
+        "failedRequests": 1,
+        "cancelledRequests": 0,
+        "promptTokens": 300,
+        "completionTokens": 130,
+        "cachedTokens": 20,
+        "cost": 0.03,
+        "requestDurationMs": 2000,
+        "durationRequestCount": 2,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "sourceIps": {
+          "1.1.1.1": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "apps": {
+          "Cursor": {
+            "requests": 2,
+            "promptTokens": 300,
+            "completionTokens": 130,
+            "cachedTokens": 20,
+            "cost": 0.03
+          }
+        },
+        "periods": [
+          0,
+          0,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "local-no-key",
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "sessionCount": 2,
+        "activeSessionDurationMs": 2000,
+        "activeDays": 1
+      },
+      "key-alpha": {
+        "requests": 3,
+        "completedRequests": 2,
+        "failedRequests": 0,
+        "cancelledRequests": 1,
+        "promptTokens": 710,
+        "completionTokens": 285,
+        "cachedTokens": 40,
+        "cost": 0.07100000000000001,
+        "requestDurationMs": 3000,
+        "durationRequestCount": 3,
+        "models": {
+          "gpt-5 (codex)": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "glm-5 (glm)": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "sourceIps": {
+          "2.2.2.2": {
+            "requests": 2,
+            "promptTokens": 700,
+            "completionTokens": 280,
+            "cachedTokens": 40,
+            "cost": 0.07
+          },
+          "4.4.4.4": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "apps": {
+          "claude code": {
+            "requests": 1,
+            "promptTokens": 300,
+            "completionTokens": 120,
+            "cachedTokens": 40,
+            "cost": 0.03
+          },
+          "curl": {
+            "requests": 1,
+            "promptTokens": 400,
+            "completionTokens": 160,
+            "cachedTokens": 0,
+            "cost": 0.04
+          },
+          "Aider": {
+            "requests": 1,
+            "promptTokens": 10,
+            "completionTokens": 5,
+            "cachedTokens": 0,
+            "cost": 0.001
+          }
+        },
+        "periods": [
+          0,
+          1,
+          2,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          1,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-alpha",
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "sessionCount": 3,
+        "activeSessionDurationMs": 3000,
+        "activeDays": 2
+      },
+      "key-beta": {
+        "requests": 1,
+        "completedRequests": 1,
+        "failedRequests": 0,
+        "cancelledRequests": 0,
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "cachedTokens": 60,
+        "cost": 0.05,
+        "requestDurationMs": 1000,
+        "durationRequestCount": 1,
+        "models": {
+          "ds-chat (deepseek)": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          }
+        },
+        "sourceIps": {},
+        "apps": {
+          "未知客户端": {
+            "requests": 1,
+            "promptTokens": 500,
+            "completionTokens": 200,
+            "cachedTokens": 60,
+            "cost": 0.05
+          }
+        },
+        "periods": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "weekdays": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "firstUsed": "<TS>",
+        "lastUsed": "<TS>",
+        "userId": "key-beta",
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "sessionCount": 1,
+        "activeSessionDurationMs": 1000,
+        "activeDays": 1
+      }
+    },
+    "sourceCapture": {
+      "ipEnabled": true,
+      "mode": "development",
+      "appEnabled": true,
+      "geoip": {
+        "dataDir": "<TMPDIR>/geoip",
+        "cityPath": "<TMPDIR>/geoip/GeoLite2-City.mmdb",
+        "asnPath": "<TMPDIR>/geoip/GeoLite2-ASN.mmdb",
+        "cityAvailable": false,
+        "asnAvailable": false
+      }
+    },
+    "requestRhythm": {
+      "periods": [
+        {
+          "label": "00:00–03:59",
+          "requests": 0
+        },
+        {
+          "label": "04:00–07:59",
+          "requests": 2
+        },
+        {
+          "label": "08:00–11:59",
+          "requests": 4
+        },
+        {
+          "label": "12:00–15:59",
+          "requests": 0
+        },
+        {
+          "label": "16:00–19:59",
+          "requests": 0
+        },
+        {
+          "label": "20:00–23:59",
+          "requests": 0
+        }
+      ],
+      "weekdays": [
+        {
+          "label": "周一",
+          "requests": 1
+        },
+        {
+          "label": "周二",
+          "requests": 5
+        },
+        {
+          "label": "周三",
+          "requests": 0
+        },
+        {
+          "label": "周四",
+          "requests": 0
+        },
+        {
+          "label": "周五",
+          "requests": 0
+        },
+        {
+          "label": "周六",
+          "requests": 0
+        },
+        {
+          "label": "周日",
+          "requests": 0
+        }
+      ]
+    },
+    "recentCallDetails": [
+      {
+        "id": 7,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "glm-5",
+        "provider": "glm",
+        "appName": "Aider",
+        "sourceIp": "4.4.4.4",
+        "sourceGeo": "SG",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 10,
+        "completionTokens": 5,
+        "totalTokens": 15,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.001,
+        "status": "success"
+      },
+      {
+        "id": 5,
+        "timestamp": "<TS>",
+        "userId": "key-beta",
+        "durationMs": 1000,
+        "keyName": "Deleted API Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "未知客户端",
+        "sourceIp": null,
+        "sourceGeo": null,
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 500,
+        "completionTokens": 200,
+        "totalTokens": 700,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.05,
+        "status": "success"
+      },
+      {
+        "id": 4,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "ds-chat",
+        "provider": "deepseek",
+        "appName": "curl",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/messages",
+        "promptTokens": 400,
+        "completionTokens": 160,
+        "totalTokens": 560,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.04,
+        "status": "cancelled"
+      },
+      {
+        "id": 3,
+        "timestamp": "<TS>",
+        "userId": "key-alpha",
+        "durationMs": 1000,
+        "keyName": "Alpha Key",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "claude code",
+        "sourceIp": "2.2.2.2",
+        "sourceGeo": "US",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 300,
+        "completionTokens": 120,
+        "totalTokens": 420,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.03,
+        "status": "success"
+      },
+      {
+        "id": 2,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/messages",
+        "promptTokens": 200,
+        "completionTokens": 80,
+        "totalTokens": 280,
+        "requestBytes": 0,
+        "responseBytes": 0,
+        "totalBytes": 0,
+        "cost": 0.02,
+        "status": "error"
+      },
+      {
+        "id": 1,
+        "timestamp": "<TS>",
+        "userId": "local-no-key",
+        "durationMs": 1000,
+        "keyName": "Local (No API Key)",
+        "apiKeyMasked": null,
+        "model": "gpt-5",
+        "provider": "codex",
+        "appName": "Cursor",
+        "sourceIp": "1.1.1.1",
+        "sourceGeo": "JP",
+        "endpoint": "/v1/chat/completions",
+        "promptTokens": 100,
+        "completionTokens": 50,
+        "totalTokens": 150,
+        "requestBytes": 100,
+        "responseBytes": 200,
+        "totalBytes": 300,
+        "cost": 0.01,
+        "status": "success"
+      }
+    ]
+  }
+}

@@ -14,9 +14,18 @@ const committedChannel = "spring-mouse:usage:committed";
 const consumer = `writer-${os.hostname()}-${process.pid}`;
 const batchSize = Math.max(1, Number(process.env.SPRING_MOUSE_USAGE_BATCH_SIZE || 100));
 const blockMs = Math.max(100, Number(process.env.SPRING_MOUSE_USAGE_BLOCK_MS || 1000));
+
+// Retention: usageHistory and networkTraffic grow ~30k rows/day and had no
+// pruning at all. Default keeps 90 days; 0 disables pruning (keep forever).
+const retentionDays = Math.max(0, Number.parseInt(process.env.SPRING_MOUSE_USAGE_RETENTION_DAYS ?? "90", 10) || 0);
+const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.SPRING_MOUSE_USAGE_PRUNE_INTERVAL_MS || 60 * 60 * 1000));
+const PRUNE_CHUNK = Math.max(100, Number(process.env.SPRING_MOUSE_USAGE_PRUNE_CHUNK || 5000));
+const lastPruneMetaKey = "usageRetentionLastPruneAt";
+
 let stopping = false;
 let db = null;
 let redisClient = null;
+let lastPruneAt = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
@@ -68,6 +77,66 @@ function persistBatch(events) {
     try { database.exec(`ROLLBACK TO ${savepoint}`); database.exec(`RELEASE ${savepoint}`); } catch {}
     throw error;
   }
+}
+
+/**
+ * Delete rows older than the retention window from both large tables.
+ *
+ * Chunked + index-covered: each statement deletes at most PRUNE_CHUNK rows via
+ * `idx_uh_ts` / `idx_nt_ts` (both on `timestamp`), and we yield to the event loop
+ * between chunks. A single unbounded DELETE would hold a long write transaction
+ * against the web process (which shares `busy_timeout=5000`).
+ *
+ * Both tables are pruned at the same cutoff so `usageHistory.trafficRequestId`
+ * references do not outlive their `networkTraffic` rows by much.
+ */
+async function pruneOnce() {
+  if (!retentionDays) return;
+  const database = openDatabase();
+  if (!database) return;
+
+  const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
+  let removed = 0;
+  for (const [table, indexHint] of [["usageHistory", "idx_uh_ts"], ["networkTraffic", "idx_nt_ts"]]) {
+    for (;;) {
+      if (stopping) return;
+      const result = database.prepare(
+        `DELETE FROM ${table} WHERE id IN (
+           SELECT id FROM ${table} INDEXED BY ${indexHint} WHERE timestamp < ? LIMIT ?
+         )`,
+      ).run(cutoff, PRUNE_CHUNK);
+      const changes = Number(result.changes || 0);
+      removed += changes;
+      if (changes < PRUNE_CHUNK) break;
+      // Yield so a big backlog does not starve Redis consumption.
+      await sleep(50);
+    }
+  }
+  if (removed > 0) {
+    console.log(`[UsageWriter] retention: removed ${removed} row(s) older than ${retentionDays}d`);
+    // Reclaim pages only occasionally; a full VACUUM rewrites the file and would
+    // block readers, so it is intentionally NOT run here.
+  }
+  lastPruneAt = Date.now();
+  try {
+    database.prepare("INSERT INTO _meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(lastPruneMetaKey, String(lastPruneAt));
+  } catch { /* meta write is best-effort */ }
+}
+
+/** Run retention at most once per interval, resuming the persisted schedule. */
+async function maybePrune() {
+  if (!retentionDays || stopping) return;
+  if (!lastPruneAt) {
+    // First tick after start: honour the persisted timestamp so a restart does
+    // not immediately re-run a long prune.
+    try {
+      const row = openDatabase()?.prepare("SELECT value FROM _meta WHERE key = ?").get(lastPruneMetaKey);
+      lastPruneAt = Number.parseInt(row?.value || "0", 10) || 0;
+    } catch { lastPruneAt = 0; }
+  }
+  if (Date.now() - lastPruneAt < PRUNE_INTERVAL_MS) return;
+  await pruneOnce();
 }
 
 function normalizeMessages(result) {
@@ -133,8 +202,14 @@ async function main() {
       await client.set(heartbeatKey, String(Date.now()), { expiration: { type: "EX", value: 20 } });
       const result = await client.xReadGroup(group, consumer, [{ key: stream, id: ">" }], { COUNT: batchSize, BLOCK: blockMs });
       const messages = normalizeMessages(result);
-      if (!messages.length) continue;
+      if (!messages.length) {
+        // Idle tick: a natural place to run retention without competing with
+        // ingestion. maybePrune() self-throttles to PRUNE_INTERVAL_MS.
+        await maybePrune();
+        continue;
+      }
       await persistWithRetry(client, messages);
+      await maybePrune();
     } catch (error) {
       if (!stopping) {
         console.error("[UsageWriter] batch failed:", error.message);

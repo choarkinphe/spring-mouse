@@ -2,14 +2,17 @@ import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabilities } from "@/models";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { normalizeModelCapabilities } from "@/shared/utils/modelCatalog";
+import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/models/custom - List all custom models
-export async function GET() {
+export async function GET(request) {
   try {
     const models = await getCustomModels();
-    return NextResponse.json({ models });
+    // ≈770KB uncompressed; see compressedJsonResponse for why route handlers
+    // have to opt in.
+    return compressedJsonResponse(request, { models });
   } catch (error) {
     console.log("Error fetching custom models:", error);
     return NextResponse.json({ error: "Failed to fetch custom models" }, { status: 500 });

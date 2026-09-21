@@ -5,9 +5,10 @@ import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
+import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
 
 // GET /api/models - Get models with aliases
-export async function GET() {
+export async function GET(request) {
   try {
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
@@ -62,7 +63,9 @@ export async function GET() {
       seen.add(routedModel);
     }
 
-    return NextResponse.json({ models });
+    // Compressed: this is the largest dashboard read (≈890KB uncompressed, ≈50KB
+    // gzipped) and route handlers do not get Next's compression middleware.
+    return compressedJsonResponse(request, { models });
   } catch (error) {
     console.log("Error fetching models:", error);
     return NextResponse.json({ error: "Failed to fetch models" }, { status: 500 });

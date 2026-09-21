@@ -638,13 +638,37 @@ const FUSION_DEFAULTS = {
   panelHardTimeoutMs: 90000, // absolute cap so one hung model can't stall forever
 };
 
-// Resolve a Response (or {__error}) within ms; the loser keeps running but is ignored.
+/**
+ * Release a panel response fusion decided not to answer from.
+ *
+ * A panel call owns an account routing lease until its body is drained or
+ * cancelled (see withRouteLease in src/sse/services/routeLease.js). Fusion
+ * abandons stragglers, timeouts and non-2xx panels by design — if such a body
+ * is merely dropped, the lease is never released, armRenewal() keeps renewing
+ * it every lease window, and the panel account reads as pinned at its
+ * concurrency cap with no traffic to show for it. Cancelling the body returns
+ * the slot. Fail-open: accounting must never mask a fusion result.
+ */
+function cancelAbandonedResponse(result) {
+  const body = result?.body;
+  if (!body || typeof body.cancel !== "function") return;
+  Promise.resolve(body.cancel()).catch(() => {});
+}
+
+// Resolve a Response (or {__error}) within ms. A panel that lands after the
+// deadline is abandoned: its body still holds a lease, so release it on arrival
+// instead of leaving it to be renewed forever.
 function withTimeout(promise, ms) {
+  let timedOut = false;
   return new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ __timeout: true }), ms);
+    const t = setTimeout(() => { timedOut = true; resolve({ __timeout: true }); }, ms);
     Promise.resolve(promise)
-      .then((v) => { clearTimeout(t); resolve(v); })
-      .catch((e) => { clearTimeout(t); resolve({ __error: e }); });
+      .then((v) => {
+        clearTimeout(t);
+        if (timedOut) { cancelAbandonedResponse(v); return; }
+        resolve(v);
+      })
+      .catch((e) => { clearTimeout(t); if (!timedOut) resolve({ __error: e }); });
   });
 }
 
@@ -654,6 +678,10 @@ function withTimeout(promise, ms) {
  * caps the straggler penalty (the slowest model otherwise dominates wall time) while
  * still preferring a full panel when everyone is fast. Bounded by a hard timeout.
  * Returns a sparse array aligned to `calls` (undefined = not yet / dropped).
+ *
+ * A panel that lands after `finish()` was decided no longer contributes, so its
+ * body is cancelled on arrival — otherwise its account lease is stranded (see
+ * cancelAbandonedResponse).
  */
 function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs }) {
   return new Promise((resolve) => {
@@ -672,8 +700,11 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
     const hardTimer = setTimeout(finish, panelHardTimeoutMs);
     calls.forEach((p, i) => {
       Promise.resolve(p)
-        .then((v) => { out[i] = v; })
-        .catch((e) => { out[i] = { __error: e }; })
+        .then((v) => {
+          if (finished) { cancelAbandonedResponse(v); return; }
+          out[i] = v;
+        })
+        .catch((e) => { if (!finished) out[i] = { __error: e }; })
         .finally(() => {
           settled++;
           if (out[i] && out[i].ok) ok++;
@@ -753,7 +784,13 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
     if (!res) { log.warn("FUSION", `Panel ${model} dropped (straggler/timeout)`); continue; }
     if (res.__timeout) { log.warn("FUSION", `Panel ${model} timed out`); continue; }
     if (res.__error) { log.warn("FUSION", `Panel ${model} threw`, { error: res.__error?.message || String(res.__error) }); continue; }
-    if (!res.ok) { log.warn("FUSION", `Panel ${model} failed`, { status: res.status }); continue; }
+    if (!res.ok) {
+      log.warn("FUSION", `Panel ${model} failed`, { status: res.status });
+      // A skipped panel's body is never read, so its account lease would be
+      // renewed forever; cancel it to release the slot.
+      cancelAbandonedResponse(res);
+      continue;
+    }
     try {
       const json = await res.clone().json();
       const text = extractPanelText(json);

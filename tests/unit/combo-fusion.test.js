@@ -17,6 +17,17 @@ function errResponse(status = 500) {
   return make();
 }
 
+// A panel response whose body cancellation releases its account routing lease,
+// mirroring withRouteLease: an abandoned body that is never read or cancelled
+// strands the slot and armRenewal() renews it forever.
+function trackedResponse(content) {
+  const json = { choices: [{ message: { role: "assistant", content } }] };
+  const make = () => ({ ok: true, status: 200, clone: make, json: async () => json });
+  const res = make();
+  res.body = { cancelled: false, cancel() { this.cancelled = true; return Promise.resolve(); } };
+  return res;
+}
+
 describe("fusion combo", () => {
   it("answers directly with a single-model panel (nothing to fuse)", async () => {
     const handleSingleModel = vi.fn(async () => okResponse("solo"));
@@ -212,5 +223,99 @@ describe("fusion combo", () => {
     
     // Flattened tool_result
     expect(panelBody.messages[2].content).toBe("[Tool result: done]");
+  });
+
+  // Fusion abandons panels by design (straggler dropped after quorum, hard
+  // timeout, non-2xx). Each abandoned body still holds an account routing lease
+  // until its body is read or cancelled — if fusion just drops the reference,
+  // armRenewal() renews that lease forever and the account reads as pinned at
+  // its concurrency cap with no traffic to show for it.
+  describe("releases abandoned panel leases", () => {
+    it("cancels a straggler's body when the grace window closes", async () => {
+      let straggler;
+      const handleSingleModel = vi.fn(async (_body, model) => {
+        if (model === "p/slow") {
+          straggler = trackedResponse("slow");
+          return new Promise((resolve) => setTimeout(() => resolve(straggler), 5000));
+        }
+        if (model === "p/judge") return okResponse("FINAL");
+        return okResponse(`fast-${model}`);
+      });
+
+      await handleFusionChat({
+        body: { messages: [{ role: "user", content: "Q" }] },
+        models: ["p/x", "p/y", "p/slow"],
+        handleSingleModel,
+        log,
+        judgeModel: "p/judge",
+        tuning: { minPanel: 2, stragglerGraceMs: 20, panelHardTimeoutMs: 10000 },
+      });
+
+      // Let the straggler's 5s promise resolve after fusion already finished.
+      await new Promise((r) => setTimeout(r, 5100));
+      expect(straggler.body.cancelled).toBe(true);
+    }, 10000);
+
+    it("cancels a panel that lands after the hard timeout", async () => {
+      let late;
+      const handleSingleModel = vi.fn(async (_body, model) => {
+        if (model === "p/late") {
+          late = trackedResponse("late");
+          return new Promise((resolve) => setTimeout(() => resolve(late), 300));
+        }
+        return okResponse(`ans-${model}`);
+      });
+
+      await handleFusionChat({
+        body: { messages: [{ role: "user", content: "Q" }] },
+        models: ["p/late", "p/other"],
+        handleSingleModel,
+        log,
+        judgeModel: "p/judge",
+        tuning: { minPanel: 2, stragglerGraceMs: 20, panelHardTimeoutMs: 50 },
+      });
+
+      await new Promise((r) => setTimeout(r, 400));
+      expect(late.body.cancelled).toBe(true);
+    });
+
+    it("cancels a failed panel's body instead of leaking its slot", async () => {
+      const failed = errResponse(500);
+      failed.body = { cancelled: false, cancel() { this.cancelled = true; return Promise.resolve(); } };
+      const handleSingleModel = vi.fn(async (_body, model) => (model === "p/bad" ? failed : okResponse(`ans-${model}`)));
+
+      await handleFusionChat({
+        body: { messages: [{ role: "user", content: "Q" }] },
+        models: ["p/ok", "p/bad"],
+        handleSingleModel,
+        log,
+        judgeModel: "p/judge",
+        tuning: { minPanel: 2, stragglerGraceMs: 20, panelHardTimeoutMs: 5000 },
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(failed.body.cancelled).toBe(true);
+    });
+
+    it("does not cancel a panel answer that is actually fused", async () => {
+      const used = [];
+      const handleSingleModel = vi.fn(async (_body, model) => {
+        if (model === "p/judge") return okResponse("FINAL");
+        const res = trackedResponse(`ans-${model}`);
+        used.push(res);
+        return res;
+      });
+
+      await handleFusionChat({
+        body: { messages: [{ role: "user", content: "Q" }] },
+        models: ["p/a", "p/b"],
+        handleSingleModel,
+        log,
+        judgeModel: "p/judge",
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      for (const res of used) expect(res.body.cancelled).toBe(false);
+    });
   });
 });

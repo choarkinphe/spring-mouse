@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   getProviderConnectionById,
+  getProviderConnections,
   getMouseById,
   getAvailableMouseById,
   updateProviderConnection,
@@ -9,6 +10,7 @@ import {
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import { moveProviderConnectionToPosition } from "@/lib/db/repos/connectionOrdering";
 import { normalizeScheduleForStorage } from "@/shared/utils/schedule.js";
+import { purgeChannelModelRowsByProviderId } from "@/lib/db/modelCleanup";
 
 function isHttpUrl(value) {
   try {
@@ -235,9 +237,23 @@ export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
 
+    // Capture the channel identity before the row disappears.
+    const connection = await getProviderConnectionById(id);
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
     const deleted = await deleteProviderConnection(id);
     if (!deleted) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    // Only sweep model rows when this was the channel's last account: a preset
+    // provider (e.g. codex) can hold several connections that share one alias,
+    // and removing one must not delete the models the others still serve.
+    const remaining = await getProviderConnections({ provider: connection.provider });
+    if (remaining.length === 0) {
+      await purgeChannelModelRowsByProviderId(connection.provider, connection);
     }
 
     return NextResponse.json({ message: "Connection deleted successfully" });

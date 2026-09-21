@@ -178,6 +178,11 @@ export function resetModelsDevCatalogCache() {
 // as badges so it is obvious where each entry came from.
 export const SYNC_SOURCE_OFFICIAL = "official";
 export const SYNC_SOURCE_CATALOG = "catalog";
+// A channel with no live /models endpoint and no external catalog entry can
+// still be synced from the model list its registry entry declares. Without this
+// those channels had no sync button at all, so their models never landed in
+// `customModels` — which is what the strict combo picker reads.
+export const SYNC_SOURCE_STATIC = "static";
 
 /**
  * Union a provider's own /models list with the shared capability catalog.

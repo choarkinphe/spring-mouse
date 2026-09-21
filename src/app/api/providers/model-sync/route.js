@@ -8,8 +8,10 @@ import {
   MODELS_DEV_CATALOG_URL,
   parseModelsDevCatalog,
   resolveModelsDevProviderKey,
+  SYNC_SOURCE_STATIC,
 } from "@/shared/utils/modelCatalog";
 import { supportsLiveModelSync } from "@/shared/constants/providers";
+import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 
 export const dynamic = "force-dynamic";
 
@@ -57,8 +59,14 @@ export async function POST(request) {
     // Compatible channels (openai-compatible-* / anthropic-compatible-*) are
     // provider nodes, not registry entries — they are always syncable.
     const canSyncLive = supportsLiveModelSync(providerId);
+    // Channels with neither a live endpoint nor a catalog entry (codebuddy-*,
+    // cline, zed, …) still declare their models in the registry. Syncing those
+    // is what makes them selectable in the strict combo picker.
+    const staticModels = getModelsByProviderId(providerId)
+      .map((model) => ({ ...model, id: model.id, name: model.name || model.id }));
+    const canSyncStatic = staticModels.length > 0;
 
-    if (!canSyncLive && !catalog) {
+    if (!canSyncLive && !catalog && !canSyncStatic) {
       return NextResponse.json({ error: "This provider does not support model synchronization" }, { status: 400 });
     }
 
@@ -102,10 +110,23 @@ export async function POST(request) {
       })
       .filter(Boolean);
 
-    // ── 3. Union: official ∪ catalog ───────────────────────────────────────
+    // ── 3. Union: official ∪ catalog ∪ registry-static ─────────────────────
     // Previously the catalog only *enriched* ids present in the live list, so
     // anything the account's /models endpoint omitted was silently dropped.
-    const { models, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels });
+    const { models: mergedModels, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels });
+
+    // Registry-declared models fill the gap only when neither the live endpoint
+    // nor the external catalog produced anything — they are the least fresh
+    // source, and a stale static id must not shadow a live one.
+    const known = new Set(mergedModels.map((model) => model.id));
+    let staticOnlyCount = 0;
+    for (const model of staticModels) {
+      if (!model?.id || known.has(model.id)) continue;
+      known.add(model.id);
+      mergedModels.push({ ...model, source: SYNC_SOURCE_STATIC });
+      staticOnlyCount += 1;
+    }
+    const models = mergedModels;
 
     if (models.length === 0) {
       return NextResponse.json(
@@ -128,6 +149,7 @@ export async function POST(request) {
       total: models.length,
       officialCount: officialModels.length,
       catalogCount: catalogOnlyCount,
+      staticCount: staticOnlyCount,
       ...(catalogWarning ? { warning: catalogWarning } : {}),
       ...result,
     });

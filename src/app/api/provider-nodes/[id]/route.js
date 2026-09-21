@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
 import { isCustomChannelIconSrc, normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
+import { purgeChannelModelRowsByProviderId } from "@/lib/db/modelCleanup";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
@@ -134,6 +135,9 @@ export async function DELETE(request, { params }) {
 
     await deleteProviderConnectionsByProvider(id);
     await deleteProviderNode(id);
+    // Sweep the channel's model rows too, or they outlive it as orphans that
+    // inflate /api/models and leak stale ids into pickers.
+    await purgeChannelModelRowsByProviderId(id, { prefix: node.prefix });
 
     return NextResponse.json({ success: true });
   } catch (error) {

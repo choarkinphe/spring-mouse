@@ -76,6 +76,20 @@ export async function initializeApp() {
 
 async function runHeavyStartup() {
   await cleanupProviderConnections();
+
+  // Reconcile model rows whose channel was deleted before the delete routes
+  // cascaded (or by an older build). Cheap, idempotent, and never blocks HTTP.
+  try {
+    const { purgeOrphanedModelRows } = await import("@/lib/db/modelCleanup");
+    const swept = await purgeOrphanedModelRows();
+    const total = swept.customModels + swept.modelAliases + swept.disabledModels;
+    if (total > 0) {
+      console.log(`[InitApp] purged orphaned model rows: ${total} (custom=${swept.customModels}, aliases=${swept.modelAliases}, disabled=${swept.disabledModels})`);
+    }
+  } catch (e) {
+    console.log("[InitApp] orphan model purge failed:", e.message);
+  }
+
   const settings = await getSettings();
 
   if (settings.mitmEnabled) {

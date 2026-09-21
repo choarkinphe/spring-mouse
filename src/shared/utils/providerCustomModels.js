@@ -1,5 +1,27 @@
+import { getProviderAlias } from "@/shared/constants/providers";
+import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
+
 function modelType(model) {
   return model?.kind || model?.type || "llm";
+}
+
+/**
+ * Every alias a channel's model rows may be stored under.
+ *
+ * A preset provider is keyed by its uiAlias (codex → "cx", deepseek → "ds"); a
+ * compatible channel is keyed by its raw provider node id, though older rows may
+ * carry its display prefix instead. Callers that need to find or delete "all of
+ * this channel's rows" must match the full set, not just one form.
+ */
+export function resolveProviderAliases(providerId, { provider, prefix } = {}) {
+  const out = new Set();
+  const add = (value) => { if (typeof value === "string" && value.trim()) out.add(value.trim()); };
+  add(providerId);
+  add(provider);
+  add(prefix);
+  add(getProviderAlias(providerId));
+  add(PROVIDER_ID_TO_ALIAS[providerId]);
+  return [...out];
 }
 
 // Badge label for a stored custom-model row. Synchronized rows keep the source
@@ -8,6 +30,7 @@ function modelType(model) {
 export function describeModelSource(source) {
   if (source === "official") return "官方";
   if (source === "models-dev" || source === "catalog") return "目录";
+  if (source === "static") return "内置";
   return null;
 }
 

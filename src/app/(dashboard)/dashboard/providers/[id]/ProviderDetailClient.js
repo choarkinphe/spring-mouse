@@ -113,9 +113,15 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   };
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
   // Channels without a live /models endpoint can still be synced when the shared
-  // capability catalog covers them (see MODELS_DEV_PROVIDER_KEYS).
+  // capability catalog covers them (see MODELS_DEV_PROVIDER_KEYS), or — for
+  // channels that declare their models in the registry and have neither — from
+  // that static list. Without the last case codebuddy-* and friends showed no
+  // sync button at all, so their models never reached the strict combo picker.
   const supportsModelSync = Boolean(
-    providerInfo?.modelCatalog || supportsLiveModelSync(providerId) || hasModelsDevCatalog(providerId)
+    providerInfo?.modelCatalog
+      || supportsLiveModelSync(providerId)
+      || hasModelsDevCatalog(providerId)
+      || staticModels.length > 0
   );
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
@@ -716,7 +722,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
       await fetchCustomModels();
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
-      const detail = `官方 ${data.officialCount ?? officialModels.length} · 目录 ${data.catalogCount ?? 0}`;
+      const detail = [
+        `官方 ${data.officialCount ?? officialModels.length}`,
+        `目录 ${data.catalogCount ?? 0}`,
+        ...(data.staticCount ? [`内置 ${data.staticCount}`] : []),
+      ].join(" · ");
       setModelSyncStatus({
         type: "success",
         text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")} (${detail}), ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`

@@ -1490,6 +1490,13 @@ const STRATEGY_DEFAULTS = {
   breakerWindowSeconds: 120,
   breakerCooldownSeconds: 60,
   overloadMaxRetries: 1,
+  // Model-overload throttle: a SEPARATE, gentler breaker from the channel one
+  // above. The upstream saying "busy" is not a broken channel, so it gets its own
+  // short cooldown. Its defaults mirror providerBreaker.js (threshold 6,
+  // cooldown 5s) so the form shows the values actually in force.
+  overloadThreshold: 6,
+  overloadCooldownSeconds: 5,
+  overloadWaitSeconds: 15,
 };
 
 function channelStrategyForm(strategy = {}) {
@@ -1505,6 +1512,9 @@ function channelStrategyForm(strategy = {}) {
     overloadMaxRetries: Number.isFinite(Number(strategy.overloadMaxRetries))
       ? Math.min(10, Math.max(0, Number(strategy.overloadMaxRetries)))
       : STRATEGY_DEFAULTS.overloadMaxRetries,
+    overloadThreshold: Number(strategy.overloadThreshold) || STRATEGY_DEFAULTS.overloadThreshold,
+    overloadCooldownSeconds: toSeconds(strategy.overloadCooldownMs, STRATEGY_DEFAULTS.overloadCooldownSeconds),
+    overloadWaitSeconds: toSeconds(strategy.overloadWaitMs, STRATEGY_DEFAULTS.overloadWaitSeconds),
   };
 }
 
@@ -1548,6 +1558,11 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       breakerWindowSeconds: Math.max(5, Number(form.breakerWindowSeconds) || 5),
       breakerCooldownSeconds: Math.max(1, Number(form.breakerCooldownSeconds) || 1),
       overloadMaxRetries: Math.min(10, Math.max(0, Number(form.overloadMaxRetries) || 0)),
+      // Model-overload throttle. Separate knobs from the channel breaker above:
+      // this one governs how a *busy upstream model* is paced, not a broken channel.
+      overloadThreshold: Math.max(1, Number(form.overloadThreshold) || 1),
+      overloadCooldownMs: Math.max(1, Number(form.overloadCooldownSeconds) || 1) * 1000,
+      overloadWaitMs: Math.max(1, Number(form.overloadWaitSeconds) || 1) * 1000,
     });
   };
 
@@ -1607,6 +1622,21 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
             {numberField("breakerWindowSeconds", "失败统计窗口（秒）", 5, 3600, "窗口外的失败不连续计数。")}
             {numberField("breakerCooldownSeconds", "熔断冷却（秒）", 1, 3600, "冷却结束后恢复尝试。")}
             {numberField("overloadMaxRetries", "模型过载重试次数", 0, 10, "上游报忙后最多再换账号重试几次；0 表示首次失败即返回 503，总尝试数为该值加 1。")}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-white/[0.07] bg-white/[0.02] p-3">
+          <div>
+            <p className="text-sm font-medium text-text-main">上游过载节流</p>
+            <p className="mt-1 text-xs text-text-muted">
+              上游返回「服务器过载」时的处理。与上面的渠道熔断相互独立：模型忙不等于渠道坏了，所以用更短的冷却。
+              阈值调大可减少熔断，让请求继续真正尝试上游；调小则更快失败。
+            </p>
+          </div>
+          <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !breakerEnabled && "opacity-50 pointer-events-none")}>
+            {numberField("overloadThreshold", "过载熔断阈值", 1, 1000, "统计窗口内累计多少次过载后暂停该模型；调大=更少熔断、更多真实尝试。")}
+            {numberField("overloadCooldownSeconds", "过载冷却（秒）", 1, 3600, "熔断后暂停该模型的时长。")}
+            {numberField("overloadWaitSeconds", "过载等待预算（秒）", 1, 3600, "熔断期间单个请求最多原地等待多久再重试；超出预算则直接返回 503。")}
           </div>
         </section>
 

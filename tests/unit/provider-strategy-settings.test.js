@@ -108,6 +108,48 @@ describe("provider strategy settings", () => {
     expect(invalid).toBeUndefined();
   });
 
+  it("stores the model-overload throttle (seconds form) separately from the breaker", async () => {
+    // These are the knobs the channel modal now exposes for an overloaded MODEL,
+    // distinct from the channel breaker above. They were previously unreachable
+    // from the UI, which is why the only way to tune them was a direct DB edit.
+    const saved = await saveStrategy({
+      overloadThreshold: 25,
+      overloadCooldownSeconds: 8,
+      overloadWaitSeconds: 20,
+    });
+
+    expect(saved).toEqual({
+      overloadThreshold: 25,
+      overloadCooldownMs: 8_000,
+      overloadWaitMs: 20_000,
+    });
+  });
+
+  it("accepts the overload throttle in raw milliseconds too", async () => {
+    const saved = await saveStrategy({
+      overloadThreshold: 12,
+      overloadCooldownMs: 3_000,
+      overloadWaitMs: 7_000,
+    });
+
+    expect(saved).toEqual({
+      overloadThreshold: 12,
+      overloadCooldownMs: 3_000,
+      overloadWaitMs: 7_000,
+    });
+  });
+
+  it("keeps the two breaker families independent", async () => {
+    // A channel-level failure threshold must not leak into the model-overload
+    // threshold; they are stored and read as separate keys on purpose.
+    const saved = await saveStrategy({
+      breakerThreshold: 4,
+      overloadThreshold: 30,
+    });
+
+    expect(saved).toEqual({ breakerThreshold: 4, overloadThreshold: 30 });
+  });
+
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

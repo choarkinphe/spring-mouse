@@ -42,8 +42,48 @@ export function isCodexRefreshStale(credentials, nowMs = Date.now(), maxAgeMs = 
   return !lastRefreshMs || nowMs - lastRefreshMs >= maxAgeMs;
 }
 
+/**
+ * How long to stop attempting a refresh after the upstream declares the
+ * refresh token permanently dead (refresh_token_reused / invalid_grant / ...).
+ *
+ * Without this, a dead token is retried on EVERY request: `refreshLeadMs` for
+ * codex is 5 days, so an account whose access token expires within 5 days is
+ * judged "needs refresh" continuously. Each attempt fails, the failure never
+ * updates `lastRefreshAt`, and the next request tries again — observed in
+ * production as ~510 identical failures over 9 hours (one every 1-3 minutes),
+ * with no backoff. The access token stays valid the whole time, so requests
+ * still succeed; the cost is a wasted upstream call plus log noise per request.
+ *
+ * A successful refresh clears the marker, so a re-authorised account recovers
+ * on its own. Override with SPRING_MOUSE_TOKEN_REFRESH_FAILURE_COOLDOWN_MS.
+ */
+export const REFRESH_FAILURE_COOLDOWN_MS = (() => {
+  const raw = Number.parseInt(process.env.SPRING_MOUSE_TOKEN_REFRESH_FAILURE_COOLDOWN_MS, 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 30 * 60 * 1000;
+})();
+
+export function getRefreshFailureAtMs(credentials) {
+  return parseTimeMs(
+    credentials?.lastRefreshFailureAt ??
+    credentials?.providerSpecificData?.lastRefreshFailureAt
+  );
+}
+
+/** True while a permanent refresh failure is still inside its cooldown window. */
+export function isRefreshFailureCoolingDown(credentials, nowMs = Date.now()) {
+  if (REFRESH_FAILURE_COOLDOWN_MS <= 0) return false;
+  const failedAtMs = getRefreshFailureAtMs(credentials);
+  if (failedAtMs === null) return false;
+  return nowMs - failedAtMs < REFRESH_FAILURE_COOLDOWN_MS;
+}
+
 export function shouldRefreshCredentials(provider, credentials, nowMs = Date.now()) {
   if (!credentials) return false;
+
+  // A refresh the upstream already rejected as permanently dead must not be
+  // retried on every request. The current access token is still usable until it
+  // expires, so skipping here costs nothing and stops the retry storm.
+  if (isRefreshFailureCoolingDown(credentials, nowMs)) return false;
 
   const expiresAtMs = getCredentialExpiryMs(credentials);
   if (expiresAtMs !== null && expiresAtMs - nowMs < getRefreshLeadMs(provider)) {
@@ -69,10 +109,28 @@ export function mergeProviderSpecificData(existing, next) {
 
 export function mergeRefreshedCredentials(provider, currentCredentials, refreshedCredentials, nowMs = Date.now()) {
   if (!refreshedCredentials) return null;
-  if (isUnrecoverableRefreshError(refreshedCredentials)) return refreshedCredentials;
+
+  const nowIso = new Date(nowMs).toISOString();
+
+  // The upstream declared this refresh token permanently dead. Stamp the failure
+  // so shouldRefreshCredentials can stop retrying it on every request (see
+  // REFRESH_FAILURE_COOLDOWN_MS). Returning the bare error object here — as this
+  // used to — left no trace in the stored credentials, so `lastRefreshAt` never
+  // advanced and the same dead token was re-attempted forever.
+  //
+  // Deliberately does NOT spread `currentCredentials`: every caller treats a
+  // truthy `accessToken` on the result as "refresh succeeded" (chatCore retries
+  // the request, onCredentialsRefreshed persists it). Carrying the old token
+  // through would make a permanent failure look like a success.
+  if (isUnrecoverableRefreshError(refreshedCredentials)) {
+    return {
+      ...refreshedCredentials,
+      lastRefreshFailureAt: refreshedCredentials.lastRefreshFailureAt || nowIso,
+      lastRefreshFailureCode: refreshedCredentials.code || refreshedCredentials.error || null,
+    };
+  }
 
   const next = {};
-  const nowIso = new Date(nowMs).toISOString();
 
   if (refreshedCredentials.accessToken) next.accessToken = refreshedCredentials.accessToken;
   if (refreshedCredentials.apiKey) next.apiKey = refreshedCredentials.apiKey;
@@ -115,6 +173,15 @@ export function mergeRefreshedCredentials(provider, currentCredentials, refreshe
     next.copilotToken
   ) {
     next.lastRefreshAt = refreshedCredentials.lastRefreshAt || nowIso;
+  }
+
+  // A successful refresh clears any prior permanent-failure cooldown, so an
+  // account that was re-authorised resumes refreshing normally. `null` (not
+  // omission) is deliberate: updateProviderCredentials only copies truthy keys,
+  // so an omitted field would leave the stale marker in the stored row.
+  if (next.lastRefreshAt) {
+    next.lastRefreshFailureAt = null;
+    next.lastRefreshFailureCode = null;
   }
 
   return next;

@@ -513,6 +513,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         } catch { log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`); }
       } else {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
+        // Persist a permanent-failure marker so shouldRefreshCredentials stops
+        // retrying this dead refresh token on every request. Without this the
+        // failure lived only in this call's return value, so the stored row kept
+        // the same dead token and the next request attempted it again — measured
+        // in production as ~510 identical failures over 9 hours.
+        if (newCredentials?.lastRefreshFailureAt && onCredentialsRefreshed) {
+          try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `failed to record refresh failure: ${e.message}`); }
+        }
       }
     } catch (e) {
       log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh threw: ${e.message}`);

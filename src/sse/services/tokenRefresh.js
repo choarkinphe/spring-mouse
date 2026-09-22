@@ -163,6 +163,12 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
     if (newCredentials.refreshToken)        updates.refreshToken = newCredentials.refreshToken;
     if (newCredentials.idToken)             updates.idToken = newCredentials.idToken;
     if (newCredentials.lastRefreshAt)       updates.lastRefreshAt = newCredentials.lastRefreshAt;
+    // A permanently-failed refresh must be recorded, otherwise the cooldown that
+    // stops the retry storm (see REFRESH_FAILURE_COOLDOWN_MS) has nowhere to live.
+    // `!== undefined` (not truthiness) so a successful refresh can clear the
+    // marker with an explicit null instead of leaving the stale value in place.
+    if (newCredentials.lastRefreshFailureAt !== undefined)   updates.lastRefreshFailureAt = newCredentials.lastRefreshFailureAt;
+    if (newCredentials.lastRefreshFailureCode !== undefined) updates.lastRefreshFailureCode = newCredentials.lastRefreshFailureCode;
     if (newCredentials.expiresAt)           updates.expiresAt = newCredentials.expiresAt;
     if (newCredentials.expiresIn) {
       updates.expiresAt = toExpiresAt(newCredentials.expiresIn);

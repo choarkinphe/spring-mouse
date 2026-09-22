@@ -10,7 +10,7 @@
 // These drive the REAL chat.js loop, the REAL markAccountUnavailable lock logic
 // and the REAL provider/model breaker against a REAL database, so the routing
 // decision under test is the production one. Only the upstream call is stubbed.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,8 +18,20 @@ import path from "node:path";
 // DATA_DIR is resolved when src/ modules are first imported, so pin it before any
 // of them load.
 const PROBE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "sm-fanout-"));
+const PREVIOUS_DATA_DIR = process.env.DATA_DIR;
 process.env.DATA_DIR = PROBE_DIR;
 delete global._dbAdapter;
+
+// vitest shares one process across test FILES, so leaving DATA_DIR pointed here
+// leaks into every later file: another suite that builds its own database in
+// beforeAll would silently read this directory instead. Restore on the way out.
+afterAll(() => {
+  try { global._dbAdapter?.instance?.close?.(); } catch {}
+  delete global._dbAdapter;
+  try { fs.rmSync(PROBE_DIR, { recursive: true, force: true }); } catch {}
+  if (PREVIOUS_DATA_DIR === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = PREVIOUS_DATA_DIR;
+});
 
 const mocks = vi.hoisted(() => ({
   handleChatCore: vi.fn(),
@@ -199,6 +211,54 @@ describe("multi-account fan-out", () => {
 
   it("defaults to one overload retry when the channel sets no budget", async () => {
     await seedAccounts(6);
+    failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(2);
+    expect(res.status).toBe(503);
+  });
+
+  it("keeps retrying a busy model when the pool is smaller than the budget", async () => {
+    // Production shape: 3 accounts, a generous channel budget. Each model-level
+    // overload used to exclude an account, so three overloads drained the pool
+    // and the request ended as a 503 while the budget was never consulted —
+    // measured live (`No more accounts available` fired, `exceeded channel retry
+    // budget` did not). The pool must now be refilled for model-level signals.
+    await seedAccounts(3);
+    await setProviderStrategy({ overloadMaxRetries: 8 });
+    failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
+
+    const res = await handleChat(request());
+
+    // Two passes over the 3 accounts. The second pass stops at the model-overload
+    // breaker (default threshold 6), which is a separate, deliberate guard: an
+    // overloaded model gets a short breather rather than being hammered for the
+    // full retry budget. Before the fix the first pass alone ended the request
+    // (3 attempts); now it is 6.
+    expect(mocks.attempts.length).toBe(6);
+    expect(res.status).toBe(503);
+  });
+
+  it("still drains the pool for account-level failures", async () => {
+    // The refill is specific to model-level signals. An account that cannot
+    // serve the request (here: a 401) must stay excluded, so the loop ends after
+    // one pass over the pool rather than retrying the same dead accounts.
+    await seedAccounts(3);
+    await setProviderStrategy({ overloadMaxRetries: 8 });
+    failEveryAccount({ status: 401, error: "Invalid API key provided" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(3);
+    expect(res.status).toBe(401);
+  });
+
+  it("does not refill past the channel overload budget", async () => {
+    // Termination guard: the refill is bounded by the same budget, so a small
+    // budget on a small pool must stop there instead of looping forever.
+    await seedAccounts(2);
+    await setProviderStrategy({ overloadMaxRetries: 1 });
     failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
 
     const res = await handleChat(request());

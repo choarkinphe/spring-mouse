@@ -291,6 +291,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
+  // Subset of `excludeConnectionIds` holding accounts excluded ONLY because the
+  // upstream model was busy. A model-level signal says nothing about the account,
+  // so when the pool drains purely for that reason the exclusions can be lifted
+  // and the pool retried, with `overloadMaxRetries` as the bound. Account-level
+  // failures (bad key, per-account rate limit) are never in this set and stay
+  // excluded.
+  const modelLevelExcluded = new Set();
   let lastError = null;
   let lastStatus = null;
   // Counts accounts that reported a *model-level* problem (the upstream model is
@@ -348,6 +355,26 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log.warn("AUTH", `${reqPrefix}No active credentials for provider: ${provider}`);
         saveOutcome("blocked:no_account");
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
+      }
+      // The pool drained, but if every exclusion came from a model-level signal
+      // the accounts are still healthy — the MODEL is busy. Lift those
+      // exclusions and keep going, bounded by overloadMaxRetries. Without this,
+      // three overloads on a three-account channel ended the request as a 503
+      // while the configured retry budget was never consulted (measured in
+      // production: `No more accounts available` fired, `exceeded channel retry
+      // budget` did not). A pool drained by account-level failures stays drained.
+      if (modelLevelFailures <= overloadMaxRetries
+        && modelLevelExcluded.size === excludeConnectionIds.size
+        && modelLevelExcluded.size > 0) {
+        log.warn("THROTTLE", `${provider}/${model} | pool drained by model-level signals (${modelLevelFailures}/${overloadMaxRetries}) · retrying accounts`);
+        excludeConnectionIds.clear();
+        // The refill starts a fresh pass, so the "which exclusions were
+        // model-level" tracker must reset with it. Leaving it populated made the
+        // size comparison fail on the next drain, so the pool was refilled only
+        // once (measured: 3 accounts produced 6 attempts instead of the 9 the
+        // budget allows).
+        modelLevelExcluded.clear();
+        continue;
       }
       // Every account was tried and each attempt failed upstream. Individual
       // attempts are already recorded per account, so the terminal row is
@@ -477,6 +504,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
+      if (modelLevel) modelLevelExcluded.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
 

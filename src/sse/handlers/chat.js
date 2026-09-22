@@ -41,16 +41,23 @@ function resolveComboRequestModels(comboModels, requiredCapabilities, capabiliti
   return { models };
 }
 
-// A model-wide overload signal must not be answered by trying every account:
-// each extra attempt pushes one more request at an upstream that already said
-// "busy". Two accounts are enough to tell "this account is unlucky" apart from
-// "the model is saturated", and the model overload throttle then holds traffic
-// off for a few seconds instead of the former whole-pool fan-out.
-const MAX_MODEL_LEVEL_ATTEMPTS = 2;
+// Model-level overload retries are configured per provider strategy. The cap keeps a
+// malformed or overly generous setting from turning one request into an unbounded
+// fan-out across accounts.
+const OVERLOAD_MAX_RETRIES_DEFAULT = 1;
+const OVERLOAD_MAX_RETRIES_CAP = 10;
 // Hint handed back to the client when we stop fanning out on a busy model. Short
 // on purpose: the model throttle clears in seconds, so telling the caller to wait
 // a minute (the old breaker wording) made every client back off far too long.
 const MODEL_LEVEL_RETRY_HINT_MS = 5_000;
+
+export function resolveOverloadMaxRetries(strategy = {}) {
+  const raw = strategy?.overloadMaxRetries;
+  if (raw == null || raw === "") return OVERLOAD_MAX_RETRIES_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return OVERLOAD_MAX_RETRIES_DEFAULT;
+  return Math.min(parsed, OVERLOAD_MAX_RETRIES_CAP);
+}
 
 /**
  * Handle chat completion request
@@ -272,6 +279,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+  const routingSettings = await getSettings();
+  const overloadMaxRetries = resolveOverloadMaxRetries(
+    (routingSettings.providerStrategies || {})[provider],
+  );
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -471,8 +482,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
       if (modelLevel) {
         modelLevelFailures += 1;
-        if (modelLevelFailures >= MAX_MODEL_LEVEL_ATTEMPTS) {
-          log.warn("THROTTLE", `${provider}/${model} | ${modelLevelFailures} accounts reported a busy model · stopping fan-out`);
+        if (modelLevelFailures > overloadMaxRetries) {
+          log.warn("THROTTLE", `${provider}/${model} | ${modelLevelFailures} model-level failures exceeded channel retry budget ${overloadMaxRetries}`);
           const retryAt = new Date(Date.now() + MODEL_LEVEL_RETRY_HINT_MS).toISOString();
           saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,

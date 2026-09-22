@@ -8,6 +8,7 @@ describe("account fallback classification", () => {
       expect(checkFallbackError(status, "invalid request")).toEqual({
         shouldFallback: false,
         cooldownMs: 0,
+        modelLevel: false,
       });
     },
   );
@@ -19,7 +20,7 @@ describe("account fallback classification", () => {
   });
 });
 
-it("uses a short fixed cooldown for provider overload instead of exponential account escalation", () => {
+it("classifies provider overload as a model-level fallback without an account cooldown", () => {
   const result = checkFallbackError(503, "Our servers are currently overloaded", 8);
-  expect(result).toEqual({ shouldFallback: true, cooldownMs: 30_000 });
+  expect(result).toEqual({ shouldFallback: true, cooldownMs: 0, modelLevel: true });
 });

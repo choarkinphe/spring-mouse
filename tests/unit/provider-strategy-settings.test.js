@@ -93,6 +93,21 @@ describe("provider strategy settings", () => {
     });
   });
 
+  it("stores the per-channel overload retry budget, including zero", async () => {
+    const saved = await saveStrategy({ overloadMaxRetries: 0 });
+    expect(saved).toEqual({ overloadMaxRetries: 0 });
+  });
+
+  it("clamps the overload retry budget and drops malformed values", async () => {
+    const saved = await saveStrategy({ overloadMaxRetries: 999 });
+    expect(saved).toEqual({ overloadMaxRetries: 10 });
+
+    // A negative count is not a valid budget, so the entry carries no recognized
+    // field and the API drops the whole provider key.
+    const invalid = await saveStrategy({ overloadMaxRetries: -1 });
+    expect(invalid).toBeUndefined();
+  });
+
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

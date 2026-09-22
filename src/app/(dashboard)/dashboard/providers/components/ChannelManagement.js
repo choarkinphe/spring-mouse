@@ -1489,6 +1489,7 @@ const STRATEGY_DEFAULTS = {
   breakerThreshold: 3,
   breakerWindowSeconds: 120,
   breakerCooldownSeconds: 60,
+  overloadMaxRetries: 1,
 };
 
 function channelStrategyForm(strategy = {}) {
@@ -1501,6 +1502,9 @@ function channelStrategyForm(strategy = {}) {
     breakerThreshold: Number(strategy.breakerThreshold) || STRATEGY_DEFAULTS.breakerThreshold,
     breakerWindowSeconds: toSeconds(strategy.breakerWindowMs, STRATEGY_DEFAULTS.breakerWindowSeconds),
     breakerCooldownSeconds: toSeconds(strategy.breakerCooldownMs, STRATEGY_DEFAULTS.breakerCooldownSeconds),
+    overloadMaxRetries: Number.isFinite(Number(strategy.overloadMaxRetries))
+      ? Math.min(10, Math.max(0, Number(strategy.overloadMaxRetries)))
+      : STRATEGY_DEFAULTS.overloadMaxRetries,
   };
 }
 
@@ -1543,6 +1547,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       breakerThreshold: Math.max(1, Number(form.breakerThreshold) || 1),
       breakerWindowSeconds: Math.max(5, Number(form.breakerWindowSeconds) || 5),
       breakerCooldownSeconds: Math.max(1, Number(form.breakerCooldownSeconds) || 1),
+      overloadMaxRetries: Math.min(10, Math.max(0, Number(form.overloadMaxRetries) || 0)),
     });
   };
 
@@ -1601,6 +1606,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
             {numberField("breakerThreshold", "连续失败阈值", 1, 100, "达到次数后打开熔断。")}
             {numberField("breakerWindowSeconds", "失败统计窗口（秒）", 5, 3600, "窗口外的失败不连续计数。")}
             {numberField("breakerCooldownSeconds", "熔断冷却（秒）", 1, 3600, "冷却结束后恢复尝试。")}
+            {numberField("overloadMaxRetries", "模型过载重试次数", 0, 10, "上游报忙后最多再换账号重试几次；0 表示首次失败即返回 503，总尝试数为该值加 1。")}
           </div>
         </section>
 

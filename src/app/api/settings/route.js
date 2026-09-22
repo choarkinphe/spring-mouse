@@ -280,6 +280,13 @@ export async function PATCH(request) {
       if (overloadCooldownMs != null) result.overloadCooldownMs = overloadCooldownMs;
       const overloadWaitMs = durationMs(entry.overloadWaitSeconds, entry.overloadWaitMs);
       if (overloadWaitMs != null) result.overloadWaitMs = overloadWaitMs;
+      const overloadMaxRetries = (() => {
+        if (entry.overloadMaxRetries == null || entry.overloadMaxRetries === "") return null;
+        const parsed = Number.parseInt(entry.overloadMaxRetries, 10);
+        if (!Number.isFinite(parsed) || parsed < 0) return null;
+        return Math.min(10, parsed);
+      })();
+      if (overloadMaxRetries != null) result.overloadMaxRetries = overloadMaxRetries;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

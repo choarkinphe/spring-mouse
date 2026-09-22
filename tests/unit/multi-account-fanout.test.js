@@ -81,6 +81,11 @@ function clearBreakers() {
   if (g?.overloads) g.overloads.clear();
 }
 
+async function setProviderStrategy(strategy) {
+  const settingsRepo = await import("../../src/lib/db/repos/settingsRepo.js");
+  await settingsRepo.updateSettings({ providerStrategies: { probe: strategy } });
+}
+
 function request(model = "probe/model-x") {
   return new Request("https://router.test/v1/chat/completions", {
     method: "POST",
@@ -116,10 +121,13 @@ function failEveryAccount({ status, error }) {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   mocks.attempts.length = 0;
   clearBreakers();
+  // Settings persist in the real DB this harness uses, so a strategy set by one
+  // case would otherwise leak into the next one.
+  await setProviderStrategy({});
   mocks.getModelInfo.mockResolvedValue({ provider: "probe", model: "model-x" });
   mocks.checkAndRefreshToken.mockImplementation(async (_p, c) => c);
 });
@@ -187,6 +195,38 @@ describe("multi-account fan-out", () => {
 
     const breaker = await getProviderModelBreaker("probe", "model-x");
     expect(breaker.open).toBe(false);
+  });
+
+  it("defaults to one overload retry when the channel sets no budget", async () => {
+    await seedAccounts(6);
+    failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(2);
+    expect(res.status).toBe(503);
+  });
+
+  it("uses the channel overload retry budget", async () => {
+    await seedAccounts(6);
+    await setProviderStrategy({ overloadMaxRetries: 3 });
+    failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(4);
+    expect(res.status).toBe(503);
+  });
+
+  it("supports zero overload retries for a channel", async () => {
+    await seedAccounts(6);
+    await setProviderStrategy({ overloadMaxRetries: 0 });
+    failEveryAccount({ status: 503, error: "Our servers are currently overloaded" });
+
+    const res = await handleChat(request());
+
+    expect(mocks.attempts.length).toBe(1);
+    expect(res.status).toBe(503);
   });
 
   it("still opens the breaker for a genuine upstream outage (5xx)", async () => {

@@ -38,6 +38,7 @@ export { default as SelectionCheckbox } from "./SelectionCheckbox";
 export { default as ModelCapabilitiesModal } from "./ModelCapabilitiesModal";
 export { default as CapacityBadges } from "./CapacityBadges";
 export { default as DashboardHero } from "./DashboardHero";
+export { default as StatCard, Sparkline } from "./StatCard";
 
 // Layouts
 export * from "./layouts";

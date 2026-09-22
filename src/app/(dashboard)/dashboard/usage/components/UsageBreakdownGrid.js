@@ -3,6 +3,7 @@
 import PropTypes from "prop-types";
 import { useState } from "react";
 import Card from "@/shared/components/Card";
+import StatCard from "@/shared/components/StatCard";
 import UsageChart from "./UsageChart";
 import PersonAnalysisReport from "./PersonAnalysisReport";
 import UsageDetailsDrawer from "./UsageDetailsDrawer";
@@ -62,61 +63,6 @@ function topIndex(values = []) {
   if (!values.length || !values.some(Boolean)) return -1;
   return values.reduce((best, value, index) => value > values[best] ? index : best, 0);
 }
-
-function Sparkline({ points = [], color = "#2563eb" }) {
-  const values = points.length ? points : [0, 0];
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const range = Math.max(max - min, 1);
-  const coords = values.map((value, index) => {
-    const x = values.length === 1 ? 50 : (index / (values.length - 1)) * 100;
-    const y = 32 - ((value - min) / range) * 28;
-    return `${x},${y}`;
-  }).join(" ");
-
-  return (
-    <svg viewBox="0 0 100 36" aria-hidden="true" className="h-10 w-24 overflow-visible">
-      <polyline points={coords} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={coords.split(" ").at(-1)?.split(",")[0]} cy={coords.split(" ").at(-1)?.split(",")[1]} r="3" fill={color} />
-    </svg>
-  );
-}
-
-Sparkline.propTypes = {
-  points: PropTypes.arrayOf(PropTypes.number),
-  color: PropTypes.string,
-};
-
-function MetricCard({ icon, label, value, detail, points, tone, color }) {
-  return (
-    <Card className="group relative min-w-0 overflow-hidden p-4" padding="none">
-      <div className={`absolute inset-x-0 top-0 h-[2px] ${tone}`} />
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-text-muted">
-            <span className={`material-symbols-outlined grid size-8 place-items-center rounded-lg text-[18px] ${tone} bg-opacity-10`}>
-              {icon}
-            </span>
-            <span className="text-[11px] font-bold uppercase tracking-[0.12em]">{label}</span>
-          </div>
-          <p className="mt-3 truncate text-2xl font-bold tracking-tight text-text-main">{value}</p>
-          <p className="mt-1 truncate text-[11px] text-text-muted">{detail}</p>
-        </div>
-        <Sparkline points={points} color={color} />
-      </div>
-    </Card>
-  );
-}
-
-MetricCard.propTypes = {
-  icon: PropTypes.string.isRequired,
-  label: PropTypes.string.isRequired,
-  value: PropTypes.string.isRequired,
-  detail: PropTypes.string.isRequired,
-  points: PropTypes.arrayOf(PropTypes.number),
-  tone: PropTypes.string.isRequired,
-  color: PropTypes.string.isRequired,
-};
 
 function PanelHeader({ icon, eyebrow, title, description, action }) {
   return (
@@ -418,13 +364,66 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
 
       <CaptureStatus capture={stats.sourceCapture} hasIpData={sourceIps.length > 0} hasAppData={apps.some((item) => item.appName !== "未知客户端")} />
 
-      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-        <MetricCard icon="send" label="模型调用次数" value={fmt(stats.totalRequests)} detail={`Top 使用人：${topPerson?.keyName || "暂无"}`} points={recent.map((item) => item.requests || 0)} tone="bg-sky-500 text-sky-600" color="#0ea5e9" />
-        <MetricCard icon="input" label="输入 Token" value={fmtTokens(stats.totalPromptTokens)} detail={`缓存命中 ${fmtTokens(stats.totalCachedTokens)}`} points={recent.map((item) => item.promptTokens || 0)} tone="bg-indigo-500 text-indigo-600" color="#6366f1" />
-        <MetricCard icon="output" label="输出 Token" value={fmtTokens(stats.totalCompletionTokens)} detail={`总消耗 ${fmtTokens(totalTokens)}`} points={recent.map((item) => item.completionTokens || 0)} tone="bg-emerald-500 text-emerald-600" color="#10b981" />
-        <MetricCard icon="network_check" label="数据流量" value={formatBytes(stats.totalTrafficBytes)} detail={`↑ ${formatBytes(stats.totalRequestBytes)} · ↓ ${formatBytes(stats.totalResponseBytes)}`} points={recent.map((item) => item.trafficBytes || 0)} tone="bg-cyan-500 text-cyan-600" color="#0891b2" />
-        <MetricCard icon="paid" label="预估成本" value={fmtCost(stats.totalCost)} detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`} points={recent.map((item) => item.cost || 0)} tone="bg-amber-500 text-amber-600" color="#f59e0b" />
-        <MetricCard icon="hub" label="活跃路由" value={apiKeyId ? "—" : fmt(stats.activeRequests?.length)} detail={apiKeyId ? "实时队列不保留 API Key" : `识别应用 ${fmt(apps.length)} 个`} points={recent.map((item) => item.requests || 0)} tone="bg-violet-500 text-violet-600" color="#8b5cf6" />
+      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <StatCard
+          icon="send"
+          eyebrow="REQUESTS"
+          value={fmt(stats.totalRequests)}
+          valueTitle={`模型调用次数 ${fmt(stats.totalRequests)}`}
+          tone="sky"
+          points={recent.map((item) => item.requests || 0)}
+          metrics={[
+            { label: "已完成", value: fmt(stats.completedRequests), tone: "success" },
+            { label: "失败", value: fmt(stats.failedRequests), tone: "danger" },
+            { label: "已取消", value: fmt(stats.cancelledRequests), tone: "muted" },
+          ]}
+        />
+        <StatCard
+          icon="input"
+          eyebrow="INPUT TOKENS"
+          value={fmtTokens(stats.totalPromptTokens)}
+          valueTitle={`输入 Token ${fmt(stats.totalPromptTokens)}`}
+          tone="indigo"
+          points={recent.map((item) => item.promptTokens || 0)}
+          detail={`缓存命中 ${fmtTokens(stats.totalCachedTokens)}`}
+        />
+        <StatCard
+          icon="output"
+          eyebrow="OUTPUT TOKENS"
+          value={fmtTokens(stats.totalCompletionTokens)}
+          valueTitle={`输出 Token ${fmt(stats.totalCompletionTokens)}`}
+          tone="emerald"
+          points={recent.map((item) => item.completionTokens || 0)}
+          detail={`总消耗 ${fmtTokens(totalTokens)}`}
+        />
+        <StatCard
+          icon="network_check"
+          eyebrow="TRAFFIC"
+          value={formatBytes(stats.totalTrafficBytes)}
+          valueTitle={`总流量 ${formatBytes(stats.totalTrafficBytes, { maximumFractionDigits: 2 })}`}
+          tone="cyan"
+          points={recent.map((item) => item.trafficBytes || 0)}
+          metrics={[
+            { label: "↑ 上行", value: formatBytes(stats.totalRequestBytes), tone: "sky" },
+            { label: "↓ 下行", value: formatBytes(stats.totalResponseBytes), tone: "cyan" },
+          ]}
+        />
+        <StatCard
+          icon="paid"
+          eyebrow="COST"
+          value={fmtCost(stats.totalCost)}
+          tone="amber"
+          points={recent.map((item) => item.cost || 0)}
+          detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`}
+        />
+        <StatCard
+          icon="hub"
+          eyebrow="ACTIVE ROUTES"
+          value={apiKeyId ? "—" : fmt(stats.activeRequests?.length)}
+          tone="violet"
+          points={recent.map((item) => item.requests || 0)}
+          detail={apiKeyId ? "实时队列不保留 API Key" : `识别应用 ${fmt(apps.length)} 个 · Top 使用人：${topPerson?.keyName || "暂无"}`}
+        />
       </div>
 
       <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.75fr)]">

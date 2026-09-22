@@ -52,28 +52,25 @@ function TimeAgo({ timestamp }) {
 function UsageMetricSkeletons() {
   return (
     <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-3 sm:gap-4 2xl:grid-cols-[1.4fr_1fr_1fr_1fr]" aria-label="正在加载概览指标">
-      <div className="rounded-xl border border-border bg-surface/70 px-4 py-3 shadow-[var(--shadow-soft)]">
-        <Skeleton className="h-3 w-20" />
-        <Skeleton className="mt-3 h-7 w-20" />
-        <div className="mt-3 grid grid-cols-3 gap-1.5">
-          {Array.from({ length: 3 }, (_, index) => (
-            <div key={index} className="rounded-md border border-border/70 px-1.5 py-1">
-              <Skeleton className="mx-auto h-3 w-10" />
-              <Skeleton className="mx-auto mt-1 h-2 w-8" />
-            </div>
-          ))}
-        </div>
-      </div>
       {[
-        { subMetrics: 3 },
-        { subMetrics: 2 },
-        { subMetrics: 0 },
-      ].map(({ subMetrics }, index) => (
-        <div key={index} className="rounded-xl border border-border bg-surface/70 px-4 py-3 shadow-[var(--shadow-soft)]">
-          <Skeleton className="h-3 w-20" />
-          <Skeleton className="mt-3 h-7 w-20" />
+        { subMetrics: 3, sparkline: true },
+        { subMetrics: 3, sparkline: true },
+        { subMetrics: 2, sparkline: true },
+        { subMetrics: 0, sparkline: true },
+      ].map(({ subMetrics, sparkline }, index) => (
+        <div key={index} className="relative overflow-hidden rounded-[14px] border border-border-subtle bg-surface px-4 py-3 shadow-[var(--shadow-soft)]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Skeleton className="size-8 rounded-lg" />
+                <Skeleton className="h-2.5 w-20" />
+              </div>
+              <Skeleton className="mt-3 h-7 w-24" />
+            </div>
+            {sparkline && <Skeleton className="h-10 w-24 rounded-md" />}
+          </div>
           {subMetrics > 0 && (
-            <div className={`mt-3 grid ${subMetrics === 3 ? "grid-cols-3" : "grid-cols-2"} gap-1.5`}>
+            <div className={`mt-2 grid ${subMetrics === 3 ? "grid-cols-3" : "grid-cols-2"} gap-1.5`}>
               {Array.from({ length: subMetrics }, (_, metricIndex) => (
                 <div key={metricIndex} className="rounded-md border border-border/70 px-1.5 py-1">
                   <Skeleton className="mx-auto h-3 w-10" />

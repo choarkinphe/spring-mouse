@@ -74,6 +74,26 @@ describe("Codex Refresh Token", () => {
 
       expect(result.refreshToken).toBe("old-refresh-token-without-rotation");
     });
+
+    it("carries a failure marker on a permanent rejection", async () => {
+      // The marker has to live on the result itself: mergeRefreshedCredentials
+      // also adds one, but the model-list resolver calls this function directly
+      // and never passes through that. Without it the dead token was retried on
+      // every channel-page load with no cooldown.
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve(JSON.stringify({ error: "refresh_token_reused" })),
+      });
+
+      const { refreshCodexToken } = await import("../../open-sse/services/tokenRefresh.js");
+      const result = await refreshCodexToken("dead-refresh-token", null);
+
+      expect(result.error).toBe("unrecoverable_refresh_error");
+      expect(result.lastRefreshFailureCode).toBe("refresh_token_reused");
+      expect(typeof result.lastRefreshFailureAt).toBe("string");
+      expect(Number.isFinite(new Date(result.lastRefreshFailureAt).getTime())).toBe(true);
+    });
   });
 
   describe("CodexExecutor credential lifecycle", () => {

@@ -234,7 +234,16 @@ export async function refreshCodexToken(refreshToken, log) {
             status: response.status,
             code: failure.code,
           });
-          return { error: "unrecoverable_refresh_error", code: failure.code };
+          // Carry the failure marker on the result itself. mergeRefreshedCredentials
+          // also stamps it, but not every caller goes through that: the model-list
+          // resolver calls this function directly. Putting it here means any
+          // caller can persist it without having to know the rule.
+          return {
+            error: "unrecoverable_refresh_error",
+            code: failure.code,
+            lastRefreshFailureAt: new Date().toISOString(),
+            lastRefreshFailureCode: failure.code || "unrecoverable_refresh_error",
+          };
         }
 
         log?.error?.("TOKEN_REFRESH", "Failed to refresh Codex token", {

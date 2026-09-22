@@ -107,6 +107,16 @@ const buildOAuthResolver = ({ refreshFn, fetchFn, parseFn, errorLabel }) => asyn
         connection.accessToken = refreshed.accessToken;
         if (refreshed.refreshToken) connection.refreshToken = refreshed.refreshToken;
         response = await fetchFn(refreshed.accessToken, connection);
+      } else if (refreshed?.lastRefreshFailureAt) {
+        // This path calls the bare refresh function (not refreshProviderCredentials),
+        // so it never reached mergeRefreshedCredentials. A dead refresh token was
+        // therefore retried every time the dashboard loaded the channel page,
+        // with no marker written and no cooldown — the same retry storm the
+        // cooldown exists to stop, arriving through a different door.
+        await updateProviderCredentials(connection.id, {
+          lastRefreshFailureAt: refreshed.lastRefreshFailureAt,
+          lastRefreshFailureCode: refreshed.lastRefreshFailureCode ?? null,
+        });
       }
     }
     if (response.ok) {

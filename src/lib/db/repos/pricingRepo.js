@@ -1,14 +1,26 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
+import { deleteHotJson } from "@/lib/redis/hotCache.js";
 
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
+
+// `pricingKv.getAll()` backfills a Redis hot snapshot with a 120s TTL, so the
+// module-local cache below is not the only stale layer. Every writer must also
+// drop that snapshot or pricing changes take up to two minutes to be visible
+// (and are invisible to other processes for the same window).
+const PRICING_CACHE_KEY = "kv:pricing";
 
 let cache = { value: null, expiresAt: 0 };
 
 function invalidate() {
   cache = { value: null, expiresAt: 0 };
+}
+
+async function invalidateAll() {
+  invalidate();
+  await deleteHotJson(PRICING_CACHE_KEY).catch(() => {});
 }
 
 async function getUserPricing() {
@@ -74,7 +86,7 @@ export async function updatePricing(pricingData) {
       );
     }
   });
-  invalidate();
+  await invalidateAll();
   return await getUserPricing();
 }
 
@@ -98,12 +110,12 @@ export async function resetPricing(provider, model) {
       );
     }
   });
-  invalidate();
+  await invalidateAll();
   return await getUserPricing();
 }
 
 export async function resetAllPricing() {
   await pricingKv.clear();
-  invalidate();
+  await invalidateAll();
   return {};
 }

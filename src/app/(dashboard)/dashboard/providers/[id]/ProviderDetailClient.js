@@ -74,6 +74,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [syncingModels, setSyncingModels] = useState(false);
   const [modelSyncStatus, setModelSyncStatus] = useState(null);
+  const [syncingPricing, setSyncingPricing] = useState(false);
+  const [pricingSyncStatus, setPricingSyncStatus] = useState(null);
   // Batch model operations: a "批量" menu in the channel header plus a selection
   // mode that puts a checkbox on every model card.
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
@@ -739,6 +741,43 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   };
 
+  // Fill in prices this channel's models are missing, from the shared models.dev
+  // catalog. Existing prices (including hand-tuned ones) are never overwritten —
+  // see src/shared/utils/pricingSync.js.
+  const handleSyncPricing = async () => {
+    if (syncingPricing) return;
+    setSyncingPricing(true);
+    setPricingSyncStatus(null);
+    try {
+      const res = await fetch("/api/pricing/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPricingSyncStatus({ type: "error", text: data.error || translate("Failed to sync model pricing") });
+        return;
+      }
+      const stats = data.stats || {};
+      const detail = [
+        `${translate("scanned")} ${stats.scanned ?? 0}`,
+        `${translate("already priced")} ${stats.skippedExisting ?? 0}`,
+        ...(stats.fixed ? [`${translate("corrected")} ${stats.fixed}`] : []),
+        ...(stats.unresolved ? [`${translate("no catalog price")} ${stats.unresolved}`] : []),
+      ].join(" · ");
+      setPricingSyncStatus({
+        type: "success",
+        text: `${translate("Pricing synchronization complete")}: ${translate("added")} ${data.added ?? 0} (${detail})`,
+      });
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("pricingChanged"));
+    } catch (error) {
+      setPricingSyncStatus({ type: "error", text: `${translate("Failed to sync model pricing")}: ${error.message}` });
+    } finally {
+      setSyncingPricing(false);
+    }
+  };
+
 
   const handleTestModel = async (modelId) => {
     if (testingModelIds.has(modelId)) return;
@@ -1333,6 +1372,18 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 {syncingModels ? translate("Syncing models...") : translate("Sync Supported Models")}
               </Button>
             )}
+            {/* Pricing sync is independent of model sync: a channel can have its
+                model list settled and still be missing prices for some of them. */}
+            <Button
+              size="md"
+              variant="secondary"
+              icon="paid"
+              onClick={handleSyncPricing}
+              disabled={syncingPricing}
+              loading={syncingPricing}
+            >
+              {syncingPricing ? translate("Syncing pricing...") : translate("Sync Model Pricing")}
+            </Button>
             {/* Batch entry: every action here works for both channel kinds. */}
             <div className="relative">
               <Button
@@ -1516,6 +1567,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         {!!modelSyncStatus && (
           <p className={`mb-3 text-xs break-words ${modelSyncStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
             {modelSyncStatus.text}
+          </p>
+        )}
+        {!!pricingSyncStatus && (
+          <p className={`mb-3 text-xs break-words ${pricingSyncStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+            {pricingSyncStatus.text}
           </p>
         )}
         {renderModelsSection()}

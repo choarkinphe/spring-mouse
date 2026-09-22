@@ -121,8 +121,11 @@ export const MODELS_DEV_PROVIDER_KEYS = {
   // MiniMax
   minimax: "minimax-coding-plan",
   "minimax-cn": "minimax-cn",
-  // Moonshot / Kimi
-  kimi: "kimi-for-coding",
+  // Moonshot / Kimi. The catalog has no "kimi-for-coding" provider; Moonshot's
+  // models live under `moonshotai`, and the coding-plan ids under
+  // `kimi-code-plan-global` / `kimi-code-plan-cn`. Map to `moonshotai` so the
+  // entry resolves instead of silently returning an empty catalog.
+  kimi: "moonshotai",
   // Alibaba DashScope (CN + intl coding / general endpoints)
   alicode: "alibaba-coding-plan-cn",
   "alicode-intl": "alibaba-coding-plan",

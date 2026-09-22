@@ -424,6 +424,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       expiresAt: connection.expiresAt,
       expiresIn: connection.expiresIn,
       lastRefreshAt: connection.lastRefreshAt,
+      // Carried through so shouldRefreshCredentials can see the cooldown written
+      // by a previous permanent failure. This object is a field allow-list, so an
+      // unlisted field is invisible to the refresh decision even though it is in
+      // the stored row — the suppression silently never engaged (verified live).
+      lastRefreshFailureAt: connection.lastRefreshFailureAt,
+      lastRefreshFailureCode: connection.lastRefreshFailureCode,
       projectId: connection.projectId,
       connectionName: connection.displayName || connection.name || connection.email || connection.id,
       copilotToken: connection.providerSpecificData?.copilotToken,

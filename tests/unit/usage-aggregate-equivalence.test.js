@@ -27,13 +27,28 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PERIODS = ["all", "7d", "24h"];
+// `all` covers every seeded row and every aggregation dimension — the strongest
+// single check. `7d` adds a time-filter check; its 168h window comfortably
+// contains the recent rows and excludes the 20-day-old one, so it is stable.
+//
+// `24h` is deliberately excluded: it is a ROLLING window (`now - 24h`) and
+// getUsageStats does not accept an injected `now`, so a row seeded a fixed
+// number of hours back sits on a different side of the boundary depending on
+// what time of day the test runs. That is wall-clock flakiness, not a signal
+// about the aggregation logic this guard protects.
+const PERIODS = ["all", "7d"];
 
 let tempDir;
 const originalDataDir = process.env.DATA_DIR;
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const LIVE_FIELDS = ["activeRequests", "recentRequests", "errorProvider", "pending"];
+// Bytes are totalled over a CALENDAR window (getTrafficRange: today / 24h / 7d),
+// so the same seeded traffic rows fall inside or outside it depending on when
+// the test runs. They are excluded from the guard for the same reason `today`
+// and trafficSummary's today/week/month are: wall-clock dependent, not part of
+// the aggregation contract being protected.
+const CALENDAR_DEPENDENT_FIELDS = ["totalRequestBytes", "totalResponseBytes", "totalTrafficBytes"];
 const TMP_GEOIP = /^.*[\\/]geoip([\\/][^\\/]+)?$/;
 
 /** Deterministic seed anchor: today at LOCAL noon (bucket-stable). */
@@ -51,6 +66,15 @@ function normalize(stats) {
       const out = {};
       for (const [k, v] of Object.entries(value)) {
         if (LIVE_FIELDS.includes(k) || k === "last10Minutes") continue;
+        if (CALENDAR_DEPENDENT_FIELDS.includes(k)) continue;
+        // trafficSummary.today/week/month are calendar windows (local midnight,
+        // Monday, 1st of month). They legitimately change when the fixture is
+        // compared on a later day, so they are not part of the aggregation
+        // contract this guard protects. `recent` is a fixed-size tail and stays.
+        if (k === "trafficSummary" && v && typeof v === "object") {
+          out[k] = { recent: walk(v.recent) };
+          continue;
+        }
         out[k] = walk(v);
       }
       return out;

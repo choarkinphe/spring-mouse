@@ -54,12 +54,29 @@ describe("refresh failure cooldown", () => {
   it("keeps the original failure timestamp when a later retry also fails", async () => {
     const { mergeRefreshedCredentials } = await loadManager();
     const first = Date.now() - 5 * 60 * 1000;
+    // The failure object carries no timestamp of its own, so the EXISTING marker
+    // (from the stored credentials) must win. Using `|| nowIso` here re-stamped
+    // every attempt and restarted the cooldown, so suppression never engaged
+    // (verified live: the stored timestamp advanced on each failure).
     const merged = mergeRefreshedCredentials("codex",
       { connectionId: "c1", refreshToken: "dead", lastRefreshFailureAt: new Date(first).toISOString() },
-      { error: "unrecoverable_refresh_error", code: "refresh_token_reused", lastRefreshFailureAt: new Date(first).toISOString() },
+      { error: "unrecoverable_refresh_error", code: "refresh_token_reused" },
       Date.now(),
     );
     expect(merged.lastRefreshFailureAt).toBe(new Date(first).toISOString());
+  });
+
+  it("auth.js carries the marker into credentials (it is a field allow-list)", async () => {
+    // getProviderCredentials builds its result field by field, so a field absent
+    // from that list is invisible to shouldRefreshCredentials even when it is in
+    // the stored row. This was the final gap that kept the storm alive in prod.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const src = fs.readFileSync(path.join(root, "src/sse/services/auth.js"), "utf-8");
+    expect(src).toContain("lastRefreshFailureAt: connection.lastRefreshFailureAt");
+    expect(src).toContain("lastRefreshFailureCode: connection.lastRefreshFailureCode");
   });
 
   it("does not ask to refresh while the failure cooldown is active", async () => {

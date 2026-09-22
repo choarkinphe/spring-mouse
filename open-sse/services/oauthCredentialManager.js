@@ -125,7 +125,14 @@ export function mergeRefreshedCredentials(provider, currentCredentials, refreshe
   if (isUnrecoverableRefreshError(refreshedCredentials)) {
     return {
       ...refreshedCredentials,
-      lastRefreshFailureAt: refreshedCredentials.lastRefreshFailureAt || nowIso,
+      // Prefer an EXISTING marker (from the stored credentials) over the current
+      // time. The failure object itself never carries one, so `|| nowIso` alone
+      // re-stamped the timestamp on every attempt and the cooldown window
+      // restarted each time — the suppression never engaged. Verified live.
+      lastRefreshFailureAt:
+        refreshedCredentials.lastRefreshFailureAt ||
+        currentCredentials?.lastRefreshFailureAt ||
+        nowIso,
       lastRefreshFailureCode: refreshedCredentials.code || refreshedCredentials.error || null,
     };
   }

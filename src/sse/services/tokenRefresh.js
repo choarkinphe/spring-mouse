@@ -266,6 +266,18 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
       // Non-blocking: refresh projectId with the new access token
       _refreshProjectId(provider, creds.connectionId, creds.accessToken);
+    } else if (newCreds?.lastRefreshFailureAt) {
+      // The upstream rejected this refresh token permanently (e.g.
+      // refresh_token_reused). Record the failure so shouldRefreshCredentials
+      // stops re-attempting it on every request. Without this the marker lived
+      // only in the return value of a call whose result is discarded, so the
+      // stored row kept the dead token and the next request tried again — the
+      // retry storm this cooldown exists to stop. This is the PROACTIVE path
+      // (before the request); chatCore handles the reactive one (after a 401).
+      await updateProviderCredentials(creds.connectionId, {
+        lastRefreshFailureAt: newCreds.lastRefreshFailureAt,
+        lastRefreshFailureCode: newCreds.lastRefreshFailureCode ?? null,
+      });
     }
   }
 

@@ -155,4 +155,18 @@ describe("refresh failure cooldown", () => {
     expect(src).toContain("newCredentials?.lastRefreshFailureAt");
     expect(src).toContain("onCredentialsRefreshed(newCredentials)");
   });
+
+  it("checkAndRefreshToken persists the marker on the proactive path too", async () => {
+    // This is the path that actually ran in production: chat.js calls
+    // checkAndRefreshToken BEFORE the request, so a dead token is discovered
+    // there, not in chatCore's post-401 handler. A fix that only covered chatCore
+    // left the marker unwritten and the retry storm continued (verified live).
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const src = fs.readFileSync(path.join(root, "src/sse/services/tokenRefresh.js"), "utf-8");
+    expect(src).toContain("newCreds?.lastRefreshFailureAt");
+    expect(src).toContain("lastRefreshFailureAt: newCreds.lastRefreshFailureAt");
+  });
 });

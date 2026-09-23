@@ -105,9 +105,12 @@ export function rollupBucketsForEvent(event) {
   // Mirror that exactly, or the two paths disagree on the request count.
   push("provider", provider === null || provider === undefined ? "null" : provider);
 
-  // model — keyed by raw model; provider rides in meta so the read path can
-  // rebuild the `${model} (${provider})` display key.
-  if (model) push("model", model, { rawModel: model, provider });
+  // model — keyed by model AND provider, matching the raw path's
+  // `${model} (${provider})` bucket. The provider must be part of the key, not
+  // just meta: the same model id is served by several channels (on production
+  // `deepseek-v4.1-flash` appears under 6 providers), and the raw path keeps
+  // those as separate buckets. Keying on the model alone silently merges them.
+  if (model) push("model", `${model}|${providerPart}`, { rawModel: model, provider });
 
   // account — per connection+model+provider, matching the raw bucket key.
   if (event.connectionId) {

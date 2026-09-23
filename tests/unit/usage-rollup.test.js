@@ -140,12 +140,24 @@ describe("usage rollup", () => {
     );
     // Raw ids, not display names.
     expect(byDim.provider.bucketKey).toBe("codex");
-    expect(byDim.model.bucketKey).toBe("gpt-5.6-sol");
     expect(byDim.user.bucketKey).toBe("key-1");
     expect(byDim.apiKey.bucketKey).toBe("key-1|gpt-5.6-sol|codex");
     expect(byDim.account.bucketKey).toBe("conn-1|gpt-5.6-sol|codex");
     expect(byDim.endpoint.bucketKey).toBe("/v1/chat/completions|gpt-5.6-sol|codex");
     expect(byDim.sourceIp.bucketKey).toBe("1.2.3.4");
+  });
+
+  it("includes the provider in the model key, so the same model on different channels stays separate", () => {
+    // The raw path buckets by `${model} (${provider})`. Keying on the model
+    // alone silently merged them: on production `deepseek-v4.1-flash` is served
+    // by 6 providers, so the merged bucket lost the per-channel split.
+    const a = rollupBucketsForEvent(makeEvent({ model: "deepseek-v4.1-flash", provider: "codebuddy-intl" }));
+    const b = rollupBucketsForEvent(makeEvent({ model: "deepseek-v4.1-flash", provider: "deepseek" }));
+
+    const keyOf = (buckets) => buckets.find((x) => x.dimension === "model").bucketKey;
+    expect(keyOf(a)).toBe("deepseek-v4.1-flash|codebuddy-intl");
+    expect(keyOf(b)).toBe("deepseek-v4.1-flash|deepseek");
+    expect(keyOf(a)).not.toBe(keyOf(b));
   });
 
   it("skips dimensions that have no value for the event", () => {

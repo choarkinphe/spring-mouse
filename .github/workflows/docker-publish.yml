@@ -56,6 +56,7 @@ jobs:
           unit/db-migration-chain.test.js
           unit/usage-rollup.test.js
           unit/usage-rollup-read.test.js
+          unit/usage-rollup-backfill.test.js
           unit/request-details-retention.test.js
           unit/retention-settings.test.js
           unit/realtime-time-filter.test.js

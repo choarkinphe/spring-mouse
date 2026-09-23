@@ -1,6 +1,6 @@
 {
   "name": "spring-mouse",
-  "version": "0.4.133",
+  "version": "0.4.134",
   "description": "Spring Mouse — AI router gateway & dashboard (inspired by 9Router)",
   "private": true,
   "scripts": {

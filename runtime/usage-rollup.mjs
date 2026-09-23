@@ -197,6 +197,114 @@ export function ensureRollupTable(database) {
   database.exec(rollupIndexSql());
 }
 
+/** The set of dateKeys the rollup already holds. */
+export function rollupDateKeys(database) {
+  return new Set(
+    database.prepare(`SELECT DISTINCT dateKey FROM ${ROLLUP_TABLE}`).all().map((row) => row.dateKey),
+  );
+}
+
+/**
+ * Is the rollup behind `usageHistory`?
+ *
+ * The rollup only accumulates from the moment the writer that owns it starts,
+ * so on an instance upgraded from a build without it every historical day is
+ * missing. Comparing the two earliest days is a cheap, index-free check that
+ * answers "do we need a backfill" without scanning rows.
+ */
+export function rollupNeedsBackfill(database) {
+  const history = database.prepare(
+    `SELECT MIN(COALESCE(completedAt, timestamp)) AS earliest FROM usageHistory`,
+  ).get();
+  if (!history?.earliest) return false;
+  const rollup = database.prepare(`SELECT MIN(dateKey) AS earliest FROM ${ROLLUP_TABLE}`).get();
+  if (!rollup?.earliest) return true;
+  return localDateKey(new Date(history.earliest)) < rollup.earliest;
+}
+
+/**
+ * Fill rollup days that `usageHistory` has but the rollup does not.
+ *
+ * Idempotent by construction: a day already present in the rollup is skipped
+ * entirely, so re-running never double-counts (the INSERT ... ON CONFLICT
+ * accumulates, so it cannot be relied on for idempotence on its own).
+ *
+ * Runs ONE pass over `usageHistory` and buckets each row into its day, rather
+ * than one query per missing day — `completedAt` is not indexed, so a per-day
+ * query would be a full scan per day.
+ *
+ * Takes an ADAPTER (`{ exec, run, all, iterate }`) rather than a raw
+ * `DatabaseSync`, because it runs both from the web process (whose adapter this
+ * is) and from a maintenance script. `usage-rollup.mjs`'s write path uses
+ * `prepare()` instead only because the writer owns a raw connection.
+ *
+ * Rows are applied in explicit transactions of `batchEvents` events each: one
+ * autocommitted INSERT per (event, dimension) is ~4.4M fsyncs for a 500k-row
+ * table and does not finish, while a single transaction over the whole table
+ * would hold the write lock for the entire pass and starve the web process.
+ * Batching is the middle ground — the lock is released between batches, and
+ * `onYield` is awaited at each boundary so the caller can let the event loop
+ * breathe.
+ *
+ * @returns {Promise<{ scanned: number, applied: number, days: number, skippedDays: number }>}
+ */
+export async function backfillRollup(adapter, { batchEvents = 2000, onYield = null, now = Date.now() } = {}) {
+  const present = new Set(
+    adapter.all(`SELECT DISTINCT dateKey FROM ${ROLLUP_TABLE}`).map((row) => row.dateKey),
+  );
+  const insertSql =
+    `INSERT INTO ${ROLLUP_TABLE}(dateKey, dimension, bucketKey, requests, promptTokens, completionTokens, cachedTokens, cost, meta)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(dateKey, dimension, bucketKey) DO UPDATE SET
+       requests = requests + excluded.requests,
+       promptTokens = promptTokens + excluded.promptTokens,
+       completionTokens = completionTokens + excluded.completionTokens,
+       cachedTokens = cachedTokens + excluded.cachedTokens,
+       cost = cost + excluded.cost`;
+
+  const seenDays = new Set();
+  let scanned = 0;
+  let applied = 0;
+  let inBatch = 0;
+  let open = false;
+
+  const begin = () => { adapter.exec("BEGIN"); open = true; };
+  const commit = () => { adapter.exec("COMMIT"); open = false; inBatch = 0; };
+
+  begin();
+  try {
+    for (const row of adapter.iterate(
+      `SELECT timestamp, completedAt, provider, model, connectionId, apiKeyId, endpoint,
+              promptTokens, completionTokens, cost, status, tokens, meta
+         FROM usageHistory`,
+    )) {
+      scanned++;
+      const dateKey = localDateKey(new Date(row.completedAt || row.timestamp || now).getTime());
+      // A day the live writer already owns must not be re-counted: its counters
+      // are already in the table and this pass cannot tell which rows they cover.
+      if (present.has(dateKey)) continue;
+      seenDays.add(dateKey);
+      for (const bucket of rollupBucketsForEvent(row)) {
+        const c = bucket.counters;
+        adapter.run(insertSql, [dateKey, bucket.dimension, bucket.bucketKey, c.requests, c.promptTokens, c.completionTokens, c.cachedTokens, c.cost, JSON.stringify(bucket.meta || {})]);
+        applied++;
+      }
+      inBatch++;
+      if (inBatch >= batchEvents) {
+        commit();
+        if (onYield) await onYield();
+        begin();
+      }
+    }
+    if (open) commit();
+  } catch (error) {
+    if (open) { try { adapter.exec("ROLLBACK"); } catch {} }
+    throw error;
+  }
+
+  return { scanned, applied, days: seenDays.size, skippedDays: present.size };
+}
+
 /**
  * Apply one usage event to the rollup. Runs inside the caller's transaction.
  *

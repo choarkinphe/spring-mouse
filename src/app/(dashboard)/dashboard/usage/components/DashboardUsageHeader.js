@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import PropTypes from "prop-types";
+import RealtimeTimeFilter from "./RealtimeTimeFilter";
+import { REALTIME_PRESETS } from "@/shared/utils/realtimeRange";
 
 const STATUS_REFRESH_INTERVAL = 15_000;
 const QUEUE_WARNING_LENGTH = 500;
@@ -112,7 +115,7 @@ function getSystemHealth(systemStatus, infrastructureStatus) {
   return { color: "bg-emerald-400", glow: "shadow-[0_0_8px_rgba(52,211,153,0.8)]", label: `系统运行正常 · ${redisLabel}` };
 }
 
-export default function DashboardUsageHeader({ initialSystemStatus = null }) {
+export default function DashboardUsageHeader({ initialSystemStatus = null, timeRange = null, onTimeRangeChange = null }) {
   // The dashboard server component provides the first system snapshot. Redis and
   // writer health are loaded independently so an unhealthy queue never blocks page rendering.
   const [systemStatus, setSystemStatus] = useState(initialSystemStatus);
@@ -194,6 +197,11 @@ export default function DashboardUsageHeader({ initialSystemStatus = null }) {
     ? `RSS ${formatBytes(systemStatus.memory.rssBytes)}；Heap ${formatBytes(systemStatus.memory.heapUsedBytes)} / ${formatBytes(systemStatus.memory.heapTotalBytes)}；External ${formatBytes(systemStatus.memory.externalBytes)}；ArrayBuffers ${formatBytes(systemStatus.memory.arrayBuffersBytes)}。`
     : "Spring Mouse 服务进程内存读取中。";
 
+  // The window selector lives here now, so the eyebrow and the description both
+  // track the selected rolling window instead of hardcoding "today".
+  const activePreset = REALTIME_PRESETS.find((preset) => preset.value === (timeRange?.preset || "24h")) || REALTIME_PRESETS[0];
+  const windowLabel = activePreset.label;
+
   return (
     <section className="relative flex min-w-0 flex-col gap-4 rounded-2xl border border-border bg-surface/80 px-5 py-4 shadow-sm xl:flex-row xl:items-center xl:justify-between">
       <span
@@ -206,14 +214,20 @@ export default function DashboardUsageHeader({ initialSystemStatus = null }) {
           <span className="material-symbols-outlined text-[24px]">insights</span>
         </span>
         <div className="min-w-0">
-          <p className="text-xs font-semibold tracking-[0.12em] text-primary">今日 · 实时概览</p>
+          <p className="text-xs font-semibold tracking-[0.12em] text-primary">{windowLabel} · 实时概览</p>
           <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-text-main">调用、成本与渠道额度，一眼掌握</h1>
-          <p className="mt-0.5 text-sm text-text-muted">默认统计今天 00:00 至当前时刻，数据会随请求实时更新。</p>
+          <p className="mt-0.5 text-sm text-text-muted">统计最近 {windowLabel}，滚动窗口随当前时间推进，数据随请求实时更新。</p>
         </div>
       </div>
 
       <div className="flex w-full shrink-0 self-start border-t border-border/70 pt-3 xl:w-auto xl:self-auto xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
         <div className="flex w-full flex-col gap-3">
+          {onTimeRangeChange ? (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[10px] font-medium tracking-wide text-text-muted">统计窗口</span>
+              <RealtimeTimeFilter value={timeRange} onChange={onTimeRangeChange} />
+            </div>
+          ) : null}
           <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
             <StatusMetric icon="schedule" label="运行时间" value={systemStatus ? formatDuration(systemStatus.uptimeSeconds) : "加载中"} />
             <StatusMetric icon="deployed_code" label="版本" value={systemStatus?.version ? `v${systemStatus.version}` : "—"} />
@@ -259,3 +273,13 @@ export default function DashboardUsageHeader({ initialSystemStatus = null }) {
     </section>
   );
 }
+
+DashboardUsageHeader.propTypes = {
+  initialSystemStatus: PropTypes.object,
+  timeRange: PropTypes.shape({
+    preset: PropTypes.string,
+    startDate: PropTypes.string,
+    endDate: PropTypes.string,
+  }),
+  onTimeRangeChange: PropTypes.func,
+};

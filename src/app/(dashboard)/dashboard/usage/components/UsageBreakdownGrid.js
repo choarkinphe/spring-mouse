@@ -312,6 +312,15 @@ CaptureStatus.propTypes = {
 
 export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null }) {
   const [detailsSelection, setDetailsSelection] = useState(null);
+  // The drawer captures the range it was opened with, so a range/scope change
+  // must close it. This used to fall out of the parent remounting on its key.
+  // Adjusting during render is the React-recommended prop-change reset.
+  const selectionRangeKey = `${timeRange?.startDate}:${timeRange?.endDate}:${apiKeyId}:${scope}`;
+  const [prevSelectionRangeKey, setPrevSelectionRangeKey] = useState(selectionRangeKey);
+  if (prevSelectionRangeKey !== selectionRangeKey) {
+    setPrevSelectionRangeKey(selectionRangeKey);
+    setDetailsSelection(null);
+  }
   const providers = getRows(stats.byProvider, Number.MAX_SAFE_INTEGER, "totalTokens");
   const models = getRows(stats.byModel, Number.MAX_SAFE_INTEGER, "totalTokens");
   const sourceIps = getRows(stats.bySourceIp, Number.MAX_SAFE_INTEGER);

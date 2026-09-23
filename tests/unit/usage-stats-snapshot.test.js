@@ -121,4 +121,22 @@ describe("usage stats snapshot updates", () => {
     expect(applyUsageStatsUpdate(previous, lowerTokens)).toEqual(previous);
     expect(applyUsageStatsUpdate(previous, patch, { streamPatch: true })).toEqual({ ...previous, ...patch });
   });
+
+  it("accepts a smaller snapshot as a new baseline when the range changed", () => {
+    // A rolling window that slid forward legitimately drops old traffic, so its
+    // totals shrink. The first snapshot of a new range is a new baseline, not a
+    // regression — the caller signals that with `reset`.
+    const previous = snapshot();
+    const slidWindow = snapshot({
+      totalRequests: 6,
+      totalPromptTokens: 60,
+      totalCost: 0.6,
+      totalTrafficBytes: 1500,
+      byProvider: { openai: { requests: 6 } },
+    });
+
+    expect(isUsageStatsRegression(previous, slidWindow)).toBe(true);
+    expect(applyUsageStatsUpdate(previous, slidWindow)).toEqual(previous);
+    expect(applyUsageStatsUpdate(previous, slidWindow, { reset: true })).toBe(slidWindow);
+  });
 });

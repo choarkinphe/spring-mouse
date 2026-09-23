@@ -111,10 +111,15 @@ export function isUsageStatsRegression(previous, incoming) {
   });
 }
 
-export function applyUsageStatsUpdate(previous, incoming, { streamPatch = false } = {}) {
+export function applyUsageStatsUpdate(previous, incoming, { streamPatch = false, reset = false } = {}) {
   if (!incoming) return previous;
   if (!previous) return streamPatch ? previous : incoming;
   if (streamPatch) return { ...previous, ...incoming };
+  // A new time range or scope is a fresh baseline, not a regression: a rolling
+  // window that slides forward legitimately drops old traffic, so its totals
+  // shrink. Callers pass `reset` for the first snapshot of a new range; the
+  // regression check stays in force for same-range refreshes.
+  if (reset) return incoming;
   if (!isUsageStatsRegression(previous, incoming)) return incoming;
 
   const livePatch = {};

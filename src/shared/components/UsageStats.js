@@ -180,7 +180,7 @@ function RecentRequests({ requests = [], className = "", onViewDetails }) {
   );
 }
 
-export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false, scope } = {}) {
+export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false, scope, rangeKey = null } = {}) {
   const [stats, setStats] = useState(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -207,12 +207,23 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
 
+  // An open details drawer is frozen at the range it was opened with, so a
+  // range/scope change must close it. This used to fall out of the parent
+  // remounting on its key. Adjusting during render (rather than in an effect)
+  // is the React-recommended way to reset state when a prop changes.
+  const [prevRangeKey, setPrevRangeKey] = useState(rangeKey);
+  if (prevRangeKey !== rangeKey) {
+    setPrevRangeKey(rangeKey);
+    setDetailsOpen(false);
+  }
+
   useEffect(() => {
     if (isInitialLoad.current) {
       isInitialLoad.current = false;
       setLoading(true);
     }
 
+    let cancelled = false;
     const params = new URLSearchParams({ period: "today" });
     if (timeRange?.startDate) params.set("startDate", timeRange.startDate);
     if (timeRange?.endDate) params.set("endDate", timeRange.endDate);
@@ -222,15 +233,23 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     fetch(`/api/usage/stats?${params.toString()}`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
+        if (cancelled) return;
         const normalized = normalizeUsageStatsSnapshot(data, { partial: Boolean(data.streamPatch) });
         if (normalized) {
           hasLoadedStats.current = true;
-          setStats((previous) => applyUsageStatsUpdate(previous, normalized));
+          // This read is authoritative for the effect's own range, so it is a
+          // new baseline: a rolling window that slid forward reports smaller
+          // totals, which the regression guard would otherwise reject.
+          setStats((previous) => applyUsageStatsUpdate(previous, normalized, { reset: true }));
         }
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [apiKeyId, scope, timeRange?.endDate, timeRange?.startDate]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [apiKeyId, scope, rangeKey, timeRange?.endDate, timeRange?.startDate]);
 
   // SSE uses the same period/date/key filters as the initial stats request.
   // Full refreshes update aggregate cards; pending refreshes update live fields.
@@ -241,6 +260,9 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     if (apiKeyId) params.set("apiKeyId", apiKeyId);
     if (scope) params.set("scope", scope);
     const eventSource = new EventSource(`/api/usage/stream?${params.toString()}`);
+    // This connection only ever carries one range, so its first full snapshot is
+    // that range's baseline. Same-range refreshes after it stay regression-checked.
+    let receivedBaseline = false;
 
     eventSource.onmessage = (event) => {
       try {
@@ -251,7 +273,9 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
           const { streamPatch: _streamPatch, ...patch } = normalized;
           setStats((previous) => applyUsageStatsUpdate(previous, patch, { streamPatch: true }));
         } else {
-          setStats((previous) => applyUsageStatsUpdate(previous, normalized));
+          const reset = !receivedBaseline;
+          receivedBaseline = true;
+          setStats((previous) => applyUsageStatsUpdate(previous, normalized, { reset }));
         }
         if (!data.streamPatch && normalized.streamUpdatedAt) {
           setChartRefreshToken((previous) => (normalized.streamUpdatedAt > previous ? normalized.streamUpdatedAt : previous));
@@ -264,7 +288,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
 
     eventSource.onerror = () => setLoading(false);
     return () => eventSource.close();
-  }, [apiKeyId, scope, timeRange?.endDate, timeRange?.startDate]);
+  }, [apiKeyId, scope, rangeKey, timeRange?.endDate, timeRange?.startDate]);
 
   if (!stats && !loading) return <div className="text-text-muted">Failed to load usage statistics.</div>;
 

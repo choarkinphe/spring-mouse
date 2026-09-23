@@ -3,7 +3,6 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { UsageStats, CardSkeleton } from "@/shared/components";
 import UsageTimeFilter from "./components/UsageTimeFilter";
-import RealtimeTimeFilter from "./components/RealtimeTimeFilter";
 import { realtimeRange } from "@/shared/utils/realtimeRange";
 import DashboardUsageHeader from "./components/DashboardUsageHeader";
 
@@ -54,10 +53,11 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       {showOverview ? (
-        <>
-          <DashboardUsageHeader initialSystemStatus={initialSystemStatus} />
-          <RealtimeTimeFilter value={timeRange} onChange={setTimeRange} />
-        </>
+        <DashboardUsageHeader
+          initialSystemStatus={initialSystemStatus}
+          timeRange={timeRange}
+          onTimeRangeChange={setTimeRange}
+        />
       ) : (
         <UsageTimeFilter
           value={timeRange}
@@ -70,7 +70,7 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
 
       <Suspense fallback={<CardSkeleton />}>
         <UsageStats
-          key={rangeKey}
+          rangeKey={rangeKey}
           timeRange={timeRange}
           apiKeyId={apiKeyId || undefined}
           showOverview={showOverview}

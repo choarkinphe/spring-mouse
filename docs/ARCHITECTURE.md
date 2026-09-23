@@ -83,6 +83,18 @@ flowchart LR
 
 因此生产环境应使用 `npm run start`，而不是直接运行 `next start`。
 
+### 容器内的进程
+
+Docker 镜像由 `runtime/docker-supervisor.mjs` 拉起三个进程，它们共享同一个 SQLite 文件：
+
+| 进程 | 职责 |
+|---|---|
+| `custom-server.js` | HTTP 入口，内部启动 `next-server` 承载 `/v1` 请求与管理 API。 |
+| `redis-server` | 仅监听容器回环地址（`127.0.0.1:6379`），作为实时用量与写回队列。 |
+| `usage-writer.mjs` | 消费 Redis Stream，把用量事件批量落库。 |
+
+**SQLite 是单写者模型**：同一时刻只有一个进程能持有写锁。当前 web 进程（`requestDetails`）与 `usage-writer`（`usageHistory`）都会直接写库，因此两者的写事务必须尽量短、且要有退避重试，否则会互相阻塞。这一点在 §9.2 详述。
+
 ---
 
 ## 4. 分层结构
@@ -278,8 +290,8 @@ Provider 内部可有多个已认证连接。`src/sse/services/auth.js` 根据�
 - 模型别名、禁用/自定义模型；
 - 路由策略及候选模型；
 - API Key 与额度状态；
-- Settings；
-- 用量历史、日聚合、请求详情；
+- Settings，以及按 `scope` 分组的键值数据（含模型定价覆盖）；
+- 用量历史与请求详情；
 - 数据库迁移与备份元数据。
 
 ### 9.2 用量与请求明细
@@ -287,6 +299,62 @@ Provider 内部可有多个已认证连接。`src/sse/services/auth.js` 根据�
 `usageHistory` 记录成功/失败状态、模型、Provider、连接、API Key、请求端点、Token、成本和时间字段。`requestDetails` 保存可选的详细请求/响应数据，用于 Dashboard 的请求详情页。
 
 由于请求明细可能包含敏感上下文，是否记录、保留多久以及谁能访问应由部署者负责。
+
+#### 写入路径
+
+两条路径的写入方不同，这是理解锁竞争的前提：
+
+| 数据 | 写入方 | 路径 |
+|---|---|---|
+| `usageHistory` | `usage-writer.mjs` | 请求结束 → Redis Stream → writer 批量落库 |
+| `requestDetails` | web 进程 | 内存缓冲 → 定时/批量 flush 直写 SQLite |
+
+用量走队列是因为它是高频写：web 进程只入队（`enqueueUsageEvent`），由独立的 writer 进程批量消费，从而把 SQLite 写入集中到一处。`usageHistory.cost` 在入队前算好（见 §9.3），writer 只做插入。
+
+请求明细的数据量小但单条 payload 可能很大，因此按 `observabilityBatchSize`（默认 20）或 `observabilityFlushIntervalMs`（默认 500ms）触发 flush。
+
+#### 单写者竞争
+
+`requestDetails` 由 web 进程直写，与 `usage-writer` 争同一个 SQLite 写锁。两条约束必须同时满足：
+
+1. **写事务要短**。保留清理（`COUNT(*)` + 排序 `DELETE`）曾放在 flush 的写事务内，导致每次 flush 都长时间持锁，生产上约每 13 秒就与 writer 冲突一次。清理现已移出写事务并限频。
+2. **重试要退避**。writer 曾以固定 500ms 间隔重试，密集撞锁。现改为从 250ms 指数退避到 5s；锁冲突属于预期竞争，静默处理，仅在批次最终落库时汇总一行日志。
+
+诊断此类问题的入口：`[UsageWriter] persist failed: database is locked` 日志。writer 会无限重试，**不会丢数据**，但持续出现说明有长事务在持锁。可用 `docker logs spring-mouse | grep 'persist failed'` 观察频率。
+
+根治方向是让 web 进程的 `requestDetails` 也走 Redis 队列，统一由 writer 落库；当前实现只是从两侧降低争抢频率。
+
+### 9.3 模型定价与成本
+
+成本在**写入时**计算并存入 `usageHistory.cost`，聚合与 Dashboard 只做求和，不再重算。因此定价是历史数据的一部分：模型当时没有价格，那批请求就永久记为 `$0`。
+
+#### 解析链
+
+`open-sse/providers/pricing.js` 提供静态表，按三级查找（先命中先返回）：
+
+1. `PROVIDER_PRICING[provider][model]` — 按 Provider 覆盖；
+2. `MODEL_PRICING[model]` — 按模型（会剥离 `vendor/` 前缀）；
+3. `PATTERN_PRICING` — glob 匹配（如 `gpt-5.6-*`）。
+
+运行时的完整解析是 `src/lib/db/repos/pricingRepo.js` 的 `getPricingForModel`：先查**用户定价 KV**（`scope='pricing'`，优先级最高），未命中再回落到上述静态链。判定「某模型是否已有定价」必须用这个运行时解析，**不能用 `getPricing()`** —— 后者只合并 `PROVIDER_PRICING`，不含 `MODEL_PRICING` 与 `PATTERN_PRICING`，会把已有价格的模型误判为缺失。
+
+字段单位均为**美元 / 百万 Token**：`input`、`output`、`cached`、`reasoning`、`cache_creation`。计费约定见 `calculateCostFromTokens`：`prompt_tokens` 是**缓存含入**的总量，`cached` 与 `cache_creation` 是其子集，需先扣除再按各自费率计算，否则会重复计费。
+
+#### 与 models.dev 同步
+
+静态表是手工维护的，新模型上线后无人更新就会漏计费。系统复用已有的 models.dev 公共目录（`https://models.dev/api.json`，约 95% 的模型带 `cost`）补齐缺失价格。
+
+- 入口：渠道模型管理页的「同步定价」按钮、计费设置页、以及可选的定时任务（`SPRING_MOUSE_PRICING_SYNC_INTERVAL_MS`，默认关闭）；
+- 实现：`src/shared/services/pricingSyncService.js`（手动与定时共用，避免漂移）；
+- 匹配：先按 Provider 映射，再回落到**全库 model id 索引**。后者是必需的——`glm-cn` 的主力模型不在其映射的目录条目下，`codebuddy-*`、`openai-compatible-*` 则完全没有映射；
+- 同名模型在多个 reseller 下价格不同，取**中位数**以避免异常低价；
+- **不覆盖已有定价**（保护手工调价），唯一例外是 `-review`/`-max` 这类变体被通配符错误匹配时，改用其基础模型的策展价。
+
+Dashboard 的模型列表会为每个模型标注定价；**无定价显示为「未定价」**。这是漏计费的可见信号——没有这个提示，某个模型持续记 `$0` 不会有任何迹象。
+
+#### 历史回填
+
+`usageHistory.cost` 不会因为后来补上定价而自动更新。`POST /api/pricing/backfill`（`src/lib/db/repos/usageRepo.js` 的 `backfillUsageCost`）按当前定价重算历史成本，支持 `dryRun` 预演、按 Provider 限定范围，并按 id 分批写入以避免长时间持锁。它会改写账单数字，因此**只能手动触发**，绝不自动运行。
 
 ---
 

@@ -68,9 +68,13 @@ export default function StatCard({
   metrics,
   detail,
   loading = false,
+  failed = false,
   className,
 }) {
   const palette = TONES[tone] || TONES.primary;
+  // A failed load is not "keep calculating": show it, and never fall back to the
+  // previous range's numbers.
+  const showPlaceholder = loading || failed;
 
   return (
     <Card padding="none" className={cn("group relative min-w-0 overflow-hidden px-4 py-3", className)}>
@@ -91,13 +95,18 @@ export default function StatCard({
               <Skeleton className="h-7 w-24" />
               <span className="material-symbols-outlined animate-spin text-[16px] text-primary">progress_activity</span>
             </div>
+          ) : failed ? (
+            <p className="mt-2.5 flex items-center gap-1.5 truncate text-sm font-semibold text-text-muted" role="status">
+              <span className="material-symbols-outlined text-[16px]">error</span>
+              加载失败
+            </p>
           ) : (
             <p className={cn("mt-2.5 truncate text-2xl font-bold tracking-tight", palette.accent)} title={valueTitle || value}>
               {value}
             </p>
           )}
         </div>
-        {!loading && points?.length ? <Sparkline points={points} color={palette.spark} /> : null}
+        {!showPlaceholder && points?.length ? <Sparkline points={points} color={palette.spark} /> : null}
       </div>
 
       {loading ? (
@@ -106,7 +115,7 @@ export default function StatCard({
             <Skeleton key={index} className="h-8 flex-1" />
           ))}
         </div>
-      ) : metrics?.length ? (
+      ) : failed ? null : metrics?.length ? (
         <div className="mt-2 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${metrics.length}, minmax(0, 1fr))` }}>
           {metrics.map((metric) => {
             const metricPalette = TONES[metric.tone] || palette;
@@ -142,5 +151,6 @@ StatCard.propTypes = {
   })),
   detail: PropTypes.string,
   loading: PropTypes.bool,
+  failed: PropTypes.bool,
   className: PropTypes.string,
 };

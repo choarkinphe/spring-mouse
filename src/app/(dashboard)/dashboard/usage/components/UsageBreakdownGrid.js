@@ -412,7 +412,7 @@ CaptureStatus.propTypes = {
   hasAppData: PropTypes.bool.isRequired,
 };
 
-export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null, loading = false }) {
+export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null, loading = false, failed = false }) {
   const [detailsSelection, setDetailsSelection] = useState(null);
   // The drawer captures the range it was opened with, so a range/scope change
   // must close it. This used to fall out of the parent remounting on its key.
@@ -484,6 +484,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="sky"
           points={recent.map((item) => item.requests || 0)}
           loading={loading}
+          failed={failed}
           metrics={[
             { label: "已完成", value: fmt(stats.completedRequests), tone: "success" },
             { label: "失败", value: fmt(stats.failedRequests), tone: "danger" },
@@ -498,6 +499,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="indigo"
           points={recent.map((item) => item.promptTokens || 0)}
           loading={loading}
+          failed={failed}
           detail={`缓存命中 ${fmtTokens(stats.totalCachedTokens)}`}
         />
         <StatCard
@@ -508,6 +510,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="emerald"
           points={recent.map((item) => item.completionTokens || 0)}
           loading={loading}
+          failed={failed}
           detail={`总消耗 ${fmtTokens(totalTokens)}`}
         />
         <StatCard
@@ -518,6 +521,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="cyan"
           points={recent.map((item) => item.trafficBytes || 0)}
           loading={loading}
+          failed={failed}
           metrics={[
             { label: "↑ 上行", value: formatBytes(stats.totalRequestBytes), tone: "sky" },
             { label: "↓ 下行", value: formatBytes(stats.totalResponseBytes), tone: "cyan" },
@@ -530,6 +534,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="amber"
           points={recent.map((item) => item.cost || 0)}
           loading={loading}
+          failed={failed}
           detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`}
         />
         <StatCard
@@ -539,6 +544,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           tone="violet"
           points={recent.map((item) => item.requests || 0)}
           loading={loading}
+          failed={failed}
           detail={apiKeyId ? "实时队列不保留 API Key" : `识别应用 ${fmt(apps.length)} 个 · Top 使用人：${topPerson?.keyName || "暂无"}`}
         />
       </div>
@@ -657,4 +663,5 @@ UsageBreakdownGrid.propTypes = {
   scope: PropTypes.string,
   chartRefreshToken: PropTypes.number,
   loading: PropTypes.bool,
+  failed: PropTypes.bool,
 };

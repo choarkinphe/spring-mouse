@@ -190,6 +190,9 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   // resolves; comparing this against the current `rangeKey` is what lets the
   // cards show a calculating state instead of stale figures that read as current.
   const [statsRangeKey, setStatsRangeKey] = useState(null);
+  // A failed load for the CURRENT range. Without this the cards would spin
+  // forever: the stale check never clears because no data ever arrives.
+  const [rangeLoadFailed, setRangeLoadFailed] = useState(false);
 
   // Options for the details drawer's filters, derived from the loaded stats.
   // The board builds the same shape in UsageBreakdownGrid; this is the subset
@@ -216,10 +219,14 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   // range/scope change must close it. This used to fall out of the parent
   // remounting on its key. Adjusting during render (rather than in an effect)
   // is the React-recommended way to reset state when a prop changes.
+  //
+  // The failure flag resets here for the same reason: a new range is a new load,
+  // and clearing it in an effect would be a setState-in-effect cascade.
   const [prevRangeKey, setPrevRangeKey] = useState(rangeKey);
   if (prevRangeKey !== rangeKey) {
     setPrevRangeKey(rangeKey);
     setDetailsOpen(false);
+    setRangeLoadFailed(false);
   }
 
   useEffect(() => {
@@ -247,9 +254,15 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
           // totals, which the regression guard would otherwise reject.
           setStats((previous) => applyUsageStatsUpdate(previous, normalized, { reset: true }));
           setStatsRangeKey(rangeKey);
+        } else if (!cancelled) {
+          // A non-ok response for this range. Record it so the cards stop
+          // showing "calculating" for data that is never going to arrive.
+          setRangeLoadFailed(true);
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setRangeLoadFailed(true);
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -306,14 +319,19 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   // `stats` holds the last range we loaded, which after a switch is NOT the range
   // on screen. Report that as "calculating" so the cards never present the
   // previous range's numbers as the current ones.
+  //
+  // A failed load for the current range is its own state, not "keep spinning":
+  // the cards show an explicit failure rather than a skeleton forever, and never
+  // fall back to the previous range's numbers (which is the bug this guards).
   const statsStale = statsRangeKey !== null && statsRangeKey !== rangeKey;
+  const statsLoadFailed = statsStale && rangeLoadFailed;
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
       {showOverview && (
         <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 xl:h-[min(58rem,calc(100vh-8rem))] xl:grid-cols-[minmax(0,1fr)_minmax(360px,400px)]">
           <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:min-h-0">
-            <OverviewCards stats={stats} loading={statsStale} />
+            <OverviewCards stats={stats} loading={statsStale} failed={statsLoadFailed} />
             <ProviderTopology
               activeRequests={stats.activeRequests || []}
               recentRequests={stats.recentRequests || []}
@@ -332,7 +350,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
       )}
 
       {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} refreshToken={chartRefreshToken} />}
-      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} loading={statsStale} />}
+      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} loading={statsStale} failed={statsLoadFailed} />}
 
       {/* Opened from the "最近的请求" card. Scoped to the same window the page is
           showing, so the detail list matches the numbers above it. */}

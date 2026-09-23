@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { applyEventToRollup, ensureRollupTable } from "./usage-rollup.mjs";
+import { applyEventToUserRollup, ensureUserRollupTable } from "./usage-rollup-user.mjs";
 
 const redisUrl = process.env.SPRING_MOUSE_REDIS_URL || "redis://127.0.0.1:6379";
 const dataDir = process.env.DATA_DIR || "/app/data";
@@ -48,10 +49,11 @@ function openDatabase() {
   const ready = candidate.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usageHistory'").get();
   const columns = ready ? candidate.prepare("PRAGMA table_info(usageHistory)").all() : [];
   if (!ready || !columns.some((column) => column.name === "trafficRequestId")) { candidate.close(); return null; }
-  // The rollup table is owned by the writer (it is the only thing that writes
-  // it), so create it here rather than depending on the web process's migration
-  // having run. Idempotent.
+  // The rollup tables are owned by the writer (it is the only thing that writes
+  // them), so create them here rather than depending on the web process's
+  // migration having run. Idempotent.
   try { ensureRollupTable(candidate); } catch (e) { console.warn("[UsageWriter] rollup table init failed:", e.message); }
+  try { ensureUserRollupTable(candidate); } catch (e) { console.warn("[UsageWriter] user rollup table init failed:", e.message); }
   db = candidate;
   return db;
 }
@@ -84,6 +86,10 @@ function persistBatch(events) {
       // event reports changes: 0 above and never reaches here, so the rollup
       // stays in step with usageHistory without needing its own dedup.
       applyEventToRollup(database, event);
+      // The per-person table is a read-modify-write (sessions and the (user, X)
+      // crosses are not SQL increments), so it MUST be fed exactly once per
+      // event. The `changes > 0` guard above is what makes that safe.
+      applyEventToUserRollup(database, event);
     }
 
     if (insertedCount > 0) {

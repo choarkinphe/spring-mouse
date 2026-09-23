@@ -158,14 +158,44 @@ async function persistAndAck(client, messages) {
   return true;
 }
 
+// Backoff between persist attempts. The web process writes requestDetails on a
+// ~500ms cadence against the same SQLite file, so a fixed 500ms retry kept
+// re-colliding with it on the write lock ("database is locked" every ~13s).
+// Starting low keeps the common case (a brief overlap) fast, and doubling up to
+// a few seconds stops a long holder from being hammered.
+const RETRY_MIN_MS = 250;
+const RETRY_MAX_MS = 5000;
+
+function isLockError(error) {
+  return /database is locked|SQLITE_BUSY/i.test(String(error?.message || error));
+}
+
 async function persistWithRetry(client, messages) {
+  let delay = RETRY_MIN_MS;
+  let collisions = 0;
   while (!stopping) {
     try {
-      if (await persistAndAck(client, messages)) return true;
+      if (await persistAndAck(client, messages)) {
+        // Report recovery once, with the count, so a sustained lock storm is
+        // still visible without logging every individual collision.
+        if (collisions > 1) {
+          console.log(`[UsageWriter] recovered after ${collisions} lock collision(s)`);
+        }
+        return true;
+      }
+      delay = RETRY_MIN_MS;
     } catch (error) {
+      if (isLockError(error)) {
+        // Expected contention with the web process — back off instead of
+        // hammering, and stay quiet until we know whether it resolves.
+        collisions += 1;
+        await sleep(delay);
+        delay = Math.min(delay * 2, RETRY_MAX_MS);
+        continue;
+      }
       console.error("[UsageWriter] persist failed:", error.message);
     }
-    await sleep(500);
+    await sleep(delay);
   }
   return false;
 }

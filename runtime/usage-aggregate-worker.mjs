@@ -2,12 +2,16 @@
  * Worker entry for usage aggregation.
  *
  * Runs the synchronous SQLite scan off the main event loop. The aggregation
- * itself lives in `./usage-aggregate.mjs` — the SAME file the web process
- * imports for its in-process fallback, so there is exactly one implementation.
+ * itself lives in `./usage-aggregate.mjs` (raw) and `./usage-rollup-stats.mjs`
+ * (rollup-backed) — the SAME files the web process imports for its in-process
+ * fallback, so there is exactly one implementation of each.
  *
  * Protocol:
- *   in : { id, dbFile, period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now }
+ *   in : { id, dbFile, source, period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now }
  *   out: { id, stats }  |  { id, error }
+ *
+ * `source` is `"rollup"` (read the daily rollup tables) or `"raw"` (scan
+ * `usageHistory`). The caller decides; the worker just dispatches.
  *
  * The result payload is small (~17KB); raw rows are never sent back, because
  * postMessage of the full result set would block the main thread for seconds.
@@ -20,6 +24,7 @@ import { parentPort } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { runAggregation } from "./usage-aggregate.mjs";
+import { runRollupStats } from "./usage-rollup-stats.mjs";
 
 function resolveDbFile(msg) {
   if (msg?.dbFile) return msg.dbFile;
@@ -66,7 +71,7 @@ parentPort.on("message", (msg) => {
   const { id } = msg || {};
   try {
     const adapter = makeAdapter(openDatabase(resolveDbFile(msg)));
-    const stats = runAggregation(adapter, {
+    const params = {
       period: msg.period,
       range: msg.range || {},
       connectionMap: msg.connectionMap || {},
@@ -74,7 +79,8 @@ parentPort.on("message", (msg) => {
       providerNodeNameMap: msg.providerNodeNameMap || {},
       sourceCapture: msg.sourceCapture || {},
       now: msg.now ? new Date(msg.now) : new Date(),
-    });
+    };
+    const stats = msg.source === "rollup" ? runRollupStats(adapter, params) : runAggregation(adapter, params);
     parentPort.postMessage({ id, stats });
   } catch (error) {
     parentPort.postMessage({ id, error: String(error?.message || error) });

@@ -1,68 +1,52 @@
 /**
- * Incremental daily rollup for usage stats.
+ * Daily usage rollup — ONE table, keyed by (local day, API key).
  *
- * WHY: every dashboard query scans `usageHistory` (206k rows for 7 days on the
- * production gateway; ~880k for 30d). The same 8 dimensions are re-aggregated
- * from raw rows on every poll. A daily rollup turns a 30d scan into ~16k bucket
- * reads (~55x less), and — because it is tiny — can be retained far longer than
- * the raw table, which is what bounds the long-range views today.
+ * WHY ONE TABLE AND NOT A TABLE PER DIMENSION:
+ * Every question the dashboard asks is either a sum over (day, key) or a sum
+ * over one of the nested maps stored on that row. Keeping the maps on the row
+ * (`models`, `apps`, `sourceIps`, `accounts`, `endpoints`) means:
+ *   - `byUser` is the row itself, with its session intervals and histograms;
+ *   - `byModel` / `byProvider` / `byApp` / `bySourceIp` / `byAccount` /
+ *     `byEndpoint` are derived by summing the maps across keys;
+ *   - a tag-scoped dashboard filters on the primary key, so EVERY dimension is
+ *     scopeable. (A dimension-per-row table cannot do this: six of the seven
+ *     dimensions carry no key, so a scoped view would silently report unscoped
+ *     numbers — 91.8% of production traffic is in the default scope.)
+ * Measured on production: 454 rows for 37 days of 550k events, and all seven
+ * dimensions plus `byUser` derive from it exactly.
  *
- * This module is the WRITE side only. It is called by `usage-writer.mjs` right
- * after a `usageHistory` row is inserted, so the rollup accumulates from the
- * same single writer and needs no extra coordination. Nothing reads it yet —
- * that is deliberate: the table accumulates data first so the rollup can be
- * reconciled against raw rows before anything depends on it.
+ * GRANULARITY: local DAY, keyed on `timestamp` (= startedAt) — the same basis
+ * the raw aggregation filters and buckets on, so `activeDays`, the histograms
+ * and the range filter agree with it. A range is served at day granularity, so
+ * boundary days are included whole; that is the trade for not scanning raw rows.
  *
- * IDEMPOTENCE: the caller only calls this when the INSERT actually changed a row
- * (`changes > 0`). Re-delivered Redis events hit `INSERT OR IGNORE` and report
- * `changes: 0`, so they never double-count.
+ * WHY SESSIONS ARE STORED AS DISJOINT INTERVALS:
+ * A session is a run of a key's events no more than 30 minutes apart — not a sum
+ * over anything, so it cannot be a counter. Storing the day's interval list (not
+ * just first/last bounds) makes the value order-independent: an arriving event
+ * either lands in a gap or bridges a contiguous run of sessions, which depends
+ * only on the interval SET. That is what lets the writer accumulate as events
+ * arrive in COMPLETION order (measured: 37.5% arrive out of start order), and it
+ * makes a range read a plain sort-and-merge — a session spanning midnight is two
+ * partial intervals that rejoin, with no correction formula.
  *
- * SCOPE — counters only. The five counter columns cover requests, tokens and
- * cost for all 8 dimensions. Two per-person fields are NOT derivable from
- * counters and are deliberately absent: `sessionCount` and
- * `activeSessionDurationMs`. They require the ordered sequence of a user's
- * events (sessions are runs of events no more than 30 minutes apart, merged
- * across day boundaries), which incremental counter accumulation cannot
- * reconstruct — and the writer sees events in completion order, not strict
- * time order. Those two fields must be solved before the read path switches
- * over; see the note at the bottom of this file.
- *
- * CONSTRAINTS (same as usage-aggregate.mjs — see its header): this file lives in
- * `runtime/`, which is the only directory shipped as real files in the image, so
- * it must stay free of `@/` and `open-sse/` alias imports. Only Node built-ins
- * and relative imports inside `runtime/` are allowed.
- *
- * KEY DESIGN: bucket keys store RAW identifiers (`provider` id, `model`,
- * `connectionId`, `apiKeyId`), never display names. Display names come from
- * lookup maps (`connectionMap`, `apiKeyMap`, `providerNodeNameMap`) that can
- * change between writes, so resolving them at write time would bake stale labels
- * into the rollup. The read path resolves them, exactly like the raw path does.
+ * CONSTRAINTS: lives in `runtime/`, which is the only directory shipped as real
+ * files in the image, so it must stay free of `@/` and `open-sse/` imports.
  */
 
 import { detectSourceApp } from "./usage-aggregate.mjs";
 
-export const ROLLUP_TABLE = "usageRollup";
-
-/** The dimensions the dashboard aggregates over. One row per dimension per day per bucket. */
-export const ROLLUP_DIMENSIONS = [
-  "provider",
-  "model",
-  "account",
-  "apiKey",
-  "endpoint",
-  "sourceIp",
-  "app",
-  "user",
-  // Status counts for the board's completed/failed/cancelled cards. A plain
-  // dimension rather than a cross of the others, so it stays cheap.
-  "status",
-];
+export const ROLLUP_TABLE = "usageRollupDay";
+export const SESSION_GAP_MS = 30 * 60 * 1000;
 
 /** Counter columns, mirroring the raw aggregation's bucket shape. */
 export const COUNTER_COLUMNS = ["requests", "promptTokens", "completionTokens", "cachedTokens", "cost"];
 
-function localDateKey(ms) {
-  const d = new Date(ms);
+/** The nested (key, X) maps stored per row. */
+export const MAP_COLUMNS = ["models", "apps", "sourceIps", "accounts", "endpoints"];
+
+export function localDateKey(value) {
+  const d = new Date(value);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
@@ -72,97 +56,20 @@ function parseJson(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-/**
- * Derive every rollup bucket for one usage event.
- *
- * Returns `[{ dimension, bucketKey, meta, counters }]`. Kept as a pure function
- * so it can be unit-tested against the raw aggregation without a database.
- *
- * @param {object} event  a usageHistory-shaped row (same fields the writer inserts)
- */
-export function rollupBucketsForEvent(event) {
-  const tokens = parseJson(event.tokens, {}) || {};
-  const meta = parseJson(event.meta, {}) || {};
-
-  const promptTokens = Number(event.promptTokens) || 0;
-  const completionTokens = Number(event.completionTokens) || 0;
-  const cachedTokens = Number(tokens.cached_tokens ?? tokens.cache_read_input_tokens) || 0;
-  const cost = Number(event.cost) || 0;
-
-  // Every dimension gets the same counter shape; `requests` counts the event.
-  const counters = { requests: 1, promptTokens, completionTokens, cachedTokens, cost };
-
-  const provider = event.provider || null;
-  const model = event.model || null;
-  const providerPart = provider || "unknown";
-  const out = [];
-
-  const push = (dimension, bucketKey, extraMeta = {}) => {
-    if (bucketKey === null || bucketKey === undefined || bucketKey === "") return;
-    out.push({ dimension, bucketKey: String(bucketKey), meta: extraMeta, counters });
-  };
-
-  // provider — bucket key is the raw provider id. The raw aggregation indexes
-  // `byProvider[r.provider]` unconditionally, so a null provider becomes a
-  // "null" bucket there (it holds non-billing endpoints like count_tokens).
-  // Mirror that exactly, or the two paths disagree on the request count.
-  push("provider", provider === null || provider === undefined ? "null" : provider);
-
-  // model — keyed by model AND provider, matching the raw path's
-  // `${model} (${provider})` bucket. The provider must be part of the key, not
-  // just meta: the same model id is served by several channels (on production
-  // `deepseek-v4.1-flash` appears under 6 providers), and the raw path keeps
-  // those as separate buckets. Keying on the model alone silently merges them.
-  if (model) push("model", `${model}|${providerPart}`, { rawModel: model, provider });
-
-  // account — per connection+model+provider, matching the raw bucket key.
-  if (event.connectionId) {
-    push("account", `${event.connectionId}|${model || ""}|${providerPart}`, {
-      connectionId: event.connectionId, rawModel: model, provider,
-    });
-  }
-
-  // apiKey — keyed by the stored apiKeyId (raw), not the masked display value.
-  const apiKeyId = event.apiKeyId || "local-no-key";
-  if (model) {
-    push("apiKey", `${apiKeyId}|${model}|${providerPart}`, {
-      apiKey: apiKeyId, rawModel: model, provider,
-    });
-  }
-
-  // endpoint
-  const endpoint = event.endpoint || "Unknown";
-  if (model) {
-    push("endpoint", `${endpoint}|${model}|${providerPart}`, {
-      endpoint, rawModel: model, provider,
-    });
-  }
-
-  // sourceIp — only when captured; geo is resolved at read time.
-  if (meta.sourceIp) {
-    push("sourceIp", meta.sourceIp, { sourceIp: meta.sourceIp });
-  }
-
-  // app — normalised at write time (the detector is deterministic and cheap).
-  push("app", detectSourceApp(meta));
-
-  // user — the person key, same as the raw path (`apiKeyId` || local-no-key).
-  push("user", apiKeyId, { userId: apiKeyId });
-
-  // status — normalised to the three buckets the board counts, matching the raw
-  // path's EXACT-match rule (`status === "cancelled"` / `"error"`, everything
-  // else completed). Statuses like `blocked:account_locked` or `upstream:503`
-  // therefore count as completed, which looks odd but is what the existing
-  // numbers do — diverging here would make the board disagree with itself
-  // across the rollup boundary.
-  push("status", statusBucket(event.status));
-
-  return out;
+function getRequestDurationMs(startedAt, completedAt) {
+  const start = new Date(startedAt).getTime();
+  const end = new Date(completedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return end - start;
 }
 
 /**
  * Map a raw status onto the bucket the board counts.
- * Kept exported so the read path and tests share the exact rule.
+ *
+ * EXACT match, mirroring the raw aggregation: only `cancelled` and `error` are
+ * special, everything else counts as completed. So `blocked:account_locked` and
+ * `upstream:503` land in completed, which looks odd but is what the existing
+ * numbers do — diverging here would make the board disagree with itself.
  */
 export function statusBucket(status) {
   if (status === "cancelled") return "cancelled";
@@ -170,68 +77,386 @@ export function statusBucket(status) {
   return "completed";
 }
 
-/**
- * Build the rollup table DDL. Kept here rather than in `src/lib/db/schema.js`
- * because the writer owns the table: it must exist even if the web process never
- * booted, and the writer cannot import from `src/`.
- */
+// ─── schema ─────────────────────────────────────────────────────────────────
+
 export function rollupTableSql() {
   const counters = COUNTER_COLUMNS.map((c) => `${c} REAL DEFAULT 0`).join(", ");
+  const maps = MAP_COLUMNS.map((c) => `${c} TEXT`).join(", ");
   return `CREATE TABLE IF NOT EXISTS ${ROLLUP_TABLE} (
     dateKey TEXT NOT NULL,
-    dimension TEXT NOT NULL,
-    bucketKey TEXT NOT NULL,
+    apiKeyId TEXT NOT NULL,
     ${counters},
-    meta TEXT,
-    PRIMARY KEY (dateKey, dimension, bucketKey)
+    completedRequests REAL DEFAULT 0,
+    failedRequests REAL DEFAULT 0,
+    cancelledRequests REAL DEFAULT 0,
+    requestDurationMs REAL DEFAULT 0,
+    durationRequestCount REAL DEFAULT 0,
+    firstUsed TEXT,
+    lastUsed TEXT,
+    ${maps},
+    periods TEXT,
+    weekdays TEXT,
+    sessions TEXT,
+    PRIMARY KEY (dateKey, apiKeyId)
   )`;
 }
 
 export function rollupIndexSql() {
-  return `CREATE INDEX IF NOT EXISTS idx_ur_dim_date ON ${ROLLUP_TABLE}(dimension, dateKey)`;
+  return `CREATE INDEX IF NOT EXISTS idx_urd_date ON ${ROLLUP_TABLE}(dateKey)`;
 }
 
-/** Create the table and its index if absent. Safe to call on every boot. */
+/**
+ * Bookkeeping shared by the writer and the rebuild. `completeThrough` is the
+ * last local day the rebuild has fully recomputed. Days after it can be
+ * incomplete — a restart mid-day, or the web process's Redis-downgrade fallback
+ * (which writes `usageHistory` without the rollup) — so the read path must not
+ * trust them and falls back to raw instead.
+ */
+export const ROLLUP_META_TABLE = "usageRollupMeta";
+const COMPLETE_THROUGH_KEY = "completeThrough";
+
+export function rollupMetaTableSql() {
+  return `CREATE TABLE IF NOT EXISTS ${ROLLUP_META_TABLE} (key TEXT PRIMARY KEY, value TEXT)`;
+}
+
+function rawOf(database) {
+  // The writer holds a raw DatabaseSync (prepare); the app passes an adapter (all/get/run).
+  return typeof database.prepare === "function"
+    ? { all: (sql, p = []) => database.prepare(sql).all(...p), get: (sql, p = []) => database.prepare(sql).get(...p), run: (sql, p = []) => database.prepare(sql).run(...p) }
+    : database;
+}
+
+export function getCompleteThrough(database) {
+  try {
+    const row = rawOf(database).get(`SELECT value FROM ${ROLLUP_META_TABLE} WHERE key = ?`, [COMPLETE_THROUGH_KEY]);
+    return row?.value || null;
+  } catch { return null; }
+}
+
+/** Advance the completeness marker. Never moves backwards. */
+export function setCompleteThrough(database, dateKey) {
+  const current = getCompleteThrough(database);
+  if (current && current >= dateKey) return;
+  rawOf(database).run(
+    `INSERT INTO ${ROLLUP_META_TABLE}(key, value) VALUES(?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [COMPLETE_THROUGH_KEY, dateKey],
+  );
+}
+
+/**
+ * Create the table and its index if absent. Safe on every boot.
+ *
+ * A table with the OLD shape (the earlier dimension-per-row rollup, or an
+ * earlier revision of this one) is dropped rather than migrated: the rollup is
+ * derived data that the rebuild regenerates from `usageHistory`, so a shape
+ * change is a rebuild. The completeness marker is cleared with it, so the read
+ * path falls back to raw until the next rebuild lands.
+ */
 export function ensureRollupTable(database) {
+  const api = rawOf(database);
+  const REQUIRED = ["dateKey", "apiKeyId", "accounts", "endpoints", "sessions"];
+  let columns = [];
+  try { columns = api.all(`PRAGMA table_info(${ROLLUP_TABLE})`) || []; } catch { columns = []; }
+  if (columns.length && !REQUIRED.every((name) => columns.some((c) => c.name === name))) {
+    database.exec(`DROP TABLE IF EXISTS ${ROLLUP_TABLE}`);
+    try { database.exec(`DELETE FROM ${ROLLUP_META_TABLE} WHERE key = '${COMPLETE_THROUGH_KEY}'`); } catch { /* not created yet */ }
+  }
+  database.exec(rollupMetaTableSql());
   database.exec(rollupTableSql());
   database.exec(rollupIndexSql());
 }
 
-/** The set of dateKeys the rollup already holds. */
-export function rollupDateKeys(database) {
-  return new Set(
-    database.prepare(`SELECT DISTINCT dateKey FROM ${ROLLUP_TABLE}`).all().map((row) => row.dateKey),
+// ─── session intervals ──────────────────────────────────────────────────────
+
+/** Sort and coalesce intervals within `gapMs`. Result is disjoint and ordered. */
+export function normalizeIntervals(intervals, gapMs = SESSION_GAP_MS) {
+  const sorted = (intervals || [])
+    .filter((iv) => Array.isArray(iv) && Number.isFinite(iv[0]) && Number.isFinite(iv[1]))
+    .map((iv) => [iv[0], Math.max(iv[0], iv[1])])
+    .sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const iv of sorted) {
+    const last = out[out.length - 1];
+    if (last && iv[0] <= last[1] + gapMs) last[1] = Math.max(last[1], iv[1]);
+    else out.push([iv[0], iv[1]]);
+  }
+  return out;
+}
+
+/**
+ * Add one event's interval to a disjoint interval list.
+ *
+ * Absorb every interval the event's gap-expanded box touches, then normalise:
+ * the merge can pull two previously-separate intervals together, and only the
+ * normalise pass catches that chain.
+ */
+export function addSessionInterval(intervals, startMs, endMs, gapMs = SESSION_GAP_MS) {
+  const start = Number(startMs);
+  if (!Number.isFinite(start)) return normalizeIntervals(intervals, gapMs);
+  const end = Math.max(start, Number(endMs) || start);
+  const lo = start - gapMs;
+  const hi = end + gapMs;
+
+  let mergedStart = start;
+  let mergedEnd = end;
+  const kept = [];
+  for (const iv of intervals || []) {
+    if (Array.isArray(iv) && iv[1] >= lo && iv[0] <= hi) {
+      mergedStart = Math.min(mergedStart, iv[0]);
+      mergedEnd = Math.max(mergedEnd, iv[1]);
+    } else {
+      kept.push(iv);
+    }
+  }
+  kept.push([mergedStart, mergedEnd]);
+  return normalizeIntervals(kept, gapMs);
+}
+
+/** Session count and total duration for a disjoint interval list. */
+export function sessionsFromIntervals(intervals, gapMs = SESSION_GAP_MS) {
+  const merged = normalizeIntervals(intervals, gapMs);
+  let durationMs = 0;
+  for (const [start, end] of merged) durationMs += Math.max(0, end - start);
+  return { count: merged.length, durationMs };
+}
+
+// ─── the per-event delta ────────────────────────────────────────────────────
+
+function emptyBucket() {
+  return { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+}
+
+function bump(map, key, values) {
+  if (key === null || key === undefined || key === "") return;
+  const bucket = map[key] || (map[key] = emptyBucket());
+  bucket.requests += values.requests ?? 1;
+  bucket.promptTokens += values.promptTokens || 0;
+  bucket.completionTokens += values.completionTokens || 0;
+  bucket.cachedTokens += values.cachedTokens || 0;
+  bucket.cost += values.cost || 0;
+}
+
+/**
+ * The per-(day, key) contribution of one usage event. Pure, so the merge rules
+ * are testable without a database.
+ *
+ * The map keys reproduce the raw aggregation's bucket keys, so the read side can
+ * rebuild every dimension without a second grouping:
+ *   - models:    `${model}|${provider}`   → byModel, and byProvider via the suffix
+ *   - accounts:  `${connectionId}|${model}|${provider}` → byAccount
+ *   - endpoints: `${endpoint}|${model}|${provider}`     → byEndpoint
+ *   - apps:      the `detectSourceApp` label            → byApp
+ *   - sourceIps: the IP                                 → bySourceIp
+ * A raw provider is stored, never a display name: `providerNodeNameMap` can
+ * change between writes, and `byModel` and `byUser.models` resolve it
+ * differently (the former uses the raw id, the latter the display name).
+ */
+export function rollupRowDelta(event) {
+  const tokens = parseJson(event.tokens, {}) || {};
+  const meta = parseJson(event.meta, {}) || {};
+
+  const startedAt = event.startedAt || event.timestamp || event.completedAt;
+  const completedAt = event.completedAt || startedAt;
+  const timestamp = event.timestamp || startedAt;
+  const apiKeyId = event.apiKeyId || "local-no-key";
+  const dateKey = localDateKey(startedAt);
+
+  const promptTokens = Number(event.promptTokens) || 0;
+  const completionTokens = Number(event.completionTokens) || 0;
+  const cachedTokens = Number(tokens.cached_tokens ?? tokens.cache_read_input_tokens) || 0;
+  const cost = Number(event.cost) || 0;
+  const provider = event.provider ?? null;
+  const model = event.model ?? null;
+  const values = { requests: 1, promptTokens, completionTokens, cachedTokens, cost };
+
+  const models = {};
+  // Empty parts stand for null, matching the raw path's template coercion
+  // (`${null}` → "null"); the read side reconstructs the display key.
+  bump(models, `${model === null ? "" : model}|${provider === null ? "" : provider}`, values);
+
+  const apps = {};
+  bump(apps, detectSourceApp(meta), values);
+
+  const sourceIps = {};
+  if (meta.sourceIp) bump(sourceIps, meta.sourceIp, values);
+
+  const accounts = {};
+  if (event.connectionId) bump(accounts, `${event.connectionId}|${model === null ? "" : model}|${provider === null ? "" : provider}`, values);
+
+  const endpoints = {};
+  // Unconditional: the raw path buckets EVERY row by endpoint, even a null model.
+  // Empty parts stand for null; the read side re-applies the raw template's
+  // coercions (`provider || "unknown"` for the endpoint key).
+  bump(endpoints, `${event.endpoint || "Unknown"}|${model === null ? "" : model}|${provider === null ? "" : provider}`, values);
+
+  const periods = Array(6).fill(0);
+  const weekdays = Array(7).fill(0);
+  const requestedAt = new Date(timestamp);
+  if (Number.isFinite(requestedAt.getTime())) {
+    periods[Math.floor(requestedAt.getHours() / 4)] = 1;
+    weekdays[(requestedAt.getDay() + 6) % 7] = 1;
+  }
+
+  const status = statusBucket(event.status);
+  const durationMs = getRequestDurationMs(startedAt, completedAt);
+  const startMs = new Date(startedAt).getTime();
+  const endMs = new Date(completedAt).getTime();
+
+  return {
+    dateKey,
+    apiKeyId,
+    counters: values,
+    status: { completed: status === "completed" ? 1 : 0, failed: status === "failed" ? 1 : 0, cancelled: status === "cancelled" ? 1 : 0 },
+    requestDurationMs: durationMs,
+    durationRequestCount: durationMs > 0 ? 1 : 0,
+    firstUsed: timestamp,
+    lastUsed: timestamp,
+    models,
+    apps,
+    sourceIps,
+    accounts,
+    endpoints,
+    periods,
+    weekdays,
+    sessions: Number.isFinite(startMs)
+      ? [[startMs, Math.max(startMs, Number.isFinite(endMs) ? endMs : startMs)]]
+      : [],
+  };
+}
+
+// ─── merge ──────────────────────────────────────────────────────────────────
+
+function mergeMaps(target, source) {
+  const out = { ...(target || {}) };
+  for (const [key, value] of Object.entries(source || {})) {
+    const bucket = out[key] || (out[key] = emptyBucket());
+    bucket.requests += value.requests || 0;
+    bucket.promptTokens += value.promptTokens || 0;
+    bucket.completionTokens += value.completionTokens || 0;
+    bucket.cachedTokens += value.cachedTokens || 0;
+    bucket.cost += value.cost || 0;
+  }
+  return out;
+}
+
+function addArrays(target, source, length) {
+  const out = Array.from({ length }, (_, i) => Number(target?.[i]) || 0);
+  for (let i = 0; i < length; i++) out[i] += Number(source?.[i]) || 0;
+  return out;
+}
+
+function earlier(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a < b ? a : b;
+}
+
+function later(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+/** Fold a delta into a stored row (or a fresh one). Pure. */
+export function mergeRollupRow(existing, delta) {
+  const base = existing || {};
+  const incoming = delta.sessions?.[0];
+  const sessions = incoming
+    ? addSessionInterval(parseJson(base.sessions, []) || [], incoming[0], incoming[1])
+    : (parseJson(base.sessions, []) || []);
+  return {
+    dateKey: delta.dateKey,
+    apiKeyId: delta.apiKeyId,
+    requests: (base.requests || 0) + delta.counters.requests,
+    promptTokens: (base.promptTokens || 0) + delta.counters.promptTokens,
+    completionTokens: (base.completionTokens || 0) + delta.counters.completionTokens,
+    cachedTokens: (base.cachedTokens || 0) + delta.counters.cachedTokens,
+    cost: (base.cost || 0) + delta.counters.cost,
+    completedRequests: (base.completedRequests || 0) + delta.status.completed,
+    failedRequests: (base.failedRequests || 0) + delta.status.failed,
+    cancelledRequests: (base.cancelledRequests || 0) + delta.status.cancelled,
+    requestDurationMs: (base.requestDurationMs || 0) + delta.requestDurationMs,
+    durationRequestCount: (base.durationRequestCount || 0) + delta.durationRequestCount,
+    firstUsed: earlier(base.firstUsed, delta.firstUsed),
+    lastUsed: later(base.lastUsed, delta.lastUsed),
+    models: mergeMaps(base.models, delta.models),
+    apps: mergeMaps(base.apps, delta.apps),
+    sourceIps: mergeMaps(base.sourceIps, delta.sourceIps),
+    accounts: mergeMaps(base.accounts, delta.accounts),
+    endpoints: mergeMaps(base.endpoints, delta.endpoints),
+    periods: addArrays(base.periods, delta.periods, 6),
+    weekdays: addArrays(base.weekdays, delta.weekdays, 7),
+    sessions,
+  };
+}
+
+const ROW_COLUMNS = [
+  "dateKey", "apiKeyId", ...COUNTER_COLUMNS,
+  "completedRequests", "failedRequests", "cancelledRequests",
+  "requestDurationMs", "durationRequestCount", "firstUsed", "lastUsed",
+  ...MAP_COLUMNS, "periods", "weekdays", "sessions",
+];
+
+/** Encode a row for storage (the map/array columns as JSON). */
+export function serializeRow(row) {
+  return ROW_COLUMNS.map((column) => {
+    const value = row[column];
+    if (MAP_COLUMNS.includes(column) || column === "periods" || column === "weekdays" || column === "sessions") {
+      return JSON.stringify(value || (column === "periods" || column === "weekdays" || column === "sessions" ? [] : {}));
+    }
+    return value ?? null;
+  });
+}
+
+/** Decode a stored row's JSON columns. */
+export function deserializeRow(row) {
+  const out = { ...row };
+  for (const column of MAP_COLUMNS) out[column] = parseJson(row[column], {}) || {};
+  out.periods = parseJson(row.periods, []) || [];
+  out.weekdays = parseJson(row.weekdays, []) || [];
+  out.sessions = parseJson(row.sessions, []) || [];
+  return out;
+}
+
+// ─── write ──────────────────────────────────────────────────────────────────
+
+/**
+ * Apply one usage event. Runs inside the caller's transaction.
+ *
+ * Read-modify-write, because sessions and the (key, X) maps are not expressible
+ * as SQL increments. The caller must therefore call this EXACTLY once per event
+ * (the writer guards on the `usageHistory` insert having changed a row).
+ */
+export function applyEventToRollup(database, event) {
+  const api = rawOf(database);
+  const delta = rollupRowDelta(event);
+  const existing = api.get(`SELECT * FROM ${ROLLUP_TABLE} WHERE dateKey = ? AND apiKeyId = ?`, [delta.dateKey, delta.apiKeyId]);
+  const row = mergeRollupRow(existing ? deserializeRow(existing) : null, delta);
+  const placeholders = ROW_COLUMNS.map(() => "?").join(", ");
+  const updates = ROW_COLUMNS.filter((c) => c !== "dateKey" && c !== "apiKeyId").map((c) => `${c} = excluded.${c}`).join(", ");
+
+  api.run(
+    `INSERT INTO ${ROLLUP_TABLE}(${ROW_COLUMNS.join(", ")}) VALUES(${placeholders})
+     ON CONFLICT(dateKey, apiKeyId) DO UPDATE SET ${updates}`,
+    serializeRow(row),
   );
 }
 
-/**
- * Is the rollup behind `usageHistory`?
- *
- * The rollup only accumulates from the moment the writer that owns it starts,
- * so on an instance upgraded from a build without it every historical day is
- * missing. Comparing the two earliest days is a cheap, index-free check that
- * answers "do we need a backfill" without scanning rows.
- */
-export function rollupNeedsBackfill(database) {
-  const history = database.prepare(
-    `SELECT MIN(COALESCE(completedAt, timestamp)) AS earliest FROM usageHistory`,
-  ).get();
-  if (!history?.earliest) return false;
-  const rollup = database.prepare(`SELECT MIN(dateKey) AS earliest FROM ${ROLLUP_TABLE}`).get();
-  if (!rollup?.earliest) return true;
-  return localDateKey(new Date(history.earliest)) < rollup.earliest;
+// ─── rebuild ────────────────────────────────────────────────────────────────
+
+/** Local-day bounds for a `dateKey`, as inclusive `[startMs, endMs]`. */
+function dayBounds(dateKey) {
+  const [y, m, d] = String(dateKey).split("-").map(Number);
+  return [
+    new Date(y, m - 1, d, 0, 0, 0, 0).getTime(),
+    new Date(y, m - 1, d, 23, 59, 59, 999).getTime(),
+  ];
 }
 
-/**
- * Which local days `usageHistory` covers, from its earliest row to today.
- * Cheap: `MIN(COALESCE(completedAt, timestamp))` is one indexed scan.
- *
- * Takes an adapter (not a raw connection) to match `rebuildRollupDays`.
- */
+/** Which local days `usageHistory` covers, earliest row through `now`. */
 export function historyDateKeys(adapter, now = Date.now()) {
-  const row = adapter.get(
-    `SELECT MIN(COALESCE(completedAt, timestamp)) AS earliest FROM usageHistory`,
-  );
+  const row = adapter.get(`SELECT MIN(COALESCE(startedAt, timestamp)) AS earliest FROM usageHistory`);
   if (!row?.earliest) return [];
   const days = [];
   const cursor = new Date(row.earliest);
@@ -245,66 +470,46 @@ export function historyDateKeys(adapter, now = Date.now()) {
   return days;
 }
 
-/** Local-day bounds for a `dateKey`, as inclusive `[startMs, endMs]`. */
-function dayBounds(dateKey) {
-  const [y, m, d] = String(dateKey).split("-").map(Number);
-  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
-  const end = new Date(y, m - 1, d, 23, 59, 59, 999);
-  return [start.getTime(), end.getTime()];
+/** Is the rollup behind `usageHistory` (or shaped for a different day basis)? */
+export function rollupNeedsBackfill(adapter, now = Date.now()) {
+  const completeThrough = getCompleteThrough(adapter);
+  const days = historyDateKeys(adapter, now);
+  if (!days.length) return false;
+  if (!completeThrough) return true;
+  return completeThrough < days[days.length - 1];
 }
 
 /**
  * Rebuild rollup days from `usageHistory`.
  *
  * REBUILD, not "fill missing": a day already present is deleted and recomputed.
- * Filling only absent days cannot repair a day the live writer started
- * mid-way through — on the production upgrade the writer began at 05:43, so
- * "today" held 05:43→now and the earlier hours were simply absent. Rebuilding
- * is also what makes the pass re-runnable after a schema or key change.
+ * Filling only absent days cannot repair a day the writer started mid-way
+ * through — on the production upgrade the writer began at 05:43, so "today" held
+ * 05:43→now and the earlier hours were simply absent. Rebuilding is also what
+ * makes the pass re-runnable after a shape change.
  *
- * EACH DAY IS ONE TRANSACTION (delete + rescan + insert). That is a correctness
- * requirement, not a performance tweak: the live writer inserts a `usageHistory`
- * row and its rollup counters in the SAME transaction, so the two are always
- * consistent at a transaction boundary. A backfill that read history, then
- * deleted, then inserted in separate transactions could have its delete land
- * after a writer's insert and silently drop it (verified by walking the
- * interleavings). Wrapping the whole day closes that window.
+ * EACH DAY IS ONE TRANSACTION (delete + rescan + insert). A correctness
+ * requirement, not a tidy-up: the live writer inserts a `usageHistory` row and
+ * its rollup counters in the SAME transaction, so the two agree at every
+ * transaction boundary. Splitting the rebuild's read, delete and insert across
+ * transactions lets a writer insert land between the read and the delete and be
+ * silently dropped.
  *
- * A day is bounded by `[00:00, 23:59:59.999]` on `COALESCE(completedAt,
- * timestamp)` — the same basis the writer keys `dateKey` on — and the scan uses
- * `idx_uh_ts` on `timestamp`. A row whose `completedAt` falls in the day but
- * whose `timestamp` does not is picked up by the surrounding days' scans being
- * inclusive; the filter re-checks `completedAt` in JS so no row is double-counted
- * (a row belongs to exactly one day, by its `completedAt`).
+ * A day is scanned on `timestamp` (so `idx_uh_ts` is usable) with the lower
+ * bound reaching back a day, because a row's `startedAt` can precede the day its
+ * `completedAt` falls in; the JS side then assigns each row to exactly one day
+ * by `startedAt`, matching how the writer keys `dateKey`.
  *
- * Takes an ADAPTER (`{ exec, run, all, iterate }`) rather than a raw
- * `DatabaseSync`, because it runs both from the web process (whose adapter this
- * is) and from a maintenance script.
- *
- * @returns {Promise<{ days: number, scanned: number, applied: number }>}
+ * @returns {Promise<{ days: number, scanned: number, applied: number, completeThrough: string|null }>}
  */
 export async function rebuildRollupDays(adapter, { days = null, onYield = null, now = Date.now() } = {}) {
   const targets = days || historyDateKeys(adapter, now);
-  const insertSql =
-    `INSERT INTO ${ROLLUP_TABLE}(dateKey, dimension, bucketKey, requests, promptTokens, completionTokens, cachedTokens, cost, meta)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(dateKey, dimension, bucketKey) DO UPDATE SET
-       requests = requests + excluded.requests,
-       promptTokens = promptTokens + excluded.promptTokens,
-       completionTokens = completionTokens + excluded.completionTokens,
-       cachedTokens = cachedTokens + excluded.cachedTokens,
-       cost = cost + excluded.cost`;
-
   let scanned = 0;
   let applied = 0;
   let built = 0;
 
   for (const dateKey of targets) {
     const [dayStart, dayEnd] = dayBounds(dateKey);
-    // Filter on `timestamp` so `idx_uh_ts` is usable (a COALESCE here would
-    // defeat the index). The lower bound reaches back a day because a row's
-    // `timestamp` (= startedAt) can precede its `completedAt` day; the JS check
-    // below then assigns each row to exactly one day, by its `completedAt`.
     const rows = adapter.all(
       `SELECT timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint,
               promptTokens, completionTokens, cost, status, tokens, meta
@@ -316,78 +521,30 @@ export async function rebuildRollupDays(adapter, { days = null, onYield = null, 
     adapter.exec("BEGIN");
     try {
       adapter.run(`DELETE FROM ${ROLLUP_TABLE} WHERE dateKey = ?`, [dateKey]);
+      // Fold the whole day in memory and write once per (day, key): a
+      // read-modify-write per event would be a statement per row, and this pass
+      // already holds the day's rows.
+      const byKey = new Map();
       for (const row of rows) {
         scanned++;
-        const key = localDateKey(new Date(row.completedAt || row.timestamp || now).getTime());
-        if (key !== dateKey) continue;
-        for (const bucket of rollupBucketsForEvent(row)) {
-          const c = bucket.counters;
-          adapter.run(insertSql, [dateKey, bucket.dimension, bucket.bucketKey, c.requests, c.promptTokens, c.completionTokens, c.cachedTokens, c.cost, JSON.stringify(bucket.meta || {})]);
-          applied++;
-        }
+        if (localDateKey(row.startedAt || row.timestamp) !== dateKey) continue;
+        const delta = rollupRowDelta(row);
+        byKey.set(delta.apiKeyId, mergeRollupRow(byKey.get(delta.apiKeyId) || null, delta));
+        applied++;
+      }
+      const placeholders = ROW_COLUMNS.map(() => "?").join(", ");
+      for (const row of byKey.values()) {
+        adapter.run(`INSERT INTO ${ROLLUP_TABLE}(${ROW_COLUMNS.join(", ")}) VALUES(${placeholders})`, serializeRow(row));
       }
       adapter.exec("COMMIT");
+      setCompleteThrough(adapter, dateKey);
       built++;
     } catch (error) {
       try { adapter.exec("ROLLBACK"); } catch {}
       throw error;
     }
-    // Yield after each committed day so the web process gets the lock between
-    // days (the writer's busy_timeout is 5s; a day's transaction is far shorter).
     if (onYield) await onYield();
   }
 
-  return { days: built, scanned, applied };
+  return { days: built, scanned, applied, completeThrough: getCompleteThrough(adapter) };
 }
-
-/**
- * Apply one usage event to the rollup. Runs inside the caller's transaction.
- *
- * @param {object} database  a `node:sqlite` DatabaseSync (the writer's connection)
- * @param {object} event     a usageHistory-shaped row
- */
-export function applyEventToRollup(database, event) {
-  const dateKey = localDateKey(new Date(event.completedAt || event.timestamp || Date.now()).getTime());
-
-  for (const bucket of rollupBucketsForEvent(event)) {
-    const c = bucket.counters;
-    database.prepare(
-      `INSERT INTO ${ROLLUP_TABLE}(dateKey, dimension, bucketKey, requests, promptTokens, completionTokens, cachedTokens, cost, meta)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(dateKey, dimension, bucketKey) DO UPDATE SET
-         requests = requests + excluded.requests,
-         promptTokens = promptTokens + excluded.promptTokens,
-         completionTokens = completionTokens + excluded.completionTokens,
-         cachedTokens = cachedTokens + excluded.cachedTokens,
-         cost = cost + excluded.cost`,
-    ).run(
-      dateKey, bucket.dimension, bucket.bucketKey,
-      c.requests, c.promptTokens, c.completionTokens, c.cachedTokens, c.cost,
-      JSON.stringify(bucket.meta || {}),
-    );
-  }
-}
-
-// ─── Known gap: per-person session metrics ──────────────────────────────────
-//
-// `byUser` in the raw aggregation carries `sessionCount` and
-// `activeSessionDurationMs`, which the personnel report renders. They are
-// computed from the ordered sequence of a user's events (a session is a run of
-// events no more than SESSION_GAP_MS = 30min apart; sessions spanning local
-// midnight are one session, not two).
-//
-// Counters cannot reconstruct this, so the read path must not claim those two
-// fields for rolled-up days until it is solved. Options, in rough order of
-// preference:
-//   1. Store per (user, day) the first/last event timestamps plus the boundary
-//      session spans, and merge adjacent days with the correction
-//      `sessions = a + b - 1` when `a.lastEventAt + GAP >= b.firstEventAt`.
-//      Measured on production: 72 of 1518 sessions span a day boundary, so the
-//      correction is required, not cosmetic.
-//   2. Compute the two fields from raw rows for the requested range and leave
-//      the rest of the person report on the rollup.
-//   3. Drop the two fields for days older than the raw retention window and say
-//      so in the UI.
-//
-// The writer sees events in completion order (concurrent requests can land out
-// of order), so any incremental sessionisation must tolerate that.

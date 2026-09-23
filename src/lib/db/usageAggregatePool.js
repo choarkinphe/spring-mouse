@@ -24,6 +24,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runAggregation } from "../../../runtime/usage-aggregate.mjs";
+import { runRollupStats } from "../../../runtime/usage-rollup-stats.mjs";
 
 const POOL_SIZE = Math.max(1, Math.min(4, Number.parseInt(process.env.SPRING_MOUSE_USAGE_WORKER_POOL, 10) || 2));
 const TASK_TIMEOUT_MS = Math.max(5000, Number.parseInt(process.env.SPRING_MOUSE_USAGE_WORKER_TIMEOUT_MS, 10) || 30_000);
@@ -184,19 +185,24 @@ function pump() {
  * Run the aggregation, preferring a worker. Resolves to the stats object.
  * Never rejects for infrastructure reasons — the caller gets a result either
  * way (worker, or in-process fallback).
+ *
+ * `params.source` selects the implementation: `"rollup"` reads the daily rollup
+ * tables, anything else scans `usageHistory`. The fallback below uses the same
+ * source, so a worker failure changes performance, not the numbers.
  */
 export async function runUsageAggregation({ adapter, params }) {
   ensureStarted();
+  const inProcess = () => (params?.source === "rollup" ? runRollupStats(adapter, params) : runAggregation(adapter, params));
 
   if (state.disabled || state.workers.length === 0) {
     state.stats.fallbacks++;
-    return runAggregation(adapter, params);
+    return inProcess();
   }
 
   if (state.queue.length >= MAX_QUEUE) {
     // Overloaded: shed to the in-process path rather than growing unbounded.
     state.stats.fallbacks++;
-    return runAggregation(adapter, params);
+    return inProcess();
   }
 
   state.stats.tasks++;
@@ -209,7 +215,7 @@ export async function runUsageAggregation({ adapter, params }) {
 
   // Worker path failed or timed out — run it here so the dashboard still loads.
   state.stats.fallbacks++;
-  return runAggregation(adapter, params);
+  return inProcess();
 }
 
 export function getUsageAggregatePoolStatus() {

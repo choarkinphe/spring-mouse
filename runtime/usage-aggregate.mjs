@@ -364,7 +364,7 @@ export function getTrafficBuckets(adapter, { startTime, endTime, bucketMs, bucke
 
 // ─── usageHistory aggregation ───────────────────────────────────────────────
 
-function getTrafficRange(period, range = {}) {
+export function getTrafficRange(period, range = {}) {
   if (range.startDate && range.endDate) return { startDate: range.startDate, endDate: range.endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
   const endDate = new Date().toISOString();
   if (period === "today") {
@@ -439,33 +439,19 @@ function getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNam
 }
 
 /**
- * Build the stats object. Mirrors the pre-existing `calculateUsageStats` body
- * exactly (minus the three live fields the caller overlays), so the dashboard
- * contract is unchanged.
- *
- * @param {object} adapter  { all, get, iterate }
- * @param {object} params   { period, range, connectionMap, apiKeyMap,
- *                            providerNodeNameMap, sourceCapture }
+ * The last 100 calls, deduped to 50 — the home page's "最近的请求" card.
+ * Cheap and independent of the range, so both the raw and rollup-backed
+ * aggregations reuse it.
  */
-export function runAggregation(adapter, {
-  period = "all",
-  range = {},
-  connectionMap = {},
-  apiKeyMap = {},
-  providerNodeNameMap = {},
-  sourceCapture = {},
-  now = new Date(),
-} = {}) {
+export function buildRecentRequests(adapter, range, apiKeyMap) {
   const usageApiKeyFilter = getUsageApiKeyFilter(range);
   const scopedWhere = usageApiKeyFilter.clause ? ` WHERE ${usageApiKeyFilter.clause}` : "";
-
-  // recentRequests from live history (last 100 entries enough for 50 deduped)
   const recentRows = adapter.all(
     `SELECT timestamp, provider, model, apiKeyId, tokens, status FROM usageHistory${scopedWhere} ORDER BY id DESC LIMIT 100`,
     usageApiKeyFilter.params,
   );
   const seen = new Set();
-  const recentRequests = recentRows
+  return recentRows
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
       return {
@@ -487,35 +473,21 @@ export function runAggregation(adapter, {
       return true;
     })
     .slice(0, 50);
+}
 
-  const stats = {
-    totalRequests: 0,
-    completedRequests: 0, failedRequests: 0, cancelledRequests: 0, meteredRequests: 0,
-    totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
-    totalRequestBytes: 0, totalResponseBytes: 0, totalTrafficBytes: 0,
-    trafficSummary: { today: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, week: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, month: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, recent: [] },
-    byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {}, bySourceIp: {}, byApp: {}, byUser: {},
-    sourceCapture,
-    requestRhythm: {
-      periods: ["00:00–03:59", "04:00–07:59", "08:00–11:59", "12:00–15:59", "16:00–19:59", "20:00–23:59"].map((label) => ({ label, requests: 0 })),
-      weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((label) => ({ label, requests: 0 })),
-    },
-    last10Minutes: [],
-    recentCallDetails: [],
-    pending: {},
-    activeRequests: [],
-    recentRequests,
-    errorProvider: "",
-  };
-
-  // last10Minutes — query 10min window
+/**
+ * Ten one-minute buckets over the last 10 minutes, with traffic merged in.
+ * A fixed recent window, so it stays on the raw table in both modes.
+ */
+export function buildLast10Minutes(adapter, range, now) {
   const currentMinuteStart = new Date(Math.floor(now.getTime() / 60000) * 60000);
   const tenMinutesAgo = new Date(currentMinuteStart.getTime() - 9 * 60 * 1000);
   const bucketMap = {};
+  const buckets = [];
   for (let i = 0; i < 10; i++) {
     const ts = currentMinuteStart.getTime() - (9 - i) * 60 * 1000;
     bucketMap[ts] = { requests: 0, promptTokens: 0, completionTokens: 0, cost: 0 };
-    stats.last10Minutes.push(bucketMap[ts]);
+    buckets.push(bucketMap[ts]);
   }
   const recent10Conditions = ["timestamp >= ?", "timestamp <= ?"];
   const recent10Params = [tenMinutesAgo.toISOString(), now.toISOString()];
@@ -542,12 +514,58 @@ export function runAggregation(adapter, {
     apiKeyId: range.apiKeyId || null,
     apiKeyIds: range.apiKeyIds || null,
   });
-  stats.last10Minutes.forEach((bucket, index) => Object.assign(bucket, recentTraffic[index] || {
+  buckets.forEach((bucket, index) => Object.assign(bucket, recentTraffic[index] || {
     requestBytes: 0,
     responseBytes: 0,
     trafficBytes: 0,
   }));
+  return buckets;
+}
 
+/** An empty stats object with every field the dashboard contract promises. */
+export function emptyStats(sourceCapture = {}, recentRequests = []) {
+  return {
+    totalRequests: 0,
+    completedRequests: 0, failedRequests: 0, cancelledRequests: 0, meteredRequests: 0,
+    totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
+    totalRequestBytes: 0, totalResponseBytes: 0, totalTrafficBytes: 0,
+    trafficSummary: { today: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, week: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, month: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, recent: [] },
+    byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {}, bySourceIp: {}, byApp: {}, byUser: {},
+    sourceCapture,
+    requestRhythm: {
+      periods: ["00:00–03:59", "04:00–07:59", "08:00–11:59", "12:00–15:59", "16:00–19:59", "20:00–23:59"].map((label) => ({ label, requests: 0 })),
+      weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((label) => ({ label, requests: 0 })),
+    },
+    last10Minutes: [],
+    recentCallDetails: [],
+    pending: {},
+    activeRequests: [],
+    recentRequests,
+    errorProvider: "",
+  };
+}
+
+/**
+ * Build the stats object. Mirrors the pre-existing `calculateUsageStats` body
+ * exactly (minus the three live fields the caller overlays), so the dashboard
+ * contract is unchanged.
+ *
+ * @param {object} adapter  { all, get, iterate }
+ * @param {object} params   { period, range, connectionMap, apiKeyMap,
+ *                            providerNodeNameMap, sourceCapture }
+ */
+export function runAggregation(adapter, {
+  period = "all",
+  range = {},
+  connectionMap = {},
+  apiKeyMap = {},
+  providerNodeNameMap = {},
+  sourceCapture = {},
+  now = new Date(),
+} = {}) {
+  const recentRequests = buildRecentRequests(adapter, range, apiKeyMap);
+  const stats = emptyStats(sourceCapture, recentRequests);
+  stats.last10Minutes = buildLast10Minutes(adapter, range, now);
   stats.recentCallDetails = getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNameMap);
 
   // Live-history aggregation (the authoritative path; the day-grain rollup was

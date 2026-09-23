@@ -99,6 +99,14 @@ function appendBounded(buffer, record, maxRecords) {
 
 export const __test__ = { sanitizeHeaders, prepareRecord, appendBounded };
 
+// Retention runs at most this often. It used to run inside every write
+// transaction, which made each flush hold the write lock for a COUNT(*) plus an
+// ordered DELETE on top of the inserts. On a busy gateway that collided with
+// the separate usage-writer process ("database is locked") roughly every 13
+// seconds. Trimming is not urgent — it only bounds a 100-row table.
+const RETENTION_INTERVAL_MS = 60_000;
+let lastRetentionAt = 0;
+
 async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
@@ -110,6 +118,8 @@ async function flushToDatabase() {
       const db = await getAdapter();
       const config = await getObservabilityConfig();
 
+      // Write transaction holds ONLY the inserts, so it commits and releases the
+      // write lock as quickly as possible.
       db.transaction(() => {
         for (const record of items) {
           db.run(
@@ -119,15 +129,26 @@ async function flushToDatabase() {
         }
         const latest = items[items.length - 1];
         console.log(`[RequestDetail] persisted ${items.length} record(s) · ${latest.requestId || latest.id} · ${latest.provider || "-"}/${latest.model || "-"} · ${latest.status || "-"}`);
-
-        const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
-        if (cnt && cnt.c > config.maxRecords) {
-          db.run(
-            `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
-            [cnt.c - config.maxRecords]
-          );
-        }
       });
+
+      // Retention outside the write transaction, and rate-limited. Each of these
+      // is its own short transaction.
+      const now = Date.now();
+      if (now - lastRetentionAt >= RETENTION_INTERVAL_MS) {
+        lastRetentionAt = now;
+        try {
+          const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
+          if (cnt && cnt.c > config.maxRecords) {
+            db.run(
+              `DELETE FROM requestDetails WHERE id IN (SELECT id FROM requestDetails ORDER BY timestamp ASC LIMIT ?)`,
+              [cnt.c - config.maxRecords]
+            );
+          }
+        } catch (e) {
+          // A failed trim must not fail the write that already succeeded.
+          console.warn("[requestDetailsRepo] retention failed:", e?.message || e);
+        }
+      }
     }
   } catch (e) {
     console.error("[requestDetailsRepo] Batch write failed:", e);

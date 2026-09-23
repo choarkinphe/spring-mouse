@@ -9,6 +9,8 @@ import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
 import { enqueueUsageEvent, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
 import { getTrafficBuckets, getTrafficSummary, getTrafficTotals } from "./trafficRepo.js";
 import { runUsageAggregation } from "../usageAggregatePool.js";
+import { getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
+import { isDayAlignedRange, localDateKey } from "../../../../runtime/usage-rollup-read.mjs";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -955,6 +957,38 @@ function getTrafficRange(period, range = {}) {
  * The shared implementation lives in `runtime/usage-aggregate.mjs` so the
  * worker and the fallback cannot drift apart.
  */
+/**
+ * Pick the aggregation source for a request: `"rollup"` or `"raw"`.
+ *
+ * The rollup is a daily aggregate, so it can only answer a request whose range
+ * is (a) on local-day boundaries and (b) entirely inside the days the rebuild has
+ * completed. Anything else stays on raw:
+ *   - a rolling window ("24h"/"48h"/"7d" from 15:00) starts mid-day, so the
+ *     rollup would include the boundary day whole and over-report;
+ *   - a day after `completeThrough` can be missing rows — the writer only fills
+ *     the rollup for days it was running, and the web process's Redis-downgrade
+ *     fallback writes `usageHistory` without the rollup at all.
+ *
+ * Falling back to raw is always correct. The rollup is an optimisation; it must
+ * never be the reason a number is wrong.
+ */
+function resolveAggregationSource(db, period, range = {}) {
+  if (process.env.SPRING_MOUSE_AGGREGATION_SOURCE === "raw") return "raw";
+  try {
+    if (!isDayAlignedRange(range)) return "raw";
+    const completeThrough = getCompleteThrough(db);
+    if (!completeThrough) return "raw";
+    // The last day the request needs. A custom range ends at its endDate; a
+    // calendar period ends today.
+    const endDate = range.endDate ? new Date(range.endDate) : new Date();
+    if (localDateKey(endDate) > completeThrough) return "raw";
+    return "rollup";
+  } catch {
+    // A missing/broken rollup must never break the dashboard.
+    return "raw";
+  }
+}
+
 async function calculateUsageStats(period = "all", range = {}) {
   const db = await getAdapter();
 
@@ -991,7 +1025,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 
   const stats = await runUsageAggregation({
     adapter: db,
-    params: { period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now: new Date() },
+    params: { source: await resolveAggregationSource(db, period, range), period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now: new Date() },
   });
 
   // Live, in-process state is overlaid here: it is not in the DB, so the worker

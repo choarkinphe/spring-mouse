@@ -45,8 +45,9 @@ const PERIOD_DAYS = { "7d": 7, "30d": 30, "60d": 60 };
  *
  * The rollup is keyed by LOCAL day, so the range must be expressed in local days
  * too. A rolling window cannot be represented exactly at day granularity — the
- * boundary day is included whole. That is acceptable for a daily view, and is
- * the trade for not scanning raw rows.
+ * boundary days are included whole, so "last 7 days" would cover up to 8
+ * calendar days. That is why `isDayAlignedRange` gates this: a rolling window is
+ * served from raw instead.
  */
 export function resolveDateKeyRange(period, range = {}, now = new Date()) {
   if (range.startDate && range.endDate) {
@@ -61,6 +62,27 @@ export function resolveDateKeyRange(period, range = {}, now = new Date()) {
   // "24h"/"48h" and anything else: no exact day-granular equivalent, so leave it
   // unbounded and let the caller decide (the home page stays on the raw path).
   return { from: null, to: null };
+}
+
+/**
+ * Does this range fall on local-day boundaries?
+ *
+ * Only then is the rollup's day granularity EXACT. A rolling window ("the last
+ * 7 days" from 15:00) starts mid-day, so serving it from the rollup would
+ * include the boundary day whole — up to 8 calendar days instead of 7. The
+ * board's calendar periods are day-aligned and qualify; the home page's rolling
+ * windows do not, and stay on raw.
+ */
+export function isDayAlignedRange(range = {}) {
+  if (!range.startDate || !range.endDate) return true;   // period-based ranges are whole days
+  const start = new Date(range.startDate);
+  const end = new Date(range.endDate);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return false;
+  // A day-aligned range starts at local midnight and ends at local end-of-day
+  // (what the board's calendar filter produces).
+  const midnight = new Date(start); midnight.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(end); endOfDay.setHours(23, 59, 59, 999);
+  return start.getTime() === midnight.getTime() && end.getTime() === endOfDay.getTime();
 }
 
 export function localDateKey(value) {

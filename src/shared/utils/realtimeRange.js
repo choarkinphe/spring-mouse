@@ -13,6 +13,7 @@
 export const REALTIME_PRESETS = [
   { value: "24h", label: "24 小时", hours: 24 },
   { value: "48h", label: "48 小时", hours: 48 },
+  { value: "7d", label: "7 天", hours: 24 * 7 },
 ];
 
 /**

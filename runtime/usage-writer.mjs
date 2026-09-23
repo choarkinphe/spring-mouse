@@ -3,7 +3,14 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { applyEventToRollup, ensureRollupTable } from "./usage-rollup.mjs";
+import {
+  applyEventToRollup,
+  ensureRollupTable,
+  rebuildRollupDays,
+  rollupNeedsBackfill,
+  historyDateKeys,
+  getCompleteThrough,
+} from "./usage-rollup.mjs";
 
 const redisUrl = process.env.SPRING_MOUSE_REDIS_URL || "redis://127.0.0.1:6379";
 const dataDir = process.env.DATA_DIR || "/app/data";
@@ -267,6 +274,66 @@ async function recoverPending(client) {
   return true;
 }
 
+/**
+ * Bring the rollup up to date, one day per idle tick.
+ *
+ * The rollup only accumulates from the moment this writer runs, so an instance
+ * upgraded from a build without it (or one whose rollup shape changed) has every
+ * historical day missing — and the day the writer starts mid-way through is
+ * PARTIAL. `rebuildRollupDays` recomputes whole days, so both cases are repaired.
+ *
+ * WHY ONE DAY PER TICK, ON THE INGEST LOOP'S OWN CONNECTION: the rebuild wraps a
+ * day in BEGIN…COMMIT, and `persistBatch` wraps its batch in a SAVEPOINT. Running
+ * the rebuild concurrently on the same connection would nest one inside the
+ * other. Driving it from the idle branch keeps a single transaction in flight at
+ * a time, and lets ingestion interleave between days instead of stalling for the
+ * whole rebuild.
+ *
+ * Nothing reads the rollup until `completeThrough` covers the requested range, so
+ * a rebuild in progress never serves a half-built day.
+ */
+const rebuildState = { pending: null, done: false };
+
+function nextRebuildDay() {
+  if (rebuildState.done) return null;
+  const database = openDatabase();
+  if (!database) { rebuildState.done = true; return null; }
+  try {
+    if (!rebuildState.pending) {
+      if (!rollupNeedsBackfill(database)) { rebuildState.done = true; return null; }
+      rebuildState.pending = historyDateKeys(database);
+      console.log(`[UsageWriter] rollup is behind usageHistory; rebuilding ${rebuildState.pending.length} day(s)`);
+    }
+    const day = rebuildState.pending.shift() || null;
+    if (day === null) {
+      rebuildState.done = true;
+      console.log(`[UsageWriter] rollup rebuild complete through ${getCompleteThrough(database)}`);
+      return null;
+    }
+    return day;
+  } catch (error) {
+    rebuildState.done = true;
+    console.warn("[UsageWriter] rollup rebuild setup failed (dashboard stays on raw):", error.message);
+    return null;
+  }
+}
+
+async function rebuildNextDay() {
+  const day = nextRebuildDay();
+  if (!day) return;
+  const database = openDatabase();
+  if (!database) return;
+  try {
+    await rebuildRollupDays(database, { days: [day] });
+  } catch (error) {
+    // A failed day leaves the marker where it was, so the dashboard keeps
+    // serving raw — degraded performance, never wrong numbers. Stop rather than
+    // retry the same day forever.
+    rebuildState.done = true;
+    console.warn("[UsageWriter] rollup rebuild failed (dashboard stays on raw):", error.message);
+  }
+}
+
 async function main() {
   const client = createClient({ url: redisUrl });
   redisClient = client;
@@ -284,9 +351,12 @@ async function main() {
       const result = await client.xReadGroup(group, consumer, [{ key: stream, id: ">" }], { COUNT: batchSize, BLOCK: blockMs });
       const messages = normalizeMessages(result);
       if (!messages.length) {
-        // Idle tick: a natural place to run retention without competing with
-        // ingestion. maybePrune() self-throttles to PRUNE_INTERVAL_MS.
+        // Idle tick: a natural place to run retention and advance the rollup
+        // rebuild, both of which would otherwise compete with ingestion for the
+        // write lock. maybePrune() self-throttles to PRUNE_INTERVAL_MS; the
+        // rebuild advances at most one day per idle tick.
         await maybePrune();
+        await rebuildNextDay();
         continue;
       }
       await persistWithRetry(client, messages);

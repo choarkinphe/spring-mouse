@@ -145,6 +145,13 @@ function getLocalDateKey(timestamp) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function getRequestDurationMs(startedAt, completedAt) {
+  const start = new Date(startedAt).getTime();
+  const end = new Date(completedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return end - start;
+}
+
 function finalizePersonSessionMetrics(byUser, personEvents) {
   const sessionGapMs = 30 * 60 * 1000;
 

@@ -1,10 +1,18 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { UsageStats, CardSkeleton } from "@/shared/components";
 import UsageTimeFilter from "./components/UsageTimeFilter";
+import RealtimeTimeFilter from "./components/RealtimeTimeFilter";
+import { realtimeRange } from "@/shared/utils/realtimeRange";
 import DashboardUsageHeader from "./components/DashboardUsageHeader";
 
+// How often the home page's rolling window advances. Without this the window
+// would freeze at whatever instant the page was opened, so "last 24 hours"
+// would slowly become "the 24 hours before you opened the tab".
+const WINDOW_ADVANCE_MS = 60_000;
+
+// Default range for the usage board: today, local midnight → end of day.
 function currentDayRange() {
   const now = new Date();
   const start = new Date(now);
@@ -27,15 +35,29 @@ export default function UsageOverview({ showOverview = true, showBreakdowns = fa
 }
 
 function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatus }) {
-  const [timeRange, setTimeRange] = useState(currentDayRange);
+  // Home page: a rolling realtime window. Usage board: calendar periods.
+  const [timeRange, setTimeRange] = useState(() => (showOverview ? realtimeRange("24h") : currentDayRange()));
   const [apiKeyId, setApiKeyId] = useState("");
   const [scopeRevision, setScopeRevision] = useState(0);
+
+  // Advance the home page's rolling window so it keeps meaning "the last N hours".
+  useEffect(() => {
+    if (!showOverview) return;
+    const timer = setInterval(() => {
+      setTimeRange((current) => realtimeRange(current?.preset || "24h"));
+    }, WINDOW_ADVANCE_MS);
+    return () => clearInterval(timer);
+  }, [showOverview]);
+
   const rangeKey = useMemo(() => `${timeRange.startDate}:${timeRange.endDate}:${apiKeyId}:${scopeRevision}`, [timeRange, apiKeyId, scopeRevision]);
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       {showOverview ? (
-        <DashboardUsageHeader initialSystemStatus={initialSystemStatus} />
+        <>
+          <DashboardUsageHeader initialSystemStatus={initialSystemStatus} />
+          <RealtimeTimeFilter value={timeRange} onChange={setTimeRange} />
+        </>
       ) : (
         <UsageTimeFilter
           value={timeRange}

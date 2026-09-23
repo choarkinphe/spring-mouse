@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Card from "./Card";
 import { ModuleSkeleton, Skeleton } from "./Loading";
@@ -24,6 +24,13 @@ const UsageBreakdownGrid = dynamic(
     ssr: false,
     loading: () => <ModuleSkeleton title="正在装载使用分析面板" icon="analytics" lines={7} className="min-h-[520px]" />,
   },
+);
+
+// Lazy: the drawer pulls the full request record (cost, endpoint, IP, traffic)
+// and is only opened on demand from the "最近的请求" card.
+const UsageDetailsDrawer = dynamic(
+  () => import("@/app/(dashboard)/dashboard/usage/components/UsageDetailsDrawer"),
+  { ssr: false },
 );
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
@@ -111,11 +118,24 @@ export function UsageDashboardSkeleton({ showOverview, showBreakdowns }) {
   );
 }
 
-function RecentRequests({ requests = [], className = "" }) {
+function RecentRequests({ requests = [], className = "", onViewDetails }) {
   return (
     <Card className={`flex min-h-[300px] min-w-0 flex-1 flex-col overflow-hidden ${className}`} padding="sm">
-      <div className="shrink-0 border-b border-border px-1 py-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-1 py-2">
         <span className="text-xs font-semibold tracking-wide text-text-muted">最近的请求</span>
+        {/* The card shows the thin live feed (model / user / tokens / time).
+            The drawer shows the full record — cost, endpoint, IP, traffic —
+            which is what you want when a row looks wrong. */}
+        {onViewDetails && (
+          <button
+            type="button"
+            onClick={onViewDetails}
+            className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
+          >
+            查看明细
+            <span className="material-symbols-outlined text-[14px]">chevron_right</span>
+          </button>
+        )}
       </div>
 
       {!requests.length ? (
@@ -164,6 +184,26 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   const [stats, setStats] = useState(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Options for the details drawer's filters, derived from the loaded stats.
+  // The board builds the same shape in UsageBreakdownGrid; this is the subset
+  // the home page has data for.
+  const detailFilterOptions = useMemo(() => {
+    const keys = (map) => Object.keys(map || {}).filter(Boolean);
+    const people = Object.entries(stats?.byUser || {}).map(([key, person]) => ({
+      id: person?.userId || key,
+      label: person?.keyName || person?.apiKeyMasked || key,
+    })).filter((item) => item.id);
+    const models = Object.entries(stats?.byModel || {}).map(([key, model]) => model?.rawModel || key).filter(Boolean);
+    return {
+      providers: keys(stats?.byProvider),
+      models,
+      people,
+      apps: Object.entries(stats?.byApp || {}).map(([key, app]) => app?.appName || key).filter(Boolean),
+      sourceIps: Object.entries(stats?.bySourceIp || {}).map(([key, ip]) => ip?.sourceIp || key).filter(Boolean),
+    };
+  }, [stats]);
   const isInitialLoad = useRef(true);
   const hasLoadedStats = useRef(false);
 
@@ -244,13 +284,33 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
           </div>
           <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:min-h-0">
             <ChannelQuotaPanel />
-            <RecentRequests requests={stats.recentRequests || []} className="min-h-[240px] xl:min-h-[16rem]" />
+            <RecentRequests
+              requests={stats.recentRequests || []}
+              className="min-h-[240px] xl:min-h-[16rem]"
+              onViewDetails={() => setDetailsOpen(true)}
+            />
           </div>
         </div>
       )}
 
       {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} refreshToken={chartRefreshToken} />}
       {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} />}
+
+      {/* Opened from the "最近的请求" card. Scoped to the same window the page is
+          showing, so the detail list matches the numbers above it. */}
+      {detailsOpen && (
+        <UsageDetailsDrawer
+          isOpen={detailsOpen}
+          onClose={() => setDetailsOpen(false)}
+          subject="最近请求明细"
+          initialFilters={{
+            ...(timeRange?.startDate ? { startDate: timeRange.startDate } : {}),
+            ...(timeRange?.endDate ? { endDate: timeRange.endDate } : {}),
+            ...(apiKeyId ? { apiKeyId } : {}),
+          }}
+          filterOptions={detailFilterOptions}
+        />
+      )}
     </div>
   );
 }

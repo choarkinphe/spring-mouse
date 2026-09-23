@@ -31,6 +31,16 @@ jobs:
         working-directory: tests
         # The tunnel suite builds an isolated database in beforeAll, which
         # exceeds vitest's 10s default hook budget on a cold runner.
+        #
+        # This is a curated subset, not the whole suite (see tests/README or the
+        # baseline notes for the full run). It is the set of paths where a
+        # regression is both plausible and expensive: the request lifecycle, the
+        # usage aggregation the dashboard reads, and the schema migrations that
+        # run on every boot. Add to it when a change touches those.
+        #
+        # `traffic-repo` is here because a refactor of usageRepo once dropped a
+        # helper it still called, and nothing in this list noticed until the
+        # request-details page 500'd in production.
         run: >-
           npm exec vitest run --
           --config vitest.config.js
@@ -42,6 +52,12 @@ jobs:
           unit/xai-video-handler.test.js
           unit/mouse-tunnel.test.js
           unit/account-schedule.test.js
+          unit/traffic-repo.test.js
+          unit/db-migration-chain.test.js
+          unit/usage-rollup.test.js
+          unit/request-details-retention.test.js
+          unit/retention-settings.test.js
+          unit/realtime-time-filter.test.js
 
   build:
     needs: test

@@ -66,31 +66,34 @@ export function getRequestSourceMeta(request) {
   };
 }
 
+// Hoisted for the same reason as the runtime copy (runtime/usage-aggregate.mjs):
+// this runs once per row when aggregating, and the table is constant.
+const KNOWN_APPS = [
+  ["claude code", ["claude-code", "claude code"]],
+  ["OpenAI Codex", ["codex_cli_rs", "openai codex", "codex-cli"]],
+  ["Cursor", ["cursor"]],
+  ["Cline", ["cline"]],
+  ["Roo Code", ["roo-code", "roo code"]],
+  ["Continue", ["continue.dev", "continue/"]],
+  ["Aider", ["aider"]],
+  ["Open WebUI", ["open-webui", "openwebui"]],
+  ["LobeChat", ["lobechat", "lobe-chat"]],
+  ["Chatbox", ["chatbox"]],
+  ["Cherry Studio", ["cherry studio", "cherry-studio"]],
+  ["NextChat", ["nextchat", "chatgpt-next-web"]],
+  ["VS Code", ["vscode", "visual studio code"]],
+  ["JetBrains", ["jetbrains", "intellij", "pycharm", "webstorm"]],
+  ["OpenAI Python SDK", ["openai-python", "python-openai"]],
+  ["OpenAI Node SDK", ["openai-node", "node-openai"]],
+  ["curl", ["curl/"]],
+];
+
 export function detectSourceApp({ appName, userAgent, sourceUrl } = {}) {
   if (appName) return appName;
 
   const haystack = `${userAgent || ""} ${sourceUrl || ""}`.toLowerCase();
-  const knownApps = [
-    ["claude code", ["claude-code", "claude code"]],
-    ["OpenAI Codex", ["codex_cli_rs", "openai codex", "codex-cli"]],
-    ["Cursor", ["cursor"]],
-    ["Cline", ["cline"]],
-    ["Roo Code", ["roo-code", "roo code"]],
-    ["Continue", ["continue.dev", "continue/"]],
-    ["Aider", ["aider"]],
-    ["Open WebUI", ["open-webui", "openwebui"]],
-    ["LobeChat", ["lobechat", "lobe-chat"]],
-    ["Chatbox", ["chatbox"]],
-    ["Cherry Studio", ["cherry studio", "cherry-studio"]],
-    ["NextChat", ["nextchat", "chatgpt-next-web"]],
-    ["VS Code", ["vscode", "visual studio code"]],
-    ["JetBrains", ["jetbrains", "intellij", "pycharm", "webstorm"]],
-    ["OpenAI Python SDK", ["openai-python", "python-openai"]],
-    ["OpenAI Node SDK", ["openai-node", "node-openai"]],
-    ["curl", ["curl/"]],
-  ];
 
-  for (const [label, needles] of knownApps) {
+  for (const [label, needles] of KNOWN_APPS) {
     if (needles.some((needle) => haystack.includes(needle))) return label;
   }
   if (userAgent) return userAgent.split(/[ /]/)[0].slice(0, 48) || "未知客户端";

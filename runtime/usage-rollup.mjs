@@ -223,35 +223,68 @@ export function rollupNeedsBackfill(database) {
 }
 
 /**
- * Fill rollup days that `usageHistory` has but the rollup does not.
+ * Which local days `usageHistory` covers, from its earliest row to today.
+ * Cheap: `MIN(COALESCE(completedAt, timestamp))` is one indexed scan.
  *
- * Idempotent by construction: a day already present in the rollup is skipped
- * entirely, so re-running never double-counts (the INSERT ... ON CONFLICT
- * accumulates, so it cannot be relied on for idempotence on its own).
+ * Takes an adapter (not a raw connection) to match `rebuildRollupDays`.
+ */
+export function historyDateKeys(adapter, now = Date.now()) {
+  const row = adapter.get(
+    `SELECT MIN(COALESCE(completedAt, timestamp)) AS earliest FROM usageHistory`,
+  );
+  if (!row?.earliest) return [];
+  const days = [];
+  const cursor = new Date(row.earliest);
+  cursor.setHours(0, 0, 0, 0);
+  const end = new Date(now);
+  end.setHours(0, 0, 0, 0);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(localDateKey(cursor.getTime()));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return days;
+}
+
+/** Local-day bounds for a `dateKey`, as inclusive `[startMs, endMs]`. */
+function dayBounds(dateKey) {
+  const [y, m, d] = String(dateKey).split("-").map(Number);
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
+  const end = new Date(y, m - 1, d, 23, 59, 59, 999);
+  return [start.getTime(), end.getTime()];
+}
+
+/**
+ * Rebuild rollup days from `usageHistory`.
  *
- * Runs ONE pass over `usageHistory` and buckets each row into its day, rather
- * than one query per missing day — `completedAt` is not indexed, so a per-day
- * query would be a full scan per day.
+ * REBUILD, not "fill missing": a day already present is deleted and recomputed.
+ * Filling only absent days cannot repair a day the live writer started
+ * mid-way through — on the production upgrade the writer began at 05:43, so
+ * "today" held 05:43→now and the earlier hours were simply absent. Rebuilding
+ * is also what makes the pass re-runnable after a schema or key change.
+ *
+ * EACH DAY IS ONE TRANSACTION (delete + rescan + insert). That is a correctness
+ * requirement, not a performance tweak: the live writer inserts a `usageHistory`
+ * row and its rollup counters in the SAME transaction, so the two are always
+ * consistent at a transaction boundary. A backfill that read history, then
+ * deleted, then inserted in separate transactions could have its delete land
+ * after a writer's insert and silently drop it (verified by walking the
+ * interleavings). Wrapping the whole day closes that window.
+ *
+ * A day is bounded by `[00:00, 23:59:59.999]` on `COALESCE(completedAt,
+ * timestamp)` — the same basis the writer keys `dateKey` on — and the scan uses
+ * `idx_uh_ts` on `timestamp`. A row whose `completedAt` falls in the day but
+ * whose `timestamp` does not is picked up by the surrounding days' scans being
+ * inclusive; the filter re-checks `completedAt` in JS so no row is double-counted
+ * (a row belongs to exactly one day, by its `completedAt`).
  *
  * Takes an ADAPTER (`{ exec, run, all, iterate }`) rather than a raw
  * `DatabaseSync`, because it runs both from the web process (whose adapter this
- * is) and from a maintenance script. `usage-rollup.mjs`'s write path uses
- * `prepare()` instead only because the writer owns a raw connection.
+ * is) and from a maintenance script.
  *
- * Rows are applied in explicit transactions of `batchEvents` events each: one
- * autocommitted INSERT per (event, dimension) is ~4.4M fsyncs for a 500k-row
- * table and does not finish, while a single transaction over the whole table
- * would hold the write lock for the entire pass and starve the web process.
- * Batching is the middle ground — the lock is released between batches, and
- * `onYield` is awaited at each boundary so the caller can let the event loop
- * breathe.
- *
- * @returns {Promise<{ scanned: number, applied: number, days: number, skippedDays: number }>}
+ * @returns {Promise<{ days: number, scanned: number, applied: number }>}
  */
-export async function backfillRollup(adapter, { batchEvents = 2000, onYield = null, now = Date.now() } = {}) {
-  const present = new Set(
-    adapter.all(`SELECT DISTINCT dateKey FROM ${ROLLUP_TABLE}`).map((row) => row.dateKey),
-  );
+export async function rebuildRollupDays(adapter, { days = null, onYield = null, now = Date.now() } = {}) {
+  const targets = days || historyDateKeys(adapter, now);
   const insertSql =
     `INSERT INTO ${ROLLUP_TABLE}(dateKey, dimension, bucketKey, requests, promptTokens, completionTokens, cachedTokens, cost, meta)
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -262,47 +295,49 @@ export async function backfillRollup(adapter, { batchEvents = 2000, onYield = nu
        cachedTokens = cachedTokens + excluded.cachedTokens,
        cost = cost + excluded.cost`;
 
-  const seenDays = new Set();
   let scanned = 0;
   let applied = 0;
-  let inBatch = 0;
-  let open = false;
+  let built = 0;
 
-  const begin = () => { adapter.exec("BEGIN"); open = true; };
-  const commit = () => { adapter.exec("COMMIT"); open = false; inBatch = 0; };
-
-  begin();
-  try {
-    for (const row of adapter.iterate(
-      `SELECT timestamp, completedAt, provider, model, connectionId, apiKeyId, endpoint,
+  for (const dateKey of targets) {
+    const [dayStart, dayEnd] = dayBounds(dateKey);
+    // Filter on `timestamp` so `idx_uh_ts` is usable (a COALESCE here would
+    // defeat the index). The lower bound reaches back a day because a row's
+    // `timestamp` (= startedAt) can precede its `completedAt` day; the JS check
+    // below then assigns each row to exactly one day, by its `completedAt`.
+    const rows = adapter.all(
+      `SELECT timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint,
               promptTokens, completionTokens, cost, status, tokens, meta
-         FROM usageHistory`,
-    )) {
-      scanned++;
-      const dateKey = localDateKey(new Date(row.completedAt || row.timestamp || now).getTime());
-      // A day the live writer already owns must not be re-counted: its counters
-      // are already in the table and this pass cannot tell which rows they cover.
-      if (present.has(dateKey)) continue;
-      seenDays.add(dateKey);
-      for (const bucket of rollupBucketsForEvent(row)) {
-        const c = bucket.counters;
-        adapter.run(insertSql, [dateKey, bucket.dimension, bucket.bucketKey, c.requests, c.promptTokens, c.completionTokens, c.cachedTokens, c.cost, JSON.stringify(bucket.meta || {})]);
-        applied++;
+         FROM usageHistory
+        WHERE timestamp >= ? AND timestamp <= ?`,
+      [new Date(dayStart - 86400_000).toISOString(), new Date(dayEnd).toISOString()],
+    );
+
+    adapter.exec("BEGIN");
+    try {
+      adapter.run(`DELETE FROM ${ROLLUP_TABLE} WHERE dateKey = ?`, [dateKey]);
+      for (const row of rows) {
+        scanned++;
+        const key = localDateKey(new Date(row.completedAt || row.timestamp || now).getTime());
+        if (key !== dateKey) continue;
+        for (const bucket of rollupBucketsForEvent(row)) {
+          const c = bucket.counters;
+          adapter.run(insertSql, [dateKey, bucket.dimension, bucket.bucketKey, c.requests, c.promptTokens, c.completionTokens, c.cachedTokens, c.cost, JSON.stringify(bucket.meta || {})]);
+          applied++;
+        }
       }
-      inBatch++;
-      if (inBatch >= batchEvents) {
-        commit();
-        if (onYield) await onYield();
-        begin();
-      }
+      adapter.exec("COMMIT");
+      built++;
+    } catch (error) {
+      try { adapter.exec("ROLLBACK"); } catch {}
+      throw error;
     }
-    if (open) commit();
-  } catch (error) {
-    if (open) { try { adapter.exec("ROLLBACK"); } catch {} }
-    throw error;
+    // Yield after each committed day so the web process gets the lock between
+    // days (the writer's busy_timeout is 5s; a day's transaction is far shorter).
+    if (onYield) await onYield();
   }
 
-  return { scanned, applied, days: seenDays.size, skippedDays: present.size };
+  return { days: built, scanned, applied };
 }
 
 /**

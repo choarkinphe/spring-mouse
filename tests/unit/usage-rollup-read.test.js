@@ -183,6 +183,25 @@ describe("rollup read path", () => {
     expect(rolled.totalRequests).toBe(2);
   });
 
+  it("produces the token and cost totals the overview cards read", async () => {
+    // These are the same single-dimension sums as totalRequests — computing
+    // them per-row would inflate them by the buckets-per-event count.
+    const events = [
+      makeEvent({ requestId: "a" }),
+      makeEvent({ requestId: "b", promptTokens: 2000, completionTokens: 80, cost: 0.02,
+        tokens: JSON.stringify({ prompt_tokens: 2000, completion_tokens: 80, cached_tokens: 0 }) }),
+    ];
+    const db = await buildRollup(events);
+    const rolled = rollupStats(db);
+    const raw = rawStats(events);
+    db.close();
+
+    expect(rolled.totalPromptTokens).toBe(raw.totalPromptTokens);
+    expect(rolled.totalCompletionTokens).toBe(raw.totalCompletionTokens);
+    expect(rolled.totalCachedTokens).toBe(raw.totalCachedTokens);
+    expect(rolled.totalCost).toBeCloseTo(raw.totalCost, 9);
+  });
+
   it("aggregates across multiple days", async () => {
     const events = [
       makeEvent({ requestId: "d1", completedAt: "2026-09-19T10:00:00.000Z", timestamp: "2026-09-19T10:00:00.000Z" }),

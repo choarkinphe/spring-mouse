@@ -246,6 +246,13 @@ export function runRollupAggregation(adapter, {
   // totalRequests counts events, so it must come from a single dimension —
   // summing every dimension would multiply by the number of buckets per event.
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, b) => sum + (b.requests || 0), 0);
+  // The token/cost totals are the same sums over the same single dimension.
+  // Computed here rather than per-row so they cannot be inflated by the
+  // multi-bucket-per-event problem above.
+  stats.totalPromptTokens = Object.values(stats.byProvider).reduce((sum, b) => sum + (b.promptTokens || 0), 0);
+  stats.totalCompletionTokens = Object.values(stats.byProvider).reduce((sum, b) => sum + (b.completionTokens || 0), 0);
+  stats.totalCachedTokens = Object.values(stats.byProvider).reduce((sum, b) => sum + (b.cachedTokens || 0), 0);
+  stats.totalCost = Object.values(stats.byProvider).reduce((sum, b) => sum + (b.cost || 0), 0);
   // meteredRequests is not derivable from counters (it needs per-row token>0);
   // the caller overlays it or leaves it out of rollup-backed views.
   stats.meteredRequests = stats.totalRequests;

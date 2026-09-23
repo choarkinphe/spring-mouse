@@ -125,24 +125,32 @@ function textOf(content) {
 const USER_PROMPT_MAX_CHARS = 2048;
 
 /**
- * Is this user turn actually the human typing, or just a relayed tool result?
+ * Is this user turn actually the human typing, or a relayed tool result?
  *
  * Agent clients (Claude Code and friends) send tool output as `role: "user"`
  * turns, so "the last user message" is very often `[tool_result]` or an attached
  * image — not the question. The provider export this mirrors never shows those
- * (0 of 3000 sampled rows), so neither do we: skip a turn whose text is entirely
- * tool/attachment markers, and keep walking back to the real prompt.
+ * (0 of 3000 sampled rows), so neither do we: skip the relay and keep walking
+ * back to the real prompt.
+ *
+ * A relay is identified by its LEADING marker, not by its whole body: a tool
+ * result often carries injected instructions after the marker (observed in
+ * production as "[tool_result]\nCRITICAL: Respond with TEXT ONLY..."), which
+ * would defeat an "all lines are markers" test.
  */
+const TOOL_RELAY_LEAD = /^\[(tool_result|tool_use)\]/;
+const TOOL_MARKER_LINE = /^\[(tool_result|tool_use|thinking|image_url|image_local_path)\]/;
+
 function isToolRelayText(text) {
   const trimmed = text.trim();
   if (!trimmed) return true;
-  // Every line is a tool_result / tool_use / attachment marker, or an image part
-  // placeholder like "[image_url]" — nothing the human typed.
-  const MARKER = /^\[(tool_result|tool_use|thinking|image_url|image_local_path)\]/;
+  // Tool output (with or without injected text after the marker).
+  if (TOOL_RELAY_LEAD.test(trimmed)) return true;
+  // Nothing but tool/attachment markers — no human text anywhere.
   const lines = trimmed.split("\n").filter((line) => line.trim());
   if (!lines.length) return true;
-  if (lines.every((line) => MARKER.test(line.trim()))) return true;
-  // The summarizer's multimodal placeholder for a whole attachment-only turn.
+  if (lines.every((line) => TOOL_MARKER_LINE.test(line.trim()))) return true;
+  // The summarizer's placeholder for a whole attachment-only turn.
   if (/^Attached image\(s\) from tool result:?$/i.test(trimmed)) return true;
   return false;
 }

@@ -283,6 +283,46 @@ describe("usage rollup — scoping", () => {
 });
 
 describe("usage rollup — schema", () => {
+  it("accepts BOTH a raw connection and an adapter", async () => {
+    // The writer holds a raw node:sqlite DatabaseSync; the web process passes its
+    // own adapter. Every exported entry point must take either. A mismatch is
+    // SILENT in production: the writer's background rebuild catches the error and
+    // logs "stays on raw", so the rollup simply never fills and nothing looks
+    // broken — the dashboard just never gets faster.
+    const build = () => {
+      const db = new DatabaseSync(":memory:");
+      db.exec(`CREATE TABLE usageHistory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT,
+        connectionId TEXT, apiKey TEXT, apiKeyId TEXT, requestId TEXT, trafficRequestId TEXT,
+        startedAt TEXT, completedAt TEXT, endpoint TEXT, promptTokens INTEGER, completionTokens INTEGER,
+        cost REAL, status TEXT, tokens TEXT, meta TEXT)`);
+      db.exec(`INSERT INTO usageHistory(timestamp, startedAt, completedAt, provider, model, apiKeyId, promptTokens, completionTokens, cost, status, tokens, meta)
+               VALUES('2026-09-23T10:00:00Z','2026-09-23T10:00:00Z','2026-09-23T10:00:01Z','codex','gpt-5.6-sol','k1',10,2,0.001,'success','{}','{}')`);
+      ensureRollupTable(db);
+      return db;
+    };
+
+    const raw = build();
+    const backed = build();
+    const adapter = {
+      all: (sql, p = []) => backed.prepare(sql).all(...p),
+      get: (sql, p = []) => backed.prepare(sql).get(...p),
+      run: (sql, p = []) => backed.prepare(sql).run(...p),
+      exec: (sql) => backed.exec(sql),
+    };
+
+    for (const handle of [raw, adapter]) {
+      expect(() => historyDateKeys(handle)).not.toThrow();
+      expect(() => rollupNeedsBackfill(handle)).not.toThrow();
+      const result = await rebuildRollupDays(handle, { days: ["2026-09-23"] });
+      expect(result.days).toBe(1);
+      expect(result.completeThrough).toBe("2026-09-23");
+      expect(getCompleteThrough(handle)).toBe("2026-09-23");
+    }
+    raw.close();
+    backed.close();
+  });
+
   it("drops the legacy rollup tables so an upgrade leaves no orphans", () => {
     // Production had a 150-row `usageRollup` (the dimension-per-row table) and
     // the code no longer references it, so it would sit there forever and be

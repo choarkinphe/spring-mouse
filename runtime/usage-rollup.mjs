@@ -119,16 +119,34 @@ export function rollupMetaTableSql() {
   return `CREATE TABLE IF NOT EXISTS ${ROLLUP_META_TABLE} (key TEXT PRIMARY KEY, value TEXT)`;
 }
 
-function rawOf(database) {
-  // The writer holds a raw DatabaseSync (prepare); the app passes an adapter (all/get/run).
-  return typeof database.prepare === "function"
-    ? { all: (sql, p = []) => database.prepare(sql).all(...p), get: (sql, p = []) => database.prepare(sql).get(...p), run: (sql, p = []) => database.prepare(sql).run(...p) }
-    : database;
+/**
+ * Normalize a database handle to the `{ all, get, run }` adapter shape.
+ *
+ * Two callers pass different things: the writer holds a raw `node:sqlite`
+ * DatabaseSync (so it has `prepare`), while the web process passes its own
+ * adapter. Every exported function here funnels through this, because a
+ * mismatch is silent — a `raw.get is not a function` inside the writer's
+ * background rebuild is caught and logged as "stays on raw", so the rollup
+ * would simply never fill and nothing would look broken.
+ */
+function asAdapter(database) {
+  if (database && typeof database.prepare === "function") {
+    return {
+      all: (sql, p = []) => database.prepare(sql).all(...p),
+      get: (sql, p = []) => database.prepare(sql).get(...p),
+      run: (sql, p = []) => database.prepare(sql).run(...p),
+      exec: (sql) => database.exec(sql),
+    };
+  }
+  return database;
 }
+
+/** The legacy alias kept for the callers that already used it. */
+const rawOf = asAdapter;
 
 export function getCompleteThrough(database) {
   try {
-    const row = rawOf(database).get(`SELECT value FROM ${ROLLUP_META_TABLE} WHERE key = ?`, [COMPLETE_THROUGH_KEY]);
+    const row = asAdapter(database).get(`SELECT value FROM ${ROLLUP_META_TABLE} WHERE key = ?`, [COMPLETE_THROUGH_KEY]);
     return row?.value || null;
   } catch { return null; }
 }
@@ -137,7 +155,7 @@ export function getCompleteThrough(database) {
 export function setCompleteThrough(database, dateKey) {
   const current = getCompleteThrough(database);
   if (current && current >= dateKey) return;
-  rawOf(database).run(
+  asAdapter(database).run(
     `INSERT INTO ${ROLLUP_META_TABLE}(key, value) VALUES(?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [COMPLETE_THROUGH_KEY, dateKey],
@@ -468,8 +486,8 @@ function dayBounds(dateKey) {
 }
 
 /** Which local days `usageHistory` covers, earliest row through `now`. */
-export function historyDateKeys(adapter, now = Date.now()) {
-  const row = adapter.get(`SELECT MIN(COALESCE(startedAt, timestamp)) AS earliest FROM usageHistory`);
+export function historyDateKeys(database, now = Date.now()) {
+  const row = asAdapter(database).get(`SELECT MIN(COALESCE(startedAt, timestamp)) AS earliest FROM usageHistory`);
   if (!row?.earliest) return [];
   const days = [];
   const cursor = new Date(row.earliest);
@@ -484,9 +502,9 @@ export function historyDateKeys(adapter, now = Date.now()) {
 }
 
 /** Is the rollup behind `usageHistory` (or shaped for a different day basis)? */
-export function rollupNeedsBackfill(adapter, now = Date.now()) {
-  const completeThrough = getCompleteThrough(adapter);
-  const days = historyDateKeys(adapter, now);
+export function rollupNeedsBackfill(database, now = Date.now()) {
+  const completeThrough = getCompleteThrough(database);
+  const days = historyDateKeys(database, now);
   if (!days.length) return false;
   if (!completeThrough) return true;
   return completeThrough < days[days.length - 1];
@@ -515,8 +533,9 @@ export function rollupNeedsBackfill(adapter, now = Date.now()) {
  *
  * @returns {Promise<{ days: number, scanned: number, applied: number, completeThrough: string|null }>}
  */
-export async function rebuildRollupDays(adapter, { days = null, onYield = null, now = Date.now() } = {}) {
-  const targets = days || historyDateKeys(adapter, now);
+export async function rebuildRollupDays(database, { days = null, onYield = null, now = Date.now() } = {}) {
+  const adapter = asAdapter(database);
+  const targets = days || historyDateKeys(database, now);
   let scanned = 0;
   let applied = 0;
   let built = 0;

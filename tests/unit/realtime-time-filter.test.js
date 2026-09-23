@@ -19,15 +19,30 @@ describe("realtimeRange", () => {
     expect(range.endDate).not.toContain("23:59:59");
   });
 
-  it("subtracts exactly the preset's hours", () => {
+  it("subtracts exactly the preset's hours for the rolling windows", () => {
     const r24 = realtimeRange("24h", NOW);
     expect(new Date(r24.startDate).getTime()).toBe(NOW.getTime() - 24 * 3600_000);
 
     const r48 = realtimeRange("48h", NOW);
     expect(new Date(r48.startDate).getTime()).toBe(NOW.getTime() - 48 * 3600_000);
+  });
 
-    const r7d = realtimeRange("7d", NOW);
-    expect(new Date(r7d.startDate).getTime()).toBe(NOW.getTime() - 7 * 24 * 3600_000);
+  it("aligns the 7-day window to whole local days, so the rollup can serve it", () => {
+    // A rolling 168h window forces a full usageHistory scan (8.8s on
+    // production). Aligning to local midnight lets the day-alignment gate hand
+    // it to the rollup (~100ms).
+    const range = realtimeRange("7d", NOW);
+    const start = new Date(range.startDate);
+    const end = new Date(range.endDate);
+    expect([start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds()]).toEqual([0, 0, 0, 0]);
+    expect([end.getHours(), end.getMinutes(), end.getSeconds(), end.getMilliseconds()]).toEqual([23, 59, 59, 999]);
+    expect(isDayAlignedRange(range)).toBe(true);
+
+    // "近 7 天" includes today, so it starts 6 days back.
+    const expectedStart = new Date(NOW);
+    expectedStart.setHours(0, 0, 0, 0);
+    expectedStart.setDate(expectedStart.getDate() - 6);
+    expect(start.getTime()).toBe(expectedStart.getTime());
   });
 
   it("carries the preset through so the selector can highlight it", () => {
@@ -53,14 +68,13 @@ describe("realtimeRange", () => {
     expect(REALTIME_PRESETS.map((p) => p.value)).toEqual(["24h", "48h", "7d"]);
   });
 
-  it("never produces a day-aligned range — the reason it stays on raw", () => {
+  it("keeps the sub-day windows off the rollup — the reason they stay on raw", () => {
     // A rolling window starts mid-day, so the rollup's day granularity would
-    // include the boundary day whole. Every preset must therefore fail the
-    // day-aligned gate; if one ever passed, the home page would silently
-    // over-report by up to a day.
-    for (const preset of REALTIME_PRESETS) {
-      const range = realtimeRange(preset.value, NOW);
-      expect(isDayAlignedRange(range), preset.value).toBe(false);
+    // include the boundary day whole. Measured over-count on production: 66.7%
+    // for 24h, 35.4% for 48h. If either ever passed the gate, the home page
+    // would silently over-report.
+    for (const preset of ["24h", "48h"]) {
+      expect(isDayAlignedRange(realtimeRange(preset, NOW)), preset).toBe(false);
     }
   });
 });

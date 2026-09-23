@@ -198,9 +198,15 @@ export default function DashboardUsageHeader({ initialSystemStatus = null, timeR
     : "Spring Mouse 服务进程内存读取中。";
 
   // The window selector lives here now, so the eyebrow and the description both
-  // track the selected rolling window instead of hardcoding "today".
+  // track the selected window instead of hardcoding "today".
   const activePreset = REALTIME_PRESETS.find((preset) => preset.value === (timeRange?.preset || "24h")) || REALTIME_PRESETS[0];
   const windowLabel = activePreset.label;
+  // A day-aligned window (近 7 天) spans whole calendar days and advances at
+  // midnight; the sub-day windows roll with the clock. The copy has to say which,
+  // or "滚动窗口随当前时间推进" would be a lie for the 7-day view.
+  const windowDescription = activePreset.dayAligned
+    ? `统计${windowLabel}（自然日），跨零点后自动推进，数据随请求实时更新。`
+    : `统计最近 ${windowLabel}，滚动窗口随当前时间推进，数据随请求实时更新。`;
 
   return (
     <section className="relative flex min-w-0 flex-col gap-4 rounded-2xl border border-border bg-surface/80 px-5 py-4 shadow-sm xl:flex-row xl:items-center xl:justify-between">
@@ -216,7 +222,7 @@ export default function DashboardUsageHeader({ initialSystemStatus = null, timeR
         <div className="min-w-0">
           <p className="text-xs font-semibold tracking-[0.12em] text-primary">{windowLabel} · 实时概览</p>
           <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-text-main">调用、成本与渠道额度，一眼掌握</h1>
-          <p className="mt-0.5 text-sm text-text-muted">统计最近 {windowLabel}，滚动窗口随当前时间推进，数据随请求实时更新。</p>
+          <p className="mt-0.5 text-sm text-text-muted">{windowDescription}</p>
         </div>
       </div>
 

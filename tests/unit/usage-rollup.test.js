@@ -5,6 +5,7 @@ import {
   ensureRollupTable,
   rollupBucketsForEvent,
   ROLLUP_TABLE,
+  ROLLUP_DIMENSIONS,
   COUNTER_COLUMNS,
 } from "../../runtime/usage-rollup.mjs";
 import { runAggregation } from "../../runtime/usage-aggregate.mjs";
@@ -135,9 +136,7 @@ describe("usage rollup", () => {
     const buckets = rollupBucketsForEvent(makeEvent());
     const byDim = Object.fromEntries(buckets.map((b) => [b.dimension, b]));
 
-    expect(Object.keys(byDim).sort()).toEqual(
-      ["account", "apiKey", "app", "endpoint", "model", "provider", "sourceIp", "user"].sort(),
-    );
+    expect(Object.keys(byDim).sort()).toEqual([...ROLLUP_DIMENSIONS].sort());
     // Raw ids, not display names.
     expect(byDim.provider.bucketKey).toBe("codex");
     expect(byDim.user.bucketKey).toBe("key-1");

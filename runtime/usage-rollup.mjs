@@ -53,6 +53,9 @@ export const ROLLUP_DIMENSIONS = [
   "sourceIp",
   "app",
   "user",
+  // Status counts for the board's completed/failed/cancelled cards. A plain
+  // dimension rather than a cross of the others, so it stays cheap.
+  "status",
 ];
 
 /** Counter columns, mirroring the raw aggregation's bucket shape. */
@@ -146,7 +149,25 @@ export function rollupBucketsForEvent(event) {
   // user — the person key, same as the raw path (`apiKeyId` || local-no-key).
   push("user", apiKeyId, { userId: apiKeyId });
 
+  // status — normalised to the three buckets the board counts, matching the raw
+  // path's EXACT-match rule (`status === "cancelled"` / `"error"`, everything
+  // else completed). Statuses like `blocked:account_locked` or `upstream:503`
+  // therefore count as completed, which looks odd but is what the existing
+  // numbers do — diverging here would make the board disagree with itself
+  // across the rollup boundary.
+  push("status", statusBucket(event.status));
+
   return out;
+}
+
+/**
+ * Map a raw status onto the bucket the board counts.
+ * Kept exported so the read path and tests share the exact rule.
+ */
+export function statusBucket(status) {
+  if (status === "cancelled") return "cancelled";
+  if (status === "error") return "failed";
+  return "completed";
 }
 
 /**

@@ -155,4 +155,51 @@ describe("extractUserPrompt", () => {
     expect(extractUserPrompt(null)).toBe("");
     expect(extractUserPrompt("nope")).toBe("");
   });
+
+  it("reads a compacted body's digest, which is what production mostly stores", () => {
+    // compactJsonField replaces an oversized body with `_summary`, whose messages
+    // carry `text` rather than `content`. Most prod rows look like this, so
+    // reading only `messages` would return "" for the majority of traffic.
+    const compacted = compactJsonField({
+      model: "gpt-5.6-sol",
+      messages: [
+        { role: "system", content: "x".repeat(200_000) },
+        { role: "user", content: "the real question" },
+      ],
+    }, 1024);
+
+    expect(compacted._truncated).toBe(true);
+    expect(extractUserPrompt(compacted)).toBe("the real question");
+  });
+
+  it("skips relayed tool results and finds the human turn behind them", () => {
+    // Agent clients send tool output as `role: "user"`, so the newest user turn
+    // is usually NOT the question. The provider export never shows these.
+    const prompt = extractUserPrompt({
+      messages: [
+        { role: "user", content: "please fix the bug" },
+        { role: "assistant", content: "reading the file" },
+        { role: "user", content: "[tool_result]\n[tool_result]" },
+      ],
+    });
+    expect(prompt).toBe("please fix the bug");
+  });
+
+  it("skips an attachment-only turn the same way", () => {
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "look at this" },
+        { role: "user", content: "Attached image(s) from tool result:" },
+      ],
+    })).toBe("look at this");
+  });
+
+  it("returns empty when every user turn is tool chatter", () => {
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "[tool_result]\n[tool_result]" },
+        { role: "user", content: "[tool_use]" },
+      ],
+    })).toBe("");
+  });
 });

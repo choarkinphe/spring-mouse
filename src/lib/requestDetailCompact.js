@@ -118,34 +118,80 @@ function textOf(content) {
 }
 
 // The operator's question is "what did the user send", not "what did the model
-// answer". This is the LAST user turn's text only — no roles, no assistant
-// replies, no tool metadata — which is what the provider export calls "User
-// Prompt". Kept short so it can sit in a table cell and be stored per row.
+// answer". This is the last HUMAN-typed user turn's text only — no roles, no
+// assistant replies, no relayed tool output — which is what the provider export
+// calls "User Prompt". Kept short so it can sit in a table cell and be stored
+// per row.
 const USER_PROMPT_MAX_CHARS = 2048;
 
 /**
- * The user's own text from a chat request body — the last `role: "user"` turn.
+ * Is this user turn actually the human typing, or just a relayed tool result?
+ *
+ * Agent clients (Claude Code and friends) send tool output as `role: "user"`
+ * turns, so "the last user message" is very often `[tool_result]` or an attached
+ * image — not the question. The provider export this mirrors never shows those
+ * (0 of 3000 sampled rows), so neither do we: skip a turn whose text is entirely
+ * tool/attachment markers, and keep walking back to the real prompt.
+ */
+function isToolRelayText(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  // Every line is a tool_result / tool_use / attachment marker, or an image part
+  // placeholder like "[image_url]" — nothing the human typed.
+  const MARKER = /^\[(tool_result|tool_use|thinking|image_url|image_local_path)\]/;
+  const lines = trimmed.split("\n").filter((line) => line.trim());
+  if (!lines.length) return true;
+  if (lines.every((line) => MARKER.test(line.trim()))) return true;
+  // The summarizer's multimodal placeholder for a whole attachment-only turn.
+  if (/^Attached image\(s\) from tool result:?$/i.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * The user's own text from a chat request body — the last `role: "user"` turn
+ * that the human actually typed.
  *
  * Deliberately narrower than `summarizeChatRequest`: that one keeps the whole
  * conversation's shape (roles, per-message heads, knob values) for the request
  * inspector. This returns just the prompt string, for the usage table's
  * "用户提问" column.
  *
- * Returns "" when there is no user message (a non-chat request, or a body whose
- * messages were already compacted away).
+ * Handles BOTH stored shapes: a body small enough to keep whole (`messages` with
+ * `content`), and one `compactJsonField` replaced with a digest (`_summary`
+ * whose messages carry `text`). Most production rows are the latter, so reading
+ * only `messages` would silently return "" for the majority of traffic.
+ *
+ * Returns "" when there is no human turn (a non-chat request, or a body that was
+ * compacted before the digest existed).
  */
 export function extractUserPrompt(value, { maxChars = USER_PROMPT_MAX_CHARS } = {}) {
   if (!value || typeof value !== "object") return "";
+
+  const clamp = (text) => (text.length > maxChars ? Array.from(text.slice(0, maxChars)).join("") : text);
+
+  // Both shapes are scanned newest-first so a real prompt after tool chatter
+  // still wins over the tool turns that follow it.
   const messages = Array.isArray(value.messages) ? value.messages : null;
-  if (!messages || messages.length === 0) return "";
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message?.role !== "user") continue;
-    const text = textOf(message.content);
-    if (!text) continue;
-    // Array.from so a surrogate pair is never split mid-character.
-    return text.length > maxChars ? Array.from(text.slice(0, maxChars)).join("") : text;
+  if (messages && messages.length) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message?.role !== "user") continue;
+      const text = textOf(message.content);
+      if (text && !isToolRelayText(text)) return clamp(text);
+    }
   }
+
+  // Compacted body: the digest keeps each message's head under `text`.
+  const summaryMessages = Array.isArray(value._summary?.messages) ? value._summary.messages : null;
+  if (summaryMessages && summaryMessages.length) {
+    for (let i = summaryMessages.length - 1; i >= 0; i -= 1) {
+      const message = summaryMessages[i];
+      if (message?.role !== "user") continue;
+      const text = typeof message.text === "string" ? message.text : "";
+      if (text && !isToolRelayText(text)) return clamp(text);
+    }
+  }
+
   return "";
 }
 

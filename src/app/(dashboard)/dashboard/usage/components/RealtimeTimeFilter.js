@@ -4,8 +4,12 @@ import PropTypes from "prop-types";
 import { REALTIME_PRESETS, realtimeRange } from "@/shared/utils/realtimeRange";
 
 /**
- * Rolling-window selector for the dashboard home page, rendered inside the
- * header so the window and its numbers read as one unit.
+ * Rolling-window selector for the dashboard home page, rendered inline on the
+ * header's eyebrow line.
+ *
+ * Deliberately styled as plain text rather than a segmented control: it sits in
+ * a line of copy, so a bordered pill group would read as a separate widget and
+ * fight the typography. The active window carries the emphasis instead.
  *
  * The home page answers "what is happening right now", so it offers rolling
  * windows rather than calendar periods. This is deliberately separate from
@@ -19,29 +23,27 @@ export default function RealtimeTimeFilter({ value, onChange, disabled = false }
   const active = value?.preset || "24h";
 
   return (
-    <div
-      role="radiogroup"
-      aria-label="实时统计窗口"
-      className="inline-flex items-center gap-0.5 rounded-lg border border-border-subtle bg-surface-2 p-0.5"
-    >
-      {REALTIME_PRESETS.map((preset) => {
+    <div role="radiogroup" aria-label="实时统计窗口" className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {REALTIME_PRESETS.map((preset, index) => {
         const selected = active === preset.value;
         return (
-          <button
-            key={preset.value}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={disabled}
-            onClick={() => onChange(realtimeRange(preset.value))}
-            className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
-              selected
-                ? "bg-brand-500 text-white shadow-sm"
-                : "text-text-muted hover:bg-surface hover:text-text-main"
-            } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
-          >
-            {preset.label}
-          </button>
+          <span key={preset.value} className="inline-flex items-center gap-1.5">
+            {index > 0 ? <span aria-hidden="true" className="text-primary/35">·</span> : null}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={disabled}
+              onClick={() => onChange(realtimeRange(preset.value))}
+              className={`rounded-sm text-xs transition-colors ${
+                selected
+                  ? "font-semibold text-primary underline decoration-primary/40 decoration-2 underline-offset-4"
+                  : "font-medium text-text-muted hover:text-primary"
+              } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+            >
+              {preset.label}
+            </button>
+          </span>
         );
       })}
     </div>

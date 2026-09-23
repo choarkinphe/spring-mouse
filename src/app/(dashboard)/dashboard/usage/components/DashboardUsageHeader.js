@@ -220,7 +220,15 @@ export default function DashboardUsageHeader({ initialSystemStatus = null, timeR
           <span className="material-symbols-outlined text-[24px]">insights</span>
         </span>
         <div className="min-w-0">
-          <p className="text-xs font-semibold tracking-[0.12em] text-primary">{windowLabel} · 实时概览</p>
+          {/* The window selector sits on the eyebrow line rather than on a row of
+              its own, so adding it does not make the header taller. The active
+              button already names the window, so the eyebrow stays generic. */}
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+            <p className="text-xs font-semibold tracking-[0.12em] text-primary">实时概览</p>
+            {onTimeRangeChange ? (
+              <RealtimeTimeFilter value={timeRange} onChange={onTimeRangeChange} />
+            ) : null}
+          </div>
           <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-text-main">调用、成本与渠道额度，一眼掌握</h1>
           <p className="mt-0.5 text-sm text-text-muted">{windowDescription}</p>
         </div>
@@ -228,12 +236,6 @@ export default function DashboardUsageHeader({ initialSystemStatus = null, timeR
 
       <div className="flex w-full shrink-0 self-start border-t border-border/70 pt-3 xl:w-auto xl:self-auto xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
         <div className="flex w-full flex-col gap-3">
-          {onTimeRangeChange ? (
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] font-medium tracking-wide text-text-muted">统计窗口</span>
-              <RealtimeTimeFilter value={timeRange} onChange={onTimeRangeChange} />
-            </div>
-          ) : null}
           <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
             <StatusMetric icon="schedule" label="运行时间" value={systemStatus ? formatDuration(systemStatus.uptimeSeconds) : "加载中"} />
             <StatusMetric icon="deployed_code" label="版本" value={systemStatus?.version ? `v${systemStatus.version}` : "—"} />

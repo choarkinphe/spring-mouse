@@ -119,45 +119,93 @@ function textOf(content) {
 
 // The operator's question is "what did the user send", not "what did the model
 // answer". This is the last HUMAN-typed user turn's text only — no roles, no
-// assistant replies, no relayed tool output — which is what the provider export
-// calls "User Prompt". Kept short so it can sit in a table cell and be stored
-// per row.
+// assistant replies, no harness scaffolding, no relayed tool output — which is
+// what the provider export calls "User Prompt". Kept short so it can sit in a
+// table cell and be stored per row.
 const USER_PROMPT_MAX_CHARS = 2048;
 
 /**
- * Is this user turn actually the human typing, or a relayed tool result?
+ * Harness scaffolding that arrives as a `role: "user"` turn.
  *
- * Agent clients (Claude Code and friends) send tool output as `role: "user"`
- * turns, so "the last user message" is very often `[tool_result]` or an attached
- * image — not the question. The provider export this mirrors never shows those
- * (0 of 3000 sampled rows), so neither do we: skip the relay and keep walking
- * back to the real prompt.
- *
- * A relay is identified by its LEADING marker, not by its whole body: a tool
- * result often carries injected instructions after the marker (observed in
- * production as "[tool_result]\nCRITICAL: Respond with TEXT ONLY..."), which
- * would defeat an "all lines are markers" test.
+ * Agent clients inject a lot of this: `<system-reminder>` wraps the token
+ * counter, the Read-tool results and the CLAUDE.md dump; `<instructions>` and
+ * `<conversation_history_summary>` carry their own boilerplate. None of it is
+ * something the human typed, so it must not be mistaken for the prompt — which
+ * is exactly what happened in production (the column was showing a CLAUDE.md
+ * dump, a `<total_tokens>` counter, and Read-tool output).
  */
-const TOOL_RELAY_LEAD = /^\[(tool_result|tool_use)\]/;
-const TOOL_MARKER_LINE = /^\[(tool_result|tool_use|thinking|image_url|image_local_path)\]/;
+const HARNESS_TAG = "system-reminder|instructions|conversation_history_summary|total_tokens|user_info|env|gitStatus";
 
-function isToolRelayText(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return true;
-  // Tool output (with or without injected text after the marker).
-  if (TOOL_RELAY_LEAD.test(trimmed)) return true;
-  // Nothing but tool/attachment markers — no human text anywhere.
-  const lines = trimmed.split("\n").filter((line) => line.trim());
-  if (!lines.length) return true;
-  if (lines.every((line) => TOOL_MARKER_LINE.test(line.trim()))) return true;
-  // The summarizer's placeholder for a whole attachment-only turn.
-  if (/^Attached image\(s\) from tool result:?$/i.test(trimmed)) return true;
-  return false;
+/** Remove harness blocks. The stored digest truncates, so also drop an unterminated one to the end. */
+function stripHarnessBlocks(text) {
+  let out = text.replace(new RegExp(`<(${HARNESS_TAG})\\b[^>]*>[\\s\\S]*?<\\/\\1>`, "gi"), "\n");
+  out = out.replace(new RegExp(`<(${HARNESS_TAG})\\b[^>]*>[\\s\\S]*$`, "i"), "\n");
+  return out;
+}
+
+/** A line that is purely a tool/attachment relay marker — nothing the human typed. */
+const RELAY_LINE = /^\s*(\[(tool_result|tool_use|thinking|image_url|image_local_path|image)\]|Called the \S+ tool with the following input:|Result of calling the \S+ tool:|\[Request interrupted by user\]|Attached image\(s\) from tool result:)/i;
+
+/**
+ * Harness boilerplate that the client sends AS the whole user message.
+ *
+ * These are not the human's words even though they arrive as a user turn:
+ *   - a context-compaction hand-off (the "continue from summary" preamble);
+ *   - the sub-call that names a session ("succinct title and git branch name");
+ *   - automated notifications and suggestion prompts.
+ * Showing one as "用户提问" is as wrong as showing a tool result.
+ */
+const BOILERPLATE_LEAD = [
+  /^This session is being continued from a previous conversation/i,
+  /^You are coming up with a succinct title and git branch name/i,
+  /^Output token limit hit\. Resume directly/i,
+  /^Please continue with the conversation based on the summarized context above/i,
+  /^\[SYSTEM NOTIFICATION - NOT USER INPUT\]/i,
+  /^\[SUGGESTION MODE/i,
+];
+
+/**
+ * The human's text from one turn, with harness scaffolding removed.
+ *
+ * Order matters:
+ *   1. `[Request interrupted by user]` means the human took the turn back, so
+ *      anything AFTER that marker is theirs — even though the turn still leads
+ *      with tool markers. (Observed in production: the client appends the user's
+ *      next message to the interrupted tool turn.)
+ *   2. Otherwise, strip harness blocks. If the turn then leads with a relay
+ *      marker it is tool output — text after the marker is harness instruction
+ *      (e.g. "CRITICAL: Respond with TEXT ONLY..."), never the human.
+ *   3. A plain turn keeps its text, minus any relay lines and known boilerplate.
+ *
+ * "" means the turn held nothing the human typed.
+ */
+const INTERRUPT_MARKER = "[Request interrupted by user]";
+
+function humanTextOf(raw) {
+  if (typeof raw !== "string") return "";
+
+  const interruptAt = raw.indexOf(INTERRUPT_MARKER);
+  if (interruptAt >= 0) {
+    const after = raw.slice(interruptAt + INTERRUPT_MARKER.length).trim();
+    if (after) return after;
+  }
+
+  const stripped = stripHarnessBlocks(raw);
+  const trimmed = stripped.trim();
+  if (!trimmed) return "";
+  // Leads with a relay marker and no interrupt → the whole turn is tool output.
+  if (RELAY_LINE.test(trimmed)) return "";
+
+  const kept = stripped.split("\n").filter((line) => line.trim() && !RELAY_LINE.test(line));
+  const text = kept.join("\n").trim();
+  if (!text) return "";
+  if (BOILERPLATE_LEAD.some((re) => re.test(text))) return "";
+  return text;
 }
 
 /**
- * The user's own text from a chat request body — the last `role: "user"` turn
- * that the human actually typed.
+ * The user's own text from a chat request body — the newest `role: "user"` turn
+ * that still has human text after the scaffolding is removed.
  *
  * Deliberately narrower than `summarizeChatRequest`: that one keeps the whole
  * conversation's shape (roles, per-message heads, knob values) for the request
@@ -166,26 +214,25 @@ function isToolRelayText(text) {
  *
  * Handles BOTH stored shapes: a body small enough to keep whole (`messages` with
  * `content`), and one `compactJsonField` replaced with a digest (`_summary`
- * whose messages carry `text`). Most production rows are the latter, so reading
- * only `messages` would silently return "" for the majority of traffic.
+ * whose messages carry `text`).
  *
- * Returns "" when there is no human turn (a non-chat request, or a body that was
- * compacted before the digest existed).
+ * Returns "" when no turn holds human text (a non-chat request, a sub-agent /
+ * title-generation call, or a body whose prompt was compacted away).
  */
 export function extractUserPrompt(value, { maxChars = USER_PROMPT_MAX_CHARS } = {}) {
   if (!value || typeof value !== "object") return "";
 
   const clamp = (text) => (text.length > maxChars ? Array.from(text.slice(0, maxChars)).join("") : text);
 
-  // Both shapes are scanned newest-first so a real prompt after tool chatter
-  // still wins over the tool turns that follow it.
+  // Newest-first: the first turn with human text left after stripping IS the
+  // newest prompt, since everything newer was scaffolding or a relay.
   const messages = Array.isArray(value.messages) ? value.messages : null;
   if (messages && messages.length) {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const message = messages[i];
       if (message?.role !== "user") continue;
-      const text = textOf(message.content);
-      if (text && !isToolRelayText(text)) return clamp(text);
+      const text = humanTextOf(textOf(message.content));
+      if (text) return clamp(text);
     }
   }
 
@@ -195,8 +242,8 @@ export function extractUserPrompt(value, { maxChars = USER_PROMPT_MAX_CHARS } = 
     for (let i = summaryMessages.length - 1; i >= 0; i -= 1) {
       const message = summaryMessages[i];
       if (message?.role !== "user") continue;
-      const text = typeof message.text === "string" ? message.text : "";
-      if (text && !isToolRelayText(text)) return clamp(text);
+      const text = humanTextOf(typeof message.text === "string" ? message.text : "");
+      if (text) return clamp(text);
     }
   }
 

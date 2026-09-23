@@ -126,7 +126,7 @@ describe("extractUserPrompt", () => {
     expect(prompt).toBe("the actual question");
   });
 
-  it("keeps multimodal text and names non-text parts, without the base64 payload", () => {
+  it("keeps the human text from a multimodal turn, without the base64 payload", () => {
     const prompt = extractUserPrompt({
       messages: [{
         role: "user",
@@ -136,8 +136,9 @@ describe("extractUserPrompt", () => {
         ],
       }],
     });
-    expect(prompt).toContain("describe this");
-    expect(prompt).toContain("[image_url]");
+    expect(prompt).toBe("describe this");
+    // The attachment placeholder is harness scaffolding, not the human's words.
+    expect(prompt).not.toContain("[image_url]");
     expect(prompt).not.toContain("base64");
   });
 
@@ -194,15 +195,58 @@ describe("extractUserPrompt", () => {
     })).toBe("look at this");
   });
 
-  it("skips a tool relay that carries injected text after the marker", () => {
-    // Observed in production: a tool_result turn with instructions appended.
-    // An "all lines are markers" test would miss it, so the leading marker wins.
+  it("skips a tool relay that carries injected instructions after the marker", () => {
+    // Observed in production: a tool_result turn with harness instructions
+    // appended. Those are not the human's words, so the turn is skipped and the
+    // walk-back finds the real prompt.
     expect(extractUserPrompt({
       messages: [
         { role: "user", content: "what does this function do?" },
         { role: "user", content: "[tool_result]\nCRITICAL: Respond with TEXT ONLY. Do NOT call any tools." },
       ],
     })).toBe("what does this function do?");
+  });
+
+  it("keeps the human text the client appends to an interrupted turn", () => {
+    // Production shape: the tool turn is interrupted and the user's next message
+    // is appended to that SAME turn. Everything after the marker is the human.
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "earlier question" },
+        { role: "user", content: "[tool_result]\n[tool_result]\n[Request interrupted by user]\n\n清空历史测试数据并重跑全流程" },
+      ],
+    })).toBe("清空历史测试数据并重跑全流程");
+  });
+
+  it("strips harness scaffolding that arrives as a user turn", () => {
+    // The column was showing these in production: a CLAUDE.md dump wrapped in
+    // <system-reminder>, and a bare token counter.
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "real question" },
+        { role: "user", content: "<system-reminder>\nContents of /x/CLAUDE.md:\n\n# rules\n</system-reminder>" },
+      ],
+    })).toBe("real question");
+
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "real question" },
+        { role: "user", content: "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>" },
+      ],
+    })).toBe("real question");
+  });
+
+  it("skips context-compaction and session-naming boilerplate", () => {
+    expect(extractUserPrompt({
+      messages: [
+        { role: "user", content: "fix the login bug" },
+        { role: "user", content: "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion." },
+      ],
+    })).toBe("fix the login bug");
+
+    expect(extractUserPrompt({
+      messages: [{ role: "user", content: "You are coming up with a succinct title and git branch name for a coding session" }],
+    })).toBe("");
   });
 
   it("returns empty when every user turn is tool chatter", () => {

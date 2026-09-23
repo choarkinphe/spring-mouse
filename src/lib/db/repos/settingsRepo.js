@@ -51,7 +51,11 @@ const DEFAULT_SETTINGS = {
   tunnelDashboardAccess: true,
   enableObservability: false,
   enableRequestLogFileDumps: process.env.ENABLE_REQUEST_LOG_FILE_DUMPS === "true",
-  observabilityMaxRecords: 100,
+  // Row-count backstop for requestDetails. Age retention
+  // (requestDetailsRetentionDays) is the primary lever; this only bounds runaway
+  // growth. Set high so a normal age window governs first — the old 100 default
+  // made "保留 30 天明细" keep only the last ~100 calls.
+  observabilityMaxRecords: 200_000,
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 500,
   observabilityMaxJsonSize: 128,

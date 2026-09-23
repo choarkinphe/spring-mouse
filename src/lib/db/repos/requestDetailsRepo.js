@@ -2,7 +2,20 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { compactJsonField } from "@/lib/requestDetailCompact.js";
 
-const DEFAULT_MAX_RECORDS = 100;
+// Row-count backstop for requestDetails. Age-based retention
+// (DEFAULT_RETENTION_DAYS below) is the primary lever; this only stops runaway
+// growth when an operator sets the age window to 0 ("keep forever"). It is set
+// high enough that a normal 30-day window governs first — a 100-row cap used to
+// make the "30 天明细" setting meaningless (only the last ~100 calls kept their
+// conversation), which is the bug this replaced.
+const DEFAULT_MAX_RECORDS = 200_000;
+// Hard ceiling on rows queued in memory before a flush. Deliberately a constant,
+// NOT derived from maxRecords: the queue only hides flush latency, so tying it to
+// a 200k-row retention cap would let a stalled/locked DB hold a huge number of
+// payloads in memory. Each queued record is already compacted to the per-field
+// JSON cap, so this bounds the queue to roughly the same footprint as the old
+// 100-row default.
+const MAX_BUFFERED_RECORDS = 100;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 500;
 const DEFAULT_MAX_JSON_SIZE = 128 * 1024;
@@ -45,7 +58,7 @@ async function getObservabilityConfig() {
 
     cachedConfig = {
       enabled,
-      maxRecords: Math.min(100, settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10)),
+      maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: Math.min(500, settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10)),
       maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "128", 10)) * 1024,
@@ -128,7 +141,8 @@ export const __test__ = { sanitizeHeaders, prepareRecord, appendBounded };
 // transaction, which made each flush hold the write lock for a COUNT(*) plus an
 // ordered DELETE on top of the inserts. On a busy gateway that collided with
 // the separate usage-writer process ("database is locked") roughly every 13
-// seconds. Trimming is not urgent — it only bounds a 100-row table.
+// seconds. Trimming is not urgent — the age window is the primary bound, and
+// this only keeps the table from outgrowing it.
 const RETENTION_INTERVAL_MS = 60_000;
 let lastRetentionAt = 0;
 
@@ -195,14 +209,15 @@ export async function saveRequestDetail(detail) {
   console.log(`[RequestDetail] queued ${detail.requestId || detail.id || "-"} · ${detail.provider || "-"}/${detail.model || "-"} · ${detail.status || "-"}`);
   // The console's request-detail drawer and "view last 10 requests" rely on a
   // bounded rolling history. Keep writing it even when verbose request/response
-  // file dumps are disabled; retention is capped at 100 records below.
+  // file dumps are disabled.
 
   // Bound large payloads before they enter the delayed write queue. Otherwise
   // long-context requests remain strongly referenced until the next flush.
   // A slow/unavailable observability database must not retain an unbounded
-  // number of records. Keeping more queued rows than the configured rolling
-  // history cannot improve the eventual dashboard result, so discard oldest.
-  const dropped = appendBounded(writeBuffer, prepareRecord(detail, config), Math.max(config.maxRecords, config.batchSize));
+  // number of records: the in-memory queue is bounded by MAX_BUFFERED_RECORDS
+  // (never by the retention cap, which may be very large), so discard oldest.
+  // Still at least batchSize, so the threshold flush below can always trigger.
+  const dropped = appendBounded(writeBuffer, prepareRecord(detail, config), Math.max(MAX_BUFFERED_RECORDS, config.batchSize));
   if (dropped > 0 && Date.now() - lastBufferDropWarningAt >= BUFFER_DROP_WARNING_INTERVAL_MS) {
     lastBufferDropWarningAt = Date.now();
     console.warn(`[requestDetailsRepo] Dropped ${dropped} oldest buffered observability record(s)`);

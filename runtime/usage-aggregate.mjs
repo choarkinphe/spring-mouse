@@ -376,7 +376,7 @@ export function getTrafficRange(period, range = {}) {
   return { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
 }
 
-function getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNameMap) {
+export function getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNameMap) {
   const conditions = [];
   const params = [];
 
@@ -400,7 +400,7 @@ function getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNam
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = adapter.all(
-    `SELECT id, timestamp, startedAt, completedAt, provider, model, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
+    `SELECT id, requestId, timestamp, startedAt, completedAt, provider, model, apiKeyId AS apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
             COALESCE((SELECT requestBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS requestBytes,
             COALESCE((SELECT responseBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS responseBytes
        FROM usageHistory ${where} ORDER BY id DESC LIMIT 100`,
@@ -415,6 +415,9 @@ function getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNam
     const completionTokens = row.completionTokens ?? tokens.completion_tokens ?? tokens.output_tokens ?? 0;
     return {
       id: row.id,
+      // The join key back to requestDetails (which stores the conversation).
+      // `usageHistory.id` is not it — that is a local integer.
+      requestId: row.requestId || null,
       timestamp: row.timestamp,
       userId: row.apiKey || "local-no-key",
       durationMs: getRequestDurationMs(row.startedAt || row.timestamp, row.completedAt || row.timestamp),

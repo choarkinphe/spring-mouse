@@ -29,7 +29,7 @@ const fmtCompact = (n) => {
 };
 const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
 
-export default function OverviewCards({ stats }) {
+export default function OverviewCards({ stats, loading = false }) {
   // Same total the rest of the dashboard uses (UsageBreakdownGrid, the person
   // report): input + output. Cached tokens are deliberately NOT added in — they
   // are a subset of the input tokens, so counting them again would double-bill
@@ -54,6 +54,7 @@ export default function OverviewCards({ stats }) {
         valueTitle={`输入 ${fmt(stats.totalPromptTokens)} + 输出 ${fmt(stats.totalCompletionTokens)} = ${fmt(totalTokens)}`}
         tone="primary"
         points={series("promptTokens")}
+        loading={loading}
         // Input / output / cached, in that order. Colours match each metric's
         // accent elsewhere on the page: input=primary, output=success,
         // cached=info (cached is shown but not summed into the headline).
@@ -70,6 +71,7 @@ export default function OverviewCards({ stats }) {
         valueTitle={`模型调用次数 ${fmt(stats.totalRequests)}`}
         tone="sky"
         points={series("requests")}
+        loading={loading}
         metrics={[
           { label: "已完成", value: fmtCompact(stats.completedRequests), tone: "success", title: `${fmtCompact(stats.completedRequests)} 已完成` },
           { label: "失败", value: fmtCompact(stats.failedRequests), tone: "danger", title: `${fmtCompact(stats.failedRequests)} 失败` },
@@ -83,6 +85,7 @@ export default function OverviewCards({ stats }) {
         valueTitle={`总流量 ${formatBytes(stats.totalTrafficBytes, { maximumFractionDigits: 2 })}`}
         tone="cyan"
         points={series("trafficBytes")}
+        loading={loading}
         // Up/down split rendered as the same "mini panel" the request card uses
         // (rounded-md + hairline border + tiny caption), instead of the old
         // single line of 10px text. Two cells because there are only two
@@ -99,6 +102,7 @@ export default function OverviewCards({ stats }) {
         tone="warning"
         points={series("cost")}
         detail="预估费用，非实际账单"
+        loading={loading}
       />
     </div>
   );
@@ -106,4 +110,5 @@ export default function OverviewCards({ stats }) {
 
 OverviewCards.propTypes = {
   stats: PropTypes.object.isRequired,
+  loading: PropTypes.bool,
 };

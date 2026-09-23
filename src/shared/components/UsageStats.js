@@ -185,6 +185,11 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
   const [chartRefreshToken, setChartRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // Which range the currently-rendered `stats` belong to. When the user switches
+  // range, `stats` still holds the PREVIOUS range's numbers until the new fetch
+  // resolves; comparing this against the current `rangeKey` is what lets the
+  // cards show a calculating state instead of stale figures that read as current.
+  const [statsRangeKey, setStatsRangeKey] = useState(null);
 
   // Options for the details drawer's filters, derived from the loaded stats.
   // The board builds the same shape in UsageBreakdownGrid; this is the subset
@@ -241,6 +246,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
           // new baseline: a rolling window that slid forward reports smaller
           // totals, which the regression guard would otherwise reject.
           setStats((previous) => applyUsageStatsUpdate(previous, normalized, { reset: true }));
+          setStatsRangeKey(rangeKey);
         }
       })
       .catch(() => {})
@@ -276,6 +282,9 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
           const reset = !receivedBaseline;
           receivedBaseline = true;
           setStats((previous) => applyUsageStatsUpdate(previous, normalized, { reset }));
+          // A full snapshot for THIS connection's range: it is authoritative, so
+          // the cards can leave their calculating state.
+          setStatsRangeKey(rangeKey);
         }
         if (!data.streamPatch && normalized.streamUpdatedAt) {
           setChartRefreshToken((previous) => (normalized.streamUpdatedAt > previous ? normalized.streamUpdatedAt : previous));
@@ -294,12 +303,17 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
 
   if (!stats) return <UsageDashboardSkeleton showOverview={showOverview} showBreakdowns={showBreakdowns} />;
 
+  // `stats` holds the last range we loaded, which after a switch is NOT the range
+  // on screen. Report that as "calculating" so the cards never present the
+  // previous range's numbers as the current ones.
+  const statsStale = statsRangeKey !== null && statsRangeKey !== rangeKey;
+
   return (
     <div className="flex min-w-0 flex-col gap-6">
       {showOverview && (
         <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 xl:h-[min(58rem,calc(100vh-8rem))] xl:grid-cols-[minmax(0,1fr)_minmax(360px,400px)]">
           <div className="flex min-w-0 flex-col gap-2 xl:h-full xl:min-h-0">
-            <OverviewCards stats={stats} />
+            <OverviewCards stats={stats} loading={statsStale} />
             <ProviderTopology
               activeRequests={stats.activeRequests || []}
               recentRequests={stats.recentRequests || []}
@@ -318,7 +332,7 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
       )}
 
       {showOverview && <UsageChart timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} refreshToken={chartRefreshToken} />}
-      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} />}
+      {showBreakdowns && <UsageBreakdownGrid stats={stats} timeRange={timeRange} apiKeyId={apiKeyId} scope={scope} chartRefreshToken={chartRefreshToken} loading={statsStale} />}
 
       {/* Opened from the "最近的请求" card. Scoped to the same window the page is
           showing, so the detail list matches the numbers above it. */}

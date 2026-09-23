@@ -1,13 +1,14 @@
 "use client";
 
 import PropTypes from "prop-types";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Card from "@/shared/components/Card";
 import StatCard from "@/shared/components/StatCard";
 import UsageChart from "./UsageChart";
 import PersonAnalysisReport from "./PersonAnalysisReport";
 import UsageDetailsDrawer from "./UsageDetailsDrawer";
 import { formatBytes } from "@/shared/utils/formatBytes";
+import { cn } from "@/shared/utils/cn";
 
 const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间"];
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -207,14 +208,93 @@ function formatCallTime(value) {
   }).format(new Date(value));
 }
 
+const ROLE_STYLES = {
+  system: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
+  user: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-100",
+  assistant: "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-100",
+  tool: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100",
+};
+
+/** The bounded conversation digest for one request, rendered inline. */
+function ConversationPanel({ state }) {
+  if (state.status === "loading") {
+    return <p className="px-1 py-4 text-xs text-text-muted"><span className="material-symbols-outlined mr-1.5 animate-spin align-[-4px] text-[16px]">progress_activity</span>正在读取对话内容…</p>;
+  }
+  if (state.status === "error") {
+    return <p className="px-1 py-4 text-xs text-rose-600">{state.error}</p>;
+  }
+  const summary = state.data;
+  if (!summary?.messages?.length) {
+    return <p className="px-1 py-4 text-xs text-text-muted">{state.notice || "该请求未记录可展示的对话内容。"}</p>;
+  }
+  const knobs = [
+    summary.model ? `模型 ${summary.model}` : null,
+    summary.stream ? "流式" : null,
+    summary.temperature !== null && summary.temperature !== undefined ? `temperature ${summary.temperature}` : null,
+    summary.maxTokens ? `max_tokens ${summary.maxTokens}` : null,
+    summary.toolCount ? `${summary.toolCount} 个工具` : null,
+  ].filter(Boolean);
+  return (
+    <div className="rounded-lg border border-primary/20 bg-primary/[0.03] p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="material-symbols-outlined text-[16px] text-primary">forum</span>
+        <span className="text-xs font-semibold text-text-main">本轮对话内容</span>
+        <span className="rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] text-text-muted">{summary.messageCount} 条消息</span>
+        {knobs.length > 0 && <span className="text-[10px] text-text-muted">{knobs.join(" · ")}</span>}
+      </div>
+      <ol className="space-y-1.5">
+        {summary.messages.map((message, index) => (
+          <li key={index} className="rounded-md border border-black/5 bg-surface/60 p-2 dark:border-white/5">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className={cn("rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase", ROLE_STYLES[message.role] || ROLE_STYLES.system)}>{message.role}</span>
+              <span className="text-[10px] text-text-muted">
+                {message.chars} 字符{message.truncated ? "（已截断）" : ""}
+                {message.parts ? ` · ${message.parts} 个内容块` : ""}
+                {message.toolCalls ? ` · ${message.toolCalls} 个工具调用` : ""}
+              </span>
+            </div>
+            <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-text-main">{message.text || "（无文本内容）"}</pre>
+          </li>
+        ))}
+      </ol>
+      {summary.omittedMessages > 0 && <p className="mt-1.5 text-[10px] text-text-muted">另有 {summary.omittedMessages} 条消息未包含在摘要中。</p>}
+    </div>
+  );
+}
+
+ConversationPanel.propTypes = { state: PropTypes.object.isRequired };
+
 function RecentCallDetailsTable({ rows, totalCalls }) {
+  const [expanded, setExpanded] = useState({});
+  const setRowState = (id, state) => setExpanded((current) => ({ ...current, [id]: state }));
+  const toggleConversation = (row) => {
+    // Already open → collapse. Otherwise fetch once and cache the result in state,
+    // so re-opening does not re-request.
+    if (expanded[row.id]) {
+      setExpanded((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      return;
+    }
+    if (!row.requestId) {
+      setRowState(row.id, { status: "done", data: null, notice: "该调用未记录 requestId，无法关联对话明细。" });
+      return;
+    }
+    setRowState(row.id, { status: "loading" });
+    fetch(`/api/usage/request-details/conversation?requestId=${encodeURIComponent(row.requestId)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => setRowState(row.id, { status: "done", data: payload.conversation, notice: payload.notice }))
+      .catch(() => setRowState(row.id, { status: "error", error: "对话内容加载失败" }));
+  };
   return (
     <Card className="min-w-0 overflow-hidden" padding="sm">
       <PanelHeader
         icon="receipt_long"
         eyebrow="CALL DETAILS"
         title="模型调用明细"
-        description="当前筛选时间范围内的实际模型调用，按最近时间倒序展示。"
+        description="当前筛选时间范围内的实际模型调用，按最近时间倒序展示。展开任意一行可查看该次调用发送给模型的对话内容。"
         action={<span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">共 {fmt(totalCalls)} 条 · 展示最近 {fmt(rows.length)} 条</span>}
       />
       {!rows.length ? (
@@ -235,36 +315,58 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
                 <th className="px-3 py-2.5 text-right">总流量</th>
                 <th className="px-3 py-2.5 text-right">成本</th>
                 <th className="px-3 py-2.5 text-left">端点</th>
+                <th className="px-3 py-2.5 text-left">对话</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {rows.map((row) => (
-                <tr key={row.id} className="transition-colors hover:bg-primary/[0.025]">
-                  <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-text-muted">{formatCallTime(row.timestamp)}</td>
-                  <td className="max-w-[130px] px-3 py-2.5">
-                    <p className="truncate font-semibold text-text-main" title={row.keyName}>{row.keyName}</p>
-                  </td>
-                  <td className="max-w-[190px] px-3 py-2.5">
-                    <p className="truncate font-semibold text-text-main" title={row.model}>{row.model}</p>
-                    <p className="mt-0.5 truncate text-[10px] text-text-muted">{row.provider}</p>
-                  </td>
-                  <td className="max-w-[180px] px-3 py-2.5">
-                    <p className="truncate font-medium text-text-main" title={row.appName}>{row.appName}</p>
-                    <p className="mt-0.5 truncate font-mono text-[10px] text-text-muted" title={row.sourceIp}>{row.sourceIp || "IP 未采集"}</p>
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right">
-                    <span className="text-indigo-500">{fmtTokens(row.promptTokens)}</span>
-                    <span className="px-1 text-text-muted">/</span>
-                    <span className="text-emerald-500">{fmtTokens(row.completionTokens)}</span>
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-primary">{fmtTokens(row.totalTokens)}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-indigo-600">{formatBytes(row.requestBytes)}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-emerald-600">{formatBytes(row.responseBytes)}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-cyan-600">{formatBytes(row.totalBytes)}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-warning">{fmtCost(row.cost)}</td>
-                  <td className="max-w-[170px] px-3 py-2.5 font-mono text-[11px] text-text-muted" title={row.endpoint}>{row.endpoint}</td>
-                </tr>
-              ))}
+              {rows.map((row) => {
+                const state = expanded[row.id];
+                return (
+                  <Fragment key={row.id}>
+                    <tr className="transition-colors hover:bg-primary/[0.025]">
+                      <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-text-muted">{formatCallTime(row.timestamp)}</td>
+                      <td className="max-w-[130px] px-3 py-2.5">
+                        <p className="truncate font-semibold text-text-main" title={row.keyName}>{row.keyName}</p>
+                      </td>
+                      <td className="max-w-[190px] px-3 py-2.5">
+                        <p className="truncate font-semibold text-text-main" title={row.model}>{row.model}</p>
+                        <p className="mt-0.5 truncate text-[10px] text-text-muted">{row.provider}</p>
+                      </td>
+                      <td className="max-w-[180px] px-3 py-2.5">
+                        <p className="truncate font-medium text-text-main" title={row.appName}>{row.appName}</p>
+                        <p className="mt-0.5 truncate font-mono text-[10px] text-text-muted" title={row.sourceIp}>{row.sourceIp || "IP 未采集"}</p>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                        <span className="text-indigo-500">{fmtTokens(row.promptTokens)}</span>
+                        <span className="px-1 text-text-muted">/</span>
+                        <span className="text-emerald-500">{fmtTokens(row.completionTokens)}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-primary">{fmtTokens(row.totalTokens)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-indigo-600">{formatBytes(row.requestBytes)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-emerald-600">{formatBytes(row.responseBytes)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-cyan-600">{formatBytes(row.totalBytes)}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 text-right font-semibold text-warning">{fmtCost(row.cost)}</td>
+                      <td className="max-w-[170px] px-3 py-2.5 font-mono text-[11px] text-text-muted" title={row.endpoint}>{row.endpoint}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleConversation(row)}
+                          aria-expanded={Boolean(state)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] font-semibold text-text-muted transition-colors hover:border-primary/35 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        >
+                          <span className={`material-symbols-outlined text-[15px] transition-transform ${state ? "rotate-90" : ""}`}>chevron_right</span>
+                          {state ? "收起" : "查看"}
+                        </button>
+                      </td>
+                    </tr>
+                    {state && (
+                      <tr className="bg-bg-subtle/40">
+                        <td colSpan={12} className="px-3 py-3"><ConversationPanel state={state} /></td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -310,7 +412,7 @@ CaptureStatus.propTypes = {
   hasAppData: PropTypes.bool.isRequired,
 };
 
-export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null }) {
+export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, chartRefreshToken = null, loading = false }) {
   const [detailsSelection, setDetailsSelection] = useState(null);
   // The drawer captures the range it was opened with, so a range/scope change
   // must close it. This used to fall out of the parent remounting on its key.
@@ -381,6 +483,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           valueTitle={`模型调用次数 ${fmt(stats.totalRequests)}`}
           tone="sky"
           points={recent.map((item) => item.requests || 0)}
+          loading={loading}
           metrics={[
             { label: "已完成", value: fmt(stats.completedRequests), tone: "success" },
             { label: "失败", value: fmt(stats.failedRequests), tone: "danger" },
@@ -394,6 +497,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           valueTitle={`输入 Token ${fmt(stats.totalPromptTokens)}`}
           tone="indigo"
           points={recent.map((item) => item.promptTokens || 0)}
+          loading={loading}
           detail={`缓存命中 ${fmtTokens(stats.totalCachedTokens)}`}
         />
         <StatCard
@@ -403,6 +507,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           valueTitle={`输出 Token ${fmt(stats.totalCompletionTokens)}`}
           tone="emerald"
           points={recent.map((item) => item.completionTokens || 0)}
+          loading={loading}
           detail={`总消耗 ${fmtTokens(totalTokens)}`}
         />
         <StatCard
@@ -412,6 +517,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           valueTitle={`总流量 ${formatBytes(stats.totalTrafficBytes, { maximumFractionDigits: 2 })}`}
           tone="cyan"
           points={recent.map((item) => item.trafficBytes || 0)}
+          loading={loading}
           metrics={[
             { label: "↑ 上行", value: formatBytes(stats.totalRequestBytes), tone: "sky" },
             { label: "↓ 下行", value: formatBytes(stats.totalResponseBytes), tone: "cyan" },
@@ -423,6 +529,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           value={fmtCost(stats.totalCost)}
           tone="amber"
           points={recent.map((item) => item.cost || 0)}
+          loading={loading}
           detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`}
         />
         <StatCard
@@ -431,6 +538,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           value={apiKeyId ? "—" : fmt(stats.activeRequests?.length)}
           tone="violet"
           points={recent.map((item) => item.requests || 0)}
+          loading={loading}
           detail={apiKeyId ? "实时队列不保留 API Key" : `识别应用 ${fmt(apps.length)} 个 · Top 使用人：${topPerson?.keyName || "暂无"}`}
         />
       </div>
@@ -548,4 +656,5 @@ UsageBreakdownGrid.propTypes = {
   apiKeyId: PropTypes.string,
   scope: PropTypes.string,
   chartRefreshToken: PropTypes.number,
+  loading: PropTypes.bool,
 };

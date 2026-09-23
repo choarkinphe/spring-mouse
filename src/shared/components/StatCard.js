@@ -2,6 +2,7 @@
 
 import PropTypes from "prop-types";
 import Card from "./Card";
+import { Skeleton } from "./Loading";
 import { cn } from "@/shared/utils/cn";
 
 // One tone table for every accent the usage cards use. Each entry drives the
@@ -66,6 +67,7 @@ export default function StatCard({
   points,
   metrics,
   detail,
+  loading = false,
   className,
 }) {
   const palette = TONES[tone] || TONES.primary;
@@ -81,14 +83,30 @@ export default function StatCard({
             </span>
             <span className="truncate text-[11px] font-bold uppercase tracking-[0.12em] text-text-muted">{eyebrow}</span>
           </div>
-          <p className={cn("mt-2.5 truncate text-2xl font-bold tracking-tight", palette.accent)} title={valueTitle || value}>
-            {value}
-          </p>
+          {/* While a range switch is in flight the previous range's number is no
+              longer valid, so show a placeholder instead of a value that reads
+              as current. aria-busy announces the pending update to AT. */}
+          {loading ? (
+            <div className="mt-2.5 flex items-center gap-2" aria-busy="true" aria-label="正在计算">
+              <Skeleton className="h-7 w-24" />
+              <span className="material-symbols-outlined animate-spin text-[16px] text-primary">progress_activity</span>
+            </div>
+          ) : (
+            <p className={cn("mt-2.5 truncate text-2xl font-bold tracking-tight", palette.accent)} title={valueTitle || value}>
+              {value}
+            </p>
+          )}
         </div>
-        {points?.length ? <Sparkline points={points} color={palette.spark} /> : null}
+        {!loading && points?.length ? <Sparkline points={points} color={palette.spark} /> : null}
       </div>
 
-      {metrics?.length ? (
+      {loading ? (
+        <div className="mt-2 flex gap-1.5" aria-hidden="true">
+          {Array.from({ length: metrics?.length || (detail ? 1 : 2) }, (_, index) => (
+            <Skeleton key={index} className="h-8 flex-1" />
+          ))}
+        </div>
+      ) : metrics?.length ? (
         <div className="mt-2 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${metrics.length}, minmax(0, 1fr))` }}>
           {metrics.map((metric) => {
             const metricPalette = TONES[metric.tone] || palette;
@@ -123,5 +141,6 @@ StatCard.propTypes = {
     tone: PropTypes.oneOf(Object.keys(TONES)),
   })),
   detail: PropTypes.string,
+  loading: PropTypes.bool,
   className: PropTypes.string,
 };

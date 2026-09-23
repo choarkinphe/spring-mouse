@@ -275,7 +275,7 @@ async function recoverPending(client) {
 }
 
 /**
- * Bring the rollup up to date, one day per idle tick.
+ * Bring the rollup up to date, one day per tick.
  *
  * The rollup only accumulates from the moment this writer runs, so an instance
  * upgraded from a build without it (or one whose rollup shape changed) has every
@@ -285,28 +285,51 @@ async function recoverPending(client) {
  * WHY ONE DAY PER TICK, ON THE INGEST LOOP'S OWN CONNECTION: the rebuild wraps a
  * day in BEGIN…COMMIT, and `persistBatch` wraps its batch in a SAVEPOINT. Running
  * the rebuild concurrently on the same connection would nest one inside the
- * other. Driving it from the idle branch keeps a single transaction in flight at
- * a time, and lets ingestion interleave between days instead of stalling for the
- * whole rebuild.
+ * other. Driving it sequentially keeps a single transaction in flight at a time,
+ * and lets ingestion interleave between days instead of stalling for the whole
+ * rebuild.
  *
  * Nothing reads the rollup until `completeThrough` covers the requested range, so
  * a rebuild in progress never serves a half-built day.
+ *
+ * NOT ONE-SHOT. This used to latch `done` after the first pass and never look
+ * again. A new local day then made the rollup behind again with nothing to
+ * advance `completeThrough`, so from the second day on the dashboard fell back to
+ * the raw scan — the slow path the rollup exists to avoid. It is also driven from
+ * the ingest branch (not only idle ticks): a busy gateway has no idle ticks, so
+ * the initial backfill could never finish there.
  */
-const rebuildState = { pending: null, done: false };
+const rebuildState = { pending: null, done: false, nextCheckAt: 0 };
+// How often to re-check for a new day / newly-stale rows once the rollup is
+// caught up. Cheap: one indexed MAX()/MIN() read when there is nothing to do.
+const ROLLUP_RECHECK_MS = Math.max(10_000, Number(process.env.SPRING_MOUSE_ROLLUP_RECHECK_MS || 60_000));
 
-function nextRebuildDay() {
+function nextRebuildDay(now = Date.now()) {
   if (rebuildState.done) return null;
   const database = openDatabase();
   if (!database) { rebuildState.done = true; return null; }
   try {
     if (!rebuildState.pending) {
-      if (!rollupNeedsBackfill(database)) { rebuildState.done = true; return null; }
-      rebuildState.pending = historyDateKeys(database);
-      console.log(`[UsageWriter] rollup is behind usageHistory; rebuilding ${rebuildState.pending.length} day(s)`);
+      if (now < rebuildState.nextCheckAt) return null;
+      if (!rollupNeedsBackfill(database)) {
+        rebuildState.nextCheckAt = now + ROLLUP_RECHECK_MS;
+        return null;
+      }
+      // Only days AFTER the last completed one can be stale. Rebuilding every
+      // historical day again (what the old code did) would re-scan the whole
+      // table for no reason; past days are already final.
+      const all = historyDateKeys(database);
+      const completeThrough = getCompleteThrough(database);
+      const stale = completeThrough ? all.filter((day) => day > completeThrough) : all;
+      if (!stale.length) { rebuildState.nextCheckAt = now + ROLLUP_RECHECK_MS; return null; }
+      rebuildState.pending = stale;
+      console.log(`[UsageWriter] rollup is behind usageHistory; rebuilding ${stale.length} day(s)`);
     }
     const day = rebuildState.pending.shift() || null;
     if (day === null) {
-      rebuildState.done = true;
+      // Caught up. Do not latch `done`; re-check after the cooldown so a new day
+      // is picked up without a restart.
+      rebuildState.nextCheckAt = Date.now() + ROLLUP_RECHECK_MS;
       console.log(`[UsageWriter] rollup rebuild complete through ${getCompleteThrough(database)}`);
       return null;
     }
@@ -354,13 +377,18 @@ async function main() {
         // Idle tick: a natural place to run retention and advance the rollup
         // rebuild, both of which would otherwise compete with ingestion for the
         // write lock. maybePrune() self-throttles to PRUNE_INTERVAL_MS; the
-        // rebuild advances at most one day per idle tick.
+        // rebuild advances at most one day per tick.
         await maybePrune();
         await rebuildNextDay();
         continue;
       }
       await persistWithRetry(client, messages);
       await maybePrune();
+      // Also advance the rollup after ingesting, not only on idle ticks. A busy
+      // gateway may never see an empty read, and without this the backfill (and
+      // each new day) would never catch up — leaving the board on the slow raw
+      // scan. `nextRebuildDay` self-throttles, so this is a no-op when caught up.
+      await rebuildNextDay();
     } catch (error) {
       if (!stopping) {
         console.error("[UsageWriter] batch failed:", error.message);

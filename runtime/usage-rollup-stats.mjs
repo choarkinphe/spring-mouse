@@ -27,6 +27,7 @@ import {
   buildRecentRequests,
   buildLast10Minutes,
   emptyStats,
+  getRecentCallDetails,
   getTrafficRange,
   getTrafficSummary,
   getTrafficTotals,
@@ -74,6 +75,10 @@ export function runRollupStats(adapter, {
   Object.assign(stats, aggregate, { byUser, source: "rollup" });
 
   stats.last10Minutes = buildLast10Minutes(adapter, range, now);
+  // A bounded recent window, not a range scan — same helper the raw path uses.
+  // Without this the board's 模型调用明细 stayed empty whenever the range was
+  // served from the rollup (every day-aligned calendar range).
+  stats.recentCallDetails = getRecentCallDetails(adapter, period, range, apiKeyMap, providerNodeNameMap);
   // The per-person histograms are the only source of the global rhythm, so sum
   // them once rather than per bucket.
   const rhythm = globalRhythm(byUser);

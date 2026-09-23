@@ -9,7 +9,7 @@ import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
 import { enqueueUsageEvent, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
 import { getTrafficBuckets, getTrafficSummary, getTrafficTotals } from "./trafficRepo.js";
 import { runUsageAggregation } from "../usageAggregatePool.js";
-import { getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
+import { applyEventToRollup, getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
 import { isDayAlignedRange, localDateKey } from "../../../../runtime/usage-rollup-read.mjs";
 
 function maskApiKey(key) {
@@ -625,6 +625,36 @@ function persistUsageRecord(db, record, knownKeyId, promptTokens, completionToke
     const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
     db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
     inserted = true;
+
+    // Keep the rollup in step with the row we just wrote. The Docker path does
+    // this in the writer (applyEventToRollup); the web-side direct write did not,
+    // so without this the rollup's day row would go stale between rebuilds and
+    // the dashboard's fast path would under-report. Same idempotent delta as the
+    // writer, applied in the SAME transaction as the insert so the two agree at
+    // every commit boundary.
+    try {
+      applyEventToRollup(db, {
+        requestId: record.requestId,
+        timestamp: record.timestamp,
+        startedAt: record.startedAt,
+        completedAt: record.completedAt,
+        provider: record.provider || null,
+        model: record.model || null,
+        connectionId: record.connectionId || null,
+        apiKeyId: record.apiKeyId,
+        endpoint: record.endpoint || null,
+        promptTokens,
+        completionTokens,
+        cost: record.cost || 0,
+        status: record.status || "success",
+        tokens: record.tokens || {},
+        meta: record.meta || {},
+      });
+    } catch (error) {
+      // A rollup hiccup must not fail the usage write that already succeeded;
+      // the maintainer rebuilds the day anyway.
+      console.warn("[UsageRollup] inline delta failed:", error?.message || error);
+    }
   });
   return inserted;
 }

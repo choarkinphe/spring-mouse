@@ -119,6 +119,14 @@ async function runHeavyStartup() {
   import("@/shared/services/pricingAutoSync.js")
     .then(({ startPricingAutoSync }) => startPricingAutoSync(settings))
     .catch((e) => console.log("[PricingAutoSync] scheduler start failed:", e.message));
+
+  // Keep the daily rollup current so the dashboard's day-aligned ranges read the
+  // fast path. The Docker writer already does this; outside Docker (CLI /
+  // standalone) nothing did, so every range switch paid the full raw scan. The
+  // maintainer stands down while a live writer heartbeat is present.
+  import("@/lib/db/rollupMaintainer.js")
+    .then(({ startRollupMaintainer }) => startRollupMaintainer())
+    .catch((e) => console.log("[RollupMaintainer] start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

@@ -15,6 +15,7 @@ import {
   ROLLUP_TABLE,
 } from "../../runtime/usage-rollup.mjs";
 import { runRollupAggregation, readUserRollup } from "../../runtime/usage-rollup-read.mjs";
+import { runRollupStats } from "../../runtime/usage-rollup-stats.mjs";
 import { runAggregation } from "../../runtime/usage-aggregate.mjs";
 
 /**
@@ -245,6 +246,30 @@ describe("usage rollup — agreement with the raw aggregation", () => {
     // byUser.models uses the DISPLAY name, as the raw path's person branch does.
     expect(Object.keys(rolledByUser(db, override)["key-1"].models)).toEqual(["gpt-5.6-sol (Codex Pro)"]);
     expect(Object.keys(raw.byUser["key-1"].models)).toEqual(["gpt-5.6-sol (Codex Pro)"]);
+    db.close();
+  });
+
+  it("fills recentCallDetails, the bounded recent window the board's detail table reads", () => {
+    // Regression: runRollupStats assembled the aggregate dimensions but never set
+    // recentCallDetails, so the board's 模型调用明细 was empty for every day-aligned
+    // range (which is exactly what the rollup serves). The raw path set it, so the
+    // home page's rolling window worked and the bug hid.
+    const events = [makeEvent({ requestId: "a" }), makeEvent({ requestId: "b", day: "2026-09-19" })];
+    const db = makeDb(events);
+
+    const rolled = runRollupStats(adapterOf(db), { period: "all", range: {}, ...maps, now: new Date("2026-09-21T00:00:00Z") });
+    const raw = rawStats(db);
+
+    expect(rolled.recentCallDetails.length).toBe(raw.recentCallDetails.length);
+    expect(rolled.recentCallDetails.length).toBeGreaterThan(0);
+    // The join key back to requestDetails, without which the conversation lookup
+    // has nothing to match on.
+    expect(rolled.recentCallDetails[0].requestId).toBeTruthy();
+    expect(rolled.recentCallDetails[0]).toEqual(expect.objectContaining({
+      requestId: raw.recentCallDetails[0].requestId,
+      model: raw.recentCallDetails[0].model,
+      totalTokens: raw.recentCallDetails[0].totalTokens,
+    }));
     db.close();
   });
 });

@@ -199,6 +199,7 @@ export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = 
                 fill="url(#gradTokens)"
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
             ) : null}
             {selectedMetrics.includes("cost") ? (
@@ -211,6 +212,7 @@ export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = 
                 strokeWidth={2.25}
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
             ) : null}
             {selectedMetrics.includes("trafficBytes") ? (
@@ -223,6 +225,7 @@ export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = 
                 strokeWidth={2.25}
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
             ) : null}
             {selectedMetrics.includes("requests") ? (
@@ -236,6 +239,7 @@ export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = 
                 strokeDasharray="5 3"
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
             ) : null}
           </ComposedChart>

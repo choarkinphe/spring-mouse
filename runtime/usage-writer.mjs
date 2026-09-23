@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { applyEventToRollup, ensureRollupTable } from "./usage-rollup.mjs";
 
 const redisUrl = process.env.SPRING_MOUSE_REDIS_URL || "redis://127.0.0.1:6379";
 const dataDir = process.env.DATA_DIR || "/app/data";
@@ -47,6 +48,10 @@ function openDatabase() {
   const ready = candidate.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usageHistory'").get();
   const columns = ready ? candidate.prepare("PRAGMA table_info(usageHistory)").all() : [];
   if (!ready || !columns.some((column) => column.name === "trafficRequestId")) { candidate.close(); return null; }
+  // The rollup table is owned by the writer (it is the only thing that writes
+  // it), so create it here rather than depending on the web process's migration
+  // having run. Idempotent.
+  try { ensureRollupTable(candidate); } catch (e) { console.warn("[UsageWriter] rollup table init failed:", e.message); }
   db = candidate;
   return db;
 }
@@ -75,6 +80,10 @@ function persistBatch(events) {
       if (Number(result.changes || 0) === 0) continue;
       insertedCount++;
       if (event.knownApiKeyId) lastUsedStmt.run(event.completedAt, event.completedAt, event.knownApiKeyId);
+      // Rollup accumulates only for rows that actually landed. A re-delivered
+      // event reports changes: 0 above and never reaches here, so the rollup
+      // stays in step with usageHistory without needing its own dedup.
+      applyEventToRollup(database, event);
     }
 
     if (insertedCount > 0) {

@@ -1,28 +1,7 @@
 import { NextResponse } from "next/server";
-import { getAdapter } from "@/lib/db/driver.js";
-import { getCustomModels } from "@/lib/db/repos/aliasRepo.js";
-import { getPricingForModel, updatePricing } from "@/lib/db/repos/pricingRepo.js";
-import { fetchModelsDevCatalog, resetModelsDevCatalogCache } from "@/shared/utils/modelCatalog";
-import { buildPricingFromCatalog, collectPricingTargets } from "@/shared/utils/pricingSync";
+import { syncModelPricing } from "@/shared/services/pricingSyncService";
 
 export const dynamic = "force-dynamic";
-
-/**
- * Distinct (provider, model) pairs from real traffic. Needed because a channel
- * can serve models that were never synced into `customModels` — those are
- * exactly the ones most likely to be missing a price.
- */
-async function readUsagePairs(db, providerId) {
-  try {
-    const rows = providerId
-      ? db.all(`SELECT DISTINCT provider, model FROM usageHistory WHERE provider = ? AND model IS NOT NULL`, [providerId])
-      : db.all(`SELECT DISTINCT provider, model FROM usageHistory WHERE model IS NOT NULL`);
-    return rows || [];
-  } catch {
-    // usageHistory may not exist on a very fresh install — not fatal.
-    return [];
-  }
-}
 
 /**
  * POST /api/pricing/sync
@@ -44,45 +23,20 @@ export async function POST(request) {
 
     // A manual action must observe upstream truth, not a cache filled by an
     // earlier "sync models" click.
-    resetModelsDevCatalogCache();
-    const catalog = await fetchModelsDevCatalog();
-    if (!catalog) {
-      return NextResponse.json(
-        { error: "The model catalog is unreachable. Check outbound network access to models.dev." },
-        { status: 502 },
-      );
+    const result = await syncModelPricing({ providerId, dryRun, forceCatalogRefresh: true });
+
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: 502 });
     }
-
-    const db = await getAdapter();
-    const [customModels, usagePairs] = await Promise.all([
-      getCustomModels(),
-      readUsagePairs(db, providerId),
-    ]);
-
-    const targets = collectPricingTargets({ customModels, usagePairs, providerId });
-    if (targets.length === 0) {
-      return NextResponse.json({ success: true, total: 0, stats: null, message: "No models to price for this channel." });
-    }
-
-    const { pricing, stats, unresolved } = await buildPricingFromCatalog(catalog, targets, {
-      resolveCurrent: getPricingForModel,
-    });
-
-    const total = stats.added + stats.fixed;
-    if (dryRun) {
-      return NextResponse.json({ success: true, dryRun: true, total, stats, unresolved: unresolved.slice(0, 50) });
-    }
-
-    if (total > 0) await updatePricing(pricing);
-
     return NextResponse.json({
       success: true,
-      total,
-      added: stats.added,
-      fixed: stats.fixed,
-      stats,
-      // Truncated: the full list can be long and is only useful as a hint.
-      unresolved: unresolved.slice(0, 50),
+      dryRun: result.dryRun === true,
+      total: result.total,
+      added: result.added,
+      fixed: result.fixed,
+      stats: result.stats,
+      unresolved: result.unresolved,
+      ...(result.message ? { message: result.message } : {}),
     });
   } catch (error) {
     console.error("Failed to synchronize model pricing:", error);

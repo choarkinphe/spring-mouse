@@ -113,6 +113,12 @@ async function runHeavyStartup() {
   import("@/sse/services/backgroundTokenRefresh.js")
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
+
+  // Periodic pricing refresh. Opt-in via settings; the call is a no-op when the
+  // setting is off, so it is safe to register unconditionally here.
+  import("@/shared/services/pricingAutoSync.js")
+    .then(({ startPricingAutoSync }) => startPricingAutoSync(settings))
+    .catch((e) => console.log("[PricingAutoSync] scheduler start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

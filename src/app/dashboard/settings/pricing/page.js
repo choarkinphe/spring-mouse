@@ -1,37 +1,99 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback } from "react";
 import Card from "@/shared/components/Card";
+import Toggle from "@/shared/components/Toggle";
 import PricingModal from "@/shared/components/PricingModal";
 
+const fmtTime = (iso) => {
+  if (!iso) return "从未";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "从未";
+  return d.toLocaleString();
+};
+
 export default function PricingSettingsPage() {
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadPricing();
-  }, []);
+  const [settings, setSettings] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncError, setSyncError] = useState(null);
 
-  const loadPricing = async () => {
+  const loadPricing = useCallback(async () => {
     setLoading(true);
     try {
       const response = await fetch("/api/pricing");
-      if (response.ok) {
-        const data = await response.json();
-        setCurrentPricing(data);
-      }
+      if (response.ok) setCurrentPricing(await response.json());
     } catch (error) {
       console.error("Failed to load pricing:", error);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const response = await fetch("/api/settings");
+      if (response.ok) setSettings(await response.json());
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    }
+  }, []);
+
+  // Initial load: fetching server state on mount is the legitimate use of this
+  // effect; the rule's concern (cascading renders) does not apply to a one-shot
+  // mount fetch.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadPricing();
+    loadSettings();
+  }, [loadPricing, loadSettings]);
+
+  const handlePricingUpdated = () => loadPricing();
+
+  const handleSync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const res = await fetch("/api/pricing/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSyncError(data.error || "同步失败");
+        return;
+      }
+      setSyncResult(data);
+      await loadPricing();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("pricingChanged"));
+    } catch (error) {
+      setSyncError(error.message);
+    } finally {
+      setSyncing(false);
+    }
   };
 
-  const handlePricingUpdated = () => {
-    loadPricing();
+  const handleToggleAutoSync = async (next) => {
+    // Optimistic: the PATCH is authoritative, but the switch should not lag.
+    setSettings((prev) => ({ ...(prev || {}), pricingAutoSyncEnabled: next }));
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pricingAutoSyncEnabled: next }),
+      });
+      if (res.ok) setSettings(await res.json());
+      else await loadSettings();
+    } catch {
+      await loadSettings();
+    }
   };
 
   // Count total models with pricing
@@ -49,6 +111,8 @@ export default function PricingSettingsPage() {
     if (!currentPricing) return [];
     return Object.keys(currentPricing).sort();
   };
+
+  const autoSyncEnabled = settings?.pricingAutoSyncEnabled === true;
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -95,6 +159,62 @@ export default function PricingSettingsPage() {
           </div>
         </Card>
       </div>
+
+      {/* models.dev sync */}
+      <Card className="p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">从 models.dev 同步定价</h2>
+            <p className="text-text-muted mt-1 text-sm">
+              为尚无定价的模型补齐单价。已有定价（含手工调整）不会被覆盖，
+              仅修正被通配符错误匹配的变体。
+            </p>
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="shrink-0 px-4 py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {syncing ? "同步中..." : "立即同步"}
+          </button>
+        </div>
+
+        {syncError && (
+          <p className="mt-3 text-sm text-red-500 break-words">{syncError}</p>
+        )}
+
+        {syncResult && (
+          <div className="mt-3 text-sm text-text-muted">
+            {syncResult.message ? (
+              <p>{syncResult.message}</p>
+            ) : (
+              <p>
+                新增 <strong className="text-text-main">{syncResult.added ?? 0}</strong>，
+                修正 <strong className="text-text-main">{syncResult.fixed ?? 0}</strong>
+                {syncResult.stats ? (
+                  <>
+                    {" "}· 扫描 {syncResult.stats.scanned}，跳过已有 {syncResult.stats.skippedExisting}
+                    {syncResult.stats.unresolved ? `，目录无价 ${syncResult.stats.unresolved}` : ""}
+                  </>
+                ) : null}
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 border-t border-border-subtle pt-4">
+          <Toggle
+            checked={autoSyncEnabled}
+            onChange={handleToggleAutoSync}
+            label="定时自动同步"
+            description="每 24 小时自动补齐一次缺失定价（可用 SPRING_MOUSE_PRICING_SYNC_INTERVAL_MS 调整间隔）"
+            ariaLabel="定时自动同步定价"
+          />
+          <p className="mt-2 text-xs text-text-muted">
+            上次自动同步：{fmtTime(settings?.pricingAutoSyncLastRunAt)}
+          </p>
+        </div>
+      </Card>
 
       {/* Info Section */}
       <Card className="p-6">

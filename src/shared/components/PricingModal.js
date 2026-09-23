@@ -75,13 +75,22 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   };
 
   const handleReset = async () => {
-    if (!confirm("Reset all pricing to defaults? This cannot be undone.")) return;
+    // `resetAllPricing` clears the whole user pricing KV — including anything
+    // added by "sync pricing" — and the view then falls back to the static
+    // PROVIDER_PRICING table, which only covers a couple of providers. Say so,
+    // otherwise the model count dropping from hundreds to a handful reads as
+    // data loss.
+    if (!confirm(
+      "将清空全部自定义定价，包括「同步定价」写入的内容和手工调整。\n" +
+      "清除后仅保留内置的默认费率表（覆盖范围小得多）。此操作不可撤销。\n\n确定继续？"
+    )) return;
 
     try {
       const response = await fetch("/api/pricing", { method: "DELETE" });
       if (response.ok) {
         const defaults = getDefaultPricing();
         setPricingData(defaults);
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("pricingChanged"));
       }
     } catch (error) {
       console.error("Failed to reset pricing:", error);

@@ -333,6 +333,15 @@ export async function PATCH(request) {
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "pricingAutoSyncEnabled")) {
+      // Start or stop the periodic pricing refresh to match the new setting.
+      import("@/shared/services/pricingAutoSync")
+        .then(({ configurePricingAutoSync }) => {
+          configurePricingAutoSync(settings);
+        })
+        .catch((error) => console.warn("[PricingAutoSync] settings update failed:", error.message));
+    }
+
     return NextResponse.json(toSafeSettings(settings), { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);

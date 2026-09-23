@@ -72,6 +72,11 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  // Periodic pricing refresh from the shared models.dev catalog. Off by default:
+  // it writes pricing rows, so an operator opts in.
+  pricingAutoSyncEnabled: false,
+  // Persisted so the settings page can show when the last run happened.
+  pricingAutoSyncLastRunAt: null,
 };
 
 async function readRaw() {

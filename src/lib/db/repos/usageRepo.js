@@ -45,9 +45,11 @@ const CONN_CACHE_TTL_MS = 30 * 1000;
 // event via getActiveRequests.
 const STATS_CACHE_TTL_MS = 5000;
 const STATS_STALE_TTL_MS = 15000;
-// Even when an entry is stale, do not kick off another expensive recompute more
-// often than this. Writes invalidate every period on every completed request, so
-// without a floor a busy gateway would re-aggregate continuously.
+// Minimum spacing between background re-aggregations of the same key, measured
+// from when the entry's data was produced. Writes mark entries stale but do not
+// reset this clock (see clearUsageStatsCache) — otherwise a busy gateway, which
+// writes about once a second, would keep pushing the floor out and the refresh
+// would never run.
 const STATS_MIN_REFRESH_INTERVAL_MS = 5000;
 const STATS_CACHE_MAX_ENTRIES = 50;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
@@ -107,13 +109,15 @@ function clearUsageStatsCache() {
   // wait for a full re-aggregation. Each entry is refreshed in the background
   // and expires completely after STATS_STALE_TTL_MS.
   //
-  // Also stamp `invalidatedAt` so getCachedUsageStats can rate-limit recomputes
-  // (STATS_MIN_REFRESH_INTERVAL_MS). Every completed request invalidates every
-  // period, so without that floor a busy gateway would re-scan continuously.
-  const now = Date.now();
+  // NOTE: this must NOT record a per-write timestamp for rate limiting. An
+  // earlier revision stamped `invalidatedAt` here and gated the background
+  // refresh on it; because a busy gateway writes roughly once a second, that
+  // gate never elapsed, so the refresh never ran — the entry then aged past
+  // STATS_STALE_TTL_MS and the next request blocked for a full re-aggregation
+  // (measured on production: a ~1.8s stall every ~15s). The refresh floor is
+  // measured from `createdAt` instead; see getCachedUsageStats.
   for (const entry of usageStatsCache.values()) {
     entry.stale = true;
-    entry.invalidatedAt = now;
   }
 }
 
@@ -1124,12 +1128,18 @@ async function getCachedUsageStats(period = "all", range = {}) {
 
   const canServeStale = cached && now - cached.createdAt < STATS_STALE_TTL_MS;
   if (canServeStale) {
-    // Rate-limit the background recompute. Every completed request invalidates
-    // every period, so on a busy gateway a stale entry can be re-invalidated
-    // faster than the scan completes. Serving the last value until the floor
-    // elapses keeps the worker from being pinned at 100% CPU.
-    const sinceInvalidated = cached.invalidatedAt ? now - cached.invalidatedAt : Infinity;
-    const tooSoon = sinceInvalidated < STATS_MIN_REFRESH_INTERVAL_MS;
+    // Rate-limit the background recompute so a busy gateway cannot pin the
+    // worker: at most one re-aggregation per STATS_MIN_REFRESH_INTERVAL_MS.
+    //
+    // The floor is measured from when this entry's data was produced
+    // (`createdAt`), NOT from the last write. Keying it on writes made the
+    // refresh unreachable on a busy gateway: writes land about once a second,
+    // so the "time since last write" never reached the floor, the background
+    // refresh never started, and the entry eventually aged past
+    // STATS_STALE_TTL_MS — turning the next request into a blocking
+    // re-aggregation (~1.8s, observed every ~15s in production).
+    const sinceComputed = now - cached.createdAt;
+    const tooSoon = sinceComputed < STATS_MIN_REFRESH_INTERVAL_MS;
     if (!cached.refreshPromise && !tooSoon) {
       const refreshPromise = calculateUsageStats(period, range)
         .then((stats) => {
@@ -1140,7 +1150,6 @@ async function getCachedUsageStats(period = "all", range = {}) {
             promise: Promise.resolve(stats),
             stale: false,
             refreshPromise: null,
-            invalidatedAt: 0,
           });
           // The page that received a fast stale snapshot gets the exact update
           // through its already-open SSE connection.
@@ -1162,7 +1171,7 @@ async function getCachedUsageStats(period = "all", range = {}) {
       if (current?.promise === promise) usageStatsCache.delete(key);
       throw error;
     });
-  usageStatsCache.set(key, { createdAt: now, promise, stale: false, refreshPromise: null, invalidatedAt: 0 });
+  usageStatsCache.set(key, { createdAt: now, promise, stale: false, refreshPromise: null });
   trimUsageStatsCache();
   return promise;
 }

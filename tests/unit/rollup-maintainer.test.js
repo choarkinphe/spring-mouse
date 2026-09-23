@@ -148,3 +148,56 @@ describe("rollup maintainer (web process)", () => {
     expect(days).toContain(localDayKey(1));
   });
 });
+
+/**
+ * In Docker the usage-writer ALSO maintains the rollup (today's row by live
+ * increment). The maintainer must stand down while that writer is alive, and
+ * only take over after its heartbeat has been continuously absent — otherwise
+ * two processes could rebuild the same day and drop an increment.
+ */
+describe("rollup maintainer — coexistence with the usage-writer", () => {
+  it("takes over immediately when Redis is not configured (no writer exists)", async () => {
+    const { __test__ } = await import("@/lib/db/rollupMaintainer.js");
+    // The test env has no SPRING_MOUSE_REDIS_URL → no writer is possible.
+    expect(await __test__.writerOwnsRollup()).toBe(false);
+  });
+
+  it("stands down while a live heartbeat is present", async () => {
+    const { __test__ } = await import("@/lib/db/rollupMaintainer.js");
+    // Simulate the writer's heartbeat being fresh, without a real Redis: stub the
+    // redis module the guard imports lazily.
+    vi.doMock("@/lib/redis/client.js", () => ({
+      isRedisConfigured: () => true,
+      getRedisClient: async () => ({ get: async () => String(Date.now()) }),
+    }));
+    vi.resetModules();
+    const fresh = await import("@/lib/db/rollupMaintainer.js");
+    expect(await fresh.__test__.writerOwnsRollup()).toBe(true);
+    expect(fresh.__test__.state.writerAbsentSince).toBeNull();
+    vi.doUnmock("@/lib/redis/client.js");
+  });
+
+  it("waits out the grace window before taking over a stale heartbeat", async () => {
+    process.env.SPRING_MOUSE_ROLLUP_GRACE_MS = "60000";
+    vi.doMock("@/lib/redis/client.js", () => ({
+      isRedisConfigured: () => true,
+      // Stale heartbeat: the writer is gone (or wedged).
+      getRedisClient: async () => ({ get: async () => "1" }),
+    }));
+    vi.resetModules();
+    const { __test__ } = await import("@/lib/db/rollupMaintainer.js");
+
+    // First observation: absent now, but still inside the grace window → the
+    // writer is presumed alive so a restart cannot stomp it.
+    expect(await __test__.writerOwnsRollup()).toBe(true);
+    expect(__test__.state.writerAbsentSince).not.toBeNull();
+
+    // Past the grace window it takes over, so a CLI / crashed-writer install
+    // still gets a fast dashboard.
+    __test__.state.writerAbsentSince = Date.now() - 61_000;
+    expect(await __test__.writerOwnsRollup()).toBe(false);
+
+    vi.doUnmock("@/lib/redis/client.js");
+    delete process.env.SPRING_MOUSE_ROLLUP_GRACE_MS;
+  });
+});

@@ -10,15 +10,20 @@
  * switch paid the full scan.
  *
  * This module closes that gap: the web process itself keeps the rollup current,
- * so the fast path is available regardless of how the server was launched. Where
- * the writer IS running (Docker) this is harmless — both use the same idempotent
- * `rebuildRollupDays`, which recomputes a whole day inside one transaction, and
- * `setCompleteThrough` never moves backwards.
+ * so the fast path is available regardless of how the server was launched.
  *
- * SCHEDULING: one day per tick, throttled, and never on the request path. The
- * rebuild is synchronous SQLite work, so it runs from a timer and yields between
- * days; a rebuild in progress never serves a half-built day because
- * `completeThrough` only advances after a day's transaction commits.
+ * COEXISTENCE WITH THE WRITER: in Docker the writer also maintains the rollup —
+ * today's row by live INCREMENT per committed event. The maintainer therefore
+ * stands down whenever the writer's heartbeat is live, and only takes over after
+ * the heartbeat has been continuously absent for a grace window. That matters
+ * because `rebuildRollupDays` reads `usageHistory` before its write transaction:
+ * two processes rebuilding the same day concurrently could drop an increment.
+ * Within one process this is impossible (the read through COMMIT is synchronous),
+ * so a single maintainer never races its own request-path writes.
+ *
+ * SCHEDULING: one day per tick, throttled, and never on the request path. A
+ * rebuild in progress never serves a half-built day because `completeThrough`
+ * only advances after a day's transaction commits.
  *
  * FAIL-OPEN: any error leaves `completeThrough` where it was, so the dashboard
  * keeps serving raw — degraded speed, never wrong numbers.
@@ -45,6 +50,9 @@ const state = globalThis.__smRollupMaintainer ||= {
   nextCheckAt: 0,
   done: false,
   running: false,
+  // When we first observed no writer heartbeat. The maintainer only takes over
+  // after a full window of continuous absence (see writerOwnsRollup).
+  writerAbsentSince: null,
 };
 
 function log(...args) {
@@ -56,26 +64,59 @@ function log(...args) {
 // from liveUsage.js) to avoid pulling the Redis client into this module.
 const WRITER_HEARTBEAT_KEY = "spring-mouse:usage:writer:heartbeat";
 const WRITER_LIVE_MS = 20_000;
+// How long the writer must be continuously absent before the maintainer takes
+// over. Long enough to ride out a slow day-rebuild or a GC pause, short enough
+// that a CLI / standalone install (no writer at all) starts maintaining quickly.
+const WRITER_TAKEOVER_GRACE_MS = Math.max(30_000, Number(process.env.SPRING_MOUSE_ROLLUP_GRACE_MS || 90_000));
 
 /**
- * Is a live usage-writer maintaining the rollup right now?
+ * Does the usage-writer currently own the rollup?
  *
- * Docker runs one; the CLI/standalone launcher does not (which is the gap this
- * module fills). `false` on any error — including "Redis not configured" — so a
- * plain `npm start` keeps the rollup current.
+ * Docker runs a writer that maintains TODAY's rollup row by live INCREMENT
+ * (`applyEventToRollup` per committed event). A whole-day rebuild must not run
+ * concurrently: `rebuildRollupDays` reads `usageHistory` OUTSIDE its write
+ * transaction, so a writer commit landing between that read and the day's DELETE
+ * would be silently dropped.
+ *
+ * A single missing heartbeat is not enough to conclude the writer is gone — it
+ * may be mid-rebuild on a large day, or briefly blocked. Only after a full
+ * window of CONTINUOUS absence do we take over, which is the CLI / standalone
+ * case (no writer at all) and the Docker case where the writer has crashed.
+ *
+ * Fails safe: any error (including "Redis not configured") is treated as "the
+ * writer owns it" only for the grace window, so a plain `npm start` still takes
+ * over after the grace period elapses.
  */
-async function writerIsLive() {
+async function writerOwnsRollup() {
+  let redisConfigured = false;
+  let live = false;
   try {
     const { getRedisClient, isRedisConfigured } = await import("@/lib/redis/client.js");
-    if (!isRedisConfigured()) return false;
-    const client = await getRedisClient({ required: false });
-    if (!client) return false;
-    const value = await client.get(WRITER_HEARTBEAT_KEY);
-    if (!value) return false;
-    return Date.now() - Number(value) < WRITER_LIVE_MS;
+    redisConfigured = isRedisConfigured();
+    if (redisConfigured) {
+      const client = await getRedisClient({ required: false });
+      const value = client ? await client.get(WRITER_HEARTBEAT_KEY) : null;
+      live = Boolean(value) && (Date.now() - Number(value) < WRITER_LIVE_MS);
+    }
   } catch {
-    return false;
+    // Treated as "not live"; the grace window below still applies when Redis is
+    // configured, so a transient read error cannot make us stomp the writer.
+    live = false;
   }
+
+  // No Redis at all means no writer can exist (the writer is Redis-driven), so
+  // take over immediately — this is the plain `npm start` / CLI case.
+  if (!redisConfigured) return false;
+
+  if (live) {
+    state.writerAbsentSince = null;
+    return true;
+  }
+  // Redis is configured but the heartbeat is missing/stale. The writer may be
+  // starting up, mid-rebuild, or momentarily blocked — only take over after a
+  // full window of continuous absence.
+  if (state.writerAbsentSince === null) state.writerAbsentSince = Date.now();
+  return (Date.now() - state.writerAbsentSince) < WRITER_TAKEOVER_GRACE_MS;
 }
 
 /**
@@ -102,12 +143,11 @@ async function tick() {
   if (!state.pending && now < state.nextCheckAt) return;
   state.running = true;
   try {
-    // Stand down while a live usage-writer owns the rollup. The writer maintains
-    // today's row by live INCREMENT (applyEventToRollup), so a whole-day rebuild
-    // racing it could re-derive a day from a snapshot taken before the writer's
-    // latest insert and drop that increment. When the writer is absent or
-    // unhealthy, nothing else is maintaining the rollup and we take over.
-    if (await writerIsLive()) return;
+    // Stand down while the usage-writer owns the rollup (see writerOwnsRollup).
+    // It maintains today's row by live INCREMENT, so a whole-day rebuild racing
+    // it could re-derive the day from a snapshot taken before the writer's latest
+    // insert and drop that increment.
+    if (await writerOwnsRollup()) return;
 
     const db = await getAdapter();
     ensureRollupTable(db);
@@ -165,4 +205,4 @@ export function stopRollupMaintainer() {
 }
 
 /** Exported for tests: run a single scheduling tick. */
-export const __test__ = { tick, pendingDays };
+export const __test__ = { tick, pendingDays, writerOwnsRollup, state };

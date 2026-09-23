@@ -971,8 +971,11 @@ function getTrafficRange(period, range = {}) {
  *
  * Falling back to raw is always correct. The rollup is an optimisation; it must
  * never be the reason a number is wrong.
+ *
+ * Exported for tests: this gate is what stands between a fast board and a
+ * silently wrong one, so it is worth pinning directly.
  */
-function resolveAggregationSource(db, period, range = {}) {
+export function resolveAggregationSource(db, period, range = {}) {
   if (process.env.SPRING_MOUSE_AGGREGATION_SOURCE === "raw") return "raw";
   try {
     if (!isDayAlignedRange(range)) return "raw";
@@ -1025,7 +1028,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 
   const stats = await runUsageAggregation({
     adapter: db,
-    params: { source: await resolveAggregationSource(db, period, range), period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now: new Date() },
+    params: { source: resolveAggregationSource(db, period, range), period, range, connectionMap, apiKeyMap, providerNodeNameMap, sourceCapture, now: new Date() },
   });
 
   // Live, in-process state is overlaid here: it is not in the DB, so the worker

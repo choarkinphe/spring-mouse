@@ -82,11 +82,84 @@ function buildPreview(value, depth = 0, ancestors = new WeakSet()) {
   return preview;
 }
 
+/**
+ * A human-readable digest of a chat request, for when the full body is too
+ * large to store.
+ *
+ * The point is the QUESTION "what did the user actually send this turn", which a
+ * 200-char slice of the raw JSON does not answer — the messages array is usually
+ * past the truncation point, so the operator sees request metadata and none of
+ * the conversation. This keeps the shape of the conversation: how many messages,
+ * each one's role, and the head of its text.
+ *
+ * Bounded by construction: at most `maxMessages` messages, `perMessageChars`
+ * each, and it gives up after `maxTotalChars` so a pathological body cannot
+ * produce a large summary.
+ */
+const SUMMARY_MAX_MESSAGES = 12;
+const SUMMARY_PER_MESSAGE_CHARS = 400;
+const SUMMARY_MAX_TOTAL_CHARS = 6000;
+
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    // Multimodal content: keep the text parts, name the rest.
+    const parts = [];
+    for (const block of content) {
+      if (typeof block === "string") { parts.push(block); continue; }
+      if (!block || typeof block !== "object") continue;
+      if (typeof block.text === "string") parts.push(block.text);
+      else if (block.type) parts.push(`[${block.type}]`);
+    }
+    return parts.join("\n");
+  }
+  if (content && typeof content === "object") return JSON.stringify(content);
+  return "";
+}
+
+export function summarizeChatRequest(value) {
+  if (!value || typeof value !== "object") return null;
+  const messages = Array.isArray(value.messages) ? value.messages : null;
+  if (!messages || messages.length === 0) return null;
+
+  const out = [];
+  let budget = SUMMARY_MAX_TOTAL_CHARS;
+  let omitted = 0;
+  for (const message of messages) {
+    if (out.length >= SUMMARY_MAX_MESSAGES || budget <= 0) { omitted++; continue; }
+    const text = textOf(message?.content);
+    const head = Array.from(text.slice(0, SUMMARY_PER_MESSAGE_CHARS)).join("");
+    budget -= head.length;
+    out.push({
+      role: message?.role || "unknown",
+      chars: text.length,
+      text: head,
+      truncated: text.length > head.length,
+      ...(Array.isArray(message?.content) ? { parts: message.content.length } : {}),
+      ...(message?.tool_calls ? { toolCalls: message.tool_calls.length } : {}),
+    });
+  }
+
+  return {
+    messageCount: messages.length,
+    messages: out,
+    omittedMessages: omitted,
+    // Non-message knobs worth seeing at a glance, since they are what the
+    // request-level fields above the fold do not carry.
+    model: value.model ?? null,
+    stream: value.stream ?? null,
+    temperature: value.temperature ?? null,
+    maxTokens: value.max_tokens ?? value.max_completion_tokens ?? null,
+    toolCount: Array.isArray(value.tools) ? value.tools.length : null,
+  };
+}
+
 function truncatedValue(value, maxChars) {
   let preview = "[unavailable]";
   try {
     preview = copyStringPrefix(JSON.stringify(buildPreview(value)), PREVIEW_CHARS);
   } catch {}
+  const summary = summarizeChatRequest(value);
   return {
     _truncated: true,
     // The bounded scan intentionally stops as soon as the configured budget is
@@ -95,6 +168,7 @@ function truncatedValue(value, maxChars) {
     _originalSize: maxChars + 1,
     _originalSizeExact: false,
     _preview: preview,
+    ...(summary ? { _summary: summary } : {}),
   };
 }
 
@@ -109,15 +183,17 @@ export function compactJsonField(value, maxChars) {
   try {
     const serialized = JSON.stringify(normalized);
     if (serialized.length <= maxChars) return normalized;
+    const summary = summarizeChatRequest(normalized);
     return {
       _truncated: true,
       _originalSize: serialized.length,
       _originalSizeExact: true,
       _preview: copyStringPrefix(serialized, PREVIEW_CHARS),
+      ...(summary ? { _summary: summary } : {}),
     };
   } catch {
     return truncatedValue(normalized, maxChars);
   }
 }
 
-export const __test__ = { copyStringPrefix, exceedsJsonBudget, buildPreview };
+export const __test__ = { copyStringPrefix, exceedsJsonBudget, buildPreview, textOf };

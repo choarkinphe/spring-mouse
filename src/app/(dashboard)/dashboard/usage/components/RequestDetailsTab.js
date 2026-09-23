@@ -82,11 +82,81 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
   );
 }
 
-function getCachedTokens(tokens) {
-  return tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
+/**
+ * Render the digest of a chat request whose full body was too large to store.
+ *
+ * Answers "what did the user send this turn": the message count, then each
+ * message's role and the head of its text. Roles are colour-coded so the
+ * conversation reads at a glance.
+ */
+const ROLE_STYLES = {
+  system: "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
+  user: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-100",
+  assistant: "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-100",
+  tool: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100",
+};
+
+function RequestConversationSummary({ summary }) {
+  if (!summary?.messages?.length) return null;
+  const knobs = [
+    summary.model ? `模型 ${summary.model}` : null,
+    summary.stream ? "流式" : null,
+    summary.temperature !== null && summary.temperature !== undefined ? `temperature ${summary.temperature}` : null,
+    summary.maxTokens ? `max_tokens ${summary.maxTokens}` : null,
+    summary.toolCount ? `${summary.toolCount} 个工具` : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="mb-4 rounded-lg border border-primary/20 bg-primary/[0.03] p-3 sm:p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="material-symbols-outlined text-[18px] text-primary">forum</span>
+        <span className="text-sm font-semibold text-text-main">
+          本轮对话内容（完整报文过大，以下为摘要）
+        </span>
+        <span className="rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text-muted">
+          {summary.messageCount} 条消息
+        </span>
+      </div>
+
+      {knobs.length > 0 && (
+        <p className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-muted">
+          {knobs.map((knob) => <span key={knob}>{knob}</span>)}
+        </p>
+      )}
+
+      <ol className="space-y-2">
+        {summary.messages.map((message, index) => (
+          <li key={index} className="rounded-md border border-black/5 bg-surface/60 p-2.5 dark:border-white/5">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className={cn(
+                "rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase",
+                ROLE_STYLES[message.role] || ROLE_STYLES.system,
+              )}>
+                {message.role}
+              </span>
+              <span className="text-[10px] text-text-muted">
+                {message.chars} 字符{message.truncated ? "（已截断）" : ""}
+                {message.parts ? ` · ${message.parts} 个内容块` : ""}
+                {message.toolCalls ? ` · ${message.toolCalls} 个工具调用` : ""}
+              </span>
+            </div>
+            <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-text-main">
+              {message.text || "（无文本内容）"}
+            </pre>
+          </li>
+        ))}
+      </ol>
+
+      {summary.omittedMessages > 0 && (
+        <p className="mt-2 text-xs text-text-muted">另有 {summary.omittedMessages} 条消息未包含在摘要中。</p>
+      )}
+    </div>
+  );
 }
 
-function getCacheCreationTokens(tokens) {
+function getCachedTokens(tokens) {
+  return tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
+}function getCacheCreationTokens(tokens) {
   return tokens?.cache_creation_input_tokens || 0;
 }
 
@@ -457,6 +527,13 @@ export default function RequestDetailsTab() {
 
             <div className="space-y-4">
               <CollapsibleSection title="1. Client Request (Input)" defaultOpen={true} icon="input">
+                {/* A body too large to store keeps a digest of the conversation,
+                    because the point of this panel is "what did the user send
+                    this turn" — and the messages array is usually past the
+                    truncation point, so the raw preview shows none of it. */}
+                {selectedDetail.request?._summary ? (
+                  <RequestConversationSummary summary={selectedDetail.request._summary} />
+                ) : null}
                 <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
                   {JSON.stringify(selectedDetail.request, null, 2)}
                 </pre>

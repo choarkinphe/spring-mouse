@@ -37,7 +37,7 @@ export default function RealtimeTimeFilter({ value, onChange, disabled = false }
               onClick={() => onChange(realtimeRange(preset.value))}
               className={`rounded-sm text-xs transition-colors ${
                 selected
-                  ? "font-semibold text-primary underline decoration-primary/40 decoration-2 underline-offset-4"
+                  ? "font-semibold text-primary"
                   : "font-medium text-text-muted hover:text-primary"
               } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
             >

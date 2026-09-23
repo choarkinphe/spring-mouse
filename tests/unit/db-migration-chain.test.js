@@ -35,8 +35,11 @@ describe("Schema migrations", () => {
     const tables = db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map(t => t.name);
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
-"apiKeys", "openPlatformApiKeys", "openPlatformApiCallLogs", "combos", "kv", "usageHistory", "usageDaily", "networkTraffic", "requestDetails",
+"apiKeys", "openPlatformApiKeys", "openPlatformApiCallLogs", "combos", "kv", "usageHistory", "networkTraffic", "requestDetails",
     ]));
+    // usageDaily was a pre-aggregated cache that nothing reads or writes any
+    // more; migration 020 drops it. A fresh DB must not recreate it.
+    expect(tables).not.toContain("usageDaily");
     const usageIndexes = db.all(`PRAGMA index_list(usageHistory)`).map(i => i.name);
     expect(usageIndexes).toContain("idx_uh_key_completed_status_tokens");
     expect(db.all(`PRAGMA table_info(usageHistory)`).map((column) => column.name)).toContain("trafficRequestId");

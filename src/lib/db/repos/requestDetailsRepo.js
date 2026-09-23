@@ -7,9 +7,30 @@ const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 500;
 const DEFAULT_MAX_JSON_SIZE = 128 * 1024;
 const CONFIG_CACHE_TTL_MS = 5000;
+// Age-based retention for requestDetails. Distinct from DEFAULT_MAX_RECORDS,
+// which bounds the row count. 0 = no age limit.
+const DEFAULT_RETENTION_DAYS = 30;
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
+
+/**
+ * Resolve the request-details retention window, in days. The env var is kept as
+ * a fallback for installs that set it before the setting existed; the DB setting
+ * wins. Returns 0 for "no age limit".
+ */
+function resolveRetentionDaysSetting(settings) {
+  const fromSetting = settings?.requestDetailsRetentionDays;
+  if (typeof fromSetting === "number" && Number.isFinite(fromSetting) && fromSetting >= 0) {
+    return Math.floor(fromSetting);
+  }
+  const raw = process.env.SPRING_MOUSE_REQUEST_DETAILS_RETENTION_DAYS;
+  if (raw !== undefined && raw !== "") {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_RETENTION_DAYS;
+}
 
 async function getObservabilityConfig() {
   if (cachedConfig && (Date.now() - cachedConfigTs) < CONFIG_CACHE_TTL_MS) return cachedConfig;
@@ -28,6 +49,9 @@ async function getObservabilityConfig() {
       batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
       flushIntervalMs: Math.min(500, settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10)),
       maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "128", 10)) * 1024,
+      // Age-based retention, independent of the record cap above: whichever
+      // limit is hit first wins. 0 = no age limit.
+      retentionDays: resolveRetentionDaysSetting(settings),
     };
   } catch {
     cachedConfig = {
@@ -36,6 +60,7 @@ async function getObservabilityConfig() {
       batchSize: DEFAULT_BATCH_SIZE,
       flushIntervalMs: DEFAULT_FLUSH_INTERVAL_MS,
       maxJsonSize: DEFAULT_MAX_JSON_SIZE,
+      retentionDays: DEFAULT_RETENTION_DAYS,
     };
   }
   cachedConfigTs = Date.now();
@@ -137,6 +162,14 @@ async function flushToDatabase() {
       if (now - lastRetentionAt >= RETENTION_INTERVAL_MS) {
         lastRetentionAt = now;
         try {
+          // Age-based trim first: it is index-covered (idx_rd_ts) and, unlike the
+          // count-based trim below, it is the one that bounds how far back the
+          // dashboard can look.
+          if (config.retentionDays > 0) {
+            const cutoff = new Date(now - config.retentionDays * 86400_000).toISOString();
+            db.run(`DELETE FROM requestDetails WHERE timestamp < ?`, [cutoff]);
+          }
+
           const cnt = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
           if (cnt && cnt.c > config.maxRecords) {
             db.run(

@@ -9,7 +9,7 @@
 // 22 adds the per-key request-rate override on apiKeys
 // (rpmLimit / rpmQueueMax / queueTimeoutMs).
 // The columns themselves are additive, so syncSchemaFromTables() backfills them.
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -230,12 +230,6 @@ export const TABLES = {
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_uh_request_id ON usageHistory(requestId) WHERE requestId IS NOT NULL",
       "CREATE INDEX IF NOT EXISTS idx_uh_traffic_request_id ON usageHistory(trafficRequestId)",
     ],
-  },
-  usageDaily: {
-    columns: {
-      dateKey: "TEXT PRIMARY KEY",
-      data: "TEXT NOT NULL",
-    },
   },
   networkTraffic: {
     columns: {

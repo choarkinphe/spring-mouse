@@ -122,6 +122,23 @@ export async function PATCH(request) {
     // Strip protected secrets and retired SSO fields before saving.
     for (const key of [...PROTECTED_SETTING_KEYS, ...RETIRED_SSO_SETTING_KEYS]) delete body[key];
 
+    // Retention windows are consumed by the writer process to compute a delete
+    // cutoff, so a malformed value must never reach the settings row: a negative
+    // or non-numeric value would make the cutoff invalid, and the writer would
+    // fall back to the default (silently ignoring the operator's intent).
+    // Reject instead of coercing so the caller learns the input was wrong.
+    for (const key of ["usageRetentionDays", "requestDetailsRetentionDays"]) {
+      if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+      const value = body[key];
+      const valid = typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 3650;
+      if (!valid) {
+        return NextResponse.json(
+          { error: `${key} must be an integer between 0 and 3650 (0 = keep forever)` },
+          { status: 400 },
+        );
+      }
+    }
+
     let currentSettings;
     const getCurrentSettings = async () => {
       if (!currentSettings) currentSettings = await getSettings();

@@ -15,9 +15,19 @@ const consumer = `writer-${os.hostname()}-${process.pid}`;
 const batchSize = Math.max(1, Number(process.env.SPRING_MOUSE_USAGE_BATCH_SIZE || 100));
 const blockMs = Math.max(100, Number(process.env.SPRING_MOUSE_USAGE_BLOCK_MS || 1000));
 
-// Retention: usageHistory and networkTraffic grow ~30k rows/day and had no
-// pruning at all. Default keeps 90 days; 0 disables pruning (keep forever).
-const retentionDays = Math.max(0, Number.parseInt(process.env.SPRING_MOUSE_USAGE_RETENTION_DAYS ?? "90", 10) || 0);
+// Retention: usageHistory and networkTraffic grow ~30k rows/day. The window is
+// configurable from the dashboard, so the effective value is read from the
+// settings table at prune time (see resolveRetentionDays).
+//
+// Precedence: the DB setting wins; the env var is kept as a fallback for
+// installs that configured it before the setting existed; then the default.
+// 0 means "keep forever".
+const RETENTION_DAYS_FALLBACK = (() => {
+  const raw = process.env.SPRING_MOUSE_USAGE_RETENTION_DAYS;
+  if (raw === undefined || raw === "") return 90;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 90;
+})();
 const PRUNE_INTERVAL_MS = Math.max(60_000, Number(process.env.SPRING_MOUSE_USAGE_PRUNE_INTERVAL_MS || 60 * 60 * 1000));
 const PRUNE_CHUNK = Math.max(100, Number(process.env.SPRING_MOUSE_USAGE_PRUNE_CHUNK || 5000));
 const lastPruneMetaKey = "usageRetentionLastPruneAt";
@@ -80,6 +90,31 @@ function persistBatch(events) {
 }
 
 /**
+ * Resolve the retention window in days.
+ *
+ * Read from the settings table each time so a dashboard change takes effect on
+ * the next prune without restarting this process. Falls back to the env var,
+ * then the default, when the row is missing or malformed — a broken read must
+ * never silently switch retention off (which would let the tables grow without
+ * bound) or to zero.
+ */
+function resolveRetentionDays(database) {
+  try {
+    const row = database.prepare(`SELECT data FROM settings WHERE id = 1`).get();
+    if (row?.data) {
+      const parsed = JSON.parse(row.data);
+      const value = parsed?.usageRetentionDays;
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        return Math.floor(value);
+      }
+    }
+  } catch {
+    // Fall through to the fallback below.
+  }
+  return RETENTION_DAYS_FALLBACK;
+}
+
+/**
  * Delete rows older than the retention window from both large tables.
  *
  * Chunked + index-covered: each statement deletes at most PRUNE_CHUNK rows via
@@ -91,9 +126,11 @@ function persistBatch(events) {
  * references do not outlive their `networkTraffic` rows by much.
  */
 async function pruneOnce() {
-  if (!retentionDays) return;
   const database = openDatabase();
   if (!database) return;
+
+  const retentionDays = resolveRetentionDays(database);
+  if (!retentionDays) return;
 
   const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
   let removed = 0;
@@ -126,7 +163,9 @@ async function pruneOnce() {
 
 /** Run retention at most once per interval, resuming the persisted schedule. */
 async function maybePrune() {
-  if (!retentionDays || stopping) return;
+  // The effective window is resolved inside pruneOnce (it is read from the DB),
+  // so there is nothing to short-circuit on here beyond shutdown.
+  if (stopping) return;
   if (!lastPruneAt) {
     // First tick after start: honour the persisted timestamp so a restart does
     // not immediately re-run a long prune.

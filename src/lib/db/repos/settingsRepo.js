@@ -77,6 +77,13 @@ const DEFAULT_SETTINGS = {
   pricingAutoSyncEnabled: false,
   // Persisted so the settings page can show when the last run happened.
   pricingAutoSyncLastRunAt: null,
+  // How long to keep usageHistory / networkTraffic rows, in days. 0 = keep
+  // forever. Read by the writer process directly from this table, so a change
+  // takes effect on its next prune without a restart.
+  usageRetentionDays: 90,
+  // How long to keep requestDetails rows, in days. Independent of the record
+  // cap (`observabilityMaxRecords`), which bounds count rather than age.
+  requestDetailsRetentionDays: 30,
 };
 
 async function readRaw() {

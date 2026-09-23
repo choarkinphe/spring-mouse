@@ -58,6 +58,10 @@ export default function ProfilePage() {
   const [apiKeyQuotaForm, setApiKeyQuotaForm] = useState({ fiveHourTokenLimitM: "", weeklyTokenLimitM: "" });
   const [apiKeyQuotaStatus, setApiKeyQuotaStatus] = useState({ type: "", message: "" });
   const [apiKeyQuotaLoading, setApiKeyQuotaLoading] = useState(false);
+  // Retention windows. Kept as strings so the field can be cleared while typing.
+  const [retentionForm, setRetentionForm] = useState({ usage: "", requestDetails: "" });
+  const [retentionStatus, setRetentionStatus] = useState({ type: "", message: "" });
+  const [retentionLoading, setRetentionLoading] = useState(false);
   const [apiKeyRateLimitForm, setApiKeyRateLimitForm] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
   const [apiKeyRateLimitStatus, setApiKeyRateLimitStatus] = useState({ type: "", message: "" });
   const [apiKeyRateLimitLoading, setApiKeyRateLimitLoading] = useState(false);
@@ -76,6 +80,10 @@ export default function ProfilePage() {
         setApiKeyQuotaForm({
           fiveHourTokenLimitM: data?.apiKeyQuotaRules?.fiveHourTokenLimitM?.toString() || "",
           weeklyTokenLimitM: data?.apiKeyQuotaRules?.weeklyTokenLimitM?.toString() || "",
+        });
+        setRetentionForm({
+          usage: data?.usageRetentionDays?.toString() ?? "",
+          requestDetails: data?.requestDetailsRetentionDays?.toString() ?? "",
         });
         setApiKeyRateLimitForm({
           rpmLimit: data?.apiKeyRateLimitRules?.rpmLimit?.toString() || "",
@@ -508,6 +516,42 @@ export default function ProfilePage() {
     }
   };
 
+  const updateRetention = async (event) => {
+    event.preventDefault();
+    setRetentionLoading(true);
+    setRetentionStatus({ type: "", message: "" });
+    // Empty means "use the default", not zero — zero is a meaningful value
+    // (keep forever), so it must be sent explicitly.
+    const parse = (value, fallback) => {
+      const trimmed = String(value ?? "").trim();
+      if (trimmed === "") return fallback;
+      const n = Number.parseInt(trimmed, 10);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          usageRetentionDays: parse(retentionForm.usage, 90),
+          requestDetailsRetentionDays: parse(retentionForm.requestDetails, 30),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update retention");
+      setSettings((prev) => ({ ...prev, ...data }));
+      setRetentionForm({
+        usage: data.usageRetentionDays?.toString() ?? "",
+        requestDetails: data.requestDetailsRetentionDays?.toString() ?? "",
+      });
+      setRetentionStatus({ type: "success", message: "保留策略已更新" });
+    } catch (err) {
+      setRetentionStatus({ type: "error", message: err.message || "An error occurred" });
+    } finally {
+      setRetentionLoading(false);
+    }
+  };
+
   // The editor takes seconds because that is how people reason about a queue
   // wait; the API and the gate take milliseconds.
   const updateApiKeyRateLimitRules = async (event) => {
@@ -897,6 +941,45 @@ export default function ProfilePage() {
                   disabled={loading}
                 />
               </div>
+            </div>
+
+            <div className="border-t border-border/50 pt-4">
+              <div className="mb-3">
+                <p className="font-medium text-sm sm:text-base">数据保留</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  超过保留天数的记录会被定期清理。填 0 表示永久保留。请求明细还受上方「请求诊断明细」的条数上限约束，两者谁先触发就按谁清理。
+                </p>
+              </div>
+              <form onSubmit={updateRetention} className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                <Input
+                  label="用量记录保留天数"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="90"
+                  value={retentionForm.usage}
+                  onChange={(event) => setRetentionForm((prev) => ({ ...prev, usage: event.target.value }))}
+                  disabled={loading || retentionLoading}
+                />
+                <Input
+                  label="请求明细保留天数"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="30"
+                  value={retentionForm.requestDetails}
+                  onChange={(event) => setRetentionForm((prev) => ({ ...prev, requestDetails: event.target.value }))}
+                  disabled={loading || retentionLoading}
+                />
+                <Button type="submit" disabled={loading || retentionLoading} loading={retentionLoading}>
+                  保存
+                </Button>
+              </form>
+              {retentionStatus.message && (
+                <p className={`mt-2 text-xs ${retentionStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+                  {retentionStatus.message}
+                </p>
+              )}
             </div>
           </div>
         </Card>

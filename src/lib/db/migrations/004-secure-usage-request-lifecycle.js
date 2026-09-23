@@ -22,7 +22,9 @@ export default {
     const rows = db.all(`SELECT id, timestamp, apiKey, apiKeyId, startedAt, completedAt FROM usageHistory`);
     // Old daily JSON blobs include raw key values. They are a cache of history,
     // so discard them rather than retaining credentials; reads now aggregate exact history.
-    db.run(`DELETE FROM usageDaily`);
+    // Guarded because migration 020 drops the table entirely — on a fresh
+    // install the table no longer exists by the time this runs.
+    try { db.run(`DELETE FROM usageDaily`); } catch { /* table already gone */ }
 
     for (const row of rows) {
       const apiKeyId = row.apiKeyId || knownKeys.get(row.apiKey) || legacyKeyId(row.apiKey, fingerprintSecret);

@@ -58,6 +58,8 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
       });
 
       if (response.ok) {
+        // Refresh the per-model price badges elsewhere in the dashboard.
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("pricingChanged"));
         onSave?.();
         onClose();
       } else {

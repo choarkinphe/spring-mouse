@@ -69,6 +69,33 @@ export async function getPricingForModel(provider, model) {
   return resolveConst(provider, model);
 }
 
+/**
+ * Resolve pricing for many (provider, model) pairs in one pass.
+ *
+ * `getPricingForModel` re-enters `getPricing()` per call, which is fine for a
+ * single lookup but wasteful when annotating a whole model list (~1300 entries
+ * on /api/models). This reads the merged table once and falls back to the
+ * static resolver for anything the merge layer does not carry.
+ *
+ * @param {Array<{provider: string, model: string}>} entries
+ * @returns {Promise<Map<string, object|null>>} keyed by `${provider}/${model}`
+ */
+export async function getPricingForModels(entries = []) {
+  const allPricing = await getPricing();
+  const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
+  const out = new Map();
+  for (const entry of entries) {
+    const provider = entry?.provider;
+    const model = entry?.model;
+    if (!model) continue;
+    const key = `${provider || ""}/${model}`;
+    if (out.has(key)) continue;
+    const merged = provider ? allPricing[provider]?.[model] : null;
+    out.set(key, merged || resolveConst(provider, model));
+  }
+  return out;
+}
+
 // Atomic merge inside transaction (per-provider read-modify-write)
 export async function updatePricing(pricingData) {
   const db = await getAdapter();

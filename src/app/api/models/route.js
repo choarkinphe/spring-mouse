@@ -5,6 +5,8 @@ import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
+import { getPricingForModels } from "@/lib/db/repos/pricingRepo.js";
+import { toCompactPricing } from "@/shared/utils/pricingSync";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
 
 // GET /api/models - Get models with aliases
@@ -61,6 +63,16 @@ export async function GET(request) {
         caps: pickModelCapabilities(c),
       });
       seen.add(routedModel);
+    }
+
+    // Attach pricing in one pass. `provider` is the registry id (what usage rows
+    // and the pricing tables key on) — deliberately NOT `routedModel`, whose
+    // prefix is the UI alias.
+    const pricingByKey = await getPricingForModels(
+      models.map((m) => ({ provider: m.provider, model: m.model })),
+    );
+    for (const m of models) {
+      m.pricing = toCompactPricing(pricingByKey.get(`${m.provider}/${m.model}`));
     }
 
     // Compressed: this is the largest dashboard read (≈890KB uncompressed, ≈50KB

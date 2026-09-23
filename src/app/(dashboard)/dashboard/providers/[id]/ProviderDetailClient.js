@@ -12,6 +12,7 @@ import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
+import { useModelPricing } from "@/shared/hooks/useModelPricing";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
@@ -46,6 +47,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const params = useParams();
   const providerId = providerIdOverride || params.id;
   const { getCaps } = useModelCaps();
+  const { getPricing } = useModelPricing();
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
@@ -1057,6 +1059,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 value,
               })}
               busyCapabilityKey={rowBusyCapabilityKey}
+              pricing={getPricing(`${model.providerId || providerId}/${model.id}`)}
+              pricingLoaded
               selectable={batchMode}
               selected={selectedModelIds.has(model.id)}
               onToggleSelect={() => toggleModelSelection(model.id)}
@@ -1111,6 +1115,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                 value,
               })}
               busyCapabilityKey={builtInBusyCapabilityKey}
+              pricing={getPricing(`${providerId}/${model.id}`)}
+              pricingLoaded
               selectable={batchMode}
               selected={selectedModelIds.has(model.id)}
               onToggleSelect={() => toggleModelSelection(model.id)}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPricingFromCatalog, collectPricingTargets } from "../../src/shared/utils/pricingSync.js";
+import { buildPricingFromCatalog, collectPricingTargets, toCompactPricing } from "../../src/shared/utils/pricingSync.js";
 
 /**
  * A miniature models.dev payload. Only `cost` / `limit` shapes matter here.
@@ -228,5 +228,38 @@ describe("collectPricingTargets", () => {
     });
 
     expect(targets).toEqual([{ provider: "codex", model: "gpt-6-astra" }]);
+  });
+});
+
+describe("toCompactPricing", () => {
+  it("keeps the two headline rates the dashboard renders", () => {
+    expect(toCompactPricing({ input: 10, output: 50, cached: 1, cache_creation: 12.5 }))
+      .toEqual({ input: 10, output: 50 });
+  });
+
+  it("returns null when no price is known — the '未定价' signal", () => {
+    // Must be distinguishable from a zero rate: `null` means "unknown", which is
+    // what makes an unpriced model visible instead of silently costing $0.
+    expect(toCompactPricing(null)).toBeNull();
+    expect(toCompactPricing(undefined)).toBeNull();
+    expect(toCompactPricing({})).toBeNull();
+  });
+
+  it("rejects a pricing object whose rates are not numbers", () => {
+    expect(toCompactPricing({ input: "abc", output: "def" })).toBeNull();
+    expect(toCompactPricing({ input: NaN, output: Infinity })).toBeNull();
+  });
+
+  it("accepts a numeric string, since Number() coerces it", () => {
+    // Upstream catalogs sometimes emit rates as strings; coercing is right so
+    // the model still bills correctly instead of showing as unpriced.
+    expect(toCompactPricing({ input: "10", output: "50" })).toEqual({ input: 10, output: 50 });
+  });
+
+  it("keeps a partial rate rather than dropping the whole entry", () => {
+    // Some catalog entries omit output. Showing the input rate still tells the
+    // user this model is priced, which is the point of the badge.
+    expect(toCompactPricing({ input: 3 })).toEqual({ input: 3, output: null });
+    expect(toCompactPricing({ output: 15 })).toEqual({ input: null, output: 15 });
   });
 });

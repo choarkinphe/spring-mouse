@@ -280,6 +280,26 @@ export async function buildPricingFromCatalog(catalog, targets = [], { resolveCu
 }
 
 /**
+ * Reduce a full pricing object to the two headline rates the dashboard shows.
+ *
+ * `null` is meaningful and must survive to the client: it means no price is
+ * known, which the model list renders as "未定价". An unpriced model records $0
+ * for every request, so this is the signal that catches a silent billing gap.
+ *
+ * @param {object|null} pricing
+ * @returns {{input: number|null, output: number|null}|null}
+ */
+export function toCompactPricing(pricing) {
+  if (!pricing || typeof pricing !== "object") return null;
+  const input = Number(pricing.input);
+  const output = Number(pricing.output);
+  const hasInput = Number.isFinite(input);
+  const hasOutput = Number.isFinite(output);
+  if (!hasInput && !hasOutput) return null;
+  return { input: hasInput ? input : null, output: hasOutput ? output : null };
+}
+
+/**
  * Collect every (provider, model) pair worth pricing for a channel, from both
  * the channel's model list and its real traffic history.
  *

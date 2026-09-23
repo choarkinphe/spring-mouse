@@ -259,6 +259,10 @@ export const TABLES = {
       model: "TEXT",
       connectionId: "TEXT",
       status: "TEXT",
+      // The user's own prompt text (last `role: "user"` turn), so the usage
+      // table can show "what did the user send" without reading the whole
+      // request JSON. Truncated at write time; "" when there is none.
+      userPrompt: "TEXT",
       data: "TEXT NOT NULL",
     },
     indexes: [
@@ -266,6 +270,10 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+      // The usage table joins usageHistory.requestId → this row's requestId,
+      // which lives inside `data`. A JSON expression index makes that lookup an
+      // index seek instead of a full scan per page.
+      "CREATE INDEX IF NOT EXISTS idx_rd_request_id ON requestDetails(json_extract(data, '$.requestId'))",
     ],
   },
 };

@@ -1,6 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
-import { compactJsonField } from "@/lib/requestDetailCompact.js";
+import { compactJsonField, extractUserPrompt } from "@/lib/requestDetailCompact.js";
 
 // Row-count backstop for requestDetails. Age-based retention
 // (DEFAULT_RETENTION_DAYS below) is the primary lever; this only stops runaway
@@ -108,6 +108,10 @@ function prepareRecord(item, config) {
     ? { ...item.request, headers: sanitizeHeaders(item.request.headers) }
     : item.request;
 
+  // Lifted out of the (possibly compacted) request body so the usage table can
+  // read it as a plain column instead of parsing every row's JSON.
+  const userPrompt = extractUserPrompt(request);
+
   return {
     id: item.id || generateDetailId(item.model),
     requestId: item.requestId || null,
@@ -117,6 +121,7 @@ function prepareRecord(item, config) {
     mouse: item.mouse || undefined,
     timestamp: item.timestamp || new Date().toISOString(),
     status: item.status || null,
+    userPrompt,
     latency: item.latency || {},
     tokens: item.tokens || {},
     request: compactJsonField(request, config.maxJsonSize),
@@ -162,8 +167,8 @@ async function flushToDatabase() {
       db.transaction(() => {
         for (const record of items) {
           db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
+            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, userPrompt, data) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, userPrompt = excluded.userPrompt, data = excluded.data`,
+            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, record.userPrompt || null, stringifyJson(record)]
           );
         }
         const latest = items[items.length - 1];
@@ -308,6 +313,42 @@ export async function getRequestDetailByRequestId(requestId) {
     response: null,
     _notice: "仅找到基础请求记录，完整报文未保存或已被清理。",
   };
+}
+
+/**
+ * User prompts for a page of requests, keyed by `requestId`.
+ *
+ * The usage table lists rows from `usageHistory` but the prompt lives in
+ * `requestDetails`, joined on `requestId` (which is inside the detail JSON, hence
+ * the expression index). One batched query per page rather than a lookup per row.
+ *
+ * Rows written before `userPrompt` existed have only the JSON body, so fall back
+ * to extracting from it — a page of history keeps working across the upgrade.
+ * Missing rows are simply absent from the map.
+ */
+export async function getUserPromptsByRequestIds(requestIds = []) {
+  const ids = [...new Set((requestIds || []).filter((id) => typeof id === "string" && id))];
+  if (ids.length === 0) return {};
+  const db = await getAdapter();
+
+  const result = {};
+  // Chunk to stay under SQLite's bound-parameter limit on a large page.
+  const CHUNK = 400;
+  for (let start = 0; start < ids.length; start += CHUNK) {
+    const chunk = ids.slice(start, start + CHUNK);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = db.all(
+      `SELECT userPrompt, data FROM requestDetails WHERE json_extract(data, '$.requestId') IN (${placeholders})`,
+      chunk,
+    );
+    for (const row of rows) {
+      const detail = parseJson(row.data, {}) || {};
+      const requestId = detail.requestId;
+      if (!requestId || result[requestId] !== undefined) continue;
+      result[requestId] = row.userPrompt || extractUserPrompt(detail.request) || "";
+    }
+  }
+  return result;
 }
 
 const _shutdownHandler = async () => {

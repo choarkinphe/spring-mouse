@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactJsonField, summarizeChatRequest } from "@/lib/requestDetailCompact.js";
+import { compactJsonField, extractUserPrompt, summarizeChatRequest } from "@/lib/requestDetailCompact.js";
 
 /**
  * When a request body is too large to store, the operator still needs to answer
@@ -105,5 +105,54 @@ describe("compactJsonField summary integration", () => {
     const compacted = compactJsonField({ some: "x".repeat(5000) }, 1024);
     expect(compacted._truncated).toBe(true);
     expect(compacted._summary).toBeUndefined();
+  });
+});
+
+/**
+ * The usage table's "用户提问" column shows what the USER sent, not the whole
+ * conversation — mirroring the provider export's "User Prompt". It is the last
+ * user turn's text only: no roles, no assistant replies, no tool metadata.
+ */
+describe("extractUserPrompt", () => {
+  it("returns only the last user message, ignoring system and assistant turns", () => {
+    const prompt = extractUserPrompt({
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: "first question" },
+        { role: "assistant", content: "an answer" },
+        { role: "user", content: "the actual question" },
+      ],
+    });
+    expect(prompt).toBe("the actual question");
+  });
+
+  it("keeps multimodal text and names non-text parts, without the base64 payload", () => {
+    const prompt = extractUserPrompt({
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "describe this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      }],
+    });
+    expect(prompt).toContain("describe this");
+    expect(prompt).toContain("[image_url]");
+    expect(prompt).not.toContain("base64");
+  });
+
+  it("caps the prompt length", () => {
+    const prompt = extractUserPrompt({ messages: [{ role: "user", content: "y".repeat(5000) }] });
+    expect(prompt.length).toBe(2048);
+    // Never split a surrogate pair.
+    const emoji = extractUserPrompt({ messages: [{ role: "user", content: "🙂".repeat(3000) }] });
+    expect(emoji).not.toContain("�");
+  });
+
+  it("returns empty when there is no user turn", () => {
+    expect(extractUserPrompt({ messages: [{ role: "assistant", content: "hi" }] })).toBe("");
+    expect(extractUserPrompt({ messages: [] })).toBe("");
+    expect(extractUserPrompt(null)).toBe("");
+    expect(extractUserPrompt("nope")).toBe("");
   });
 });

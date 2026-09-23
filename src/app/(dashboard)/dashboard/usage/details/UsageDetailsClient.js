@@ -181,12 +181,15 @@ export default function UsageDetailsClient() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1320px] border-collapse text-xs">
+          <table className="w-full min-w-[1560px] border-collapse text-xs">
             <thead className="border-b border-border bg-bg-subtle/50 text-[10px] font-bold uppercase tracking-[0.08em] text-text-muted">
               <tr>
                 <th className="px-4 py-3 text-left">调用时间</th>
                 <th className="px-4 py-3 text-left">使用人</th>
                 <th className="px-4 py-3 text-left">模型 / 提供商</th>
+                {/* What the user actually sent, mirroring the provider export's
+                    "User Prompt" — the prompt only, never the model's reply. */}
+                <th className="px-4 py-3 text-left">用户提问</th>
                 <th className="px-4 py-3 text-left">来源</th>
                 <th className="px-4 py-3 text-left">请求端点</th>
                 <th className="px-4 py-3 text-left">状态</th>
@@ -198,16 +201,21 @@ export default function UsageDetailsClient() {
             </thead>
             <tbody className="divide-y divide-border/60">
               {loading ? (
-                <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-text-muted"><span className="material-symbols-outlined mr-2 animate-spin align-[-4px] text-[18px]">progress_activity</span>正在读取调用明细…</td></tr>
+                <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-text-muted"><span className="material-symbols-outlined mr-2 animate-spin align-[-4px] text-[18px]">progress_activity</span>正在读取调用明细…</td></tr>
               ) : error ? (
-                <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-rose-600">{error}</td></tr>
+                <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-rose-600">{error}</td></tr>
               ) : !data.details?.length ? (
-                <tr><td colSpan="10" className="px-5 py-14 text-center text-sm text-text-muted">当前筛选范围内没有调用记录。</td></tr>
+                <tr><td colSpan="11" className="px-5 py-14 text-center text-sm text-text-muted">当前筛选范围内没有调用记录。</td></tr>
               ) : data.details.map((detail) => (
                 <tr key={detail.id} className="transition-colors hover:bg-primary/[0.025]">
                   <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-text-muted">{formatDateTime(detail.timestamp)}</td>
                   <td className="max-w-[160px] px-4 py-3"><p className="truncate font-semibold text-text-main" title={detail.keyName}>{detail.keyName}</p></td>
                   <td className="max-w-[240px] px-4 py-3"><p className="truncate font-semibold text-text-main" title={detail.model}>{detail.model}</p><p className="mt-0.5 truncate text-[10px] text-text-muted" title={detail.provider}>{detail.provider}</p></td>
+                  <td className="max-w-[300px] px-4 py-3">
+                    {detail.userPrompt
+                      ? <p className="line-clamp-2 break-words text-[11px] text-text-main" title={detail.userPrompt}>{detail.userPrompt}</p>
+                      : <span className="text-text-muted">—</span>}
+                  </td>
                   <td className="max-w-[220px] px-4 py-3"><p className="truncate font-medium text-text-main" title={detail.appName}>{detail.appName}</p><p className="mt-0.5 truncate font-mono text-[10px] text-text-muted" title={detail.sourceIp || "IP 未采集"}>{detail.sourceIp || "IP 未采集"}</p></td>
                   <td className="max-w-[220px] px-4 py-3 font-mono text-[11px] text-text-muted"><p className="truncate" title={detail.endpoint}>{detail.endpoint || "—"}</p></td>
                   <td className="px-4 py-3"><StatusBadge status={detail.status} /></td>

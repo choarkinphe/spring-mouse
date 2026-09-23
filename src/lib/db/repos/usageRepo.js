@@ -829,7 +829,7 @@ export async function getUsageDetails(filter = {}) {
   const unfilteredTotalItems = countResult?.total || 0;
   let totalItems = unfilteredTotalItems;
   let rows;
-  const selectDetails = `SELECT id, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
+  const selectDetails = `SELECT id, requestId, timestamp, startedAt, completedAt, provider, model, connectionId, apiKeyId, endpoint, promptTokens, completionTokens, cost, status, tokens, meta, trafficRequestId,
             COALESCE((SELECT requestBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS requestBytes,
             COALESCE((SELECT responseBytes FROM networkTraffic nt WHERE nt.requestId = usageHistory.trafficRequestId), 0) AS responseBytes
        FROM usageHistory`;
@@ -858,6 +858,7 @@ export async function getUsageDetails(filter = {}) {
       const apiKeyId = row.apiKeyId || "local-no-key";
       return {
         id: row.id,
+        requestId: row.requestId || null,
         timestamp: row.timestamp,
         provider: row.provider || "unknown",
         model: row.model || "unknown",
@@ -879,6 +880,20 @@ export async function getUsageDetails(filter = {}) {
         totalBytes: (Number(row.requestBytes) || 0) + (Number(row.responseBytes) || 0),
       };
     });
+
+  // Attach the user's prompt for this page. It lives in requestDetails (joined on
+  // requestId), not usageHistory, so this is a second batched query rather than a
+  // column on the row. Missing rows simply have no prompt.
+  try {
+    const { getUserPromptsByRequestIds } = await import("./requestDetailsRepo.js");
+    const prompts = await getUserPromptsByRequestIds(details.map((d) => d.requestId));
+    for (const detail of details) {
+      if (detail.requestId && prompts[detail.requestId] !== undefined) detail.userPrompt = prompts[detail.requestId];
+    }
+  } catch (error) {
+    // The prompt is a nicety; a failure here must not break the detail list.
+    console.warn("[UsageDetails] user prompt lookup failed:", error?.message || error);
+  }
 
   return {
     details,

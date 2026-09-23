@@ -5,4 +5,5 @@ export {
   getConnectionLastRequestAt,
   appendRequestLog, getRecentLogs,
   saveRequestDetail, getRequestDetails, getRequestDetailById, getRequestDetailByRequestId,
+  getUserPromptsByRequestIds,
 } from "@/lib/db/index.js";

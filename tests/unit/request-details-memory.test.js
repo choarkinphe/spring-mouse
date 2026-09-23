@@ -21,7 +21,13 @@ describe("request detail memory bounds", () => {
     expect(record.request._truncated).toBe(true);
     expect(record.providerRequest._truncated).toBe(true);
     expect(record.response._truncated).toBe(true);
-    expect(JSON.stringify(record).length).toBeLessThan(2_000);
+    // Every oversized field is replaced by a bounded preview+summary, and the
+    // lifted user prompt has its own cap, so the record cannot grow with the
+    // input. The bound is the four compacted fields (~1KB of preview each) plus
+    // the 2048-char prompt ceiling — what matters is that it is a CONSTANT, not
+    // a function of the 20KB input.
+    expect(record.userPrompt.length).toBeLessThanOrEqual(2048);
+    expect(JSON.stringify(record).length).toBeLessThan(12_000);
     expect(source.request.headers.authorization).toBe("secret");
   });
 

@@ -117,6 +117,38 @@ function textOf(content) {
   return "";
 }
 
+// The operator's question is "what did the user send", not "what did the model
+// answer". This is the LAST user turn's text only — no roles, no assistant
+// replies, no tool metadata — which is what the provider export calls "User
+// Prompt". Kept short so it can sit in a table cell and be stored per row.
+const USER_PROMPT_MAX_CHARS = 2048;
+
+/**
+ * The user's own text from a chat request body — the last `role: "user"` turn.
+ *
+ * Deliberately narrower than `summarizeChatRequest`: that one keeps the whole
+ * conversation's shape (roles, per-message heads, knob values) for the request
+ * inspector. This returns just the prompt string, for the usage table's
+ * "用户提问" column.
+ *
+ * Returns "" when there is no user message (a non-chat request, or a body whose
+ * messages were already compacted away).
+ */
+export function extractUserPrompt(value, { maxChars = USER_PROMPT_MAX_CHARS } = {}) {
+  if (!value || typeof value !== "object") return "";
+  const messages = Array.isArray(value.messages) ? value.messages : null;
+  if (!messages || messages.length === 0) return "";
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "user") continue;
+    const text = textOf(message.content);
+    if (!text) continue;
+    // Array.from so a surrogate pair is never split mid-character.
+    return text.length > maxChars ? Array.from(text.slice(0, maxChars)).join("") : text;
+  }
+  return "";
+}
+
 export function summarizeChatRequest(value) {
   if (!value || typeof value !== "object") return null;
   const messages = Array.isArray(value.messages) ? value.messages : null;

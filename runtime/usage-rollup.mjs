@@ -145,10 +145,19 @@ export function setCompleteThrough(database, dateKey) {
 }
 
 /**
+ * Tables from earlier revisions of this rollup. They are pure derived data that
+ * nothing reads once the code moved on, so leaving them would be dead weight in
+ * every backup. Dropped once, on boot.
+ *
+ * `usageRollup` (no suffix) was the dimension-per-row table; `usageRollupUserDay`
+ * was the separate per-person table that the current one subsumes.
+ */
+const LEGACY_ROLLUP_TABLES = ["usageRollup", "usageRollupUserDay"];
+
+/**
  * Create the table and its index if absent. Safe on every boot.
  *
- * A table with the OLD shape (the earlier dimension-per-row rollup, or an
- * earlier revision of this one) is dropped rather than migrated: the rollup is
+ * A table with the OLD shape is dropped rather than migrated: the rollup is
  * derived data that the rebuild regenerates from `usageHistory`, so a shape
  * change is a rebuild. The completeness marker is cleared with it, so the read
  * path falls back to raw until the next rebuild lands.
@@ -161,6 +170,10 @@ export function ensureRollupTable(database) {
   if (columns.length && !REQUIRED.every((name) => columns.some((c) => c.name === name))) {
     database.exec(`DROP TABLE IF EXISTS ${ROLLUP_TABLE}`);
     try { database.exec(`DELETE FROM ${ROLLUP_META_TABLE} WHERE key = '${COMPLETE_THROUGH_KEY}'`); } catch { /* not created yet */ }
+  }
+  for (const table of LEGACY_ROLLUP_TABLES) {
+    // Best-effort: a locked or missing table must not stop boot.
+    try { database.exec(`DROP TABLE IF EXISTS ${table}`); } catch { /* ignore */ }
   }
   database.exec(rollupMetaTableSql());
   database.exec(rollupTableSql());

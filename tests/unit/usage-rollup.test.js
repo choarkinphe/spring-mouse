@@ -282,6 +282,44 @@ describe("usage rollup — scoping", () => {
   });
 });
 
+describe("usage rollup — schema", () => {
+  it("drops the legacy rollup tables so an upgrade leaves no orphans", () => {
+    // Production had a 150-row `usageRollup` (the dimension-per-row table) and
+    // the code no longer references it, so it would sit there forever and be
+    // copied into every backup.
+    const db = new DatabaseSync(":memory:");
+    db.exec("CREATE TABLE usageRollup (dateKey TEXT, dimension TEXT, bucketKey TEXT, requests REAL)");
+    db.exec("INSERT INTO usageRollup VALUES ('2026-09-23','provider','codex',5)");
+    db.exec("CREATE TABLE usageRollupUserDay (dateKey TEXT, apiKeyId TEXT, requests REAL)");
+
+    ensureRollupTable(db);
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
+    expect(tables).not.toContain("usageRollup");
+    expect(tables).not.toContain("usageRollupUserDay");
+    expect(tables).toContain(ROLLUP_TABLE);
+    expect(tables).toContain("usageRollupMeta");
+    db.close();
+  });
+
+  it("rebuilds a table whose shape predates the current one", () => {
+    // A table with the right NAME but the wrong columns must be dropped, not
+    // migrated — the rebuild regenerates it from usageHistory.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`CREATE TABLE ${ROLLUP_TABLE} (dateKey TEXT, apiKeyId TEXT, requests REAL)`);
+    db.exec(`INSERT INTO ${ROLLUP_TABLE} VALUES ('2026-09-23','k1',5)`);
+
+    ensureRollupTable(db);
+
+    const columns = db.prepare(`PRAGMA table_info(${ROLLUP_TABLE})`).all().map((c) => c.name);
+    expect(columns).toContain("accounts");
+    expect(columns).toContain("endpoints");
+    expect(columns).toContain("sessions");
+    expect(db.prepare(`SELECT COUNT(*) n FROM ${ROLLUP_TABLE}`).get().n).toBe(0);
+    db.close();
+  });
+});
+
 describe("usage rollup — rebuild", () => {
   it("fills history so the rollup matches raw, and is idempotent", async () => {
     const events = [

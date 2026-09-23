@@ -426,6 +426,130 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
+// Rows whose stored cost is off by less than this are treated as correct. Guards
+// against rewriting a row because of floating-point noise, which would churn the
+// table on every run without changing anything meaningful.
+const BACKFILL_EPSILON = 1e-9;
+
+/**
+ * Recompute `usageHistory.cost` for rows the current pricing tables price
+ * differently than what was recorded.
+ *
+ * WHY: cost is computed once at write time and stored. Any model that had no
+ * price then keeps a `0` forever, even after a price is added (production had
+ * 2.66B unbilled prompt tokens on one model alone). This is the explicit,
+ * manually-triggered repair path — it rewrites billing figures, so it is never
+ * run automatically.
+ *
+ * Only rows that would actually change are written: a row whose stored cost
+ * already matches the recomputation is skipped, so a repeat run is a no-op.
+ *
+ * Batched by id to bound the write transaction. The caller decides the batch
+ * size; a full production table is ~530k rows, which is far too much to hold in
+ * one transaction (the web process shares `busy_timeout=5000`).
+ *
+ * @param {object}   options
+ * @param {boolean}  [options.dryRun]   compute and report without writing
+ * @param {string}   [options.provider] restrict to one provider (registry id)
+ * @param {number}   [options.batchSize]
+ * @param {number}   [options.maxRows]  stop after this many scanned rows (safety valve)
+ * @param {Function} [options.onProgress]
+ * @returns {Promise<object>} summary with per-model breakdown
+ */
+export async function backfillUsageCost({ dryRun = false, provider = null, batchSize = 2000, maxRows = 0, onProgress = null } = {}) {
+  const db = await getAdapter();
+  const size = Math.max(1, Number(batchSize) || 2000);
+
+  const conditions = ["model IS NOT NULL"];
+  const params = [];
+  if (provider) {
+    conditions.push("provider = ?");
+    params.push(provider);
+  }
+  const where = `WHERE ${conditions.join(" AND ")}`;
+
+  const total = db.get(`SELECT COUNT(*) n FROM usageHistory ${where}`, params).n;
+  const limit = maxRows > 0 ? Math.min(maxRows, total) : total;
+
+  const summary = {
+    dryRun,
+    provider: provider || null,
+    scanned: 0,
+    changed: 0,
+    unchanged: 0,
+    unpriced: 0,
+    costBefore: 0,
+    costAfter: 0,
+    delta: 0,
+    byModel: {},
+  };
+
+  let lastId = 0;
+  while (summary.scanned < limit) {
+    const remaining = Math.min(size, limit - summary.scanned);
+    const rows = db.all(
+      `SELECT id, provider, model, cost, tokens FROM usageHistory ${where} AND id > ? ORDER BY id LIMIT ?`,
+      [...params, lastId, remaining],
+    );
+    if (!rows.length) break;
+
+    const updates = [];
+    for (const row of rows) {
+      lastId = row.id;
+      summary.scanned += 1;
+
+      const tokens = parseJson(row.tokens, {}) || {};
+      const before = Number(row.cost) || 0;
+      const after = await calculateCost(row.provider, row.model, tokens);
+
+      // A row the tables still cannot price is left exactly as it is. It is
+      // reported separately so a missing price stays visible instead of being
+      // silently "backfilled" to the same zero.
+      if (after === 0 && before === 0) {
+        summary.unpriced += 1;
+        continue;
+      }
+
+      if (Math.abs(after - before) <= BACKFILL_EPSILON) {
+        summary.unchanged += 1;
+        continue;
+      }
+
+      const key = row.provider ? `${row.model} (${row.provider})` : row.model;
+      const entry = summary.byModel[key] || (summary.byModel[key] = { rows: 0, before: 0, after: 0 });
+      entry.rows += 1;
+      entry.before += before;
+      entry.after += after;
+
+      summary.changed += 1;
+      summary.costBefore += before;
+      summary.costAfter += after;
+
+      if (!dryRun) updates.push({ id: row.id, cost: after });
+    }
+
+    if (!dryRun && updates.length) {
+      db.transaction(() => {
+        for (const u of updates) db.run(`UPDATE usageHistory SET cost = ? WHERE id = ?`, [u.cost, u.id]);
+      });
+      db.flush?.();
+    }
+
+    if (onProgress) onProgress({ scanned: summary.scanned, total: limit });
+    if (rows.length < remaining) break;
+  }
+
+  summary.delta = summary.costAfter - summary.costBefore;
+  // Round the per-model buckets so the JSON stays readable.
+  for (const entry of Object.values(summary.byModel)) {
+    entry.before = Number(entry.before.toFixed(6));
+    entry.after = Number(entry.after.toFixed(6));
+  }
+
+  if (!dryRun && summary.changed > 0) notifyUsageCommitted();
+  return summary;
+}
+
 function updatePendingAggregate(modelKey, connectionId, delta) {
   const nextModelCount = Math.max(0, (pendingRequests.byModel[modelKey] || 0) + delta);
   if (nextModelCount === 0) delete pendingRequests.byModel[modelKey];

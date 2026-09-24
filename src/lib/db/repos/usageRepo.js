@@ -7,7 +7,7 @@ import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
 import { enqueueUsageEvent, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
-import { getTrafficBuckets, getTrafficSummary, getTrafficTotals } from "./trafficRepo.js";
+import { getTrafficBuckets } from "./trafficRepo.js";
 import { runUsageAggregation } from "../usageAggregatePool.js";
 import { applyEventToRollup, getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
 import { isDayAlignedRange, localDateKey } from "../../../../runtime/usage-rollup-read.mjs";

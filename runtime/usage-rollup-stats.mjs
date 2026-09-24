@@ -12,8 +12,7 @@
  * WHAT STILL COMES FROM RAW (and why it is cheap):
  *   - `recentRequests`, `last10Minutes`, `recentCallDetails` — bounded recent
  *     windows (100 rows / 10 minutes / a page), not range scans.
- *   - traffic totals and `trafficSummary` — from `networkTraffic`, untouched by
- *     this split.
+ *   - traffic totals — from `networkTraffic`, untouched by this split.
  * These are the same helpers the raw path uses, imported rather than copied, so
  * the two modes cannot drift.
  *
@@ -29,7 +28,6 @@ import {
   emptyStats,
   getRecentCallDetails,
   getTrafficRange,
-  getTrafficSummary,
   getTrafficTotals,
 } from "./usage-aggregate.mjs";
 import { runRollupAggregation, readUserRollup, resolveDateKeyRange } from "./usage-rollup-read.mjs";
@@ -89,7 +87,6 @@ export function runRollupStats(adapter, {
   stats.totalRequestBytes = trafficTotals.requestBytes;
   stats.totalResponseBytes = trafficTotals.responseBytes;
   stats.totalTrafficBytes = trafficTotals.totalBytes;
-  stats.trafficSummary = getTrafficSummary(adapter, { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null });
 
   return stats;
 }

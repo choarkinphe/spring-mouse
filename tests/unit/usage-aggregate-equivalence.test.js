@@ -45,9 +45,8 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 const LIVE_FIELDS = ["activeRequests", "recentRequests", "errorProvider", "pending"];
 // Bytes are totalled over a CALENDAR window (getTrafficRange: today / 24h / 7d),
 // so the same seeded traffic rows fall inside or outside it depending on when
-// the test runs. They are excluded from the guard for the same reason `today`
-// and trafficSummary's today/week/month are: wall-clock dependent, not part of
-// the aggregation contract being protected.
+// the test runs. They are excluded from the guard because that makes them
+// wall-clock dependent, not part of the aggregation contract being protected.
 const CALENDAR_DEPENDENT_FIELDS = ["totalRequestBytes", "totalResponseBytes", "totalTrafficBytes"];
 const TMP_GEOIP = /^.*[\\/]geoip([\\/][^\\/]+)?$/;
 
@@ -67,14 +66,6 @@ function normalize(stats) {
       for (const [k, v] of Object.entries(value)) {
         if (LIVE_FIELDS.includes(k) || k === "last10Minutes") continue;
         if (CALENDAR_DEPENDENT_FIELDS.includes(k)) continue;
-        // trafficSummary.today/week/month are calendar windows (local midnight,
-        // Monday, 1st of month). They legitimately change when the fixture is
-        // compared on a later day, so they are not part of the aggregation
-        // contract this guard protects. `recent` is a fixed-size tail and stays.
-        if (k === "trafficSummary" && v && typeof v === "object") {
-          out[k] = { recent: walk(v.recent) };
-          continue;
-        }
         out[k] = walk(v);
       }
       return out;

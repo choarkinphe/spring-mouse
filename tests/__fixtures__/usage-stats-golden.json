@@ -9,52 +9,6 @@
     "totalCompletionTokens": 855,
     "totalCachedTokens": 120,
     "totalCost": 0.21100000000000002,
-    "trafficSummary": {
-      "recent": [
-        {
-          "requestId": "traffic-0",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 100,
-          "responseBytes": 200,
-          "totalBytes": 300,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        },
-        {
-          "requestId": "traffic-1",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 200,
-          "responseBytes": 400,
-          "totalBytes": 600,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        },
-        {
-          "requestId": "traffic-2",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 300,
-          "responseBytes": 600,
-          "totalBytes": 900,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        }
-      ]
-    },
     "byProvider": {
       "codex": {
         "requests": 3,
@@ -910,52 +864,6 @@
     "totalCompletionTokens": 615,
     "totalCachedTokens": 120,
     "totalCost": 0.15100000000000002,
-    "trafficSummary": {
-      "recent": [
-        {
-          "requestId": "traffic-0",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 100,
-          "responseBytes": 200,
-          "totalBytes": 300,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        },
-        {
-          "requestId": "traffic-1",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 200,
-          "responseBytes": 400,
-          "totalBytes": 600,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        },
-        {
-          "requestId": "traffic-2",
-          "timestamp": "<TS>",
-          "completedAt": "<TS>",
-          "method": "POST",
-          "endpoint": "/v1/chat/completions",
-          "statusCode": 200,
-          "requestBytes": 300,
-          "responseBytes": 600,
-          "totalBytes": 900,
-          "durationMs": 10,
-          "aborted": false,
-          "appName": "Cursor"
-        }
-      ]
-    },
     "byProvider": {
       "codex": {
         "requests": 3,

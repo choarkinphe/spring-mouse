@@ -262,22 +262,6 @@ function normalizeBytes(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
 }
 
-function startOfLocalDay(date = new Date()) {
-  const value = new Date(date);
-  value.setHours(0, 0, 0, 0);
-  return value;
-}
-
-function currentTrafficRanges() {
-  const now = new Date();
-  const today = startOfLocalDay(now);
-  const week = startOfLocalDay(now);
-  week.setDate(week.getDate() - ((week.getDay() + 6) % 7));
-  const month = startOfLocalDay(now);
-  month.setDate(1);
-  return { today, week, month, now };
-}
-
 function buildTrafficFilter({ startDate, endDate, apiKeyId, apiKeyIds } = {}, alias = "nt") {
   const conditions = [];
   const params = [];
@@ -327,44 +311,6 @@ export function getTrafficTotals(adapter, range = {}) {
     params,
   );
   return mapTrafficTotals(row);
-}
-
-export function getTrafficSummary(adapter, { apiKeyId = null, apiKeyIds = null, recentLimit = 12 } = {}) {
-  const { today, week, month, now } = currentTrafficRanges();
-  const endDate = now.toISOString();
-
-  const todayTotals = getTrafficTotals(adapter, { startDate: today.toISOString(), endDate, apiKeyId, apiKeyIds });
-  const weekTotals = getTrafficTotals(adapter, { startDate: week.toISOString(), endDate, apiKeyId, apiKeyIds });
-  const monthTotals = getTrafficTotals(adapter, { startDate: month.toISOString(), endDate, apiKeyId, apiKeyIds });
-
-  const { where, params } = buildTrafficFilter({ apiKeyId, apiKeyIds });
-  const recent = adapter.all(
-    `SELECT requestId, timestamp, completedAt, method, endpoint, statusCode, requestBytes, responseBytes, durationMs, aborted, meta
-       FROM networkTraffic nt ${where}
-      ORDER BY timestamp DESC
-      LIMIT ?`,
-    [...params, Math.max(1, Math.min(50, Number(recentLimit) || 12))],
-  ).map((row) => {
-    const requestBytes = normalizeBytes(row.requestBytes);
-    const responseBytes = normalizeBytes(row.responseBytes);
-    const meta = parseJson(row.meta, {}) || {};
-    return {
-      requestId: row.requestId,
-      timestamp: row.timestamp,
-      completedAt: row.completedAt,
-      method: row.method,
-      endpoint: row.endpoint,
-      statusCode: Number(row.statusCode) || 0,
-      requestBytes,
-      responseBytes,
-      totalBytes: requestBytes + responseBytes,
-      durationMs: Math.max(0, Number(row.durationMs) || 0),
-      aborted: row.aborted === 1,
-      appName: meta.appName || null,
-    };
-  });
-
-  return { today: todayTotals, week: weekTotals, month: monthTotals, recent };
 }
 
 export function getTrafficBuckets(adapter, { startTime, endTime, bucketMs, bucketCount, apiKeyId = null, apiKeyIds = null }) {
@@ -565,7 +511,6 @@ export function emptyStats(sourceCapture = {}, recentRequests = []) {
     completedRequests: 0, failedRequests: 0, cancelledRequests: 0, meteredRequests: 0,
     totalPromptTokens: 0, totalCompletionTokens: 0, totalCachedTokens: 0, totalCost: 0,
     totalRequestBytes: 0, totalResponseBytes: 0, totalTrafficBytes: 0,
-    trafficSummary: { today: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, week: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, month: { requests: 0, requestBytes: 0, responseBytes: 0, totalBytes: 0 }, recent: [] },
     byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {}, bySourceIp: {}, byApp: {}, byUser: {},
     sourceCapture,
     requestRhythm: {
@@ -722,7 +667,6 @@ export function runAggregationTotals(adapter, {
   stats.totalRequestBytes = trafficTotals.requestBytes;
   stats.totalResponseBytes = trafficTotals.responseBytes;
   stats.totalTrafficBytes = trafficTotals.totalBytes;
-  stats.trafficSummary = getTrafficSummary(adapter, { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null });
 
   return stats;
 }
@@ -918,11 +862,9 @@ export function runAggregation(adapter, {
   finalizePersonSessionMetrics(stats.byUser, personEvents);
 
   const trafficTotals = getTrafficTotals(adapter, getTrafficRange(period, range));
-  const trafficSummary = getTrafficSummary(adapter, { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null });
   stats.totalRequestBytes = trafficTotals.requestBytes;
   stats.totalResponseBytes = trafficTotals.responseBytes;
   stats.totalTrafficBytes = trafficTotals.totalBytes;
-  stats.trafficSummary = trafficSummary;
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
   return stats;
 }

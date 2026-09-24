@@ -126,6 +126,65 @@ describe("Codex overload retry budget", () => {
     expect(result.response.status).toBe(200);
     await expect(result.response.text()).resolves.toContain("response.completed");
   }, 15000);
+
+  // The overload path must be legible from the log alone under LOG_LEVEL=WARN: an
+  // operator has to see the detection, each backoff, and how it ended. Previously a
+  // SUCCESSFUL retry logged nothing at all, so a recovered request was
+  // indistinguishable from one that died mid-retry.
+  describe("retry logging (WARN level, as production runs)", () => {
+    async function runWithLog({ overloadRetry, recoverAfter, lines }) {
+      const executor = new CodexExecutor();
+      executor.config = { ...executor.config, overloadRetry };
+      let n = 0;
+      vi.spyOn(executor, "_peekSseTransientError").mockImplementation(async () => {
+        n += 1;
+        if (recoverAfter != null && n > recoverAfter) {
+          return { matched: null, message: null, accountFallback: false, replacementBody: null };
+        }
+        return {
+          matched: "server_is_overloaded",
+          message: "Our servers are currently overloaded. Please try again later.",
+          accountFallback: false,
+          replacementBody: null,
+          upstreamError: { source: "sse", status: 200, message: "overloaded", body: "", retryAfterMs: null },
+        };
+      });
+      const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+        .mockResolvedValue({ response: sse(OVERLOAD_FRAME), url: "u", headers: {} });
+      const result = await executor.execute({ model: "gpt-5.6-sol", body: {}, stream: true, credentials: {}, log: { warn: (t, m) => lines.push(`${t} ${m}`), debug: () => {} } });
+      superExecute.mockRestore();
+      return result;
+    }
+
+    it("logs detection, each backoff, and the recovery", async () => {
+      const lines = [];
+      await runWithLog({
+        overloadRetry: { budgetMs: 5000, baseDelayMs: 5, maxDelayMs: 5, factor: 1, minRetries: 0, maxAttempts: 10, minSleepMs: 1 },
+        recoverAfter: 2,
+        lines,
+      });
+      const joined = lines.join("\n");
+      expect(joined).toMatch(/SSE overloaded "server_is_overloaded" — retrying within a 5s budget/);
+      expect(joined).toMatch(/retry 1 in \d+ms \(budget left/);
+      expect(joined).toMatch(/retry 2 in \d+ms \(budget left/);
+      expect(joined).toMatch(/recovered after 2 retries/);
+    }, 15000);
+
+    it("logs exhaustion with a readable duration", async () => {
+      const lines = [];
+      await runWithLog({
+        overloadRetry: { budgetMs: 60, baseDelayMs: 5, maxDelayMs: 5, factor: 1, minRetries: 0, maxAttempts: 50, minSleepMs: 1 },
+        recoverAfter: null,
+        lines,
+      });
+      const joined = lines.join("\n");
+      // Sub-second budgets must not render as "0s".
+      expect(joined).toMatch(/retrying within a 60ms budget/);
+      expect(joined).toMatch(/retries exhausted \(\d+ retries, 60ms budget\)/);
+      // A successful-recovery line must NOT appear when it never recovered.
+      expect(joined).not.toMatch(/recovered/);
+    }, 15000);
+  });
 });
 
 describe("request-wide overload budget", () => {

@@ -251,6 +251,15 @@ function errorFramePayloads(text) {
   return out;
 }
 
+// Human-readable duration for log lines: "1.5s" / "90s" / "300ms". A sub-second
+// budget is legal (the tests use one) and would otherwise log as "0s".
+function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  return `${Number.isInteger(s) ? s : s.toFixed(1)}s`;
+}
+
 // Count the visible output text in an SSE buffer, from `from` onward. Only complete
 // lines are consumed so a half-received frame is not miscounted; the index of the
 // first incomplete line is returned as the new cursor. Used by the content-aware
@@ -452,10 +461,20 @@ export class CodexExecutor extends BaseExecutor {
     const deadline = Math.min(Date.now() + budgetMs, sharedDeadline);
     const effectiveMinRetries = Date.now() >= sharedDeadline ? 0 : minRetries;
     let attempt = 0;
+    // Announce the budget once, before the first retry, so an overload is legible
+    // from its first line: what was matched, how long we are willing to wait, and
+    // which deadline applies. Without it the log opens mid-story on "retry 1".
+    let announced = false;
     while (true) {
       const result = await super.execute(args);
       const peek = await this._peekSseTransientError(result.response);
       if (!peek.matched) {
+        // Recovery: the retries outlasted the saturation window. Worth a line of its
+        // own — without it the log shows "retry 1 … retry 2 …" and then nothing, so a
+        // request that RECOVERED is indistinguishable from one that died mid-retry.
+        if (attempt > 0) {
+          args.log?.warn?.("RETRY", `CODEX | SSE overloaded — recovered after ${attempt} retr${attempt === 1 ? "y" : "ies"}`);
+        }
         // Replace body with re-assembled stream (prefix bytes already read + rest)
         if (peek.replacementBody) {
           result.response = new Response(peek.replacementBody, {
@@ -479,7 +498,7 @@ export class CodexExecutor extends BaseExecutor {
       const withinBudget = Date.now() < deadline;
       const exhausted = (attempt >= effectiveMinRetries && !withinBudget) || attempt >= maxAttempts;
       if (exhausted) {
-        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt} retries, ${budgetMs}ms budget)`);
+        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt} retr${attempt === 1 ? "y" : "ies"}, ${fmtDuration(budgetMs)} budget)`);
         result.response = codexSseErrorResponse(
           HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
         return result;
@@ -503,7 +522,11 @@ export class CodexExecutor extends BaseExecutor {
       // so the retry — the whole point of the overload budget — left no trace when it
       // succeeded, and only the exhaustion path was observable. Retries are rare and
       // operationally meaningful, so they belong at the level operators actually read.
-      args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retry ${attempt} after ${waitMs}ms (budget left ${remainingMs}ms)`);
+      if (!announced) {
+        announced = true;
+        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retrying within a ${fmtDuration(budgetMs)} budget`);
+      }
+      args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retry ${attempt} in ${fmtDuration(waitMs)} (budget left ${fmtDuration(remainingMs)})`);
       dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt} in ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
     }

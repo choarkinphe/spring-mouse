@@ -299,5 +299,41 @@ describe("Codex detects a capacity error that arrives after output has started",
     // Far below the 2000ms ceiling: the char threshold ended the scan at once.
     expect(Date.now() - startedAt).toBeLessThan(1000);
   });
+
+  // Regression (production, 2026-09-25): Codex's `response.created` frame replays the
+  // whole `tools` schema, so a single frame can exceed 170KB. Two of them pushed the
+  // overload frame to byte 354251 — past the old fixed 256KB scan ceiling — so the
+  // scan stopped before ever seeing it, and the error was translated into an ordinary
+  // text delta shown to the client as the model's reply. The ceiling is now
+  // byte-based and far larger during the metadata preamble.
+  it("catches an overload frame that sits behind multi-hundred-KB metadata frames", async () => {
+    const executor = new CodexExecutor();
+    const bigFrame = (name, bytes) =>
+      `event: ${name}\ndata: {"type":"${name}","response":{"id":"resp_1","tools":[{"name":"${"x".repeat(Math.max(0, bytes - 200))}"}]}}\n\n`;
+    const overload = 'event: error\ndata: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","headers":{"x-retry-metadata":"NO_MORE_RETRY"},"message":"Our servers are currently overloaded. Please try again later."},"sequence_number":2}\n\n';
+    const text = bigFrame("response.created", 177000) + bigFrame("response.in_progress", 177000) + overload;
+
+    const response = new Response(streamFromText(text), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("server_is_overloaded");
+    expect(peek.accountFallback).toBe(false);
+  });
+
+  // The larger preamble ceiling must not delay a healthy stream: once a content frame
+  // appears the content-aware rules take over and release it immediately.
+  it("still releases a healthy stream promptly behind large metadata frames", async () => {
+    const executor = new CodexExecutor();
+    const bigFrame = (name, bytes) =>
+      `event: ${name}\ndata: {"type":"${name}","response":{"id":"resp_1","tools":[{"name":"${"x".repeat(Math.max(0, bytes - 200))}"}]}}\n\n`;
+    const text = bigFrame("response.created", 177000)
+      + 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+      + 'event: response.completed\ndata: {"type":"response.completed"}\n\n';
+
+    const response = new Response(streamFromText(text), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    const startedAt = Date.now();
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
 });
 

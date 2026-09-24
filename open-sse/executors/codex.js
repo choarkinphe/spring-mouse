@@ -35,7 +35,45 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   '"type":"response.output_text.delta"',
   '"type":"response.function_call_arguments.delta"',
 ];
-const CODEX_SSE_PEEK_BYTES = 256 * 1024;
+// Frames that only announce the turn and echo the request back — Codex's
+// `response.created` replays the whole `tools` schema, so a single such frame can
+// exceed 170KB. On production an overload arrived at byte 354251 behind two such
+// frames (24 and 177143), past the old 256KB ceiling, and was never seen — the
+// error was then translated into an ordinary text delta and shown to the client as
+// the model's reply. The scan now reads through this preamble up to a much larger
+// ceiling, so an overload that arrives before any content is always reached.
+//
+// CODEX_SSE_PEEK_BYTES is the hard ceiling on the buffered prefix, in BYTES (a
+// 177KB JSON frame is ~177k chars but more bytes for non-ASCII). It bounds how much
+// preamble we will read before giving up. Once output has begun the smaller
+// AFTER_OUTPUT ceiling applies — a stream already producing content does not need a
+// multi-megabyte look-ahead, and the content-aware rules release it far sooner.
+//
+// Sized against the measured worst case (354KB of preamble) with margin, and kept
+// env-tunable so a heavier tools schema can be accommodated without a release. The
+// buffer is per in-flight stream and only grows while a stream is in preamble, so
+// this is a bound on worst case, not a per-request cost.
+const CODEX_SSE_PEEK_BYTES = (() => {
+  const raw = process.env.SPRING_MOUSE_CODEX_SSE_PEEK_BYTES;
+  if (raw == null || raw === "") return 2 * 1024 * 1024;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2 * 1024 * 1024;
+})();
+const CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT = 256 * 1024;
+// Time bound on the preamble phase, so a stalled upstream that sends
+// `response.created` and then hangs cannot hold the request open until the byte
+// ceiling. It must stay comfortably ABOVE the time an overload takes to surface:
+// measured on production, the upstream spends 10-30s processing before it emits the
+// overload frame, so a short bound (e.g. 2s) would cut the scan off before the frame
+// arrives and reintroduce the very bug this guards against. 60s clears the observed
+// worst case with margin while staying far below the 165s clients were measured to
+// wait. 0 disables the bound.
+const CODEX_SSE_PREAMBLE_MS = (() => {
+  const raw = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
+  if (raw == null || raw === "") return 60 * 1000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60 * 1000;
+})();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta
 // (the previous behaviour) let that error through as a 200-OK stream, so the combo
@@ -553,26 +591,45 @@ export class CodexExecutor extends BaseExecutor {
     // have already been counted, so the accounting is O(new bytes) per chunk.
     let outputChars = 0;
     let countedUpTo = 0;
+    // Byte accounting (not characters): the ceiling exists to bound memory, and
+    // non-ASCII JSON makes byte length the honest measure. `bufferedBytes` is what
+    // the metadata-aware limit is compared against; `outputStarted` switches the
+    // ceiling to the much smaller post-output value.
+    let bufferedBytes = 0;
+    let outputStarted = false;
+    // Hard time bound on the PREAMBLE phase (before any output). Without it a stalled
+    // upstream that sends `response.created` and then hangs would hold the request
+    // open until the byte ceiling; with it, the preamble scan gives up and hands the
+    // stream to the client, exactly like the post-output grace window does.
+    const preambleDeadline = Date.now() + CODEX_SSE_PREAMBLE_MS;
     // A read that the grace deadline raced past is NOT abandoned: it is carried into
     // the reassembled stream below, so the same reader keeps serving the client and
     // no lock is left dangling.
     let pendingRead = null;
     try {
-      while (text.length < CODEX_SSE_PEEK_BYTES) {
-        const remainingMs = graceDeadline > 0 ? graceDeadline - Date.now() : 0;
-        if (graceDeadline > 0 && remainingMs <= 0) break;
+      while (true) {
+        // Before any output, read through the metadata preamble (which can be
+        // hundreds of KB of echoed tool schema) up to the large hard ceiling; once
+        // output has begun, fall back to the small ceiling — a healthy stream is
+        // released by the content-aware rules below long before either is hit.
+        const byteCeiling = outputStarted ? CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT : CODEX_SSE_PEEK_BYTES;
+        if (bufferedBytes >= byteCeiling) break;
+        // Whichever phase we are in, never block indefinitely: the preamble has its
+        // own deadline, and the post-output phase uses the grace deadline.
+        const deadline = outputStarted ? graceDeadline : preambleDeadline;
+        const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
+        if (deadline > 0 && remainingMs <= 0) break;
         if (!pendingRead) pendingRead = reader.read();
-        // Once output has started, a silent upstream must not hold the request open:
-        // race the read against the remaining grace budget so the stream can begin
-        // flowing to the client even if the turn never completes.
+        // Race the read against the remaining budget so the stream can begin flowing
+        // to the client even if the turn never completes.
         let result;
-        if (graceDeadline > 0) {
-          let graceTimer;
+        if (deadline > 0) {
+          let timer;
           result = await Promise.race([
             pendingRead,
-            new Promise((resolve) => { graceTimer = setTimeout(() => resolve({ timedOut: true }), remainingMs); }),
+            new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), remainingMs); }),
           ]);
-          clearTimeout(graceTimer);
+          clearTimeout(timer);
         } else {
           result = await pendingRead;
         }
@@ -581,6 +638,7 @@ export class CodexExecutor extends BaseExecutor {
         const { done, value } = result;
         if (done) break;
         chunks.push(value);
+        bufferedBytes += value.byteLength;
         text += decoder.decode(value, { stream: true });
         // Match against error-frame payloads only (see errorFramePayloads): a normal
         // output delta that quotes an error string must not trigger a fallback.
@@ -593,8 +651,8 @@ export class CodexExecutor extends BaseExecutor {
         }
         const lowerText = text.toLowerCase();
         if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) break;
-        // Content-aware post-output scan. Once the turn has produced a substantial
-        // amount of text it is plainly a healthy stream, so stop buffering; a short
+        // Post-output phase: content-aware release. Once the turn has produced a
+        // substantial amount of text it is plainly healthy, so stop buffering; a short
         // burst of deltas followed by a rejection stays under the threshold and keeps
         // the scan alive long enough to catch the frame. The char count is updated
         // incrementally from the last complete line to keep this O(new bytes).
@@ -608,11 +666,12 @@ export class CodexExecutor extends BaseExecutor {
           continue;
         }
         if (CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => lowerText.includes(p))) {
-          // Output already started. Do not stop here: keep scanning so a same-turn
+          // Output has started. Do not stop here: keep scanning so a same-turn
           // capacity/overload rejection still triggers fallback. The scan ends on the
           // first of: a terminal frame, enough output to prove the turn is healthy,
           // the byte cap, or the hard time ceiling — so a healthy stream is released
           // almost immediately while a short burst before a rejection is caught.
+          outputStarted = true;
           if (!graceEnabled) break;
           graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
           graceBytesAt = text.length;
@@ -620,6 +679,10 @@ export class CodexExecutor extends BaseExecutor {
           outputChars += counted.count;
           countedUpTo = counted.cursor;
         }
+        // Otherwise we are still in the metadata preamble (response.created /
+        // in_progress echo the request's tools schema, ~177KB each). Keep reading
+        // toward the large ceiling: an overload frame arrives here, before any
+        // content, and stopping early is exactly the bug this guards against.
       }
     } catch (e) {
       dbg("CODEX", `peek read error: ${e.message}`);

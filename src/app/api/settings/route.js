@@ -304,6 +304,17 @@ export async function PATCH(request) {
         return Math.min(10, parsed);
       })();
       if (overloadMaxRetries != null) result.overloadMaxRetries = overloadMaxRetries;
+      // SSE-overload retry curve for a 200-OK stream that carries an error frame
+      // ("Our servers are currently overloaded"). Separate from the throttle above:
+      // that one paces a *busy* model across requests, this one governs how long a
+      // single request keeps retrying the same model before giving up. Tunable per
+      // channel so a saturated provider can be waited out without a release.
+      const overloadRetryBudgetMs = durationMs(entry.overloadRetryBudgetSeconds, entry.overloadRetryBudgetMs);
+      if (overloadRetryBudgetMs != null) result.overloadRetryBudgetMs = overloadRetryBudgetMs;
+      const overloadRetryBaseDelayMs = durationMs(entry.overloadRetryBaseDelaySeconds, entry.overloadRetryBaseDelayMs);
+      if (overloadRetryBaseDelayMs != null) result.overloadRetryBaseDelayMs = overloadRetryBaseDelayMs;
+      const overloadRetryMaxDelayMs = durationMs(entry.overloadRetryMaxDelaySeconds, entry.overloadRetryMaxDelayMs);
+      if (overloadRetryMaxDelayMs != null) result.overloadRetryMaxDelayMs = overloadRetryMaxDelayMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

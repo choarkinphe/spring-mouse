@@ -38,15 +38,19 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
   const [timeRange, setTimeRange] = useState(() => (showOverview ? realtimeRange("24h") : currentDayRange()));
   const [apiKeyId, setApiKeyId] = useState("");
   const [scopeRevision, setScopeRevision] = useState(0);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   // Advance the home page's rolling window so it keeps meaning "the last N hours".
+  // Keep the range stable while the request-details drawer is open; otherwise the
+  // minute tick changes rangeKey, which resets the drawer and sends the user back
+  // to the overview before they can inspect a record.
   useEffect(() => {
-    if (!showOverview) return;
+    if (!showOverview || detailsOpen) return;
     const timer = setInterval(() => {
       setTimeRange((current) => realtimeRange(current?.preset || "24h"));
     }, WINDOW_ADVANCE_MS);
     return () => clearInterval(timer);
-  }, [showOverview]);
+  }, [showOverview, detailsOpen]);
 
   const rangeKey = useMemo(() => `${timeRange.startDate}:${timeRange.endDate}:${apiKeyId}:${scopeRevision}`, [timeRange, apiKeyId, scopeRevision]);
 
@@ -76,6 +80,7 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
           showOverview={showOverview}
           showBreakdowns={showBreakdowns}
           scope={showOverview ? undefined : "dashboard"}
+          onDetailsOpenChange={showOverview ? setDetailsOpen : undefined}
         />
       </Suspense>
     </div>

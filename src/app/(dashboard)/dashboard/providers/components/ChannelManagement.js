@@ -1497,6 +1497,14 @@ const STRATEGY_DEFAULTS = {
   overloadThreshold: 6,
   overloadCooldownSeconds: 5,
   overloadWaitSeconds: 15,
+  // SSE-overload retry curve: how long one request keeps retrying the SAME model
+  // after the upstream reports it busy inside a 200-OK stream. Distinct from the
+  // throttle above (which paces a busy model across requests). Defaults mirror
+  // runtimeConfig.js (90s budget, 3s → 15s backoff) so the form shows what is
+  // actually in force.
+  overloadRetryBudgetSeconds: 90,
+  overloadRetryBaseDelaySeconds: 3,
+  overloadRetryMaxDelaySeconds: 15,
 };
 
 function channelStrategyForm(strategy = {}) {
@@ -1515,6 +1523,9 @@ function channelStrategyForm(strategy = {}) {
     overloadThreshold: Number(strategy.overloadThreshold) || STRATEGY_DEFAULTS.overloadThreshold,
     overloadCooldownSeconds: toSeconds(strategy.overloadCooldownMs, STRATEGY_DEFAULTS.overloadCooldownSeconds),
     overloadWaitSeconds: toSeconds(strategy.overloadWaitMs, STRATEGY_DEFAULTS.overloadWaitSeconds),
+    overloadRetryBudgetSeconds: toSeconds(strategy.overloadRetryBudgetMs, STRATEGY_DEFAULTS.overloadRetryBudgetSeconds),
+    overloadRetryBaseDelaySeconds: toSeconds(strategy.overloadRetryBaseDelayMs, STRATEGY_DEFAULTS.overloadRetryBaseDelaySeconds),
+    overloadRetryMaxDelaySeconds: toSeconds(strategy.overloadRetryMaxDelayMs, STRATEGY_DEFAULTS.overloadRetryMaxDelaySeconds),
   };
 }
 
@@ -1563,6 +1574,10 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       overloadThreshold: Math.max(1, Number(form.overloadThreshold) || 1),
       overloadCooldownMs: Math.max(1, Number(form.overloadCooldownSeconds) || 1) * 1000,
       overloadWaitMs: Math.max(1, Number(form.overloadWaitSeconds) || 1) * 1000,
+      // SSE-overload retry curve. Sent in seconds; the settings API stores ms.
+      overloadRetryBudgetSeconds: Math.max(1, Number(form.overloadRetryBudgetSeconds) || 1),
+      overloadRetryBaseDelaySeconds: Math.max(1, Number(form.overloadRetryBaseDelaySeconds) || 1),
+      overloadRetryMaxDelaySeconds: Math.max(1, Number(form.overloadRetryMaxDelaySeconds) || 1),
     });
   };
 
@@ -1637,6 +1652,22 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
             {numberField("overloadThreshold", "过载熔断阈值", 1, 1000, "统计窗口内累计多少次过载后暂停该模型；调大=更少熔断、更多真实尝试。")}
             {numberField("overloadCooldownSeconds", "过载冷却（秒）", 1, 3600, "熔断后暂停该模型的时长。")}
             {numberField("overloadWaitSeconds", "过载等待预算（秒）", 1, 3600, "熔断期间单个请求最多原地等待多久再重试；超出预算则直接返回 503。")}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-white/[0.07] bg-white/[0.02] p-3">
+          <div>
+            <p className="text-sm font-medium text-text-main">过载重试曲线</p>
+            <p className="mt-1 text-xs text-text-muted">
+              上游在流内报告「服务器过载」时，单个请求对<b>同一个模型</b>的重试方式。
+              与上面的节流不同：节流管的是「跨请求让模型歇一会儿」，这里管的是「这一个请求愿意等多久」。
+              上游过载通常只持续几十秒，退避太短会在同一个饱和窗口里空转，所以默认起步 3 秒并逐步拉长。
+            </p>
+          </div>
+          <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !breakerEnabled && "opacity-50 pointer-events-none")}>
+            {numberField("overloadRetryBudgetSeconds", "重试总预算（秒）", 1, 600, "单个模型最多重试多久；用满后返回 503，交给组合的下一个模型。")}
+            {numberField("overloadRetryBaseDelaySeconds", "首次退避（秒）", 1, 120, "第一次重试前的等待；之后按 3 倍递增。")}
+            {numberField("overloadRetryMaxDelaySeconds", "单次退避上限（秒）", 1, 120, "单次等待的天花板，避免退避无限增长。")}
           </div>
         </section>
 

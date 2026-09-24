@@ -93,6 +93,92 @@ export const DEFAULT_RETRY_CONFIG = {
   504: { attempts: 2, delayMs: 3000 }
 };
 
+// SSE-overload retry budget: a 200-OK stream that carries an `event: error`
+// frame ("Our servers are currently overloaded", `server_is_overloaded`).
+//
+// This is deliberately a TIME budget rather than an attempt count. Measured on
+// production, one upstream attempt on a real prompt costs 10-30s before the
+// overload frame arrives (~18s average, 94s worst case) — so the old fixed 1.5s
+// backoff was shorter than the attempt it was backing off from, every retry
+// landed inside the same saturation window, and the overload reached the client
+// after ~55s of retrying that could never have succeeded.
+//
+// The window is short: production shows the same account succeeding again within
+// the same minute. The retries only have to outlast it, so the delay grows
+// (3s → 9s → 15s, full jitter) inside a budget that stays well under the 165s
+// time-to-first-token Codex clients were observed to tolerate.
+//
+//   budgetMs    — total wall-clock budget for the overload retry loop
+//   baseDelayMs — first backoff, multiplied by `factor` on each retry
+//   maxDelayMs  — ceiling for a single backoff
+//   factor      — backoff multiplier
+//   minRetries  — retries allowed even after the budget is spent, so a single
+//                 slow attempt cannot consume the whole budget on its own
+//   maxAttempts — hard cap, so a malformed config cannot loop forever
+//   minSleepMs  — floor for a single backoff, so the loop can never hot-loop
+//                 against an upstream that is already saturated
+export const DEFAULT_OVERLOAD_RETRY = {
+  budgetMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_BUDGET_MS", 90 * 1000),
+  baseDelayMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_BASE_DELAY_MS", 3 * 1000),
+  maxDelayMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_MAX_DELAY_MS", 15 * 1000),
+  factor: 3,
+  minRetries: 1,
+  maxAttempts: 10,
+  minSleepMs: 1000,
+};
+
+// Backoff for overload retry number `attempt` (1-based), before jitter.
+// Exponential up to maxDelayMs: 3s, 9s, 15s, 15s…
+export function resolveOverloadDelayMs(attempt, config = DEFAULT_OVERLOAD_RETRY) {
+  const { baseDelayMs, maxDelayMs, factor } = { ...DEFAULT_OVERLOAD_RETRY, ...config };
+  const raw = baseDelayMs * Math.pow(factor, Math.max(0, attempt - 1));
+  return Math.min(Math.round(raw), maxDelayMs);
+}
+
+// Overlay a channel's strategy entry (settings.providerStrategies[providerId])
+// onto the built-in overload-retry defaults, so an operator can tune the curve
+// per channel from the dashboard without a release.
+//
+// Only keys the strategy actually specifies are returned, so a caller can layer
+// this over its own defaults without the untouched keys silently resetting to the
+// global ones. Only positive integers are honoured — a blank or malformed field
+// keeps the default rather than silently disabling retries. The stored names are
+// the `*Ms` forms the settings API produces from the dashboard's `*Seconds`
+// inputs.
+export function pickOverloadRetryOverrides(strategy = {}) {
+  const positiveMs = (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  const out = {};
+  const budgetMs = positiveMs(strategy.overloadRetryBudgetMs);
+  if (budgetMs) out.budgetMs = budgetMs;
+  const baseDelayMs = positiveMs(strategy.overloadRetryBaseDelayMs);
+  if (baseDelayMs) out.baseDelayMs = baseDelayMs;
+  const maxDelayMs = positiveMs(strategy.overloadRetryMaxDelayMs);
+  if (maxDelayMs) out.maxDelayMs = maxDelayMs;
+  return out;
+}
+
+// The effective overload-retry config for one call. `executorConfig` is the
+// executor's own default (used by open-sse consumers that never touch channel
+// settings); the channel strategy wins where it is set.
+export function resolveOverloadRetryConfig(strategy = {}, executorConfig = {}) {
+  const config = { ...DEFAULT_OVERLOAD_RETRY, ...executorConfig, ...pickOverloadRetryOverrides(strategy) };
+  // A base above the ceiling would make the curve non-monotonic; clamp instead.
+  if (config.baseDelayMs > config.maxDelayMs) config.baseDelayMs = config.maxDelayMs;
+  return config;
+}
+
+// Total overload-retry budget for ONE client request, shared across every model
+// the combo tries. The per-model budget above is spent by whichever model is
+// saturated first; without this cap a combo whose members all resolve to the
+// same upstream (the GPT chain: 3-6 Codex models) would multiply it, turning a
+// 90s retry into a 270-540s request that the client abandons long before the
+// gateway answers. 150s is chosen against measured client patience: Codex
+// clients were observed waiting up to 165s for a first token before giving up.
+export const REQUEST_OVERLOAD_BUDGET_MS = envMs("SPRING_MOUSE_REQUEST_OVERLOAD_BUDGET_MS", 150 * 1000);
+
 // Normalize a retry entry to { attempts, delayMs }
 export function resolveRetryEntry(entry) {
   if (entry == null) return { attempts: 0, delayMs: RETRY_CONFIG.delayMs };

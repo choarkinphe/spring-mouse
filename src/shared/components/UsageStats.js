@@ -180,7 +180,7 @@ function RecentRequests({ requests = [], className = "", onViewDetails }) {
   );
 }
 
-export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false, scope, rangeKey = null } = {}) {
+export default function UsageStats({ timeRange, apiKeyId, showOverview = true, showBreakdowns = false, scope, rangeKey = null, onDetailsOpenChange = null } = {}) {
   const [stats, setStats] = useState(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -228,6 +228,10 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
     setDetailsOpen(false);
     setRangeLoadFailed(false);
   }
+
+  useEffect(() => {
+    onDetailsOpenChange?.(detailsOpen);
+  }, [detailsOpen, onDetailsOpenChange]);
 
   useEffect(() => {
     if (isInitialLoad.current) {
@@ -343,7 +347,10 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
             <RecentRequests
               requests={stats.recentRequests || []}
               className="min-h-[240px] xl:min-h-[16rem]"
-              onViewDetails={() => setDetailsOpen(true)}
+              onViewDetails={() => {
+                setDetailsOpen(true);
+                onDetailsOpenChange?.(true);
+              }}
             />
           </div>
         </div>
@@ -357,7 +364,10 @@ export default function UsageStats({ timeRange, apiKeyId, showOverview = true, s
       {detailsOpen && (
         <UsageDetailsDrawer
           isOpen={detailsOpen}
-          onClose={() => setDetailsOpen(false)}
+          onClose={() => {
+            setDetailsOpen(false);
+            onDetailsOpenChange?.(false);
+          }}
           subject="最近请求明细"
           initialFilters={{
             ...(timeRange?.startDate ? { startDate: timeRange.startDate } : {}),

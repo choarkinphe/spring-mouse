@@ -150,6 +150,37 @@ describe("provider strategy settings", () => {
     expect(saved).toEqual({ breakerThreshold: 4, overloadThreshold: 30 });
   });
 
+  it("stores the SSE-overload retry curve (seconds form)", async () => {
+    // How long one request keeps retrying the SAME model after an in-stream
+    // "servers are currently overloaded" frame. Distinct from overloadWaitMs
+    // above, which paces a busy model across requests.
+    const saved = await saveStrategy({
+      overloadRetryBudgetSeconds: 90,
+      overloadRetryBaseDelaySeconds: 3,
+      overloadRetryMaxDelaySeconds: 15,
+    });
+
+    expect(saved).toEqual({
+      overloadRetryBudgetMs: 90_000,
+      overloadRetryBaseDelayMs: 3_000,
+      overloadRetryMaxDelayMs: 15_000,
+    });
+  });
+
+  it("accepts the SSE-overload retry curve in raw milliseconds too", async () => {
+    const saved = await saveStrategy({
+      overloadRetryBudgetMs: 45_000,
+      overloadRetryBaseDelayMs: 2_000,
+      overloadRetryMaxDelayMs: 12_000,
+    });
+
+    expect(saved).toEqual({
+      overloadRetryBudgetMs: 45_000,
+      overloadRetryBaseDelayMs: 2_000,
+      overloadRetryMaxDelayMs: 12_000,
+    });
+  });
+
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

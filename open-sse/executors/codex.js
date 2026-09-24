@@ -9,7 +9,11 @@ import { normalizeResponsesInput } from "../translator/formats/responsesApi.js";
 import { fetchImageAsBase64 } from "../translator/concerns/image.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
-import { DEFAULT_RETRY_CONFIG, HTTP_STATUS, resolveRetryEntry } from "../config/runtimeConfig.js";
+import {
+  HTTP_STATUS,
+  resolveOverloadDelayMs,
+  resolveOverloadRetryConfig,
+} from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
@@ -373,10 +377,28 @@ export class CodexExecutor extends BaseExecutor {
       await this.prefetchImages(args.body);
     }
 
-    // Retry loop for SSE-level overloaded errors (200 OK body contains event: error)
-    // Reuses 503 retry config — same semantic: upstream temporarily unavailable
-    const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
-    const { attempts, delayMs } = resolveRetryEntry(retryConfig[503]);
+    // Retry loop for SSE-level overloaded errors (200 OK body contains event: error).
+    //
+    // This is a TIME budget, not an attempt count. An upstream attempt on a real
+    // prompt costs 10-30s before the overload frame arrives (~18s average on
+    // production), so a fixed 1.5s backoff was shorter than the attempt it was
+    // backing off from: every retry landed inside the same saturation window and
+    // the request failed after ~55s of retrying that could never have worked.
+    // The window is short — the same account succeeds again within the same
+    // minute — so the loop now waits long enough to outlast it, bounded by a
+    // budget that stays well under the 165s TTFT Codex clients tolerate.
+    // Precedence: the channel's strategy entry (dashboard-tunable, per provider)
+    // wins over the executor's own config, which wins over the built-in defaults.
+    const overloadRetry = resolveOverloadRetryConfig(args.credentials?.providerStrategy, this.config.overloadRetry);
+    const { budgetMs, minRetries, maxAttempts, minSleepMs } = overloadRetry;
+    // The per-model budget is capped by the caller's request-wide deadline: a combo
+    // whose members all reach the same saturated upstream must not spend a fresh
+    // 90s per model (measured: the GPT chain has 3-6 such models). Past that
+    // deadline `minRetries` is dropped to 0 as well, so a late model fails fast and
+    // hands control to the combo instead of extending the request again.
+    const sharedDeadline = Number.isFinite(args.overloadDeadline) ? args.overloadDeadline : Infinity;
+    const deadline = Math.min(Date.now() + budgetMs, sharedDeadline);
+    const effectiveMinRetries = Date.now() >= sharedDeadline ? 0 : minRetries;
     let attempt = 0;
     while (true) {
       const result = await super.execute(args);
@@ -398,23 +420,35 @@ export class CodexExecutor extends BaseExecutor {
           HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE, "model_at_capacity", peek.upstreamError);
         return result;
       }
-      if (attempt >= attempts) {
-        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt}/${attempts})`);
+      // Keep retrying while the budget lasts, but always allow `minRetries` — a
+      // single slow attempt must not be able to spend the whole budget and leave
+      // the request with no retry at all. `maxAttempts` is a hard ceiling so a
+      // malformed config cannot loop forever.
+      const withinBudget = Date.now() < deadline;
+      const exhausted = (attempt >= effectiveMinRetries && !withinBudget) || attempt >= maxAttempts;
+      if (exhausted) {
+        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt} retries, ${budgetMs}ms budget)`);
         result.response = codexSseErrorResponse(
           HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
         return result;
       }
       attempt++;
-      // Full jitter. Concurrent requests that all observed the same overload event
-      // must not wake up in lockstep and re-create the very burst that overloaded
-      // the upstream. An upstream Retry-After, when present, wins over the local
-      // delay because it is the only authoritative recovery estimate we get.
+      // An upstream Retry-After, when present, wins over the local curve because
+      // it is the only authoritative recovery estimate we get; otherwise the
+      // delay grows exponentially. Full jitter keeps concurrent requests that all
+      // observed the same overload event from waking in lockstep and re-creating
+      // the very burst that overloaded the upstream.
       const upstreamDelayMs = Number.isFinite(peek.upstreamError?.retryAfterMs) && peek.upstreamError.retryAfterMs > 0
         ? peek.upstreamError.retryAfterMs
-        : delayMs;
-      const waitMs = Math.max(250, Math.round(upstreamDelayMs * (0.5 + Math.random() * 0.5)));
-      args.log?.debug?.("RETRY", `CODEX | SSE "${peek.matched}" retry ${attempt}/${attempts} after ${waitMs}ms`);
-      dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt}/${attempts} in ${waitMs}ms`);
+        : resolveOverloadDelayMs(attempt, overloadRetry);
+      // Never sleep past the deadline: the remaining budget caps the wait, but
+      // `minSleepMs` keeps the sleep meaningful instead of a zero-delay hot loop
+      // against an upstream that is already saturated.
+      const remainingMs = Math.max(0, deadline - Date.now());
+      const targetMs = Math.min(upstreamDelayMs, Math.max(remainingMs, minSleepMs));
+      const waitMs = Math.max(1, Math.round(targetMs * (0.5 + Math.random() * 0.5)));
+      args.log?.debug?.("RETRY", `CODEX | SSE "${peek.matched}" retry ${attempt} after ${waitMs}ms (budget left ${remainingMs}ms)`);
+      dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt} in ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
     }
   }

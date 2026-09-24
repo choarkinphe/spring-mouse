@@ -19,7 +19,7 @@ import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability } from "open-sse/services/combo.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -122,6 +122,14 @@ export async function handleChat(request, clientRawRequest = null) {
 
   const requiredCapabilities = detectRequiredCapabilities(body);
 
+  // One overload-retry deadline for the whole client request, shared by every
+  // model the combo tries. The executor's per-model budget is right for a single
+  // model, but the GPT combo chains 3-6 models that all resolve to the same
+  // upstream (cx/...), so a per-model budget multiplies: 90s x 5 = 450s, far past
+  // the 165s clients were measured to tolerate. Capping the total keeps the retry
+  // useful without letting one saturated upstream hold the request open.
+  const overloadDeadline = Date.now() + REQUEST_OVERLOAD_BUDGET_MS;
+
   // Combo routing is self-contained: its declared capability metadata must
   // match at least one of its own members. No global cross-combo pool is used.
   const comboModels = await getComboModels(modelStr, accessTags);
@@ -150,7 +158,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline);
         },
         log,
         comboName: modelStr,
@@ -164,7 +172,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: routedModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -172,13 +180,13 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = []) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null) {
   const modelInfo = await getModelInfo(modelStr);
   const requestStartTime = Date.now();
   // One id for this client request, shared by the routing log lines, the usage
@@ -252,7 +260,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline);
           },
           log,
           comboName: modelStr,
@@ -266,7 +274,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -439,6 +447,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         observabilityMaxJsonChars: Math.max(1024, Number(chatSettings.observabilityMaxJsonSize || 128) * 1024),
         // Detect source format by endpoint + body
         sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+        // Shared across every model this request tries, so a combo whose members
+        // all reach the same saturated upstream cannot multiply the retry budget.
+        overloadDeadline,
         onCredentialsRefreshed: async (newCreds) => {
           await updateProviderCredentials(credentials.connectionId, {
             ...newCreds,
@@ -500,6 +511,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Provider model is temporarily unavailable", retryAt, human);
         }
+      }
+
+      // A model-level SSE overload means the upstream MODEL is saturated, not this
+      // account: every account in the pool reaches the same busy model, so rotating
+      // accounts re-runs the executor's whole retry budget against the same
+      // saturation — measured at 4 accounts x 90s = 6 minutes for one request, all
+      // of it certain to fail. `sse_overload` is set only once the executor has
+      // already spent that budget on this model, so hand the failure straight back
+      // and let the combo try the next model: that is the only rotation which can
+      // actually change the outcome. Account-level failures still rotate as before.
+      if (result.upstreamError?.origin === "sse_overload") {
+        log.warn("THROTTLE", `${provider}/${model} | SSE overload outlasted the retry budget · not rotating accounts (same upstream model)`);
+        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+        return result.response;
       }
 
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);

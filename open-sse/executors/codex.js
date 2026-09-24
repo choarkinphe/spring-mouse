@@ -40,15 +40,40 @@ const CODEX_SSE_PEEK_BYTES = 256 * 1024;
 // few output deltas and only then fail the turn. Breaking out on the first delta
 // (the previous behaviour) let that error through as a 200-OK stream, so the combo
 // accepted it as a success and never rotated to the next model — the overload was
-// reported to the client instead of being routed around. After the first delta we
-// now keep scanning for a short, bounded grace window: long enough to catch a
-// same-turn capacity rejection, short enough that normal streaming still starts
-// promptly. SPRING_MOUSE_CODEX_SSE_GRACE_MS=0 restores the old fast path.
+// reported to the client instead of being routed around.
+//
+// After the first delta the scan used to stop after a FIXED 150ms. That is shorter
+// than the gap between a first delta and the overload frame in the failing case:
+// measured on production, a turn can emit a couple of deltas and only then report
+// `server_is_overloaded`. A fixed window therefore leaked the error frame to the
+// client as a normal stream (recorded as success, no retry, no log line).
+//
+// The window is now CONTENT-AWARE instead of fixed: after the first delta, keep
+// scanning until the turn has produced a substantial amount of output (a healthy
+// turn reaches this in milliseconds, so the common case pays almost no extra
+// time-to-first-token), or until the hard caps below. A short burst of deltas
+// followed by an error — the failure shape — stays under both the character and
+// byte thresholds and is scanned long enough to catch the frame.
+//
+//   _CHARS — output text accumulated before the scan may stop
+//   _MS    — hard ceiling on the post-output scan, so a slow upstream cannot
+//            hold the stream open indefinitely
+//   _BYTES — byte ceiling on the buffered prefix, independent of the char count
+// SPRING_MOUSE_CODEX_SSE_GRACE_MS=0 restores the old fast path (stop at the
+// first delta).
 const CODEX_SSE_OUTPUT_GRACE_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_GRACE_MS;
-  if (raw == null || raw === "") return 150;
+  if (raw == null || raw === "") return 2000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 150;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 2000;
+})();
+// Output characters that end the post-output scan. A healthy turn emits far more
+// than this within the first few frames, so normal streaming is not delayed.
+const CODEX_SSE_OUTPUT_GRACE_CHARS = (() => {
+  const raw = process.env.SPRING_MOUSE_CODEX_SSE_GRACE_CHARS;
+  if (raw == null || raw === "") return 200;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 200;
 })();
 const CODEX_SSE_OUTPUT_GRACE_BYTES = 16 * 1024;
 // Once a terminal frame is seen the turn already ended normally; no later frame can
@@ -224,6 +249,33 @@ function errorFramePayloads(text) {
     }
   }
   return out;
+}
+
+// Count the visible output text in an SSE buffer, from `from` onward. Only complete
+// lines are consumed so a half-received frame is not miscounted; the index of the
+// first incomplete line is returned as the new cursor. Used by the content-aware
+// post-output scan to tell "a healthy turn is streaming" (stop scanning) from "a
+// couple of deltas then a rejection" (keep scanning).
+function countOutputText(text, from = 0) {
+  let count = 0;
+  let cursor = from;
+  while (true) {
+    const nl = text.indexOf("\n", cursor);
+    if (nl === -1) break;
+    const line = text.slice(cursor, nl).trim();
+    cursor = nl + 1;
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]" || !payload.includes('"delta"')) continue;
+    try {
+      const parsed = JSON.parse(payload);
+      const delta = parsed?.delta;
+      if (typeof delta === "string") count += delta.length;
+    } catch {
+      // Not a JSON delta — ignore.
+    }
+  }
+  return { count, cursor };
 }
 
 // Pull the human-readable message out of an SSE error payload. Only error frames are
@@ -447,7 +499,11 @@ export class CodexExecutor extends BaseExecutor {
       const remainingMs = Math.max(0, deadline - Date.now());
       const targetMs = Math.min(upstreamDelayMs, Math.max(remainingMs, minSleepMs));
       const waitMs = Math.max(1, Math.round(targetMs * (0.5 + Math.random() * 0.5)));
-      args.log?.debug?.("RETRY", `CODEX | SSE "${peek.matched}" retry ${attempt} after ${waitMs}ms (budget left ${remainingMs}ms)`);
+      // WARN, not DEBUG: under the production LOG_LEVEL=WARN a debug line is invisible,
+      // so the retry — the whole point of the overload budget — left no trace when it
+      // succeeded, and only the exhaustion path was observable. Retries are rare and
+      // operationally meaningful, so they belong at the level operators actually read.
+      args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retry ${attempt} after ${waitMs}ms (budget left ${remainingMs}ms)`);
       dbg("CODEX", `SSE overloaded "${peek.matched}" → retry ${attempt} in ${waitMs}ms`);
       await new Promise(r => setTimeout(r, waitMs));
     }
@@ -468,6 +524,12 @@ export class CodexExecutor extends BaseExecutor {
     const graceEnabled = CODEX_SSE_OUTPUT_GRACE_MS > 0;
     let graceDeadline = 0;
     let graceBytesAt = 0;
+    // Output text produced so far (delta payloads only, framing excluded). The scan
+    // stops once this reaches CODEX_SSE_OUTPUT_GRACE_CHARS, which a healthy turn
+    // crosses in milliseconds. `countedUpTo` is how far into `text` complete lines
+    // have already been counted, so the accounting is O(new bytes) per chunk.
+    let outputChars = 0;
+    let countedUpTo = 0;
     // A read that the grace deadline raced past is NOT abandoned: it is carried into
     // the reassembled stream below, so the same reader keeps serving the client and
     // no lock is left dangling.
@@ -508,18 +570,32 @@ export class CodexExecutor extends BaseExecutor {
         }
         const lowerText = text.toLowerCase();
         if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) break;
+        // Content-aware post-output scan. Once the turn has produced a substantial
+        // amount of text it is plainly a healthy stream, so stop buffering; a short
+        // burst of deltas followed by a rejection stays under the threshold and keeps
+        // the scan alive long enough to catch the frame. The char count is updated
+        // incrementally from the last complete line to keep this O(new bytes).
         if (graceDeadline > 0) {
-          if (Date.now() >= graceDeadline || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
+          const counted = countOutputText(text, countedUpTo);
+          outputChars += counted.count;
+          countedUpTo = counted.cursor;
+          if (Date.now() >= graceDeadline
+            || outputChars >= CODEX_SSE_OUTPUT_GRACE_CHARS
+            || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
           continue;
         }
         if (CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => lowerText.includes(p))) {
-          // Output already started. Do not stop here: keep scanning briefly so a
-          // same-turn capacity/overload rejection still triggers fallback. The
-          // deadline is measured from the first output delta, and a byte cap keeps
-          // a pathological stream from being buffered in full.
+          // Output already started. Do not stop here: keep scanning so a same-turn
+          // capacity/overload rejection still triggers fallback. The scan ends on the
+          // first of: a terminal frame, enough output to prove the turn is healthy,
+          // the byte cap, or the hard time ceiling — so a healthy stream is released
+          // almost immediately while a short burst before a rejection is caught.
           if (!graceEnabled) break;
           graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
           graceBytesAt = text.length;
+          const counted = countOutputText(text, countedUpTo);
+          outputChars += counted.count;
+          countedUpTo = counted.cursor;
         }
       }
     } catch (e) {

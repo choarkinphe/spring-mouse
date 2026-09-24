@@ -254,5 +254,50 @@ describe("Codex detects a capacity error that arrives after output has started",
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBe("server_is_overloaded");
   });
+
+  // Regression: an overload frame that arrives AFTER the turn has started emitting
+  // output. The scan used to stop after a fixed 150ms, which is shorter than the gap
+  // observed in production (a couple of deltas, then the rejection), so the frame was
+  // passed to the client as a normal 200-OK stream — recorded as success, no retry.
+  // The window is now content-aware: a short burst of output keeps the scan alive.
+  it("catches an overload frame that arrives after output has started", async () => {
+    const executor = new CodexExecutor();
+    const encoder = new TextEncoder();
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const response = new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(
+          'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello"}\n\n'));
+        await sleep(300); // well past the old fixed 150ms window
+        controller.enqueue(encoder.encode(
+          'event: error\ndata: {"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBe("server_is_overloaded");
+  }, 10000);
+
+  // The content-aware window must not hold a healthy stream open: once the turn has
+  // produced substantial output the scan ends immediately, without waiting out the
+  // hard time ceiling.
+  it("releases a healthy stream as soon as it has produced enough output", async () => {
+    const executor = new CodexExecutor();
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"${"x".repeat(400)}"}\n\n`));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const startedAt = Date.now();
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.matched).toBeNull();
+    // Far below the 2000ms ceiling: the char threshold ended the scan at once.
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
 });
 

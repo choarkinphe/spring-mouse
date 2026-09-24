@@ -582,6 +582,152 @@ export function emptyStats(sourceCapture = {}, recentRequests = []) {
 }
 
 /**
+ * The home page's stats, computed by grouping in SQL instead of scanning rows
+ * into JS.
+ *
+ * WHY THIS EXISTS: `runAggregation` materialises every row in the window into JS
+ * so it can build the dimension maps and per-person session metrics. For a
+ * rolling window (the home page's 24h/48h view) that is ~42k rows and ~1.6s of
+ * CPU — and the window slides every 60s, so the cost is paid again and again.
+ *
+ * The home page needs the totals, the status counts, and enough of the maps to
+ * populate the details drawer's filter dropdowns (`byUser`, `byModel`,
+ * `byProvider`, `byApp`, `bySourceIp`). All of that comes from ONE GROUP BY over
+ * the scalar columns, with the totals summed from the groups — measured on
+ * production, 1599ms -> ~406ms for the same numbers.
+ *
+ * WHAT IT DOES NOT BUILD, because nothing on the home page reads them:
+ * `byAccount`, `byEndpoint`, per-person session metrics, and `requestRhythm`.
+ * `recentCallDetails` is deliberately left empty too — the home page's detail
+ * drawer queries `/api/usage/details` directly rather than reading this field.
+ *
+ * The result is built from `emptyStats()`, so the field contract cannot drift
+ * from `runAggregation`'s.
+ */
+export function runAggregationTotals(adapter, {
+  period = "all",
+  range = {},
+  apiKeyMap = {},
+  providerNodeNameMap = {},
+  sourceCapture = {},
+} = {}) {
+  const stats = emptyStats(sourceCapture, []);
+
+  const conditions = ["timestamp >= ?", "timestamp <= ?"];
+  const params = [range.startDate || new Date(0).toISOString(), range.endDate || new Date().toISOString()];
+  appendUsageApiKeyFilter(conditions, params, range);
+
+  // One pass. Grouping by the scalar dimensions lets every map and every total
+  // be derived by summing the groups, so the row count that reaches JS is the
+  // number of DISTINCT combinations (a few hundred) instead of every row.
+  const groups = adapter.all(
+    `SELECT
+       provider, model, apiKeyId, endpoint, status,
+       json_extract(meta, '$.sourceIp') AS sourceIp,
+       json_extract(meta, '$.sourceGeo') AS sourceGeo,
+       json_extract(meta, '$.appName') AS appName,
+       json_extract(meta, '$.userAgent') AS userAgent,
+       json_extract(meta, '$.sourceUrl') AS sourceUrl,
+       COUNT(*) AS requests,
+       SUM(CASE WHEN COALESCE(json_extract(tokens, '$.prompt_tokens'), 0) > 0
+                 OR COALESCE(json_extract(tokens, '$.completion_tokens'), 0) > 0
+                THEN 1 ELSE 0 END) AS meteredRequests,
+       SUM(COALESCE(json_extract(tokens, '$.prompt_tokens'), 0)) AS promptTokens,
+       SUM(COALESCE(json_extract(tokens, '$.completion_tokens'), 0)) AS completionTokens,
+       SUM(COALESCE(json_extract(tokens, '$.cached_tokens'),
+                    json_extract(tokens, '$.cache_read_input_tokens'), 0)) AS cachedTokens,
+       SUM(COALESCE(cost, 0)) AS cost,
+       MIN(timestamp) AS firstUsed,
+       MAX(timestamp) AS lastUsed
+     FROM usageHistory WHERE ${conditions.join(" AND ")}
+     GROUP BY provider, model, apiKeyId, endpoint, status, sourceIp, sourceGeo, appName, userAgent, sourceUrl`,
+    params,
+  );
+
+  for (const g of groups) {
+    const requests = Number(g.requests) || 0;
+    const promptTokens = Number(g.promptTokens) || 0;
+    const completionTokens = Number(g.completionTokens) || 0;
+    const cachedTokens = Number(g.cachedTokens) || 0;
+    const cost = Number(g.cost) || 0;
+    const providerDisplayName = providerNodeNameMap[g.provider] || g.provider;
+    const sourceIp = g.sourceIp || null;
+    const sourceGeo = g.sourceGeo || null;
+    const appName = detectSourceApp({ appName: g.appName, userAgent: g.userAgent, sourceUrl: g.sourceUrl });
+
+    stats.totalRequests += requests;
+    if (g.status === "cancelled") stats.cancelledRequests += requests;
+    else if (g.status === "error") stats.failedRequests += requests;
+    else stats.completedRequests += requests;
+    // Counted per ROW in SQL, not per group: a group is a set of rows sharing the
+    // grouping columns, and `tokens` is not one of them, so rows inside a group
+    // can differ on whether they are metered.
+    stats.meteredRequests += Number(g.meteredRequests) || 0;
+    stats.totalPromptTokens += promptTokens;
+    stats.totalCompletionTokens += completionTokens;
+    stats.totalCachedTokens += cachedTokens;
+    stats.totalCost += cost;
+
+    if (!stats.byProvider[g.provider]) stats.byProvider[g.provider] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0 };
+    addToCounter(stats.byProvider, g.provider, { requests, promptTokens, completionTokens, cachedTokens, cost });
+
+    // Keyed exactly as the raw path does, so a drawer filter matches either way.
+    const modelKey = g.provider ? `${g.model} (${g.provider})` : g.model;
+    if (!stats.byModel[modelKey]) {
+      stats.byModel[modelKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: g.model, provider: providerDisplayName, lastUsed: g.lastUsed };
+    }
+    addToCounter(stats.byModel, modelKey, { requests, promptTokens, completionTokens, cachedTokens, cost });
+    if (isLaterTimestamp(g.lastUsed, stats.byModel[modelKey].lastUsed)) stats.byModel[modelKey].lastUsed = g.lastUsed;
+
+    if (!stats.byApp[appName]) {
+      stats.byApp[appName] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, appName, lastUsed: g.lastUsed };
+    }
+    addToCounter(stats.byApp, appName, { requests, promptTokens, completionTokens, cachedTokens, cost });
+    if (isLaterTimestamp(g.lastUsed, stats.byApp[appName].lastUsed)) stats.byApp[appName].lastUsed = g.lastUsed;
+
+    if (sourceIp) {
+      if (!stats.bySourceIp[sourceIp]) {
+        stats.bySourceIp[sourceIp] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, sourceIp, sourceGeo, lastUsed: g.lastUsed };
+      }
+      addToCounter(stats.bySourceIp, sourceIp, { requests, promptTokens, completionTokens, cachedTokens, cost });
+      if (!stats.bySourceIp[sourceIp].sourceGeo && sourceGeo) stats.bySourceIp[sourceIp].sourceGeo = sourceGeo;
+      if (isLaterTimestamp(g.lastUsed, stats.bySourceIp[sourceIp].lastUsed)) stats.bySourceIp[sourceIp].lastUsed = g.lastUsed;
+    }
+
+    // byUser carries the drawer's `people` options; the session metrics the raw
+    // path also computes are not shown on the home page.
+    //
+    // The label mirrors the raw path's byUser branch verbatim (including its
+    // English fallbacks), rather than the localized `getUsageUserName()` used
+    // elsewhere. A perf change must not alter what the drawer displays.
+    const personKey = g.apiKeyId || "local-no-key";
+    if (!stats.byUser[personKey]) {
+      const keyInfo = apiKeyMap[personKey];
+      stats.byUser[personKey] = {
+        requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0,
+        userId: personKey,
+        keyName: keyInfo?.name || (personKey === "local-no-key" ? "Local (No API Key)" : String(personKey).startsWith("external:") ? "External API Key" : "Deleted API Key"),
+        apiKeyMasked: keyInfo ? null : (String(personKey).startsWith("external:") ? "External API Key" : null),
+        firstUsed: g.firstUsed, lastUsed: g.lastUsed,
+      };
+    }
+    addToCounter(stats.byUser, personKey, { requests, promptTokens, completionTokens, cachedTokens, cost });
+    if (isLaterTimestamp(g.lastUsed, stats.byUser[personKey].lastUsed)) stats.byUser[personKey].lastUsed = g.lastUsed;
+    if (g.firstUsed && (!stats.byUser[personKey].firstUsed || g.firstUsed < stats.byUser[personKey].firstUsed)) {
+      stats.byUser[personKey].firstUsed = g.firstUsed;
+    }
+  }
+
+  const trafficTotals = getTrafficTotals(adapter, getTrafficRange(period, range));
+  stats.totalRequestBytes = trafficTotals.requestBytes;
+  stats.totalResponseBytes = trafficTotals.responseBytes;
+  stats.totalTrafficBytes = trafficTotals.totalBytes;
+  stats.trafficSummary = getTrafficSummary(adapter, { apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null });
+
+  return stats;
+}
+
+/**
  * Build the stats object. Mirrors the pre-existing `calculateUsageStats` body
  * exactly (minus the three live fields the caller overlays), so the dashboard
  * contract is unchanged.

@@ -65,7 +65,11 @@ describe("resolveAggregationSource", () => {
     expect(resolveAggregationSource(adapterOf(db), "today", dayAligned(localMidnight(), localEndOfDay()))).toBe("raw");
   });
 
-  it("stays on raw for a rolling window, whatever the marker says", () => {
+  it("serves a rolling window from the totals path, not the rollup or raw", () => {
+    // A rolling window is never day-aligned, so the daily rollup would include
+    // the boundary day whole and over-report. It is also only ever the home
+    // page, which reads just the totals — so it takes the SQL GROUP BY path
+    // rather than materialising every row into JS.
     setCompleteThrough(adapterOf(db), todayKey());
     const now = new Date();
     for (const hours of [24, 48, 168]) {
@@ -73,7 +77,7 @@ describe("resolveAggregationSource", () => {
         startDate: new Date(now.getTime() - hours * 3600_000).toISOString(),
         endDate: now.toISOString(),
       };
-      expect(resolveAggregationSource(adapterOf(db), "all", range), `${hours}h`).toBe("raw");
+      expect(resolveAggregationSource(adapterOf(db), "all", range), `${hours}h`).toBe("totals");
     }
   });
 

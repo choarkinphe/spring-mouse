@@ -23,7 +23,7 @@ import { Worker } from "node:worker_threads";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runAggregation } from "../../../runtime/usage-aggregate.mjs";
+import { runAggregation, runAggregationTotals } from "../../../runtime/usage-aggregate.mjs";
 import { runRollupStats } from "../../../runtime/usage-rollup-stats.mjs";
 
 const POOL_SIZE = Math.max(1, Math.min(4, Number.parseInt(process.env.SPRING_MOUSE_USAGE_WORKER_POOL, 10) || 2));
@@ -187,12 +187,19 @@ function pump() {
  * way (worker, or in-process fallback).
  *
  * `params.source` selects the implementation: `"rollup"` reads the daily rollup
- * tables, anything else scans `usageHistory`. The fallback below uses the same
- * source, so a worker failure changes performance, not the numbers.
+ * tables, `"totals"` computes just the dashboard totals in SQL, anything else
+ * scans `usageHistory` row by row. The fallback below uses the same source, so a
+ * worker failure changes performance, not the numbers.
  */
 export async function runUsageAggregation({ adapter, params }) {
   ensureStarted();
-  const inProcess = () => (params?.source === "rollup" ? runRollupStats(adapter, params) : runAggregation(adapter, params));
+  const inProcess = () => (
+    params?.source === "rollup"
+      ? runRollupStats(adapter, params)
+      : params?.source === "totals"
+        ? runAggregationTotals(adapter, params)
+        : runAggregation(adapter, params)
+  );
 
   if (state.disabled || state.workers.length === 0) {
     state.stats.fallbacks++;

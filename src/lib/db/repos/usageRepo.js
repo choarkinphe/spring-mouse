@@ -1007,19 +1007,24 @@ function getTrafficRange(period, range = {}) {
  * worker and the fallback cannot drift apart.
  */
 /**
- * Pick the aggregation source for a request: `"rollup"` or `"raw"`.
+ * Pick the aggregation source for a request: `"rollup"`, `"totals"` or `"raw"`.
  *
- * The rollup is a daily aggregate, so it can only answer a request whose range
- * is (a) on local-day boundaries and (b) entirely inside the days the rebuild has
- * completed. Anything else stays on raw:
- *   - a rolling window ("24h"/"48h"/"7d" from 15:00) starts mid-day, so the
- *     rollup would include the boundary day whole and over-report;
+ * `"rollup"` — the daily aggregate. It can only answer a request whose range is
+ * (a) on local-day boundaries and (b) entirely inside the days the rebuild has
+ * completed:
  *   - a day after `completeThrough` can be missing rows — the writer only fills
  *     the rollup for days it was running, and the web process's Redis-downgrade
  *     fallback writes `usageHistory` without the rollup at all.
  *
- * Falling back to raw is always correct. The rollup is an optimisation; it must
- * never be the reason a number is wrong.
+ * `"totals"` — a ROLLING window (not day-aligned). The daily rollup would include
+ * the boundary day whole and over-report, but such a window is only ever the
+ * home page, which reads just the totals. Those come from one SQL GROUP BY
+ * instead of a row-by-row JS pass.
+ *
+ * `"raw"` — everything else: the full row scan that builds every dimension map.
+ *
+ * Falling back to raw is always correct. The other two are optimisations; they
+ * must never be the reason a number is wrong.
  *
  * Exported for tests: this gate is what stands between a fast board and a
  * silently wrong one, so it is worth pinning directly.
@@ -1027,7 +1032,18 @@ function getTrafficRange(period, range = {}) {
 export function resolveAggregationSource(db, period, range = {}) {
   if (process.env.SPRING_MOUSE_AGGREGATION_SOURCE === "raw") return "raw";
   try {
-    if (!isDayAlignedRange(range)) return "raw";
+    if (!isDayAlignedRange(range)) {
+      // A ROLLING window. Only the home page uses one (the board's calendar
+      // filter is day-aligned), and the home page reads just the totals — not
+      // the dimension maps or per-person session metrics. So this is the one
+      // case that can be answered by a SQL GROUP BY instead of materialising
+      // every row into JS: measured on production, ~1.6s -> ~120ms.
+      //
+      // A non-day-aligned range that DID need the maps would silently lose them,
+      // so this must stay true: `realtimeRange()` is the only producer of such
+      // ranges, and it feeds only the home page.
+      return "totals";
+    }
     const completeThrough = getCompleteThrough(db);
     if (!completeThrough) return "raw";
     // The last day the request needs. A custom range ends at its endDate; a

@@ -23,7 +23,7 @@
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import { runAggregation } from "./usage-aggregate.mjs";
+import { runAggregation, runAggregationTotals } from "./usage-aggregate.mjs";
 import { runRollupStats } from "./usage-rollup-stats.mjs";
 
 function resolveDbFile(msg) {
@@ -80,7 +80,11 @@ parentPort.on("message", (msg) => {
       sourceCapture: msg.sourceCapture || {},
       now: msg.now ? new Date(msg.now) : new Date(),
     };
-    const stats = msg.source === "rollup" ? runRollupStats(adapter, params) : runAggregation(adapter, params);
+    const stats = msg.source === "rollup"
+      ? runRollupStats(adapter, params)
+      : msg.source === "totals"
+        ? runAggregationTotals(adapter, params)
+        : runAggregation(adapter, params);
     parentPort.postMessage({ id, stats });
   } catch (error) {
     parentPort.postMessage({ id, error: String(error?.message || error) });

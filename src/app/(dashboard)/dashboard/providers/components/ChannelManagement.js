@@ -235,35 +235,113 @@ function ChannelQuota({ quotas, loading }) {
   }
 
   return (
-    <div className="grid w-full max-w-[38rem] grid-cols-1 gap-2 sm:grid-cols-2">
-      {quotas.slice(0, 4).map((quota) => {
-        const remaining = getRemainingPercentage(quota);
-        const balance = formatQuotaBalance(quota);
-        const reset = formatResetTime(quota.resetAt);
-        return (
-          <div key={quota.modelKey || quota.name} className="min-w-0">
-            <div className="mb-1 flex items-center gap-2 text-[11px] leading-none">
-              <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.name}</span>
-              {quota.unlimited ? (
-                <span className="shrink-0 text-[#7dd3fc]">不限额</span>
-              ) : (
-                <>
-                  {balance && <span className="shrink-0 font-mono text-[#e4edf5]">{balance}</span>}
-                  <span className="shrink-0 font-mono text-[#e4edf5]">{remaining}%</span>
-                </>
-              )}
-              {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
-            </div>
-            {!quota.unlimited && (
-              <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]">
-                <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />
+    <div className="w-full max-w-[38rem]">
+      <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#647688]">
+        <span>上游配额快照</span>
+        <Tooltip text="配额来自账号对应的提供商接口；百分比表示剩余量，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
+          <span className="material-symbols-outlined text-[13px]! leading-none" aria-label="配额口径说明">info</span>
+        </Tooltip>
+      </div>
+      <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+        {quotas.slice(0, 4).map((quota) => {
+          const remaining = getRemainingPercentage(quota);
+          const balance = formatQuotaBalance(quota);
+          const reset = formatResetTime(quota.resetAt);
+          return (
+            <div key={quota.modelKey || quota.name} className="min-w-0">
+              <div className="mb-1 flex items-center gap-2 text-[11px] leading-none">
+                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.name}</span>
+                {quota.unlimited ? (
+                  <span className="shrink-0 text-[#7dd3fc]">不限额</span>
+                ) : (
+                  <>
+                    {balance && <span className="shrink-0 font-mono text-[#e4edf5]">{balance}</span>}
+                    <span className="shrink-0 font-mono text-[#e4edf5]">{remaining}%</span>
+                  </>
+                )}
+                {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>
-            )}
-          </div>
-        );
-      })}
-      {quotas.length > 4 && <span className="text-[11px] text-[#647688]">+{quotas.length - 4} 项配额</span>}
+              {!quota.unlimited && (
+                <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]">
+                  <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {quotas.length > 4 && <span className="text-[11px] text-[#647688]">+{quotas.length - 4} 项配额</span>}
+      </div>
     </div>
+  );
+}
+
+const CHANNEL_DATA_SCOPE_ITEMS = [
+  {
+    icon: "account_balance_wallet",
+    title: "配额与重置",
+    text: "来自账号对应的提供商接口快照；百分比表示剩余量，重置时间以提供商返回值为准。",
+  },
+  {
+    icon: "schedule",
+    title: "Codex 窗口",
+    text: "session / weekly 对应上游 primary / secondary 窗口，通常约为 5 小时 / 7 天；具体周期以返回的重置时间为准。",
+  },
+  {
+    icon: "route",
+    title: "启用不等于可路由",
+    text: "启用和可用是账号状态；模型冷却、熔断或 Mouse 离线时，账号仍可能暂不参与调度。",
+  },
+  {
+    icon: "history",
+    title: "上次错误",
+    text: "保留最近的上游或网关错误证据；账号恢复后仍可能显示为历史提示，不代表当前仍失败。",
+  },
+  {
+    icon: "monitor_heart",
+    title: "成功率",
+    text: "每个账号最近最多 100 条账号级路由尝试；请求 fallback 到其他账号时，各次尝试分别计数。",
+  },
+  {
+    icon: "receipt_long",
+    title: "最近请求",
+    text: "显示该账号最近一次已记录的路由尝试，失败尝试也会更新；调用方仅显示 API Key 名称。",
+  },
+  {
+    icon: "call_split",
+    title: "加权并发",
+    text: "当前进程的实时租约；长上下文请求可能占用多个额度，多实例时不是全局汇总。",
+  },
+  {
+    icon: "view_list",
+    title: "模型数量",
+    text: "来自 Spring Mouse 当前静态路由目录，不代表每个账号实时探测到的可用模型数。",
+  },
+];
+
+function ChannelDataScopeNotice() {
+  return (
+    <section className="overflow-hidden rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.035]" aria-labelledby="channel-data-scope-title">
+      <div className="flex items-start gap-3 border-b border-[#38bdf8]/10 px-4 py-3">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/[0.10] text-[#7dd3fc]">
+          <span className="material-symbols-outlined text-[17px]! leading-none">info</span>
+        </span>
+        <div className="min-w-0">
+          <h2 id="channel-data-scope-title" className="text-sm font-semibold text-text-main">数据口径</h2>
+          <p className="mt-0.5 text-xs leading-5 text-text-muted">页面上的数字来自不同数据源；以下说明帮助区分提供商快照、账号历史和当前运行状态。</p>
+        </div>
+      </div>
+      <div className="grid gap-px bg-white/[0.045] sm:grid-cols-2 xl:grid-cols-4">
+        {CHANNEL_DATA_SCOPE_ITEMS.map((item) => (
+          <div key={item.title} className="flex min-w-0 gap-2.5 bg-surface/35 px-4 py-3">
+            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[16px]! leading-none text-[#7dd3fc]">{item.icon}</span>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-[#d7e5f0]">{item.title}</p>
+              <p className="mt-1 text-[11px] leading-5 text-text-muted">{item.text}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -720,7 +798,8 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       ]
     : ["近 100 次暂无失败"];
   const successRateHint = [
-    `本账号最近 100 次请求成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`,
+    `本账号最近最多 100 条账号级路由尝试成功率 ${successRateLabel}${recentSuccessRate.total ? `（${recentSuccessRate.success}/${recentSuccessRate.total}）` : "（暂无请求）"}`,
+    "请求发生账号 fallback 时，各账号尝试分别计数；本地策略阻断不计入成功率分母",
     ...failureMixLines,
   ].join("\n");
   // Who was behind that last request — the API key's display name. Resolved
@@ -909,7 +988,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           <span className="flex min-w-0 items-center gap-1.5 border-l border-white/[0.08] pl-2.5">
             <span
               className={cn("flex min-w-0 items-center gap-1 tabular-nums", recentlyActive ? "text-emerald-300/90" : "text-[#647688]")}
-              title={lastRequestTitle}
+              title={`${lastRequestTitle}\n口径：该账号最近一次已记录的路由尝试，失败尝试也会更新`}
             >
               {/* `!` is required: globals.css sets a 24px font-size on
                   .material-symbols-outlined outside any cascade layer, which beats
@@ -945,7 +1024,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                   : concurrency.active > 0 ? "border-sky-400/25 bg-sky-400/[0.10] text-sky-300"
                     : "border-white/[0.08] bg-white/[0.025] text-[#647688]",
               )}
-              title={`当前加权并发 ${concurrency.active} / ${concurrency.limit}\n账号达到上限后会等待，不再继续分配；长上下文请求按权重占用多个并发额度，数据来自本进程实时租约${concurrency.active === 0 ? "（当前空闲）" : ""}`}
+              title={`当前加权并发 ${concurrency.active} / ${concurrency.limit}\n账号达到上限后会等待，不再继续分配；长上下文请求按权重占用多个并发额度\n口径：数据来自本进程实时租约，多实例部署时不是全局汇总${concurrency.active === 0 ? "（当前空闲）" : ""}`}
             >
               <span className="material-symbols-outlined text-[14px]! leading-none">call_split</span>
               <span>加权并发</span>
@@ -2282,6 +2361,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
           </div>
         )}
       />
+      <ChannelDataScopeNotice />
 
       {loading ? (
         <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">

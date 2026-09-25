@@ -17,6 +17,19 @@ import {
 import { runRollupAggregation, readUserRollup } from "../../runtime/usage-rollup-read.mjs";
 import { runRollupStats } from "../../runtime/usage-rollup-stats.mjs";
 import { runAggregation } from "../../runtime/usage-aggregate.mjs";
+import { wallClock, instantOfMidnight } from "../../runtime/timezone.mjs";
+
+/**
+ * An instant at a given wall-clock time in the app timezone (Asia/Shanghai).
+ *
+ * `new Date(y, m, d, h, min)` builds in the PROCESS zone, which made these tests
+ * pass only where the process happened to run in the app zone (the container) and
+ * fail on CI (UTC). Building from the zone's midnight keeps the intent — "just
+ * before local midnight" — true wherever the suite runs.
+ */
+function atLocal(y, month, day, hour = 0, minute = 0, second = 0) {
+  return new Date(instantOfMidnight(y, month, day).getTime() + (hour * 3600 + minute * 60 + second) * 1000);
+}
 
 /**
  * ONE table, keyed (day, API key). Every dimension the dashboard shows is either
@@ -210,10 +223,10 @@ describe("usage rollup — agreement with the raw aggregation", () => {
   });
 
   it("merges a session spanning local midnight instead of counting it twice", () => {
-    const beforeStart = new Date(2026, 8, 20, 23, 50, 0);
-    const afterStart = new Date(2026, 8, 21, 0, 20, 0);
-    const evA = makeEvent({ requestId: "a", timestamp: beforeStart.toISOString(), startedAt: beforeStart.toISOString(), completedAt: new Date(2026, 8, 20, 23, 55, 0).toISOString() });
-    const evB = makeEvent({ requestId: "b", timestamp: afterStart.toISOString(), startedAt: afterStart.toISOString(), completedAt: new Date(2026, 8, 21, 0, 25, 0).toISOString() });
+    const beforeStart = atLocal(2026, 9, 20, 23, 50);
+    const afterStart = atLocal(2026, 9, 21, 0, 20);
+    const evA = makeEvent({ requestId: "a", timestamp: beforeStart.toISOString(), startedAt: beforeStart.toISOString(), completedAt: atLocal(2026, 9, 20, 23, 55).toISOString() });
+    const evB = makeEvent({ requestId: "b", timestamp: afterStart.toISOString(), startedAt: afterStart.toISOString(), completedAt: atLocal(2026, 9, 21, 0, 25).toISOString() });
 
     expect(rollupRowDelta(evA).dateKey).toBe("2026-09-20");
     expect(rollupRowDelta(evB).dateKey).toBe("2026-09-21");
@@ -427,11 +440,11 @@ describe("usage rollup — rebuild", () => {
   });
 
   it("assigns a row to its START day, matching the raw path's basis", async () => {
-    // Local-time constructors, because the rollup keys on the LOCAL day (as the
-    // raw path does via getLocalDateKey(startedAt)); a UTC literal would land on
-    // a different local day depending on the machine's timezone.
-    const start = new Date(2026, 8, 20, 23, 59, 30);
-    const end = new Date(2026, 8, 21, 0, 0, 10);
+    // Built at APP_TIMEZONE wall-clock, because the rollup keys on that zone's day
+    // (as the raw path does via getLocalDateKey(startedAt)). A process-local or UTC
+    // literal would land on a different day depending on the machine's timezone.
+    const start = atLocal(2026, 9, 20, 23, 59, 30);
+    const end = atLocal(2026, 9, 21, 0, 0, 10);
     const ev = makeEvent({
       requestId: "straddle",
       timestamp: start.toISOString(),

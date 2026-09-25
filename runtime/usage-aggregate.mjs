@@ -20,6 +20,8 @@
 
 // ─── small helpers (self-contained copies; see file header for why) ──────────
 
+import { startOfDay, localDateKey as localDateKeyTz } from "./timezone.mjs";
+
 export function parseJson(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value !== "string") return value;
@@ -77,8 +79,7 @@ export function getUsageUserName(apiKeyId, apiKeyMap = {}) {
 }
 
 function getLocalDateKey(timestamp) {
-  const d = timestamp ? new Date(timestamp) : new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return localDateKeyTz(timestamp || new Date());
 }
 
 function getRequestDurationMs(startedAt, completedAt) {
@@ -347,8 +348,7 @@ export function getTrafficRange(period, range = {}) {
   if (range.startDate && range.endDate) return { startDate: range.startDate, endDate: range.endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
   const endDate = new Date().toISOString();
   if (period === "today") {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
+    const start = startOfDay(new Date());
     return { startDate: start.toISOString(), endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
   }
   if (PERIOD_MS[period]) return { startDate: new Date(Date.now() - PERIOD_MS[period]).toISOString(), endDate, apiKeyId: range.apiKeyId || null, apiKeyIds: range.apiKeyIds || null };
@@ -363,10 +363,9 @@ export function getRecentCallDetails(adapter, period, range, apiKeyMap, provider
     conditions.push("timestamp >= ?", "timestamp <= ?");
     params.push(range.startDate, range.endDate);
   } else if (period === "today") {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const startOfDayValue = startOfDay(new Date());
     conditions.push("timestamp >= ?");
-    params.push(startOfDay.toISOString());
+    params.push(startOfDayValue.toISOString());
   } else if (period === "24h") {
     conditions.push("timestamp >= ?");
     params.push(new Date(Date.now() - PERIOD_MS["24h"]).toISOString());
@@ -702,9 +701,7 @@ export function runAggregation(adapter, {
     cutoff = range.startDate;
     endDate = range.endDate;
   } else if (period === "today") {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    cutoff = startOfDay.toISOString();
+    cutoff = startOfDay(new Date()).toISOString();
   } else if (PERIOD_MS[period]) {
     cutoff = new Date(Date.now() - PERIOD_MS[period]).toISOString();
   } else {

@@ -35,6 +35,7 @@
  */
 
 import { detectSourceApp } from "./usage-aggregate.mjs";
+import { startOfDay, localDateKey as localDateKeyTz } from "./timezone.mjs";
 
 export const ROLLUP_TABLE = "usageRollupDay";
 export const SESSION_GAP_MS = 30 * 60 * 1000;
@@ -46,8 +47,7 @@ export const COUNTER_COLUMNS = ["requests", "promptTokens", "completionTokens", 
 export const MAP_COLUMNS = ["models", "apps", "sourceIps", "accounts", "endpoints"];
 
 export function localDateKey(value) {
-  const d = new Date(value);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return localDateKeyTz(value);
 }
 
 function parseJson(value, fallback = null) {
@@ -490,13 +490,15 @@ export function historyDateKeys(database, now = Date.now()) {
   const row = asAdapter(database).get(`SELECT MIN(COALESCE(startedAt, timestamp)) AS earliest FROM usageHistory`);
   if (!row?.earliest) return [];
   const days = [];
-  const cursor = new Date(row.earliest);
-  cursor.setHours(0, 0, 0, 0);
-  const end = new Date(now);
-  end.setHours(0, 0, 0, 0);
+  // Walk APP_TIMEZONE midnights: a fixed 24h step can land mid-day across a DST
+  // boundary, and `setDate` would step in the process zone. Adding whole days to
+  // the previous instant keeps every cursor exactly on a zone midnight.
+  let cursor = startOfDay(row.earliest);
+  const end = startOfDay(now);
   while (cursor.getTime() <= end.getTime()) {
     days.push(localDateKey(cursor.getTime()));
-    cursor.setDate(cursor.getDate() + 1);
+    const wc = new Date(cursor.getTime() + 26 * 3600_000); // +26h is safely into the next day
+    cursor = startOfDay(wc);
   }
   return days;
 }

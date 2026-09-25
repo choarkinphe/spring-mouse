@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { realtimeRange, REALTIME_PRESETS } from "../../src/shared/utils/realtimeRange.js";
+import { startOfDay, endOfDay } from "../../src/shared/utils/datetime.js";
+import { instantOfMidnight } from "../../runtime/timezone.mjs";
 import { isDayAlignedRange } from "../../runtime/usage-rollup-read.mjs";
 
 /**
@@ -31,18 +33,21 @@ describe("realtimeRange", () => {
     // A rolling 168h window forces a full usageHistory scan (8.8s on
     // production). Aligning to local midnight lets the day-alignment gate hand
     // it to the rollup (~100ms).
+    //
+    // "local" here is the APP timezone (Asia/Shanghai), NOT the browser's: the
+    // server buckets by its own local day, so the window must align to the same
+    // zone or the gate and the data disagree. These assertions therefore go
+    // through the same helpers rather than getHours(), so they hold wherever the
+    // test runs (CI is UTC, dev may be CST).
     const range = realtimeRange("7d", NOW);
     const start = new Date(range.startDate);
     const end = new Date(range.endDate);
-    expect([start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds()]).toEqual([0, 0, 0, 0]);
-    expect([end.getHours(), end.getMinutes(), end.getSeconds(), end.getMilliseconds()]).toEqual([23, 59, 59, 999]);
+    expect(start.getTime()).toBe(startOfDay(NOW).getTime() - 6 * 24 * 3600_000);
+    expect(end.getTime()).toBe(endOfDay(NOW).getTime());
     expect(isDayAlignedRange(range)).toBe(true);
 
-    // "近 7 天" includes today, so it starts 6 days back.
-    const expectedStart = new Date(NOW);
-    expectedStart.setHours(0, 0, 0, 0);
-    expectedStart.setDate(expectedStart.getDate() - 6);
-    expect(start.getTime()).toBe(expectedStart.getTime());
+    // The window covers whole app-timezone days, so its edges are midnights there.
+    expect(start.getTime() % (24 * 3600_000)).toBe(startOfDay(NOW).getTime() % (24 * 3600_000));
   });
 
   it("carries the preset through so the selector can highlight it", () => {
@@ -82,22 +87,25 @@ describe("realtimeRange", () => {
 describe("isDayAlignedRange", () => {
   // The gate that decides whether a request may be served from the daily rollup.
   const dayAligned = (start, end) => ({ startDate: start.toISOString(), endDate: end.toISOString() });
+  // Boundaries are built in APP_TIMEZONE, the zone the gate itself uses — a
+  // process-local constructor would only line up when the process runs in CST.
+  const midnight = (y, m, d) => instantOfMidnight(y, m, d);
 
   it("accepts a calendar day, which is what the board asks for", () => {
-    const start = new Date(2026, 8, 23, 0, 0, 0, 0);
-    const end = new Date(2026, 8, 23, 23, 59, 59, 999);
+    const start = midnight(2026, 9, 23);
+    const end = new Date(midnight(2026, 9, 24).getTime() - 1);
     expect(isDayAlignedRange(dayAligned(start, end))).toBe(true);
   });
 
   it("rejects a mid-day start, so a rolling window cannot use the rollup", () => {
-    const start = new Date(2026, 8, 23, 15, 0, 0, 0);
-    const end = new Date(2026, 8, 24, 15, 0, 0, 0);
+    const start = new Date(midnight(2026, 9, 23).getTime() + 15 * 3600_000);
+    const end = new Date(start.getTime() + 24 * 3600_000);
     expect(isDayAlignedRange(dayAligned(start, end))).toBe(false);
   });
 
   it("rejects a mid-day end", () => {
-    const start = new Date(2026, 8, 23, 0, 0, 0, 0);
-    const end = new Date(2026, 8, 23, 12, 0, 0, 0);
+    const start = midnight(2026, 9, 23);
+    const end = new Date(start.getTime() + 12 * 3600_000);
     expect(isDayAlignedRange(dayAligned(start, end))).toBe(false);
   });
 

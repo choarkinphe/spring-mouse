@@ -25,6 +25,7 @@
  */
 
 import { COUNTER_COLUMNS, ROLLUP_TABLE, deserializeRow, sessionsFromIntervals } from "./usage-rollup.mjs";
+import { startOfDay, endOfDay, localDateKey as localDateKeyTz } from "./timezone.mjs";
 
 /** The dimensions this module can serve, in the raw path's display shape. */
 export const ROLLUP_READ_DIMENSIONS = [
@@ -78,16 +79,15 @@ export function isDayAlignedRange(range = {}) {
   const start = new Date(range.startDate);
   const end = new Date(range.endDate);
   if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return false;
-  // A day-aligned range starts at local midnight and ends at local end-of-day
-  // (what the board's calendar filter produces).
-  const midnight = new Date(start); midnight.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(end); endOfDay.setHours(23, 59, 59, 999);
-  return start.getTime() === midnight.getTime() && end.getTime() === endOfDay.getTime();
+  // A day-aligned range starts at APP_TIMEZONE midnight and ends at that zone's
+  // end-of-day. The client builds its range with the same basis, so the two agree
+  // regardless of the process TZ (CI is UTC; the container is CST).
+  return start.getTime() === startOfDay(start).getTime()
+    && end.getTime() === endOfDay(end).getTime();
 }
 
 export function localDateKey(value) {
-  const d = new Date(value);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return localDateKeyTz(value);
 }
 
 function emptyCounters() {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { resolveAggregationSource } from "@/lib/db/repos/usageRepo.js";
 import { ensureRollupTable, setCompleteThrough } from "../../runtime/usage-rollup.mjs";
+import { startOfDay, endOfDay, localDateKey } from "../../runtime/timezone.mjs";
 
 /**
  * The gate that decides whether a dashboard request may be served from the daily
@@ -20,23 +21,14 @@ const adapterOf = (db) => ({
 });
 
 const dayAligned = (start, end) => ({ startDate: start.toISOString(), endDate: end.toISOString() });
-const localMidnight = (offsetDays = 0) => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + offsetDays);
-  return d;
-};
-const localEndOfDay = (offsetDays = 0) => {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  d.setDate(d.getDate() + offsetDays);
-  return d;
-};
-const todayKey = (offsetDays = 0) => {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
+// "local" is the APP timezone, matching the gate and the stored keys — not the
+// process zone, which is UTC on CI.
+const localMidnight = (offsetDays = 0) =>
+  new Date(startOfDay(new Date()).getTime() + offsetDays * 24 * 3600_000);
+const localEndOfDay = (offsetDays = 0) =>
+  new Date(endOfDay(new Date()).getTime() + offsetDays * 24 * 3600_000);
+const todayKey = (offsetDays = 0) =>
+  localDateKey(new Date(Date.now() + offsetDays * 24 * 3600_000));
 
 let db;
 beforeEach(() => {

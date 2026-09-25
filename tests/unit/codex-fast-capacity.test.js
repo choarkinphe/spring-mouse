@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
 
 function streamFromText(text) {
@@ -334,6 +334,83 @@ describe("Codex detects a capacity error that arrives after output has started",
     const peek = await executor._peekSseTransientError(response);
     expect(peek.matched).toBeNull();
     expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
+});
+
+// The byte ceiling is a STRUCTURAL escape boundary, not just a memory guard. When
+// it is hit before any output, the scan has seen neither content nor an error, so
+// it cannot tell an overloaded stream from a healthy one. Returning matched:null
+// with no unresolved flag made the caller forward that unresolved stream — the
+// exact escape class the 256KB->2MB raise was meant to close, reintroduced at the
+// new ceiling. These pin that a pre-output ceiling hit is reported as UNRESOLVED.
+describe("Codex preamble ceiling is an unresolved stop, not a silent pass-through", () => {
+  // CODEX_SSE_PEEK_BYTES is resolved at module load, so override the env and
+  // re-import to exercise a small ceiling without building a 2MB fixture.
+  async function withPeekBytes(bytes, fn) {
+    const prev = process.env.SPRING_MOUSE_CODEX_SSE_PEEK_BYTES;
+    process.env.SPRING_MOUSE_CODEX_SSE_PEEK_BYTES = String(bytes);
+    vi.resetModules();
+    try {
+      const mod = await import("../../open-sse/executors/codex.js");
+      return await fn(new mod.CodexExecutor());
+    } finally {
+      if (prev === undefined) delete process.env.SPRING_MOUSE_CODEX_SSE_PEEK_BYTES;
+      else process.env.SPRING_MOUSE_CODEX_SSE_PEEK_BYTES = prev;
+      vi.resetModules();
+    }
+  }
+
+  const OVERLOAD = 'event: error\ndata: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}\n\n';
+
+  it("flags stoppedOnCeiling when the preamble overruns the ceiling before any output", async () => {
+    await withPeekBytes(4096, async (executor) => {
+      // The preamble must arrive in its OWN chunk(s): the ceiling is checked at the
+      // top of the read loop, so a single chunk carrying both preamble and error
+      // would be scanned whole and the error caught (correct, but not the case under
+      // test). Splitting mirrors the real upstream, which streams the metadata frames
+      // first and only then — on an overload — emits the error frame.
+      const encoder = new TextEncoder();
+      const preamble = `event: response.created\ndata: {"type":"response.created","response":{"tools":[{"name":"${"x".repeat(12000)}"}]}}\n\n`;
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(preamble));   // 12KB, over the 4KB ceiling
+          controller.enqueue(encoder.encode(OVERLOAD));   // error frame arrives after
+          controller.close();
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+      const peek = await executor._peekSseTransientError(response);
+      expect(peek.matched).toBeNull();
+      // The flag the caller keys on. Without it this stream would be forwarded.
+      expect(peek.stoppedOnDeadline).toBe(true);
+      expect(peek.stoppedOnCeiling).toBe(true);
+      expect(peek.replacementBody).toBeNull();
+      expect(peek.upstreamError.message).toContain("ceiling");
+    });
+  });
+
+  it("does NOT flag a ceiling stop once output has begun (healthy release)", async () => {
+    await withPeekBytes(4096, async (executor) => {
+      const text = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
+        + `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"${"y".repeat(12000)}"}\n\n`;
+      const response = new Response(streamFromText(text), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      const peek = await executor._peekSseTransientError(response);
+      expect(peek.matched).toBeNull();
+      // Output was flowing: this is a normal healthy release, and the caller must
+      // hand the (reassembled) stream to the client.
+      expect(peek.stoppedOnDeadline).toBe(false);
+      expect(peek.replacementBody).not.toBeNull();
+    });
+  });
+
+  it("still catches an overload frame that sits inside the ceiling", async () => {
+    await withPeekBytes(65536, async (executor) => {
+      const preamble = `event: response.created\ndata: {"type":"response.created","response":{"tools":[{"name":"${"x".repeat(12000)}"}]}}\n\n`;
+      const response = new Response(streamFromText(preamble + OVERLOAD), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      const peek = await executor._peekSseTransientError(response);
+      expect(peek.matched).toBe("server_is_overloaded");
+      expect(peek.stoppedOnCeiling).toBeFalsy();
+    });
   });
 });
 

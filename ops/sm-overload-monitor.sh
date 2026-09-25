@@ -46,6 +46,12 @@ echo "retrying_within_budget=$(echo "$L" | grep -c 'retrying within a')"
 echo "retry_lines=$(echo "$L" | grep -cE 'retry [0-9]+ in ')"
 echo "recovered=$(echo "$L" | grep -c 'recovered after')"
 echo "exhausted=$(echo "$L" | grep -c 'retries exhausted')"
+# Third terminal path: the deadline ran out mid-scan, so the loop gave up and
+# answered 503 without ever reaching the `retries exhausted` line. It is NOT an
+# escape and NOT a recovery — counting it separately is what makes the arc
+# identity below close. (Added 2026-09-26 after a real production arc landed here
+# and left `retrying` permanently one ahead of `recovered + exhausted`.)
+echo "spent_mid_scan=$(echo "$L" | grep -c 'spent mid-scan')"
 echo "not_rotating=$(echo "$L" | grep -c 'not rotating accounts')"
 echo "sse_overload=$(echo "$L" | grep -c 'sse_overload')"
 echo "=== 3. retry arc, last 16m (log timestamps are CST) ==="
@@ -72,7 +78,17 @@ console.log("all_provider_errors=" + db.prepare("SELECT COUNT(*) c FROM requestD
 // is the gateway forwarding the overload to the client as normal output, which is
 // measured by dump_client_hits above. Read the two together: exhausted>0 with
 // dump_client_hits=0 is healthy; dump_client_hits>0 is the real failure.
-const ov = db.prepare("SELECT COUNT(*) c FROM requestDetails WHERE provider=? AND timestamp>? AND status=? AND json_extract(data, ?) LIKE ?").get("codex", start, "error", "$.response.error", "%currently overloaded%").c;
+//
+// TWO message shapes must both be matched (found 2026-09-26):
+//   - "Our servers are currently overloaded. Please try again later." — the raw
+//     upstream text, surfaced verbatim by the OLD escape path. Seeing this is the
+//     historical failure mode.
+//   - "Upstream overloaded" — the message the gateway synthesises when it gives
+//     up on the budget itself (codexSseErrorResponse). This is the CURRENT,
+//     CORRECT outcome.
+// Matching only the first shape made this counter read 0 forever on the very
+// exhaustion it was built to count — it lit up solely for pre-fix escapes.
+const ov = db.prepare("SELECT COUNT(*) c FROM requestDetails WHERE provider=? AND timestamp>? AND status=? AND (json_extract(data, ?) LIKE ? OR json_extract(data, ?) LIKE ?)").get("codex", start, "error", "$.response.error", "%currently overloaded%", "$.response.error", "%Upstream overloaded%").c;
 console.log("codex_db_overload_errors=" + ov + "  (budget-exhausted 503s; NOT an escape — see dump_client_hits)");
 // 自启动以来的 codex 错误明细（CST），便于人工核对是否出现过载
 const errs = db.prepare("SELECT timestamp, model, data FROM requestDetails WHERE provider=? AND status=? AND timestamp>? ORDER BY timestamp DESC LIMIT 10").all("codex","error",start);
@@ -146,6 +162,7 @@ d = {
     "retry_lines": field("retry_lines"),
     "recovered": field("recovered"),
     "exhausted": field("exhausted"),
+    "spent_mid_scan": field("spent_mid_scan"),
     "not_rotating": field("not_rotating"),
     "sse_overload": field("sse_overload"),
     "codex_success": kv("codex_success"),
@@ -159,6 +176,16 @@ d = {
     "verdict": field("VERDICT"),
     "report": report,
 }
+# Arc identity: every announced arc must terminate in exactly one way —
+# recovered, exhausted, or spent_mid_scan. `arc_open` > 0 means an arc was still
+# in flight at sample time (normal: the sampler can land 10s before a 120s budget
+# expires) OR a new terminal path appeared that no counter covers. A value that
+# stays > 0 across two consecutive samples is the latter — investigate.
+try:
+    _a = int(d["retrying"]); _b = int(d["recovered"]) + int(d["exhausted"]) + int(d["spent_mid_scan"])
+    d["arc_open"] = str(_a - _b)
+except Exception:
+    d["arc_open"] = ""
 json.dump(d, open(out, "w", encoding="utf-8"), ensure_ascii=False)
 print(json.dumps(d, ensure_ascii=False))
 PY

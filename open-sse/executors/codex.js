@@ -519,7 +519,9 @@ export class CodexExecutor extends BaseExecutor {
         // overload frame — to the client, which is the escape this whole path exists
         // to prevent. Report it as exhausted instead.
         if (peek.stoppedOnDeadline) {
-          args.log?.warn?.("RETRY", `CODEX | SSE overload budget (${fmtDuration(budgetMs)}) spent mid-scan — giving up rather than forwarding an unresolved stream`);
+          args.log?.warn?.("RETRY", peek.stoppedOnCeiling
+            ? `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_PEEK_BYTES / 1024)}KB ceiling before any output — giving up rather than forwarding an unresolved stream`
+            : `CODEX | SSE overload budget (${fmtDuration(budgetMs)}) spent mid-scan — giving up rather than forwarding an unresolved stream`);
           result.response = codexSseErrorResponse(
             HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || "Upstream overloaded", "sse_overload", peek.upstreamError);
           return result;
@@ -626,6 +628,16 @@ export class CodexExecutor extends BaseExecutor {
     // client. `stoppedOnDeadline` carries that distinction out.
     const preambleDeadline = Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline);
     let stoppedOnDeadline = false;
+    // Hitting the BYTE ceiling before any output is the same escape class as the
+    // original 256KB bug: the metadata preamble (response.created + in_progress each
+    // echo the full tools schema) can be hundreds of KB, so if it ever exceeds the
+    // ceiling the error frame sits BEYOND it and the scan cannot tell an overloaded
+    // stream from a healthy one. Measured preamble on production is 317-376KB against
+    // a 2MB ceiling (5.6x margin) — but a margin is not a guarantee, so the ceiling
+    // stop is reported as UNRESOLVED rather than silently forwarded.
+    // Ceiling hit AFTER output began is different: output is already flowing, so the
+    // turn is healthy and releasing it is correct (this is the normal post-output path).
+    let stoppedOnCeiling = false;
     // A read that the grace deadline raced past is NOT abandoned: it is carried into
     // the reassembled stream below, so the same reader keeps serving the client and
     // no lock is left dangling.
@@ -637,7 +649,11 @@ export class CodexExecutor extends BaseExecutor {
         // output has begun, fall back to the small ceiling — a healthy stream is
         // released by the content-aware rules below long before either is hit.
         const byteCeiling = outputStarted ? CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT : CODEX_SSE_PEEK_BYTES;
-        if (bufferedBytes >= byteCeiling) break;
+        if (bufferedBytes >= byteCeiling) {
+          // Pre-output ceiling hit => unresolved (see stoppedOnCeiling above).
+          if (!outputStarted && !matched) stoppedOnCeiling = true;
+          break;
+        }
         // Whichever phase we are in, never block indefinitely: the preamble has its
         // own deadline, and the post-output phase uses the grace deadline.
         const deadline = outputStarted ? graceDeadline : preambleDeadline;
@@ -746,11 +762,12 @@ export class CodexExecutor extends BaseExecutor {
       };
     }
 
-    // Unresolved: stopped on the caller's deadline with neither output nor an error.
-    // The caller will discard this attempt and answer 503, so the upstream body must
-    // be released here — returning a replacementBody nobody reads would leak the
-    // connection (and the reader's lock) for every exhausted request.
-    if (stoppedOnDeadline) {
+    // Unresolved: stopped on the caller's deadline, or on the pre-output byte
+    // ceiling, with neither output nor an error. The caller will discard this
+    // attempt and answer 503, so the upstream body must be released here —
+    // returning a replacementBody nobody reads would leak the connection (and the
+    // reader's lock) for every exhausted request.
+    if (stoppedOnDeadline || stoppedOnCeiling) {
       try { await reader.cancel(); } catch { /* noop */ }
       try { reader.releaseLock(); } catch { /* noop */ }
       return {
@@ -758,11 +775,14 @@ export class CodexExecutor extends BaseExecutor {
         message: null,
         accountFallback: false,
         stoppedOnDeadline: true,
+        stoppedOnCeiling,
         replacementBody: null,
         upstreamError: {
           source: "sse",
           status: response.status,
-          message: "Upstream overloaded (retry budget spent mid-scan)",
+          message: stoppedOnCeiling
+            ? "Upstream overloaded (metadata preamble exceeded the scan ceiling)"
+            : "Upstream overloaded (retry budget spent mid-scan)",
           body: text.slice(0, 4000),
           retryAfterMs: null,
           receivedAt: new Date().toISOString(),

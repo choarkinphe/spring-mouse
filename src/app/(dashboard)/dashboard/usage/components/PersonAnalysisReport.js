@@ -6,6 +6,7 @@ import { cn } from "@/shared/utils/cn";
 import { buildPersonUsageAnalysisFromStats } from "@/shared/utils/personUsageAnalysis";
 import Card from "@/shared/components/Card";
 import Drawer from "@/shared/components/Drawer";
+import { formatDate, formatShortDateTime } from "@/shared/utils/datetime";
 
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间"];
@@ -23,19 +24,12 @@ const fmtTokens = (value) => {
 
 function formatDateRange(timeRange) {
   if (!timeRange?.startDate || !timeRange?.endDate) return "当前统计周期";
-  const format = (value) => new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date(value));
-  return `${format(timeRange.startDate)} — ${format(timeRange.endDate)}`;
+  // APP_TIMEZONE, so the label matches the server's day buckets.
+  return `${formatDate(timeRange.startDate)} — ${formatDate(timeRange.endDate)}`;
 }
 
 function formatDateTime(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  }).format(date);
+  return formatShortDateTime(value);
 }
 
 function formatDuration(ms) {

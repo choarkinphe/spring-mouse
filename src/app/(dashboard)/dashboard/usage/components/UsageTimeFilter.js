@@ -5,6 +5,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import UsageScopeManager from "./UsageScopeManager";
 import useSettingsStore from "@/store/settingsStore";
 import { hasAccessTagOverlap, normalizeAccessTags } from "@/shared/utils/accessTags";
+import {
+  startOfDay as atStartOfDay,
+  endOfDay as atEndOfDay,
+  startOfWeek,
+  startOfMonth,
+  startOfNextMonth,
+  toDateInputValue as toInputDate,
+  formatChineseDate as toChineseDate,
+} from "@/shared/utils/datetime";
 
 const PRESETS = [
   { value: "today", label: "今天" },
@@ -12,35 +21,11 @@ const PRESETS = [
   { value: "month", label: "本月" },
 ];
 
-function atStartOfDay(date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
-}
-
-function atEndOfDay(date) {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
-function startOfWeek(date) {
-  const result = atStartOfDay(date);
-  const offset = (result.getDay() + 6) % 7;
-  result.setDate(result.getDate() - offset);
-  return result;
-}
-
-function toInputDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function toChineseDate(date) {
-  return `${date.getFullYear()}年${String(date.getMonth() + 1).padStart(2, "0")}月${String(date.getDate()).padStart(2, "0")}日`;
-}
+// Day/week/month boundaries come from @/shared/utils/datetime so they are computed
+// in APP_TIMEZONE, not the browser's zone — the server buckets by its own local
+// day, so a browser elsewhere would request a range whose edges disagree with the
+// data it is displaying.
+const DAY_MS = 24 * 3600_000;
 
 function getRange(preset, anchor) {
   const today = atEndOfDay(new Date());
@@ -48,14 +33,13 @@ function getRange(preset, anchor) {
 
   if (preset === "week") {
     const start = startOfWeek(anchorDay);
-    const end = atEndOfDay(new Date(start));
-    end.setDate(end.getDate() + 6);
+    const end = new Date(start.getTime() + 6 * DAY_MS + DAY_MS - 1); // end of the 7th day
     return { start, end: end > today ? today : end };
   }
 
   if (preset === "month") {
-    const start = new Date(anchorDay.getFullYear(), anchorDay.getMonth(), 1);
-    const end = new Date(anchorDay.getFullYear(), anchorDay.getMonth() + 1, 0, 23, 59, 59, 999);
+    const start = startOfMonth(anchorDay);
+    const end = new Date(startOfNextMonth(anchorDay).getTime() - 1); // last ms of the month
     return { start, end: end > today ? today : end };
   }
 
@@ -64,9 +48,17 @@ function getRange(preset, anchor) {
 
 function shiftAnchor(anchor, preset, direction) {
   const next = new Date(anchor);
-  if (preset === "week") next.setDate(next.getDate() + direction * 7);
-  else if (preset === "month") next.setMonth(next.getMonth() + direction);
-  else next.setDate(next.getDate() + direction);
+  // Shift by fixed durations / explicit month bounds rather than setDate/setMonth,
+  // which operate in the browser's zone and would drift the anchor off CST
+  // midnight when the browser is elsewhere.
+  if (preset === "week") {
+    next.setTime(next.getTime() + direction * 7 * DAY_MS);
+  } else if (preset === "month") {
+    const base = direction > 0 ? startOfNextMonth(next) : startOfMonth(new Date(next.getTime() - 1));
+    next.setTime(base.getTime());
+  } else {
+    next.setTime(next.getTime() + direction * DAY_MS);
+  }
   return next;
 }
 

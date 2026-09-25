@@ -8,6 +8,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import EndpointRow from "./components/EndpointRow";
 import SecurityWarning from "./components/SecurityWarning";
 import styles from "./credentials.module.css";
+import { formatShortDateTime, formatDate, formatDateTime } from "@/shared/utils/datetime";
 
 const QUOTA_REFRESH_INTERVAL_MS = 60_000;
 
@@ -20,7 +21,7 @@ function formatLastAccess(value) {
   if (delta >= 0 && delta < 60_000) return "刚刚访问";
   if (delta >= 0 && delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前访问`;
   if (delta >= 0 && delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前访问`;
-  return timestamp.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return formatShortDateTime(timestamp);
 }
 
 function formatTokenMillions(valueM) {
@@ -35,13 +36,7 @@ function formatQuotaReset(value) {
   if (!value) return "等待新用量后滚动重置";
   const timestamp = new Date(value);
   if (Number.isNaN(timestamp.getTime())) return "—";
-  return timestamp.toLocaleString("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  return formatShortDateTime(timestamp);
 }
 
 function getQuotaTone(percentage) {
@@ -879,7 +874,7 @@ export default function APIPageClient({ machineId }) {
                       <button onClick={() => toggleKeyVisibility(key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"} aria-label={visibleKeys.has(key.id) ? "隐藏密钥" : "显示密钥"}><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>{visibleKeys.has(key.id) ? "visibility_off" : "visibility"}</span></button>
                       <button onClick={() => copy(key.key, key.id)} className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-white/[.07] hover:text-[#7dd3fc]" title="复制密钥" aria-label="复制密钥"><span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>{copied === key.id ? "check" : "content_copy"}</span></button>
                     </div>
-                    <p className="mt-1 text-[11px] text-text-muted">创建于 {new Date(key.createdAt).toLocaleDateString("zh-CN")}</p>
+                    <p className="mt-1 text-[11px] text-text-muted">创建于 {formatDate(key.createdAt)}</p>
                     {key.accessTags?.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {key.accessTags.map((tag) => <span key={tag} className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{tag}</span>)}
@@ -928,7 +923,7 @@ export default function APIPageClient({ machineId }) {
                     <div className={styles.lastAccess}>
                       <span className={styles.mobileLabel}>最近访问</span>
                       <p className="truncate text-xs font-medium text-text-main">{formatLastAccess(key.lastUsedAt)}</p>
-                      <p className="mt-0.5 truncate text-[10px] text-text-muted">{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "首次成功验证后开始记录"}</p>
+                      <p className="mt-0.5 truncate text-[10px] text-text-muted">{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : "首次成功验证后开始记录"}</p>
                     </div>
                   </div>
                 </div>

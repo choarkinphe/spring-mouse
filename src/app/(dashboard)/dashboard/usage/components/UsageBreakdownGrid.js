@@ -8,6 +8,7 @@ import UsageChart from "./UsageChart";
 import PersonAnalysisReport from "./PersonAnalysisReport";
 import UsageDetailsDrawer from "./UsageDetailsDrawer";
 import { formatBytes } from "@/shared/utils/formatBytes";
+import { formatDate } from "@/shared/utils/datetime";
 import { cn } from "@/shared/utils/cn";
 
 const PERIOD_LABELS = ["凌晨", "清晨", "上午", "下午", "傍晚", "夜间"];
@@ -29,10 +30,8 @@ function providerIdFromModelRow(item) {
 
 function formatDateRange(timeRange) {
   if (!timeRange?.startDate || !timeRange?.endDate) return "当前统计周期";
-  const format = (value) => new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date(value));
-  return `${format(timeRange.startDate)} — ${format(timeRange.endDate)}`;
+  // APP_TIMEZONE, so the label matches the server's day buckets.
+  return `${formatDate(timeRange.startDate)} — ${formatDate(timeRange.endDate)}`;
 }
 
 function formatGeo(geo) {

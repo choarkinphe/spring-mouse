@@ -5,25 +5,19 @@ import PropTypes from "prop-types";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { formatBytes } from "@/shared/utils/formatBytes";
+import { formatDateTime as formatDateTimeTz, toDatetimeLocalValue } from "@/shared/utils/datetime";
 
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
 const fmtCost = (value) => `$${Number(value || 0).toFixed(4)}`;
 
+// Timestamps are rendered in APP_TIMEZONE (see @/shared/utils/datetime) so the
+// dashboard agrees with the server, which buckets by its own local day.
 function formatDateTime(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).format(date);
+  return formatDateTimeTz(value);
 }
 
 function toDatetimeLocal(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (number) => String(number).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return toDatetimeLocalValue(value);
 }
 
 function StatusBadge({ status }) {

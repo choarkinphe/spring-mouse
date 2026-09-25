@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { UsageStats, CardSkeleton } from "@/shared/components";
 import UsageTimeFilter from "./components/UsageTimeFilter";
 import { realtimeRange } from "@/shared/utils/realtimeRange";
+import { startOfDay, endOfDay } from "@/shared/utils/datetime";
 import DashboardUsageHeader from "./components/DashboardUsageHeader";
 
 // How often the home page's rolling window advances. Without this the window
@@ -11,14 +12,11 @@ import DashboardUsageHeader from "./components/DashboardUsageHeader";
 // would slowly become "the 24 hours before you opened the tab".
 const WINDOW_ADVANCE_MS = 60_000;
 
-// Default range for the usage board: today, local midnight → end of day.
+// Default range for the usage board: today, in APP_TIMEZONE (the server buckets
+// by its own local day, so the browser's midnight would disagree).
 function currentDayRange() {
   const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(now);
-  end.setHours(23, 59, 59, 999);
-  return { preset: "today", startDate: start.toISOString(), endDate: end.toISOString() };
+  return { preset: "today", startDate: startOfDay(now).toISOString(), endDate: endOfDay(now).toISOString() };
 }
 
 export default function UsageOverview({ showOverview = true, showBreakdowns = false, initialSystemStatus = null }) {

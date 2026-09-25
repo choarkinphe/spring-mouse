@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Card from "@/shared/components/Card";
 import Pagination from "@/shared/components/Pagination";
+import { formatDateTime as formatDateTimeTz } from "@/shared/utils/datetime";
 
 const FILTER_LABELS = {
   provider: "提供商",
@@ -18,13 +19,9 @@ const FILTER_LABELS = {
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
 const fmtCost = (value) => `$${Number(value || 0).toFixed(4)}`;
 
+// Rendered in APP_TIMEZONE so the dashboard agrees with the server's day buckets.
 function formatDateTime(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).format(date);
+  return formatDateTimeTz(value);
 }
 
 function formatRange(startDate, endDate) {

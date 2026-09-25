@@ -22,6 +22,8 @@
  * local midnight buys that 80x, at the cost of "近 7 天" meaning the last 7
  * calendar days rather than the last 168 hours.
  */
+import { startOfDay, endOfDay } from "@/shared/utils/datetime";
+
 export const REALTIME_PRESETS = [
   { value: "24h", label: "24 小时", hours: 24 },
   { value: "48h", label: "48 小时", hours: 48 },
@@ -44,12 +46,13 @@ export function realtimeRange(preset = "24h", now = new Date()) {
   const config = REALTIME_PRESETS.find((p) => p.value === preset);
 
   if (config?.dayAligned) {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
+    // Day boundaries must be the SERVER's day (the container runs in
+    // APP_TIMEZONE), not the browser's: the range is sent to the server, which
+    // buckets by its own local day. Using browser-local midnight here would shift
+    // the window by the offset difference and silently include/exclude hours.
+    const start = startOfDay(now);
     start.setDate(start.getDate() - (config.days - 1));   // "近 7 天" includes today
-    const end = new Date(now);
-    end.setHours(23, 59, 59, 999);
-    return { preset, startDate: start.toISOString(), endDate: end.toISOString() };
+    return { preset, startDate: start.toISOString(), endDate: endOfDay(now).toISOString() };
   }
 
   const hours = config?.hours ?? 24;

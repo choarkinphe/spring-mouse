@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
 import { formatResetTime, getRemainingPercentage } from "./utils";
 
 const PAGE_SIZE = 10;
@@ -14,24 +15,18 @@ function formatResetTimeDisplay(resetTime) {
   try {
     const date = new Date(resetTime);
     const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
+    // Day comparison in APP_TIMEZONE, matching the server's day buckets.
+    const dayKey = (d) => formatDate(d);
     let dayStr = "";
-    if (date >= today && date < tomorrow) {
+    if (dayKey(date) === dayKey(now)) {
       dayStr = "Today";
-    } else if (date >= tomorrow && date < new Date(tomorrow.getTime() + 24 * 60 * 60 * 1000)) {
+    } else if (dayKey(date) === dayKey(new Date(now.getTime() + 86400000))) {
       dayStr = "Tomorrow";
     } else {
-      dayStr = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      dayStr = formatShortDateTime(date);
     }
 
-    const timeStr = date.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
+    const timeStr = formatTime(date);
 
     return `${dayStr}, ${timeStr}`;
   } catch {

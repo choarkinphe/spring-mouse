@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, ConfirmModal, DashboardHero, Drawer, Input, Modal, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { cn } from "@/shared/utils/cn";
+import { formatDateTime } from "@/shared/utils/datetime";
 
 const ENDPOINTS = [
   { id: "users", method: "GET", path: "/open/v1/users", title: "成员目录", icon: "group" },
@@ -12,11 +13,7 @@ const ENDPOINTS = [
 
 function formatDate(value) {
   if (!value) return "尚未调用";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("zh-CN", {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-  });
+  return formatDateTime(value);
 }
 
 function CodeBlock({ code, copyId, copied, onCopy }) {

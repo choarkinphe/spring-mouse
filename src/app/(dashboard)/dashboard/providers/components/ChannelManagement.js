@@ -21,6 +21,7 @@ import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelI
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
 import { cn } from "@/shared/utils/cn";
+import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
@@ -189,7 +190,7 @@ function formatRelativeTime(isoString) {
   if (hours < 24) return `${hours} 小时前`;
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days} 天前`;
-  return new Date(at).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+  return formatMonthDay(at);
 }
 
 // Kept out of the component body: reading the clock during render trips
@@ -728,7 +729,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   const recentlyActive = isRecentlyActive(connection.lastRequestAt);
   const lastRequestTitle = connection.lastRequestAt
     ? [
-        `该账号最近一次请求：${new Date(connection.lastRequestAt).toLocaleString("zh-CN", { hour12: false })}`,
+        `该账号最近一次请求：${formatDateTime(connection.lastRequestAt)}`,
         lastRequestBy ? `调用方：${lastRequestBy}` : null,
         connection.lastRequestModel ? `模型：${connection.lastRequestModel}` : null,
       ].filter(Boolean).join("\n")
@@ -739,7 +740,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       `账号：${getConnectionName(connection)}`,
       `渠道：${getProviderName(connection.provider)}`,
       connection.mouseId ? `Mouse：${connection.mouseId}` : null,
-      errorEvidence?.iso ? `时间：${new Date(errorEvidence.iso).toLocaleString("zh-CN", { hour12: false })}` : null,
+      errorEvidence?.iso ? `时间：${formatDateTime(errorEvidence.iso)}` : null,
       getErrorEvidenceTitle(errorEvidence),
     ].filter(Boolean).join("\n");
     try {

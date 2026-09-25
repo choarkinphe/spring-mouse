@@ -2,6 +2,7 @@
 // history persistence. No React — imported by the client components.
 
 import { marked } from "marked";
+import { formatTime as formatTimeTz } from "@/shared/utils/datetime";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -98,7 +99,7 @@ export function formatTokPerSec(value) {
 
 export function formatTime(iso) {
   try {
-    return new Date(iso).toLocaleTimeString("zh-CN", { hour12: false });
+    return formatTimeTz(iso);
   } catch {
     return "";
   }

@@ -2,11 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, Card, ConfirmModal, DashboardHero, Drawer, Input } from "@/shared/components";
+import { formatDateTime } from "@/shared/utils/datetime";
 
 function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+  return formatDateTime(value);
 }
 
 function formatRelative(value) {

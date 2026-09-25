@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/shared/utils/cn";
+import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
 import { formatResetTime } from "./utils";
 
 // Calculate color based on remaining percentage
@@ -38,26 +39,19 @@ const formatResetTimeDisplay = (resetTime) => {
   
   try {
     const resetDate = new Date(resetTime);
+    // Compare calendar days in APP_TIMEZONE, not the browser's, so "Today" matches
+    // the day the dashboard is bucketing by.
+    const dayKey = (d) => formatDate(d);
     const now = new Date();
-    const isToday = resetDate.toDateString() === now.toDateString();
-    const isTomorrow = resetDate.toDateString() === new Date(now.getTime() + 86400000).toDateString();
-    
-    const timeStr = resetDate.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
-    
+    const isToday = dayKey(resetDate) === dayKey(now);
+    const isTomorrow = dayKey(resetDate) === dayKey(new Date(now.getTime() + 86400000));
+
+    const timeStr = formatTime(resetDate);
+
     if (isToday) return `Today, ${timeStr}`;
     if (isTomorrow) return `Tomorrow, ${timeStr}`;
-    
-    return resetDate.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
+
+    return formatShortDateTime(resetDate);
   } catch {
     return null;
   }

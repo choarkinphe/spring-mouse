@@ -1247,9 +1247,12 @@ export async function getChartData(period = "7d", range = {}) {
     const useHourlyBuckets = durationMs <= 48 * 3600000;
     const bucketMs = useHourlyBuckets ? 3600000 : 86400000;
     const bucketCount = Math.min(Math.ceil(durationMs / bucketMs), useHourlyBuckets ? 48 : 90);
+    // Bucket labels are pinned to the app timezone rather than the process TZ, so
+    // the chart axis matches the day buckets regardless of how the container runs.
+    const APP_TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE || "Asia/Shanghai";
     const labelFn = useHourlyBuckets
-      ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })
-      : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      ? (timestamp) => new Date(timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: APP_TZ })
+      : (timestamp) => new Date(timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: APP_TZ });
 
     return addTrafficToChartBuckets(getChartBuckets(db, { startTime, endTime, bucketMs, bucketCount, apiKeyFilter, apiKeyIds, labelFn }), { startTime, endTime, bucketMs, bucketCount, apiKeyId: apiKeyFilter, apiKeyIds });
   }

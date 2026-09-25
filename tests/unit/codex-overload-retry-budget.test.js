@@ -127,6 +127,49 @@ describe("Codex overload retry budget", () => {
     await expect(result.response.text()).resolves.toContain("response.completed");
   }, 15000);
 
+  // Overshoot guard: the budget used to be checked only AFTER an attempt returned,
+  // so one slow attempt could run past the deadline (a p99 attempt measured 79s on
+  // production; a 90s budget could stop at ~150s+, past the ~165s clients tolerate).
+  // The scan is now bounded by the request deadline, and stopping there is reported
+  // as UNRESOLVED rather than healthy — otherwise the scan would hand a possibly
+  // overloaded stream to the client, which is the escape this path prevents.
+  describe("attempt is bounded by the request deadline", () => {
+    it("stops a stalled preamble scan at the deadline and answers 503", async () => {
+      const executor = new CodexExecutor();
+      executor.config = { ...executor.config, overloadRetry: { budgetMs: 300, baseDelayMs: 50, maxDelayMs: 50, factor: 1, minRetries: 0, maxAttempts: 5, minSleepMs: 1 } };
+      // An upstream that sends `response.created` and then never speaks again: the
+      // preamble scan would otherwise wait out its own (much longer) bound.
+      const encoder = new TextEncoder();
+      const stalled = new Response(new ReadableStream({
+        start(c) {
+          c.enqueue(encoder.encode('event: response.created\ndata: {"type":"response.created"}\n\n'));
+          // never closes
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+        .mockResolvedValue({ response: stalled, url: "u", headers: {} });
+
+      const started = Date.now();
+      const result = await executor.execute({ model: "gpt-5.6-sol", body: {}, stream: true, credentials: {}, log: {} });
+      const elapsed = Date.now() - started;
+      superExecute.mockRestore();
+
+      // Bounded by the 300ms budget, not the 60s preamble bound.
+      expect(elapsed).toBeLessThan(5000);
+      expect(result.response.status).toBe(503);
+      expect(result.response.__smUpstreamError?.origin).toBe("sse_overload");
+    }, 15000);
+
+    it("a healthy stream is still released, not treated as unresolved", async () => {
+      const executor = new CodexExecutor();
+      const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+        .mockResolvedValue({ response: sse(OK_FRAME), url: "u", headers: {} });
+      const result = await executor.execute({ model: "gpt-5.6-sol", body: {}, stream: true, credentials: {}, log: {} });
+      superExecute.mockRestore();
+      expect(result.response.status).toBe(200);
+    }, 15000);
+  });
+
   // The overload path must be legible from the log alone under LOG_LEVEL=WARN: an
   // operator has to see the detection, each backoff, and how it ended. Previously a
   // SUCCESSFUL retry logged nothing at all, so a recovered request was

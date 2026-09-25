@@ -504,9 +504,26 @@ export class CodexExecutor extends BaseExecutor {
     // which deadline applies. Without it the log opens mid-story on "retry 1".
     let announced = false;
     while (true) {
+      // Bound THIS attempt by the same deadline the loop runs under. Without it the
+      // budget is only checked after an attempt returns, so a slow attempt can
+      // overshoot: the preamble scan alone may read for up to PREAMBLE_MS, and on a
+      // p99 attempt (79s measured) a 90s budget could stop at ~150s+ — past the
+      // ~165s clients were measured to tolerate. Passing the deadline lets the scan
+      // give up and hand the stream to the client instead of holding it open.
       const result = await super.execute(args);
-      const peek = await this._peekSseTransientError(result.response);
+      const peek = await this._peekSseTransientError(result.response, deadline);
       if (!peek.matched) {
+        // The scan stopped because the caller's deadline ran out without resolving
+        // (no output, no error). That is the budget being spent, not a healthy turn:
+        // handing the stream over would forward whatever comes next — including an
+        // overload frame — to the client, which is the escape this whole path exists
+        // to prevent. Report it as exhausted instead.
+        if (peek.stoppedOnDeadline) {
+          args.log?.warn?.("RETRY", `CODEX | SSE overload budget (${fmtDuration(budgetMs)}) spent mid-scan — giving up rather than forwarding an unresolved stream`);
+          result.response = codexSseErrorResponse(
+            HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || "Upstream overloaded", "sse_overload", peek.upstreamError);
+          return result;
+        }
         // Recovery: the retries outlasted the saturation window. Worth a line of its
         // own — without it the log shows "retry 1 … retry 2 …" and then nothing, so a
         // request that RECOVERED is indistinguishable from one that died mid-retry.
@@ -573,7 +590,7 @@ export class CodexExecutor extends BaseExecutor {
   // Peek first N bytes of SSE body to detect upstream transient errors.
   // Returns { matched: string|null, message: string|null, accountFallback: boolean, replacementBody: ReadableStream|null }.
   // Caller must use replacementBody when no error matched (original body has been read).
-  async _peekSseTransientError(response) {
+  async _peekSseTransientError(response, requestDeadline = Infinity) {
     if (!response || !response.ok || !response.body) return { matched: null, message: null, accountFallback: false, replacementBody: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -601,7 +618,14 @@ export class CodexExecutor extends BaseExecutor {
     // upstream that sends `response.created` and then hangs would hold the request
     // open until the byte ceiling; with it, the preamble scan gives up and hands the
     // stream to the client, exactly like the post-output grace window does.
-    const preambleDeadline = Date.now() + CODEX_SSE_PREAMBLE_MS;
+    //
+    // Capped by the caller's request deadline, so a retry attempt cannot run past the
+    // budget the loop is spending. When that cap is what stopped the scan, the scan
+    // is UNRESOLVED (it saw neither output nor an error) — the caller must not treat
+    // that as a healthy stream, or it would hand a possibly-overloaded body to the
+    // client. `stoppedOnDeadline` carries that distinction out.
+    const preambleDeadline = Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline);
+    let stoppedOnDeadline = false;
     // A read that the grace deadline raced past is NOT abandoned: it is carried into
     // the reassembled stream below, so the same reader keeps serving the client and
     // no lock is left dangling.
@@ -618,7 +642,13 @@ export class CodexExecutor extends BaseExecutor {
         // own deadline, and the post-output phase uses the grace deadline.
         const deadline = outputStarted ? graceDeadline : preambleDeadline;
         const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
-        if (deadline > 0 && remainingMs <= 0) break;
+        if (deadline > 0 && remainingMs <= 0) {
+          // Stopped with neither output nor an error seen. If this was the caller's
+          // request deadline (not just the preamble's own bound), the scan is
+          // unresolved rather than healthy — flag it so the caller can decide.
+          if (deadline === requestDeadline && !outputStarted && !matched) stoppedOnDeadline = true;
+          break;
+        }
         if (!pendingRead) pendingRead = reader.read();
         // Race the read against the remaining budget so the stream can begin flowing
         // to the client even if the turn never completes.
@@ -633,7 +663,14 @@ export class CodexExecutor extends BaseExecutor {
         } else {
           result = await pendingRead;
         }
-        if (result.timedOut) break; // pendingRead stays pending; handed off below
+        if (result.timedOut) {
+          // The read did not arrive before the deadline. If that deadline was the
+          // CALLER's request deadline (not merely the preamble's own bound), the scan
+          // is unresolved: no output, no error, and no budget left. Mark it so the
+          // caller answers 503 instead of forwarding the stream.
+          if (deadline === requestDeadline && !outputStarted && !matched) stoppedOnDeadline = true;
+          break; // pendingRead stays pending; handed off below
+        }
         pendingRead = null;
         const { done, value } = result;
         if (done) break;
@@ -696,6 +733,7 @@ export class CodexExecutor extends BaseExecutor {
         matched,
         message,
         accountFallback,
+        stoppedOnDeadline: false,
         replacementBody: null,
         upstreamError: {
           source: "sse",
@@ -703,6 +741,30 @@ export class CodexExecutor extends BaseExecutor {
           message,
           body: text.slice(0, 4000),
           retryAfterMs: upstreamRetryAfterMs(response),
+          receivedAt: new Date().toISOString(),
+        },
+      };
+    }
+
+    // Unresolved: stopped on the caller's deadline with neither output nor an error.
+    // The caller will discard this attempt and answer 503, so the upstream body must
+    // be released here — returning a replacementBody nobody reads would leak the
+    // connection (and the reader's lock) for every exhausted request.
+    if (stoppedOnDeadline) {
+      try { await reader.cancel(); } catch { /* noop */ }
+      try { reader.releaseLock(); } catch { /* noop */ }
+      return {
+        matched: null,
+        message: null,
+        accountFallback: false,
+        stoppedOnDeadline: true,
+        replacementBody: null,
+        upstreamError: {
+          source: "sse",
+          status: response.status,
+          message: "Upstream overloaded (retry budget spent mid-scan)",
+          body: text.slice(0, 4000),
+          retryAfterMs: null,
           receivedAt: new Date().toISOString(),
         },
       };
@@ -728,7 +790,7 @@ export class CodexExecutor extends BaseExecutor {
         try { reader.cancel(reason); } catch { /* noop */ }
       },
     });
-    return { matched: null, message: null, accountFallback: false, replacementBody };
+    return { matched: null, message: null, accountFallback: false, stoppedOnDeadline, replacementBody };
   }
 
   // Parse Codex usage_limit_reached to extract precise resetsAtMs; fallback to default otherwise

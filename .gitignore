@@ -16,6 +16,8 @@
 # next.js
 /.next/
 /.next-cli-build/
+# Preview-server build output (Claude Code Browser pane)
+/.next-preview/
 /out/
 cli/.build-home/
 product

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
+import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
@@ -244,6 +245,14 @@ export async function PATCH(request) {
         delete body.cloudflareTunnelToken;
       } else {
         body.cloudflareTunnelToken = String(body.cloudflareTunnelToken).trim();
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "comboStrategies")) {
+      try {
+        body.comboStrategies = normalizeComboStrategies(body.comboStrategies, { strict: true });
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
       }
     }
 

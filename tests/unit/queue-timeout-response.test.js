@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(async () => ({})),
   getComboByName: vi.fn(async () => null),
   getModelInfo: vi.fn(),
-  getComboModels: vi.fn(async () => null),
+  getComboModelEntries: vi.fn(async () => null),
   handleBypassRequest: vi.fn(() => null),
   refreshModelCapabilityOverrides: vi.fn(async () => {}),
   saveRequestUsage: vi.fn(async () => {}),
@@ -53,7 +53,7 @@ vi.mock("@/lib/localDb", () => ({
 
 vi.mock("../../src/sse/services/model.js", () => ({
   getModelInfo: mocks.getModelInfo,
-  getComboModels: mocks.getComboModels,
+  getComboModelEntries: mocks.getComboModelEntries,
 }));
 
 vi.mock("open-sse/index.js", () => ({}));

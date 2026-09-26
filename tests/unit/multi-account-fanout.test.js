@@ -36,7 +36,7 @@ afterAll(() => {
 const mocks = vi.hoisted(() => ({
   handleChatCore: vi.fn(),
   getModelInfo: vi.fn(),
-  getComboModels: vi.fn(async () => null),
+  getComboModelEntries: vi.fn(async () => null),
   getComboByName: vi.fn(async () => null),
   checkAndRefreshToken: vi.fn(async (_p, c) => c),
   updateProviderCredentials: vi.fn(async () => {}),
@@ -56,7 +56,7 @@ vi.mock("../../src/sse/services/auth.js", async (orig) => {
 });
 vi.mock("../../src/sse/services/model.js", () => ({
   getModelInfo: mocks.getModelInfo,
-  getComboModels: mocks.getComboModels,
+  getComboModelEntries: mocks.getComboModelEntries,
 }));
 vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: mocks.checkAndRefreshToken,

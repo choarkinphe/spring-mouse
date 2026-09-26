@@ -64,13 +64,21 @@ function getComboModelAccessTags(entry) {
   return typeof entry === "object" && entry !== null ? normalizeAccessTags(entry.accessTags) : [];
 }
 
-function buildComboModelEntry(model, schedule, accessTags) {
+function getComboModelAutoTier(entry) {
+  return typeof entry === "object" && entry !== null && ["fast", "balanced", "strong"].includes(entry.autoTier)
+    ? entry.autoTier
+    : "balanced";
+}
+
+function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced") {
   const normalizedTags = normalizeAccessTags(accessTags);
-  if (!schedule && normalizedTags.length === 0) return model;
+  const normalizedTier = ["fast", "balanced", "strong"].includes(autoTier) ? autoTier : "balanced";
+  if (!schedule && normalizedTags.length === 0 && normalizedTier === "balanced") return model;
   return {
     model,
     ...(schedule ? { schedule } : {}),
     ...(normalizedTags.length > 0 ? { accessTags: normalizedTags } : {}),
+    ...(normalizedTier !== "balanced" ? { autoTier: normalizedTier } : {}),
   };
 }
 
@@ -360,6 +368,9 @@ export default function CombosPage() {
       if (patch.fallbackStrategy && patch.fallbackStrategy !== "fusion") {
         delete next.judgeModel;
       }
+      if (patch.fallbackStrategy && patch.fallbackStrategy !== "auto") {
+        delete next.autoRouting;
+      }
 
       updated[comboName] = next;
 
@@ -519,6 +530,7 @@ const STRATEGY_OPTIONS = [
   { value: "fallback", label: "回退", description: "按模型顺序尝试，失败后切换到下一个", icon: "arrow_right_alt" },
   { value: "round-robin", label: "轮询", description: "在模型之间轮换请求以分摊负载", icon: "sync" },
   { value: "fusion", label: "融合", description: "并行调用面板模型，并由裁判模型综合结果", icon: "merge_type" },
+  { value: "auto", label: "自动", description: "先判断任务复杂度，再按模型层级选择", icon: "auto_awesome" },
 ];
 
 const STRATEGY_LABELS = Object.fromEntries(STRATEGY_OPTIONS.map((option) => [option.value, option.label]));
@@ -785,11 +797,15 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                       }}
                       onScheduleChange={(schedule) => {
                         const model = getComboModelValue(entry);
-                        updateModelAt(index, buildComboModelEntry(model, schedule, getComboModelAccessTags(entry)));
+                        updateModelAt(index, buildComboModelEntry(model, schedule, getComboModelAccessTags(entry), getComboModelAutoTier(entry)));
                       }}
                       onAccessTagsChange={(accessTags) => {
                         const model = getComboModelValue(entry);
-                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), accessTags));
+                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), accessTags, getComboModelAutoTier(entry)));
+                      }}
+                      onAutoTierChange={(autoTier) => {
+                        const model = getComboModelValue(entry);
+                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), getComboModelAccessTags(entry), autoTier));
                       }}
                       onMoveUp={() => moveModel(index, -1)}
                       onMoveDown={() => moveModel(index, 1)}
@@ -1099,7 +1115,7 @@ function ScheduleWindowSection({
   );
 }
 
-function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, onEdit, onScheduleChange, onAccessTagsChange, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, onEdit, onScheduleChange, onAccessTagsChange, onAutoTierChange, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1110,6 +1126,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
   const model = getComboModelValue(entry);
   const schedule = getComboModelSchedule(entry);
   const accessTags = getComboModelAccessTags(entry);
+  const autoTier = getComboModelAutoTier(entry);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
   const commit = () => {
@@ -1262,6 +1279,22 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
             label="路由节点权限标签"
             hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
           />
+          <div className="flex min-w-0 items-center gap-2">
+            <label className="flex items-center gap-1 text-[10px] text-text-muted" title="自动策略按此层级选择节点">
+              <span className="material-symbols-outlined text-[13px] text-[#fbbf24]">equalizer</span>
+              <span>自动层级</span>
+              <select
+                value={autoTier}
+                onChange={(event) => onAutoTierChange?.(event.target.value)}
+                className="h-6 rounded-md border border-amber-400/20 bg-black/[0.12] px-1.5 text-[10px] text-amber-200 outline-none focus:border-amber-400/50"
+                aria-label={`${model} 自动层级`}
+              >
+                <option value="fast">快速</option>
+                <option value="balanced">均衡</option>
+                <option value="strong">强力</option>
+              </select>
+            </label>
+          </div>
           <div className="border-t border-black/5 pt-2 dark:border-white/5">
           {schedule ? (
             <>

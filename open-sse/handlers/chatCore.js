@@ -58,7 +58,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, internalRequest = false }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Reuse the caller's id so the request line, the usage row and the routing
@@ -88,7 +88,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     : null;
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
-  const saveFailedUsage = (status, errorStatus = null) => saveRequestUsage({
+  const saveFailedUsage = (status, errorStatus = null) => internalRequest ? Promise.resolve() : saveRequestUsage({
     requestId,
     trafficRequestId,
     startedAt,
@@ -460,7 +460,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY);
-    saveRequestDetail(buildRequestDetail({
+    if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
@@ -540,7 +540,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const upstreamError = providerResponse.__smUpstreamError || parsed.upstreamError;
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveFailedUsage("upstream", statusCode);
-    saveRequestDetail(buildRequestDetail({
+    if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
@@ -565,8 +565,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Request statistics and the console detail drawer must reflect real traffic.
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
-  const captureRequestDetails = true;
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars };
+  const captureRequestDetails = !internalRequest;
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 

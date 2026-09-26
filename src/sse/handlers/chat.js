@@ -11,13 +11,14 @@ import {
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings, getComboByName } from "@/lib/localDb";
-import { getModelInfo, getComboModels } from "../services/model.js";
+import { getModelInfo, getComboModelEntries } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability } from "open-sse/services/combo.js";
+import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel } from "open-sse/services/autoRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
@@ -40,6 +41,39 @@ function resolveComboRequestModels(comboModels, requiredCapabilities, capabiliti
   if (models.length === 0) return { error: "No active combo model can handle this request's declared inputs" };
   return { models };
 }
+
+function resolveComboRoutingModels(entries, requiredCapabilities, capabilities) {
+  const nodes = Array.isArray(entries) ? entries : [];
+  const resolved = resolveComboRequestModels(nodes.map((entry) => typeof entry === "string" ? entry : entry.model), requiredCapabilities, capabilities);
+  if (resolved.error) return resolved;
+  const byModel = new Map(nodes.map((entry) => [typeof entry === "string" ? entry : entry.model, entry]));
+  return { models: resolved.models.map((model) => byModel.get(model) || model) };
+}
+
+async function applyAutoRouting({ body, entries, comboConfig, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log }) {
+  const config = normalizeAutoRoutingConfig(comboConfig?.autoRouting);
+  const classification = await classifyAutoRequest({
+    body,
+    config,
+    requiredCapabilities,
+    signal: request?.signal,
+    log,
+    callModel: (classifierBody, classifierModel, classifierSignal) => handleSingleModelChat(
+      classifierBody,
+      classifierModel,
+      null,
+      request,
+      apiKey,
+      accessTags,
+      Math.min(overloadDeadline || Infinity, Date.now() + config.classifierTimeoutMs),
+      { internalRequest: true, clientSignal: classifierSignal },
+    ),
+  });
+  const routed = reorderByAutoLevel(entries, classification.level, config.levelOrder);
+  log.info("AUTO", `Combo auto level=${classification.level} source=${classification.source} · first=${routed[0]?.model || routed[0] || "none"}`);
+  return routed;
+}
+
 
 // Model-level overload retries are configured per provider strategy. The cap keeps a
 // malformed or overly generous setting from turning one request into an unbounded
@@ -132,20 +166,23 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Combo routing is self-contained: its declared capability metadata must
   // match at least one of its own members. No global cross-combo pool is used.
-  const comboModels = await getComboModels(modelStr, accessTags);
-  if (comboModels) {
+  const comboEntries = await getComboModelEntries(modelStr, accessTags);
+  if (comboEntries) {
     const combo = await getComboByName(modelStr);
     if (!canAccessWithTags(accessTags, combo?.accessTags)) {
       log.warn("AUTH", `${modelStr} | denied by combo access tags`);
       return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
     }
-    const resolved = resolveComboRequestModels(comboModels, requiredCapabilities, combo?.capabilities);
+    const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
     if (resolved.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
 
     const comboStrategies = settings.comboStrategies || {};
     const comboConfig = comboStrategies[modelStr] || {};
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
-    const routedModels = resolved.models;
+    const routedEntries = comboStrategy === "auto"
+      ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, requiredCapabilities, request, overloadDeadline, log })
+      : resolved.models;
+    const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
     if (comboStrategy === "fusion") {
       log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: fusion)`);
@@ -186,7 +223,7 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   const requestStartTime = Date.now();
   // One id for this client request, shared by the routing log lines, the usage
@@ -209,7 +246,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Neither is counted against API-key quota (usageRepo only charges success/ok),
   // and the startedAt→completedAt span still shows how long a request queued.
   const saveOutcome = (status) => {
-    if (!request) return;
+    if (!request || internalRequest) return;
     let endpoint = clientRawRequest?.endpoint || null;
     if (!endpoint) {
       try { endpoint = new URL(request.url).pathname; } catch { endpoint = null; }
@@ -232,8 +269,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
-    const comboModels = await getComboModels(modelStr, accessTags);
-    if (comboModels) {
+    const comboEntries = await getComboModelEntries(modelStr, accessTags);
+    if (comboEntries) {
       const combo = await getComboByName(modelStr);
       if (!canAccessWithTags(accessTags, combo?.accessTags)) {
         log.warn("AUTH", `${modelStr} | denied by combo access tags`);
@@ -241,13 +278,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
-      const resolved = resolveComboRequestModels(comboModels, requiredCapabilities, combo?.capabilities);
+      const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
       if (resolved.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
 
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboConfig = comboStrategies[modelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
-      const routedModels = resolved.models;
+      const routedEntries = comboStrategy === "auto"
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, requiredCapabilities, request, overloadDeadline, log })
+        : resolved.models;
+      const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
       if (comboStrategy === "fusion") {
         log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: fusion)`);
@@ -314,11 +354,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let modelLevelFailures = 0;
 
   while (true) {
-    if (request?.signal?.aborted) return errorResponse(499, "Request aborted");
+    if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
     let credentials;
     try {
       credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
-        accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: request?.signal, requestId,
+        accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: clientSignal || request?.signal, requestId,
       });
     } catch (error) {
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
@@ -392,7 +432,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
-    const result = await withRouteLease(credentials.releaseRouteSlot, request?.signal, async () => {
+    if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
+    const result = await withRouteLease(credentials.releaseRouteSlot, clientSignal || request?.signal, async () => {
       // Account selection shown in the unified "▶" line (acc:...)
       const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
@@ -419,7 +460,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         // Propagate client disconnects all the way to the upstream executor.
         // Without this, a channel that never responds can retain fetches after
         // the caller has gone away and exhaust the process under concurrency.
-        clientSignal: request?.signal,
+        clientSignal: clientSignal || request?.signal,
         connectionId: credentials.connectionId,
         userAgent,
         apiKey,
@@ -443,8 +484,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         requestLogsDir: REQUEST_LOGS_DIR,
         // Request details back the console’s bounded 100-record drawer, so keep
         // capturing them independently of the optional verbose file-dump toggle.
-        observabilityEnabled: true,
+        observabilityEnabled: !internalRequest,
         observabilityMaxJsonChars: Math.max(1024, Number(chatSettings.observabilityMaxJsonSize || 128) * 1024),
+        internalRequest,
         // Detect source format by endpoint + body
         sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
         // Shared across every model this request tries, so a combo whose members

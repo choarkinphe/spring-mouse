@@ -9,6 +9,8 @@ import { extractTextContent } from "../translator/formats/gemini.js";
 import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
 import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/utils/schedule.js";
 
+const AUTO_TIERS = new Set(["fast", "balanced", "strong"]);
+
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
@@ -67,20 +69,22 @@ export function reorderByCapabilities(models, required) {
   const hard = [...required].filter((c) => HARD_CAPS.has(c));
   const soft = [...required].filter((c) => !HARD_CAPS.has(c));
 
-  const tierOf = (m) => {
-    const slash = typeof m === "string" ? m.indexOf("/") : -1;
-    const provider = slash > 0 ? m.slice(0, slash) : "";
-    const model = slash > 0 ? m.slice(slash + 1) : m;
+  const tierOf = (entry) => {
+    const modelStr = comboModelIdentifier(entry);
+    const slash = typeof modelStr === "string" ? modelStr.indexOf("/") : -1;
+    const provider = slash > 0 ? modelStr.slice(0, slash) : "";
+    const model = slash > 0 ? modelStr.slice(slash + 1) : modelStr;
     const caps = getCapabilitiesForModel(provider, model);
     if (!hard.every((c) => caps[c] === true)) return 2;
     return soft.every((c) => caps[c] === true) ? 0 : 1;
   };
 
   // Stable sort by tier (Array.prototype.sort is stable in modern engines).
-  return models
+  const sorted = models
     .map((m, i) => ({ m, i, t: tierOf(m) }))
     .sort((a, b) => a.t - b.t || a.i - b.i)
     .map((x) => x.m);
+  return sorted.every((entry, index) => entry === models[index]) ? models : sorted;
 }
 
 /**
@@ -216,11 +220,13 @@ export function normalizeComboModelsForStorage(models) {
     const schedule = normalizeScheduleForStorage(entry.schedule);
     if (schedule === null && entry.schedule != null) return null;
     const accessTags = normalizeAccessTags(entry.accessTags);
-    normalized.push(schedule || accessTags.length > 0
+    const autoTier = AUTO_TIERS.has(entry.autoTier) ? entry.autoTier : null;
+    normalized.push(schedule || accessTags.length > 0 || autoTier
       ? {
         model,
         ...(schedule ? { schedule } : {}),
         ...(accessTags.length > 0 ? { accessTags } : {}),
+        ...(autoTier ? { autoTier } : {}),
       }
       : model);
   }
@@ -265,7 +271,8 @@ function comboModelIdentifier(entry) {
   return typeof entry === "string" ? entry : String(entry?.model || "");
 }
 
-function modelSupportsCapabilities(modelStr, capabilities) {
+function modelSupportsCapabilities(modelEntry, capabilities) {
+  const modelStr = comboModelIdentifier(modelEntry);
   const slash = modelStr.indexOf("/");
   const provider = slash > 0 ? modelStr.slice(0, slash) : "";
   const model = slash > 0 ? modelStr.slice(slash + 1) : modelStr;
@@ -282,7 +289,6 @@ export function getComboCapabilityValidationError(models, capabilities) {
   const normalized = normalizeComboCapabilities(capabilities);
   if (!normalized) return "组合能力配置无效：上下文窗口必须是正整数";
   const memberModels = Array.isArray(models) ? models.map(comboModelIdentifier).filter(Boolean) : [];
-
   for (const [capability, label] of DECLARABLE_INPUT_CAPABILITIES) {
     if (normalized[capability] && !memberModels.some((model) => modelSupportsCapabilities(model, [capability]))) {
       return `组合声明支持${label}，但没有添加支持${label}的模型节点`;
@@ -315,12 +321,13 @@ export function getComboModelsForRequest(models, requiredCapabilities, capabilit
 }
 
 function comboModelEntry(entry) {
-  if (typeof entry === "string") return { model: entry, schedule: null, accessTags: [] };
+  if (typeof entry === "string") return { model: entry, schedule: null, accessTags: [], autoTier: "balanced" };
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     return {
       model: String(entry.model || ""),
       schedule: entry.schedule || null,
       accessTags: normalizeAccessTags(entry.accessTags),
+      autoTier: AUTO_TIERS.has(entry.autoTier) ? entry.autoTier : "balanced",
     };
   }
   return { model: "", schedule: null, accessTags: [] };
@@ -336,19 +343,19 @@ export function isComboModelActive(entry, now = new Date()) {
   return isScheduleActive(schedule, now);
 }
 
-/**
- * Return schedule-active model IDs from a combo's mixed string/object node list.
- * A configured combo with no active nodes resolves to [] rather than null.
- */
-export function getActiveComboModels(models, now = new Date(), subjectAccessTags) {
+export function getActiveComboModelEntries(models, now = new Date(), subjectAccessTags) {
   if (!Array.isArray(models) || models.length === 0) return null;
   return models
-    .map((entry) => comboModelEntry(entry))
+    .map((entry) => ({ raw: entry, ...comboModelEntry(entry) }))
     .filter((entry) => {
-      if (!entry.model || !isComboModelActive(entry, now)) return false;
+      if (!entry.model || !isComboModelActive(entry.raw, now)) return false;
       return !Array.isArray(subjectAccessTags) || canAccessWithTags(subjectAccessTags, entry.accessTags);
-    })
-    .map((entry) => entry.model);
+    });
+}
+
+export function getActiveComboModels(models, now = new Date(), subjectAccessTags) {
+  const entries = getActiveComboModelEntries(models, now, subjectAccessTags);
+  return entries?.map((entry) => entry.model) ?? null;
 }
 
 function rotateModelsFromIndex(models, currentIndex) {

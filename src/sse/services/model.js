@@ -2,7 +2,7 @@
 import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
-import { getActiveComboModels } from "open-sse/services/combo.js";
+import { getActiveComboModelEntries } from "open-sse/services/combo.js";
 
 // Local provider alias overrides (HMR-friendly, applied on top of open-sse map)
 const LOCAL_PROVIDER_ALIASES = {
@@ -95,13 +95,16 @@ export async function getModelInfo(modelStr) {
  * Check if model is a combo and get models list
  * @returns {Promise<string[]|null>} Array of models or null if not a combo
  */
-export async function getComboModels(modelStr, accessTags) {
-  // Only check if it's not in provider/model format
+export async function getComboModelEntries(modelStr, accessTags) {
   if (modelStr.includes("/")) return null;
-
   const combo = await getComboByName(modelStr);
   if (combo && combo.isActive !== false && combo.models && combo.models.length > 0) {
-    return getActiveComboModels(combo.models, new Date(), Array.isArray(accessTags) ? accessTags : undefined);
+    return getActiveComboModelEntries(combo.models, new Date(), Array.isArray(accessTags) ? accessTags : undefined);
   }
   return null;
+}
+
+export async function getComboModels(modelStr, accessTags) {
+  const entries = await getComboModelEntries(modelStr, accessTags);
+  return entries?.map((entry) => entry.model) ?? null;
 }

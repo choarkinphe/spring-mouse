@@ -51,7 +51,7 @@ function estimateInputTokensFromHeaders(headers) {
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true }) {
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -78,7 +78,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     if (log?.errorLine) log.errorLine(reqTag, "✗", `BLOCKED ${status} · ${provider}/${model} · non-SSE (${upstreamContentType})\n    ${shortMsg}`);
     else console.warn(`[STREAM] ${provider} | ${model} | blocked pipe: ${shortMsg} [${status}]`);
     streamController?.handleError?.(new Error(`upstream non-SSE: ${status}`));
-    saveUsageStats({ provider, model, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true });
+    if (recordUsage) saveUsageStats({ provider, model, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true });
     return {
       success: false,
       response: new Response(JSON.stringify({ error: { message: `[${status}]: ${shortMsg}` } }), {
@@ -123,13 +123,13 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-function persistStreamUsage({ provider, model, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log }, usage, ttftAt) {
+function persistStreamUsage({ provider, model, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log, recordUsage = true }, usage, ttftAt) {
   const latency = {
     ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
     total: Date.now() - requestStartTime
   };
 
-  saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: "success", label: "STREAM USAGE", silent: true });
+  if (recordUsage) saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: "success", label: "STREAM USAGE", silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
   return latency;
 }
@@ -171,7 +171,7 @@ function createObservedCompletion(context) {
   };
 }
 
-export function buildOnStreamComplete({ provider, model, connectionId, mouse, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars }) {
+export function buildOnStreamComplete({ provider, model, connectionId, mouse, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
   // Capture only small source metadata. clientRawRequest also contains the full
   // request body and must not stay referenced for the lifetime of the stream.
@@ -191,6 +191,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, mouse, ap
     sourceUrl: clientRawRequest?.sourceUrl,
     reqTag,
     log,
+    recordUsage,
   };
   if (!observabilityEnabled) {
     return { onStreamComplete: createUsageOnlyCompletion(usageContext), streamDetailId: null };

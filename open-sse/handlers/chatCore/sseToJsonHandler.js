@@ -1,6 +1,6 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { createErrorResult } from "../../utils/error.js";
-import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
@@ -179,83 +179,10 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
 }
 
 /**
- * Wrap a byte stream with an IDLE watchdog.
- *
- * The read below waits on `reader.read()` until the upstream sends a terminal
- * frame. A Codex stream can stop mid-turn — metadata frames arrive, then nothing
- * ever again — and that read then simply blocks. The only thing that ended such a
- * request was the 360s hard ceiling, long after the caller had given up.
- *
- * A stall here is silence, not slowness: measured on production the failing turns
- * received a few KB and then no further bytes at all, while healthy turns keep
- * producing output. So the bound is on the GAP between chunks, which lets a
- * legitimately slow turn run as long as it keeps making progress (the slowest
- * measured success took 565s) while a stream that has genuinely gone quiet is cut
- * off promptly.
- *
- * On idle the reader is cancelled so the socket is released, and the error is
- * tagged `TimeoutError` so the caller reports a gateway timeout rather than
- * pretending the upstream answered.
- */
-function withIdleWatchdog(stream, { idleTimeoutMs, onIdle, log, tag }) {
-  if (!stream || typeof stream.getReader !== "function") return stream;
-  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return stream;
-
-  const reader = stream.getReader();
-  let timer = null;
-  let totalBytes = 0;
-  let chunks = 0;
-  const startedAt = Date.now();
-
-  const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
-  const arm = (controller) => {
-    clear();
-    timer = setTimeout(() => {
-      const idleFor = Date.now() - lastAt;
-      log?.errorLine?.("", "⏱", `STALL TIMEOUT ${idleTimeoutMs}ms | chunks=${chunks} | bytes=${totalBytes} | sinceLast=${idleFor}ms | dur=${Date.now() - startedAt}ms`);
-      clear();
-      // Release the socket: a cancelled reader is what actually frees the upstream
-      // connection, and without it the abandoned fetch keeps a slot for the full
-      // hard ceiling.
-      try { reader.cancel("idle_timeout"); } catch { /* best-effort */ }
-      const err = new Error(`Upstream stream idle for ${idleFor}ms (limit ${idleTimeoutMs}ms)`);
-      err.name = "TimeoutError";
-      err.code = "UPSTREAM_IDLE_TIMEOUT";
-      onIdle?.(err);
-      try { controller.error(err); } catch { /* already closed */ }
-    }, idleTimeoutMs);
-    timer.unref?.();
-  };
-
-  let lastAt = Date.now();
-  return new ReadableStream({
-    start(controller) { arm(controller); },
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        lastAt = Date.now();
-        if (done) { clear(); controller.close(); return; }
-        chunks += 1;
-        totalBytes += value?.byteLength || value?.length || 0;
-        arm(controller);
-        controller.enqueue(value);
-      } catch (err) {
-        clear();
-        controller.error(err);
-      }
-    },
-    cancel(reason) {
-      clear();
-      try { reader.cancel(reason); } catch { /* best-effort */ }
-    },
-  });
-}
-
-/**
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log, streamController, recordUsage = true, providerStrategy = null }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log, streamController, recordUsage = true }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -267,29 +194,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     trackDone();
   };
 
-  // Hard ceiling on the whole read. This is NOT the stall bound: a legitimate
-  // turn can run for many minutes (measured: a successful Codex turn at 565s),
-  // so this only exists to stop a runaway read, and it is deliberately far above
-  // anything the idle watchdog below would already have caught.
-  const overallTimeoutMs = NON_STREAM_RESPONSE_TIMEOUT_MS;
-  // Idle bound: how long the stream may send NOTHING before we give up. This is
-  // the one that matters. Codex was observed accepting a request, emitting a few
-  // metadata frames, and then going silent forever — the read simply waited for a
-  // terminal frame that never came, and the request only ended when the 360s hard
-  // ceiling above fired. The client in front of this gateway gives up at ~180s, so
-  // the caller saw a silent hang while the gateway was still waiting.
-  //
-  // The channel's strategy entry wins over the provider registry default, so the
-  // bound can be tuned per channel from the dashboard.
-  const strategyStallMs = Number.parseInt(providerStrategy?.stallTimeoutMs, 10);
-  const idleTimeoutMs = Number.isFinite(strategyStallMs) && strategyStallMs > 0
-    ? strategyStallMs
-    : (PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS);
-
   const readBody = (operation) => runWithAbortDeadline(operation, {
     signal: streamController?.signal,
-    timeoutMs: overallTimeoutMs,
-    timeoutMessage: `Forced streaming response timed out after ${overallTimeoutMs}ms`,
+    timeoutMs: NON_STREAM_RESPONSE_TIMEOUT_MS,
+    timeoutMessage: `Forced streaming response timed out after ${NON_STREAM_RESPONSE_TIMEOUT_MS}ms`,
     onTimeout: () => streamController?.abort?.("response_body_timeout"),
   });
 
@@ -306,15 +214,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   const isCodexResponsesApi = isResponsesProvider(provider) || targetFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
     try {
-      // The idle watchdog wraps the upstream body so a stream that goes quiet is
-      // cut off at `idleTimeoutMs` instead of blocking until the hard ceiling.
-      const watched = withIdleWatchdog(providerResponse.body, {
-        idleTimeoutMs,
-        onIdle: () => streamController?.abort?.("upstream_idle_timeout"),
-        log,
-        tag: `${provider}/${model}`,
-      });
-      const jsonResponse = await readBody(() => convertResponsesStreamToJson(watched));
+      const jsonResponse = await readBody(() => convertResponsesStreamToJson(providerResponse.body));
       finishPending();
 
       // A failed turn is NOT a success. The upstream can fail a Responses stream
@@ -425,22 +325,6 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       finishPending();
       if (recordUsage) saveUsageStats({ provider, model, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
       console.error("[ChatCore] Responses API SSE→JSON failed:", err);
-      // An idle upstream is a transient capacity problem, not a broken gateway: the
-      // model went quiet mid-turn. Report it as 503 so the caller's retry/rotation
-      // logic treats it like the overload case it is, and attach the evidence so the
-      // account panel can tell "upstream went silent" from "we gave up too early".
-      if (err?.code === "UPSTREAM_IDLE_TIMEOUT") {
-        if (log?.errorLine) log.errorLine(reqTag, "✗", `UPSTREAM ${HTTP_STATUS.SERVICE_UNAVAILABLE} · provider · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${err.message}`);
-        return createErrorResult(HTTP_STATUS.SERVICE_UNAVAILABLE, err.message, undefined, {
-          source: "sse",
-          status: providerResponse.status || 200,
-          message: err.message,
-          body: "",
-          retryAfterMs: null,
-          receivedAt: new Date().toISOString(),
-          layer: "provider",
-        });
-      }
       return createErrorResult(err?.name === "AbortError" ? 499 : err?.name === "TimeoutError" ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.BAD_GATEWAY, err?.name === "TimeoutError" ? "Upstream response body timeout" : err?.name === "AbortError" ? "Request aborted" : "Failed to convert streaming response to JSON");
     }
   }

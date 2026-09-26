@@ -181,20 +181,6 @@ describe("provider strategy settings", () => {
     });
   });
 
-  it("stores the idle watchdog for forced-streaming reads", async () => {
-    // How long a forced-streaming upstream may send NOTHING before the read is cut
-    // off. Distinct from the retry curve above: that one governs an upstream that
-    // ANSWERS "overloaded"; this one catches one that accepts the request and then
-    // goes silent forever.
-    const saved = await saveStrategy({ stallTimeoutSeconds: 170 });
-    expect(saved).toEqual({ stallTimeoutMs: 170_000 });
-  });
-
-  it("accepts the idle watchdog in raw milliseconds too", async () => {
-    const saved = await saveStrategy({ stallTimeoutMs: 120_000 });
-    expect(saved).toEqual({ stallTimeoutMs: 120_000 });
-  });
-
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

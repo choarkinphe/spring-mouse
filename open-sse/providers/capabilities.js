@@ -23,6 +23,21 @@
 // 2.0+, Grok, Perplexity). Verify with: curl -s https://models.dev/api.json
 
 import { matchPattern } from "./pricing.js";
+import REGISTRY from "./registry/index.js";
+
+const PROVIDER_ALIAS_TO_ID = new Map();
+for (const entry of REGISTRY) {
+  PROVIDER_ALIAS_TO_ID.set(entry.id, entry.id);
+  for (const alias of [entry.alias, entry.uiAlias, ...(entry.aliases || [])]) {
+    if (alias) PROVIDER_ALIAS_TO_ID.set(alias, entry.id);
+  }
+}
+
+function getProviderKeys(provider) {
+  if (!provider) return [];
+  const canonical = PROVIDER_ALIAS_TO_ID.get(provider) || provider;
+  return [...new Set([provider, canonical])];
+}
 
 /**
  * Safe floor — every resolved result is merged over this so consumers
@@ -352,10 +367,16 @@ export function getCapabilitiesForModel(provider, model) {
   let resolved = null;
 
   // 1. Provider-specific override
-  if (provider) {
-    const providerCaps = PROVIDER_CAPABILITIES[provider];
-    if (providerCaps?.[model]) resolved = providerCaps[model];
-    else if (providerCaps?.[baseModel]) resolved = providerCaps[baseModel];
+  for (const providerKey of getProviderKeys(provider)) {
+    const providerCaps = PROVIDER_CAPABILITIES[providerKey];
+    if (providerCaps?.[model]) {
+      resolved = providerCaps[model];
+      break;
+    }
+    if (providerCaps?.[baseModel]) {
+      resolved = providerCaps[baseModel];
+      break;
+    }
   }
 
   // 2. Canonical exact
@@ -372,8 +393,10 @@ export function getCapabilitiesForModel(provider, model) {
     }
   }
 
-  const dynamic = MODEL_CAPABILITY_OVERRIDES.get(overrideKey(provider, model))
-    || MODEL_CAPABILITY_OVERRIDES.get(overrideKey(provider, baseModel));
+  const dynamic = getProviderKeys(provider)
+    .map((providerKey) => MODEL_CAPABILITY_OVERRIDES.get(overrideKey(providerKey, model))
+      || MODEL_CAPABILITY_OVERRIDES.get(overrideKey(providerKey, baseModel)))
+    .find(Boolean);
 
   // 4. Floor, then static catalog, then synchronized provider metadata.
   return { ...DEFAULT_CAPABILITIES, ...(resolved || {}), ...(dynamic || {}) };

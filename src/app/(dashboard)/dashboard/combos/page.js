@@ -5,7 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle } from "@/shared/components";
+import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle, SegmentedControl } from "@/shared/components";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
@@ -63,6 +63,14 @@ function getComboModelSchedule(entry) {
 function getComboModelAccessTags(entry) {
   return typeof entry === "object" && entry !== null ? normalizeAccessTags(entry.accessTags) : [];
 }
+
+const AUTO_TIER_OPTIONS = [
+  { value: "fast", label: "快速" },
+  { value: "balanced", label: "均衡" },
+  { value: "strong", label: "强力" },
+];
+
+const AUTO_TIER_LABELS = Object.fromEntries(AUTO_TIER_OPTIONS.map((option) => [option.value, option.label]));
 
 function getComboModelAutoTier(entry) {
   return typeof entry === "object" && entry !== null && ["fast", "balanced", "strong"].includes(entry.autoTier)
@@ -789,6 +797,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                       disabled={savingModels}
                       getCaps={getCaps}
                       role={nodeRole(index)}
+                      showAutoTier={current === "auto"}
                       onEdit={(newVal) => {
                         const updated = typeof entry === "object" && entry !== null
                           ? { ...entry, model: newVal }
@@ -1115,7 +1124,7 @@ function ScheduleWindowSection({
   );
 }
 
-function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, onEdit, onScheduleChange, onAccessTagsChange, onAutoTierChange, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, showAutoTier = false, onEdit, onScheduleChange, onAccessTagsChange, onAutoTierChange, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1213,6 +1222,17 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
 
         <CapacityBadges caps={getCaps?.(model)} />
 
+        {showAutoTier && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/20 bg-amber-400/[0.07] px-1.5 py-1 text-[10px] font-medium text-amber-200"
+            title={`自动层级：${AUTO_TIER_LABELS[autoTier]}`}
+          >
+            <span className="material-symbols-outlined text-[12px] text-amber-300">equalizer</span>
+            <span className="text-amber-300/75">自动</span>
+            <span>{AUTO_TIER_LABELS[autoTier]}</span>
+          </span>
+        )}
+
         {role && (
           <span className="shrink-0 rounded-md bg-white/[0.045] px-2 py-1 text-[10px] font-medium text-text-muted">
             {role}
@@ -1279,21 +1299,19 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
             label="路由节点权限标签"
             hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
           />
-          <div className="flex min-w-0 items-center gap-2">
-            <label className="flex items-center gap-1 text-[10px] text-text-muted" title="自动策略按此层级选择节点">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <div className="flex items-center gap-1 text-[10px] text-text-muted">
               <span className="material-symbols-outlined text-[13px] text-[#fbbf24]">equalizer</span>
               <span>自动层级</span>
-              <select
-                value={autoTier}
-                onChange={(event) => onAutoTierChange?.(event.target.value)}
-                className="h-6 rounded-md border border-amber-400/20 bg-black/[0.12] px-1.5 text-[10px] text-amber-200 outline-none focus:border-amber-400/50"
-                aria-label={`${model} 自动层级`}
-              >
-                <option value="fast">快速</option>
-                <option value="balanced">均衡</option>
-                <option value="strong">强力</option>
-              </select>
-            </label>
+              <span className="text-[9px] text-text-muted/70">任务复杂度越高，优先级越高</span>
+            </div>
+            <SegmentedControl
+              options={AUTO_TIER_OPTIONS}
+              value={autoTier}
+              onChange={(value) => onAutoTierChange?.(value)}
+              size="xs"
+              className="w-fit border border-amber-400/15 bg-amber-400/[0.035]"
+            />
           </div>
           <div className="border-t border-black/5 pt-2 dark:border-white/5">
           {schedule ? (
@@ -1648,13 +1666,19 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                       onScheduleChange={(schedule) => {
                         const updated = [...models];
                         const model = getComboModelValue(updated[index]);
-                        updated[index] = buildComboModelEntry(model, schedule, getComboModelAccessTags(updated[index]));
+                        updated[index] = buildComboModelEntry(model, schedule, getComboModelAccessTags(updated[index]), getComboModelAutoTier(updated[index]));
                         setModels(updated);
                       }}
                       onAccessTagsChange={(accessTags) => {
                         const updated = [...models];
                         const model = getComboModelValue(updated[index]);
-                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), accessTags);
+                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), accessTags, getComboModelAutoTier(updated[index]));
+                        setModels(updated);
+                      }}
+                      onAutoTierChange={(autoTier) => {
+                        const updated = [...models];
+                        const model = getComboModelValue(updated[index]);
+                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), getComboModelAccessTags(updated[index]), autoTier);
                         setModels(updated);
                       }}
                       onMoveUp={() => handleMoveUp(index)}

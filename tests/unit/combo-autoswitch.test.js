@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectRequiredCapabilities, reorderByCapabilities } from "../../open-sse/services/combo.js";
+import { detectRequiredCapabilities, getComboCapabilityValidationError, getComboModelsForRequest, reorderByCapabilities } from "../../open-sse/services/combo.js";
 
 describe("detectRequiredCapabilities", () => {
   it("text-only -> empty", () => {
@@ -69,6 +69,18 @@ describe("reorderByCapabilities", () => {
     const models = ["deepseek/deepseek-chat", "deepseek/deepseek-reasoner"];
     const out = reorderByCapabilities(models, new Set(["vision"]));
     expect(out).toBe(models);
+  });
+
+  it("keeps provider aliases consistent for vision combo members", () => {
+    const models = ["cbcn/glm-5.2", "cbcn/glm-5v-turbo"];
+    const capabilities = { contextWindow: null, vision: true, audioInput: false };
+
+    expect(getComboCapabilityValidationError(models, capabilities)).toBeNull();
+    expect(getComboModelsForRequest(models, new Set(["vision"]), capabilities)).toEqual(["cbcn/glm-5v-turbo"]);
+    expect(reorderByCapabilities(models, new Set(["vision"]))).toEqual([
+      "cbcn/glm-5v-turbo",
+      "cbcn/glm-5.2",
+    ]);
   });
 
   it("single model -> unchanged", () => {

@@ -17,9 +17,9 @@ are easy to forget; this README is the checklist.
 | `sm-clean-requestlogs.sh` | production host | `/usr/local/bin/` | root crontab, every 5 min |
 | `sm-scan-dumps.sh` | inside the container | `/app/data/sm-tools/` (bind-mounted from `<deploy>/data/sm-tools/`) | called by `sm-overload-monitor.sh` |
 | `sm-query.js` | inside the container | `/app/data/sm-tools/` | ad hoc: `sm-q.sh recent N` / `errors N` / `overload N` |
+| `sm-idle-watchdog-monitor.sh` | production host | `/tmp/` (ad hoc) | the session's idle-watchdog watch task (every 30 min) |
 
 ## Why each exists
-
 **`sm-overload-monitor.sh`** — one ssh round-trip that prints a single JSON line
 (the app's own stdout is long and gets truncated by the harness, which once made
 the task retry for 17 minutes). Fields worth knowing:
@@ -50,6 +50,27 @@ per-request dumps: `5_res_provider.txt` is the upstream's raw SSE and
 gateway retried; a hit in 7 means it escaped. It matches the **error-frame
 structure** (`"code":"server_is_overloaded"`), not the bare phrase — a debugging
 conversation that merely quotes the message would otherwise register as a hit.
+
+**`sm-idle-watchdog-monitor.sh`** — watches the Codex forced-streaming idle
+watchdog (the fix for a turn that goes silent mid-stream). Read-only.
+
+The signal is `STALL TIMEOUT` in `docker logs`, emitted through `errorLine` so it
+survives the production `LOG_LEVEL=WARN`. What to read from it:
+
+- **Fired at ~170s** — the watchdog cut off a silent upstream. Healthy: the client
+  gets a 503 and the combo rotates, instead of hanging until its own 180s timeout.
+- **Fired frequently** — the upstream account problem is still live; the watchdog
+  is containing it, not fixing it. The account panel is where to look next.
+- **Stuck turns still ending at 300s+ with NO `STALL TIMEOUT`** — the watchdog is
+  NOT on the path those requests take, which is exactly the mistake an earlier
+  attempt made (it tuned the streaming pipe's timer, but a non-streaming client
+  behind a `forceStream` provider goes through `handleForcedSSEToJson` instead).
+
+Timestamps: the DB stores ISO-8601 UTC with a `T` separator, while SQLite's
+`datetime()` emits a SPACE. Comparing them as strings is wrong (`'T'` > `' '`), so
+every row from the same day matches a `-1 hour` window and the monitor reports
+failures that are hours old. Always compare with
+`strftime('%Y-%m-%dT%H:%M:%SZ', ...)`.
 
 ## Reinstalling after a rebuild
 

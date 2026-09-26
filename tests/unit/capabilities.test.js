@@ -69,6 +69,27 @@ describe("getCapabilitiesForModel", () => {
     });
   });
 
+  it("resolves provider-specific capabilities through the provider alias", () => {
+    for (const model of [
+      "glm-5.2",
+      "glm-5v-turbo",
+      "minimax-m2.7",
+      "hy3-preview",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
+    ]) {
+      expect(getCapabilitiesForModel("cbcn", model)).toEqual(
+        getCapabilitiesForModel("codebuddy-cn", model),
+      );
+    }
+
+    expect(getCapabilitiesForModel("cbcn", "glm-5v-turbo").vision).toBe(true);
+    expect(getCapabilitiesForModel("cbcn", "glm-5.2")).toMatchObject({
+      contextWindow: 1000000,
+      thinkingFormat: "openai",
+    });
+  });
+
   it("merges synchronized metadata over static family defaults", () => {
     replaceModelCapabilityOverrides([{
       provider: "glm-cn",

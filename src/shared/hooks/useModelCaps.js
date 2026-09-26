@@ -52,9 +52,10 @@ function resolveCaps(byFull, byId, input) {
     : (input && typeof input.model === "string" ? input.model : null);
   if (!key) return null;
   if (byFull[key]) return byFull[key];
-  const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
-  if (byId[bare]) return byId[bare];
-  const provider = key.includes("/") ? key.slice(0, key.indexOf("/")) : null;
+  const hasProvider = key.includes("/");
+  const bare = hasProvider ? key.slice(key.indexOf("/") + 1) : key;
+  if (!hasProvider && byId[bare]) return byId[bare];
+  const provider = hasProvider ? key.slice(0, key.indexOf("/")) : null;
   const c = getCapabilitiesForModel(provider, bare);
   return pickModelCapabilities(c);
 }

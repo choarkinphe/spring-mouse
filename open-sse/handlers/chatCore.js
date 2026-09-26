@@ -566,7 +566,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
   const captureRequestDetails = !internalRequest;
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest, providerStrategy: credentials?.providerStrategy || null };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 

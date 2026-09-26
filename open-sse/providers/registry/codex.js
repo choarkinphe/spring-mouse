@@ -34,6 +34,20 @@ export default {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
+    // Idle bound for a forced-streaming read (the non-streaming client path).
+    //
+    // A Codex account can accept a request, emit its metadata frames, and then go
+    // silent forever: measured on production, 34 turns in a day ended this way,
+    // each one reading nothing more until the 360s hard ceiling fired, with
+    // prompt_tokens=0 and completion_tokens=0 (no output ever arrived). The client
+    // in front of this gateway gives up at ~180s, so the caller saw a silent hang
+    // while the gateway was still waiting on a stream that had already stopped.
+    //
+    // 170s fires before that client gives up, and stays above the slowest
+    // legitimate turn: a successful Codex turn was measured at 565s total, but it
+    // kept producing bytes throughout — this bound is on the GAP between chunks,
+    // not the total, so slow-but-progressing turns are never cut off.
+    stallTimeoutMs: 170000,
     headers: {
       originator: "codex_cli_rs",
       "User-Agent": "codex_cli_rs/0.136.0",

@@ -324,6 +324,14 @@ export async function PATCH(request) {
       if (overloadRetryBaseDelayMs != null) result.overloadRetryBaseDelayMs = overloadRetryBaseDelayMs;
       const overloadRetryMaxDelayMs = durationMs(entry.overloadRetryMaxDelaySeconds, entry.overloadRetryMaxDelayMs);
       if (overloadRetryMaxDelayMs != null) result.overloadRetryMaxDelayMs = overloadRetryMaxDelayMs;
+      // Idle bound for a forced-streaming upstream read. A Codex account can accept a
+      // request, emit its metadata frames, and then go silent forever (measured: 34
+      // turns in a day, each reading nothing more until the 360s ceiling fired, with
+      // zero output). This is a bound on the GAP between chunks, not the total, so a
+      // slow-but-progressing turn is never cut off. Tunable per channel because the
+      // right value depends on how patient the client in front of the gateway is.
+      const stallTimeoutMs = durationMs(entry.stallTimeoutSeconds, entry.stallTimeoutMs);
+      if (stallTimeoutMs != null) result.stallTimeoutMs = stallTimeoutMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

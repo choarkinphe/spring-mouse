@@ -21,6 +21,8 @@ import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelI
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
 import { cn } from "@/shared/utils/cn";
+import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useNotificationStore } from "@/store/notificationStore";
 import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
 import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
@@ -761,6 +763,8 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
 }
 
 function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, testState, concurrency, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
+  const { copied, copy } = useCopyToClipboard();
+  const notify = useNotificationStore();
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
@@ -813,8 +817,12 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         connection.lastRequestModel ? `模型：${connection.lastRequestModel}` : null,
       ].filter(Boolean).join("\n")
     : "该账号还没有请求记录";
-  const copyErrorEvidence = async (event) => {
+  const copyErrorEvidence = (event) => {
     event.stopPropagation();
+    // Nothing to copy when the account has no recorded failure — the signal
+    // line below also binds this handler, so guard rather than copy an
+    // account/channel-only string and toast a false success.
+    if (!errorEvidence) return;
     const details = [
       `账号：${getConnectionName(connection)}`,
       `渠道：${getProviderName(connection.provider)}`,
@@ -822,12 +830,10 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       errorEvidence?.iso ? `时间：${formatDateTime(errorEvidence.iso)}` : null,
       getErrorEvidenceTitle(errorEvidence),
     ].filter(Boolean).join("\n");
-    try {
-      await navigator.clipboard.writeText(details);
-      window.dispatchEvent(new CustomEvent("toast", { detail: { type: "success", message: "错误详情已复制" } }));
-    } catch {
-      // Clipboard may be unavailable in insecure contexts; keep the error visible.
-    }
+    // Shared hook keeps the copied→check feedback and the 2s reset in one place;
+    // the id is the connection so two account rows never share copied state.
+    copy(details, connection.id);
+    notify.success("错误详情已复制");
   };
 
   const canReorder = !(isFirst && isLast);
@@ -952,8 +958,8 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
         <div className="mt-2 flex min-w-0 items-center text-xs">
           {errorEvidence && connection.isActive !== false ? (
             <div
-              className={cn("flex min-w-0 flex-1 items-center gap-1.5", errorEvidenceStale ? "text-[#647688]" : "text-rose-400")}
-              title={`${errorEvidenceAt ? `记录于 ${errorEvidenceAt}\n` : ""}${getErrorEvidenceTitle(errorEvidence)}\n双击复制完整错误详情`}
+              className={cn("group/copy flex min-w-0 flex-1 items-center gap-1.5", errorEvidenceStale ? "text-[#647688]" : "text-rose-400")}
+              title={`${errorEvidenceAt ? `记录于 ${errorEvidenceAt}\n` : ""}${getErrorEvidenceTitle(errorEvidence)}\n点击右侧按钮复制完整错误详情`}
               onDoubleClick={copyErrorEvidence}
               role="button"
               tabIndex={0}
@@ -964,6 +970,19 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
                 {errorEvidence.text}
               </span>
               {errorEvidenceAt && <span className="shrink-0 tabular-nums">{errorEvidenceAt}</span>}
+              <Tooltip text="复制完整错误详情">
+                <button
+                  type="button"
+                  onClick={copyErrorEvidence}
+                  aria-label="复制完整错误详情"
+                  className={cn(
+                    "flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-white/[0.07] hover:text-[#7dd3fc] focus-visible:opacity-100",
+                    copied === connection.id ? "opacity-100 text-[#7dd3fc]" : "opacity-0 group-hover/copy:opacity-100",
+                  )}
+                >
+                  <span className="material-symbols-outlined text-[15px]! leading-none">{copied === connection.id ? "check" : "content_copy"}</span>
+                </button>
+              </Tooltip>
             </div>
           ) : (
             <div className="min-w-0 flex-1 truncate text-[#647688]">暂无渠道方返回错误</div>

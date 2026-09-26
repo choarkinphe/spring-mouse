@@ -324,6 +324,13 @@ export async function PATCH(request) {
       if (overloadRetryBaseDelayMs != null) result.overloadRetryBaseDelayMs = overloadRetryBaseDelayMs;
       const overloadRetryMaxDelayMs = durationMs(entry.overloadRetryMaxDelaySeconds, entry.overloadRetryMaxDelayMs);
       if (overloadRetryMaxDelayMs != null) result.overloadRetryMaxDelayMs = overloadRetryMaxDelayMs;
+      // Byte-silence watchdog for a streaming upstream. An account that accepts a
+      // request and then never sends a byte otherwise holds the stream until the
+      // caller gives up on its own (measured: 40 such requests in a day, each
+      // ending ~343s in with nothing received). Tunable per channel because the
+      // right bound depends on how patient the client in front of the gateway is.
+      const stallTimeoutMs = durationMs(entry.stallTimeoutSeconds, entry.stallTimeoutMs);
+      if (stallTimeoutMs != null) result.stallTimeoutMs = stallTimeoutMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

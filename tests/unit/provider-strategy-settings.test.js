@@ -181,6 +181,20 @@ describe("provider strategy settings", () => {
     });
   });
 
+  it("stores the byte-silence watchdog (seconds form)", async () => {
+    // How long a streaming upstream may send NOTHING before the gateway ends the
+    // turn itself. Distinct from the retry curve above: that one governs an
+    // upstream that answers "overloaded"; this one catches an upstream that goes
+    // silent after accepting the request.
+    const saved = await saveStrategy({ stallTimeoutSeconds: 170 });
+    expect(saved).toEqual({ stallTimeoutMs: 170_000 });
+  });
+
+  it("accepts the byte-silence watchdog in raw milliseconds too", async () => {
+    const saved = await saveStrategy({ stallTimeoutMs: 120_000 });
+    expect(saved).toEqual({ stallTimeoutMs: 120_000 });
+  });
+
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

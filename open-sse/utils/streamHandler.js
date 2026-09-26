@@ -194,7 +194,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, log = null) {
   let stallCheckTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -214,7 +214,17 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     const now = Date.now();
     const gap = now - lastChunkAt;
     if (gap > stallTimeoutMs) {
-      dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms`);
+      // Log at WARN, not debug. `dbg` is dev-only (debugLog.js returns early when
+      // !isDev), so under the production LOG_LEVEL=WARN a stall was completely
+      // silent: an operator could not tell a watchdog that saved a request from
+      // one that wrongly killed a slow-but-healthy turn — and the two are
+      // indistinguishable from the outside. This is the only line that says
+      // which happened, so it must survive the production log level.
+      const msg = `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms | dur=${now - t0}ms`;
+      dbg(tag, msg);
+      // errorLine ignores LOG_LEVEL, so this survives the production WARN level.
+      if (log?.errorLine) log.errorLine("", "⏱", msg);
+      else console.warn(`[${tag}] ${msg}`);
       clearStall();
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();

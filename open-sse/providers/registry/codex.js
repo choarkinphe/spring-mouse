@@ -34,25 +34,6 @@ export default {
     baseUrl: "https://chatgpt.com/backend-api/codex/responses",
     format: "openai-responses",
     forceStream: true,
-    // Byte-silence watchdog. A Codex account can accept a request, emit its
-    // metadata frames, and then never send another byte — measured on
-    // production, one account swallowed 40 requests in a day, each ending after
-    // ~343s with pt=0 ct=0 (no output ever arrived). The default 360s is far too
-    // late: the client in front of this gateway gives up first, so spring-mouse
-    // was still holding the stream open long after the caller had gone, and the
-    // caller saw a silent hang instead of an ended stream.
-    //
-    // 170s is chosen against both ends of the measured distribution:
-    //   - below the client's 180s streaming idle timeout, so WE end the stream
-    //     first and the caller learns the turn failed instead of waiting out its
-    //     own watchdog;
-    //   - above the slowest LEGITIMATE turn. Codex success TTFT has a real long
-    //     tail (189 turns at 60-90s, 16 at 90-120s, 8 at 120-180s over 3 days),
-    //     and those are genuine work — prompts of 184k-336k tokens whose first
-    //     token simply takes a long time. The slowest measured was 165.7s, so a
-    //     150s bound would abort real turns to catch a stall; 170s clears them
-    //     while still firing well before the client gives up.
-    stallTimeoutMs: 170000,
     headers: {
       originator: "codex_cli_rs",
       "User-Agent": "codex_cli_rs/0.136.0",

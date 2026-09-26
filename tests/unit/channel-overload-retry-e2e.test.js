@@ -53,28 +53,4 @@ describe("E2E: channel modal -> settings API -> executor", () => {
     expect(plain.baseDelayMs).toBe(3_000);
     expect(plain.maxDelayMs).toBe(15_000);
   });
-
-  it("carries the byte-silence watchdog from the form to the strategy entry", async () => {
-    // The watchdog is read at stream time from credentials.providerStrategy, so
-    // what matters is that the value the operator typed survives the round trip
-    // in the unit the runtime expects (ms).
-    const res = await PATCH(new Request("http://localhost/api/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        providerStrategies: { codex: { stallTimeoutSeconds: 120 } },
-      }),
-    }));
-    expect(res.status).toBe(200);
-
-    const settings = await getSettings();
-    const stored = settings.providerStrategies?.codex;
-    expect(stored.stallTimeoutMs).toBe(120_000);
-
-    // And the registry default it overrides is the 170s bound chosen from the
-    // production TTFT distribution (below the client's 180s, above the slowest
-    // legitimate turn at 165.7s).
-    const { PROVIDERS } = await import("open-sse/providers/index.js");
-    expect(PROVIDERS.codex.stallTimeoutMs).toBe(170_000);
-  });
 });

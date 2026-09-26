@@ -1604,12 +1604,6 @@ const STRATEGY_DEFAULTS = {
   overloadRetryBudgetSeconds: 90,
   overloadRetryBaseDelaySeconds: 3,
   overloadRetryMaxDelaySeconds: 15,
-  // Byte-silence watchdog: how long a streaming upstream may send NOTHING before
-  // the gateway gives up on it. Distinct from the retry curve above, which
-  // governs a *responding* upstream that reports itself overloaded; this one
-  // catches an upstream that accepts the request and then goes silent, so the
-  // stream ends here instead of hanging until the client's own timeout.
-  stallTimeoutSeconds: 170,
 };
 
 function channelStrategyForm(strategy = {}) {
@@ -1631,7 +1625,6 @@ function channelStrategyForm(strategy = {}) {
     overloadRetryBudgetSeconds: toSeconds(strategy.overloadRetryBudgetMs, STRATEGY_DEFAULTS.overloadRetryBudgetSeconds),
     overloadRetryBaseDelaySeconds: toSeconds(strategy.overloadRetryBaseDelayMs, STRATEGY_DEFAULTS.overloadRetryBaseDelaySeconds),
     overloadRetryMaxDelaySeconds: toSeconds(strategy.overloadRetryMaxDelayMs, STRATEGY_DEFAULTS.overloadRetryMaxDelaySeconds),
-    stallTimeoutSeconds: toSeconds(strategy.stallTimeoutMs, STRATEGY_DEFAULTS.stallTimeoutSeconds),
   };
 }
 
@@ -1684,7 +1677,6 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       overloadRetryBudgetSeconds: Math.max(1, Number(form.overloadRetryBudgetSeconds) || 1),
       overloadRetryBaseDelaySeconds: Math.max(1, Number(form.overloadRetryBaseDelaySeconds) || 1),
       overloadRetryMaxDelaySeconds: Math.max(1, Number(form.overloadRetryMaxDelaySeconds) || 1),
-      stallTimeoutSeconds: Math.max(1, Number(form.stallTimeoutSeconds) || 1),
     });
   };
 
@@ -1775,7 +1767,6 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
             {numberField("overloadRetryBudgetSeconds", "重试总预算（秒）", 1, 600, "单个模型最多重试多久；用满后返回 503，交给组合的下一个模型。")}
             {numberField("overloadRetryBaseDelaySeconds", "首次退避（秒）", 1, 120, "第一次重试前的等待；之后按 3 倍递增。")}
             {numberField("overloadRetryMaxDelaySeconds", "单次退避上限（秒）", 1, 120, "单次等待的天花板，避免退避无限增长。")}
-            {numberField("stallTimeoutSeconds", "静默看门狗（秒）", 1, 600, "上游建立连接后完全不再发送数据的容忍时长；超时则主动结束本轮流，避免一直挂到客户端自己超时。应略小于客户端的空闲超时。")}
           </div>
         </section>
 

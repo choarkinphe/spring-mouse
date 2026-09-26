@@ -32,8 +32,21 @@ const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "m
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   "event: response.output_text.delta",
   "event: response.function_call_arguments.delta",
+  // Reasoning deltas are real upstream content, and on the xhigh thinking models
+  // they are the ONLY thing the stream carries for the first tens of seconds. Without
+  // these patterns the scan stayed in its "preamble" phase the whole time the model
+  // was thinking, so every slow request waited out the full preamble bound before the
+  // client saw anything. Production ttft histogram showed the artefact: a spike of 84
+  // requests at 61-63s against 35 at 50s, i.e. a wall at the 60s bound rather than the
+  // natural decay (10s:522 → 20s:239 → 30s:113 → 40s:63 → 50s:35). Counting reasoning
+  // as output lets the content-aware grace window release the stream as soon as
+  // thinking begins, which is what it already does for text.
+  "event: response.reasoning_summary_text.delta",
+  "event: response.reasoning_text.delta",
   '"type":"response.output_text.delta"',
   '"type":"response.function_call_arguments.delta"',
+  '"type":"response.reasoning_summary_text.delta"',
+  '"type":"response.reasoning_text.delta"',
 ];
 // Frames that only announce the turn and echo the request back — Codex's
 // `response.created` replays the whole `tools` schema, so a single such frame can
@@ -659,10 +672,19 @@ export class CodexExecutor extends BaseExecutor {
         const deadline = outputStarted ? graceDeadline : preambleDeadline;
         const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
         if (deadline > 0 && remainingMs <= 0) {
-          // Stopped with neither output nor an error seen. If this was the caller's
-          // request deadline (not just the preamble's own bound), the scan is
-          // unresolved rather than healthy — flag it so the caller can decide.
-          if (deadline === requestDeadline && !outputStarted && !matched) stoppedOnDeadline = true;
+          // Stopped with neither output nor an error seen. Two ways to land here:
+          //   - the caller's request deadline ran out, or
+          //   - the preamble scan's OWN bound expired while the upstream had sent
+          //     nothing but the metadata frames.
+          // Both are UNRESOLVED, not healthy. Forwarding either one hands the client
+          // a stream that emits a couple of frames and then hangs until its own
+          // watchdog fires — the observed production failure ("2 stream events
+          // received, none in the final 300008 ms"). Report it so the caller answers
+          // 503 and the combo falls back.
+          // `CODEX_SSE_PREAMBLE_MS === 0` disables the scan's own bound, so in that
+          // configuration only a real request deadline can stop us.
+          if (!outputStarted && !matched
+            && (CODEX_SSE_PREAMBLE_MS > 0 || deadline === requestDeadline)) stoppedOnDeadline = true;
           break;
         }
         if (!pendingRead) pendingRead = reader.read();
@@ -680,11 +702,14 @@ export class CodexExecutor extends BaseExecutor {
           result = await pendingRead;
         }
         if (result.timedOut) {
-          // The read did not arrive before the deadline. If that deadline was the
-          // CALLER's request deadline (not merely the preamble's own bound), the scan
-          // is unresolved: no output, no error, and no budget left. Mark it so the
-          // caller answers 503 instead of forwarding the stream.
-          if (deadline === requestDeadline && !outputStarted && !matched) stoppedOnDeadline = true;
+          // The read did not arrive before the deadline. That is UNRESOLVED whether the
+          // deadline was the caller's request budget or the preamble scan's own bound:
+          // no output, no error, and nothing left to wait on. Mark it so the caller
+          // answers 503 instead of forwarding a stream that will hang.
+          // (See the matching note on the `remainingMs <= 0` branch above for why the
+          // preamble's own bound counts, and why PREAMBLE_MS=0 is the opt-out.)
+          if (!outputStarted && !matched
+            && (CODEX_SSE_PREAMBLE_MS > 0 || deadline === requestDeadline)) stoppedOnDeadline = true;
           break; // pendingRead stays pending; handed off below
         }
         pendingRead = null;

@@ -202,7 +202,18 @@ export class BaseExecutor {
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
+      // Diagnostic (observation only): transformRequest runs BEFORE the fetch and
+      // has no timeout of its own, so a provider that walks a multi-megabyte body
+      // there would hang the turn with nothing in the log to show for it. Reports
+      // only if the stage is still running after 30s — a healthy transform is
+      // milliseconds on this provider.
+      const tStart = Date.now();
+      const tTimer = setTimeout(() => {
+        log?.errorLine?.("", "🔬", `FETCH-STAGE | ${this.provider} | STILL IN transformRequest for ${Date.now() - tStart}ms`);
+      }, 30000);
+      tTimer.unref?.();
       const transformedBody = this.transformRequest(model, body, stream, credentials);
+      clearTimeout(tTimer);
       const headers = this.buildHeaders(credentials, stream, url, model);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;

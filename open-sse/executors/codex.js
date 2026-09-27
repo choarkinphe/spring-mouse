@@ -481,13 +481,34 @@ export class CodexExecutor extends BaseExecutor {
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
-    if (imgCount > 0) {
-      const t0 = Date.now();
-      await this.prefetchImages(args.body);
-      dbg("CODEX", `prefetchImages done | ${Date.now() - t0}ms`);
-    } else {
-      await this.prefetchImages(args.body);
-    }
+
+    // ---- DIAGNOSTIC (observation only) --------------------------------------
+    //
+    // A Codex turn can hang for 300s+ and the log shows only the two routing lines
+    // emitted before execute() was called — no error, no requestDetail, nothing.
+    // That places the hang SOMEWHERE inside execute(), which spans prefetchImages,
+    // the upstream fetch (with its own retry loop) and the SSE preamble scan. Each
+    // has a different fix, so guessing which one costs a release per guess.
+    //
+    // This arms a timer per stage that reports WHILE the stage is still running, so
+    // a hung turn names the phase it is stuck in. Nothing here aborts or changes
+    // behaviour; a stage that finishes in time is silent, and 30s is far above any
+    // healthy stage on this provider.
+    const execT0 = Date.now();
+    const diagStage = (name) => {
+      const startedAt = Date.now();
+      const timer = setTimeout(() => {
+        args.log?.errorLine?.("", "🔬", `CODEX-STAGE | ${args.model} | STILL IN ${name} for ${Date.now() - startedAt}ms (total ${Date.now() - execT0}ms)`);
+      }, 30000);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    };
+    // -------------------------------------------------------------------------
+
+    const donePrefetch = diagStage("prefetchImages");
+    await this.prefetchImages(args.body);
+    donePrefetch();
+    dbg("CODEX", `prefetchImages done | ${Date.now() - execT0}ms`);
 
     // Retry loop for SSE-level overloaded errors (200 OK body contains event: error).
     //
@@ -523,8 +544,13 @@ export class CodexExecutor extends BaseExecutor {
       // p99 attempt (79s measured) a 90s budget could stop at ~150s+ — past the
       // ~165s clients were measured to tolerate. Passing the deadline lets the scan
       // give up and hand the stream to the client instead of holding it open.
+      const doneFetch = diagStage(`upstream fetch (attempt ${attempt + 1})`);
       const result = await super.execute(args);
+      doneFetch();
+      doneFetch();
+      const donePeek = diagStage(`peekSseTransientError (attempt ${attempt + 1})`);
       const peek = await this._peekSseTransientError(result.response, deadline);
+      donePeek();
       if (!peek.matched) {
         // The scan stopped because the caller's deadline ran out without resolving
         // (no output, no error). That is the budget being spent, not a healthy turn:

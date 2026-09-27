@@ -17,6 +17,7 @@ are easy to forget; this README is the checklist.
 | `sm-clean-requestlogs.sh` | production host | `/usr/local/bin/` | root crontab, every 5 min |
 | `sm-scan-dumps.sh` | inside the container | `/app/data/sm-tools/` (bind-mounted from `<deploy>/data/sm-tools/`) | called by `sm-overload-monitor.sh` |
 | `sm-query.js` | inside the container | `/app/data/sm-tools/` | ad hoc: `sm-q.sh recent N` / `errors N` / `overload N` |
+| `sm-deploy-rollback.sh` | production host | `/tmp/` (ad hoc) | pre-deploy backup, deploy, and one-command rollback |
 | `sm-stream-diag-collect.sh` | production host | `/tmp/` (ad hoc) | the session's stream-diagnostic collector (every 30 min) |
 
 ## Why each exists
@@ -50,6 +51,38 @@ per-request dumps: `5_res_provider.txt` is the upstream's raw SSE and
 gateway retried; a hit in 7 means it escaped. It matches the **error-frame
 structure** (`"code":"server_is_overloaded"`), not the bare phrase — a debugging
 conversation that merely quotes the message would otherwise register as a hit.
+
+**`sm-deploy-rollback.sh`** — the one-command backup / deploy / rollback for a
+production release. Two things make it worth using instead of hand-rolled steps:
+
+- **Function rollback does not depend on Docker Hub.** `latest` is mutable, so a
+  pull after a bad release can hand you the same bad image. The script tags the
+  running image locally as `spring-mouse:pre-<rev>-<ts>` at backup time and rolls
+  back to that tag, never pulling.
+- **The DB snapshot uses `sqlite3 .backup`, not `cp`.** The live DB is in WAL
+  mode, so a `cp` is a torn snapshot. `.backup` uses SQLite's online-backup API
+  and is consistent while the container keeps serving.
+
+Migration compatibility is what makes the two rollbacks separable: the migration
+chain is **forward and skip-version safe** (`src/lib/db/migrate.js` filters
+`m.version > current`), so an older image on a newer DB simply applies nothing —
+it does not fail. A migration that only ADDS tables (e.g. 024) therefore leaves
+nothing for the old image to trip over, and **rolling back the function does not
+require rolling back the DB**. Only reach for `rollback-db` when data was written
+wrong, and note it discards everything after the backup point.
+
+```bash
+sh sm-deploy-rollback.sh backup          # before a release
+sh sm-deploy-rollback.sh deploy <REV>    # backup → pull → up → health + smoke
+sh sm-deploy-rollback.sh rollback        # function only (local tag)
+sh sm-deploy-rollback.sh rollback-db     # data only (needs `yes`)
+sh sm-deploy-rollback.sh list | verify
+```
+
+`verify` finishes with a real `POST /v1/chat/completions` smoke test and treats a
+**500** as the signal to roll back — a plain health check would not have caught
+the observer-interface bug, which returned a healthy process that 500'd on every
+chat request.
 
 **`sm-stream-diag-collect.sh`** — one read-only round-trip that prints everything the
 30-minute monitoring check needs, so the check does not have to grep by hand each

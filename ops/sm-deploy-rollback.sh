@@ -130,9 +130,9 @@ do_backup() {
   │ 镜像 ID     : ${imgid}
   └────────────────────────────────────────────────────────────────┘
 
-  回滚功能 : sh $0 rollback
-  回滚数据 : sh $0 rollback-db
-  （默认回滚到【最新】一份备份；要指定旧备份请设 SM_BACKUP_DIR=<目录>）
+  回滚功能 : sh $0 rollback      回退到【上一次部署】的版本（deploy 时记录）
+  回滚数据 : sh $0 rollback-db   回退数据库到最新快照
+  （要回退到指定备份：SM_BACKUP_DIR=<备份目录> sh $0 rollback）
 
 EOF
 }
@@ -393,7 +393,7 @@ case "${1:-}" in
 
   backup        备份当前镜像（本地 tag）+ 数据库一致性快照
   deploy <REV>  备份 → pull latest → 起容器 → 健康检查+冒烟
-  rollback      回滚【功能】到最新备份的镜像（本地 tag，不 pull）
+  rollback      回滚【功能】到上一次部署的镜像（本地 tag，不 pull）
   rollback-db   回滚【数据库】到最新备份的快照（需输入 yes 确认）
   rollback-all  功能+数据库一起回滚
   list          列出备份与本地镜像 tag

@@ -18,9 +18,20 @@ describe("combo auto routing settings validation", () => {
     expect(result.route.autoRouting.levelOrder.complex[0]).toBe("strong");
   });
 
-  it("rejects a classifier that is not a direct provider/model identifier", () => {
+  it("accepts a named combo as the classifier model", () => {
+    const result = normalizeComboStrategies({
+      route: {
+        fallbackStrategy: "auto",
+        autoRouting: { classifierModel: "classifier-combo" },
+      },
+    }, { strict: true });
+
+    expect(result.route.autoRouting.classifierModel).toBe("classifier-combo");
+  });
+
+  it("rejects a classifier that is neither a direct model nor a valid combo name", () => {
     expect(() => normalizeComboStrategies({
-      route: { fallbackStrategy: "auto", autoRouting: { classifierModel: "route" } },
+      route: { fallbackStrategy: "auto", autoRouting: { classifierModel: "not a model" } },
     }, { strict: true })).toThrow(/classifierModel/);
   });
 

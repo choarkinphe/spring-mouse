@@ -1043,15 +1043,14 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           isOpen={showClassifierSelect}
           onClose={() => setShowClassifierSelect(false)}
           onSelect={(model) => {
-            const value = model?.value || "";
-            if (value.includes("/")) updateClassifierModel(value);
+            updateClassifierModel(model?.value || "");
             setShowClassifierSelect(false);
           }}
           activeProviders={activeProviders}
+          modelAliases={modelAliases}
           title="选择分类模型"
           addedModelValues={classifierModel ? [classifierModel] : []}
           availableModelsOnly
-          directModelsOnly
           closeOnSelect
         />
       )}

@@ -13,6 +13,15 @@ export function isDirectModelIdentifier(value) {
   return typeof value === "string" && /^[^/\s]+\/\S+$/.test(value.trim());
 }
 
+export function isClassifierModelIdentifier(value) {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim();
+  // A classifier can be a provider/model or a named combo. Named combos use
+  // the same restricted characters as combo creation; the runtime resolves
+  // them through the normal model handler.
+  return isDirectModelIdentifier(normalized) || /^[a-zA-Z0-9_.-]+$/.test(normalized);
+}
+
 function invalid(field) {
   throw new Error(`Invalid combo auto routing: ${field}`);
 }
@@ -53,7 +62,7 @@ export function normalizeAutoRoutingConfig(value, { strict = false } = {}) {
     if (valid) result[field] = number;
   }
   result.classifierModel = typeof source.classifierModel === "string" ? source.classifierModel.trim() : "";
-  if (strict && source.classifierModel !== undefined && (typeof source.classifierModel !== "string" || (result.classifierModel && !isDirectModelIdentifier(result.classifierModel)))) invalid("classifierModel must be a direct provider/model identifier");
+  if (strict && source.classifierModel !== undefined && (typeof source.classifierModel !== "string" || (result.classifierModel && !isClassifierModelIdentifier(result.classifierModel)))) invalid("classifierModel must be a direct provider/model identifier or combo name");
   if (strict) {
     for (const field of ["levelOrder", "minimumLevel"]) {
       if (source[field] !== undefined && !isObject(source[field])) invalid(field);
@@ -185,7 +194,7 @@ export async function classifyAutoRequest({ body, config, requiredCapabilities =
   const cfg = normalizeAutoRoutingConfig(config);
   const signals = getAutoRoutingSignals(body, requiredCapabilities);
   const fallback = { level: applyAutoMinimumLevel(cfg.defaultLevel, signals, cfg.minimumLevel), confidence: 0, source: "default" };
-  if (!isDirectModelIdentifier(cfg.classifierModel) || typeof callModel !== "function" || signal?.aborted) return fallback;
+  if (!isClassifierModelIdentifier(cfg.classifierModel) || typeof callModel !== "function" || signal?.aborted) return fallback;
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   signal?.addEventListener("abort", abort, { once: true });

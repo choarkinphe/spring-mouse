@@ -67,7 +67,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // supply one (open-sse consumers, tests) keep the previous behaviour.
   const requestId = incomingRequestId || randomUUID();
   const originalModel = clientRawRequest?.body?.model || body?.model || null;
-  const routing = createModelRouting({ originalModel, provider, model });
+  const routing = createModelRouting({ originalModel, provider, model, routeKind: modelInfo.routeKind, routed: modelInfo.routed });
   const trafficRequestId = clientRawRequest?.headers?.["x-sm-traffic-request-id"] || clientRawRequest?.headers?.["X-Sm-Traffic-Request-Id"] || null;
   const startedAt = new Date(requestStartTime).toISOString();
   // Stable per-session color so all lines of one CLI conversation share a tag

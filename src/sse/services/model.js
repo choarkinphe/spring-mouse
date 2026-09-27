@@ -83,9 +83,9 @@ export async function getModelInfo(modelStr) {
   // This prevents combo names from being incorrectly routed to providers
   const combo = await getComboByName(parsed.model);
   if (combo && combo.isActive !== false) {
-    // Return null provider to signal this should be handled as combo
-    // The caller (handleChat) will detect this and handle it as combo
-    return { provider: null, model: parsed.model };
+    // Return an explicit combo source so same-name combo targets remain visible
+    // in usage routing metadata.
+    return { provider: null, model: parsed.model, routeKind: "combo", routed: true };
   }
 
   return getModelInfoCore(modelStr, getModelAliases);

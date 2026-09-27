@@ -127,7 +127,26 @@ export function normalizeModelRouting(record = {}) {
     || clean(routing.executedModel)
     || (provider && model ? `${provider}/${model}` : model)
     || originalModel;
-  return { originalModel, executedModel, routing: { originalModel, executedModel } };
+  const routeKind = ["direct", "alias", "combo"].includes(record.routeKind)
+    ? record.routeKind
+    : ["direct", "alias", "combo"].includes(routing.routeKind)
+      ? routing.routeKind
+      : null;
+  const explicitRouted = typeof record.routed === "boolean"
+    ? record.routed
+    : typeof routing.routed === "boolean"
+      ? routing.routed
+      : undefined;
+  return {
+    originalModel,
+    executedModel,
+    routing: {
+      originalModel,
+      executedModel,
+      ...(routeKind ? { routeKind } : {}),
+      ...(explicitRouted !== undefined ? { routed: explicitRouted } : {}),
+    },
+  };
 }
 export function getUsageApiKeyFilter(range = {}, column = "apiKeyId") {
   const scopedApiKeyIds = Array.isArray(range.apiKeyIds)

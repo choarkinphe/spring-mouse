@@ -37,6 +37,8 @@ describe("model routing persistence", () => {
       routing: {
         originalModel: "balanced",
         executedModel: "openai/gpt-4o-mini",
+        routeKind: "alias",
+        routed: true,
       },
       status: "success",
       tokens: { prompt_tokens: 2, completion_tokens: 1 },
@@ -47,6 +49,8 @@ describe("model routing persistence", () => {
     expect(JSON.parse(stored.meta).routing).toEqual({
       originalModel: "balanced",
       executedModel: "openai/gpt-4o-mini",
+      routeKind: "alias",
+      routed: true,
     });
 
     await expect(getUsageHistory()).resolves.toEqual(expect.arrayContaining([
@@ -56,6 +60,8 @@ describe("model routing persistence", () => {
         routing: {
           originalModel: "balanced",
           executedModel: "openai/gpt-4o-mini",
+          routeKind: "alias",
+          routed: true,
         },
       }),
     ]));
@@ -65,12 +71,24 @@ describe("model routing persistence", () => {
       requestId: "routing-usage-1",
       originalModel: "balanced",
       executedModel: "openai/gpt-4o-mini",
+      routing: {
+        originalModel: "balanced",
+        executedModel: "openai/gpt-4o-mini",
+        routeKind: "alias",
+        routed: true,
+      },
     }));
 
     const stats = await getUsageStats("today");
     expect(stats.recentCallDetails[0]).toEqual(expect.objectContaining({
       originalModel: "balanced",
       executedModel: "openai/gpt-4o-mini",
+      routing: {
+        originalModel: "balanced",
+        executedModel: "openai/gpt-4o-mini",
+        routeKind: "alias",
+        routed: true,
+      },
     }));
   });
 

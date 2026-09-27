@@ -35,6 +35,50 @@ describe("model routing metadata", () => {
     })).toBe(false);
   });
 
+  it("shows same-name cross-provider routing when explicitly marked", () => {
+    expect(isModelRouted({
+      model: "gpt-6-sol",
+      provider: "codex",
+      originalModel: "gpt-6-sol",
+      executedModel: "codex/gpt-6-sol",
+      routing: { routeKind: "alias", routed: true },
+    })).toBe(true);
+  });
+
+  it("keeps same-name default-provider aliases direct when explicitly marked", () => {
+    expect(isModelRouted({
+      model: "gpt-4o-mini",
+      provider: "openai",
+      originalModel: "gpt-4o-mini",
+      executedModel: "openai/gpt-4o-mini",
+      routing: { routeKind: "alias", routed: false },
+    })).toBe(false);
+  });
+
+  it("keeps legacy same-name cross-provider rows visible", () => {
+    expect(isModelRouted({
+      model: "gpt-6-sol",
+      provider: "codex",
+      originalModel: "gpt-6-sol",
+      executedModel: "codex/gpt-6-sol",
+    })).toBe(true);
+  });
+
+  it("preserves routing source metadata", () => {
+    expect(createModelRouting({
+      originalModel: "gpt-6-sol",
+      provider: "codex",
+      model: "gpt-6-sol",
+      routeKind: "alias",
+      routed: true,
+    })).toEqual({
+      originalModel: "gpt-6-sol",
+      executedModel: "codex/gpt-6-sol",
+      routeKind: "alias",
+      routed: true,
+    });
+  });
+
   it("recognizes combo or alias routing", () => {
     expect(isModelRouted({
       model: "gpt-4o-mini",
@@ -43,7 +87,6 @@ describe("model routing metadata", () => {
       executedModel: "openai/gpt-4o-mini",
     })).toBe(true);
   });
-
   it("reads nested routing metadata", () => {
     expect(normalizeModelRouting({
       model: "openai/gpt-4o-mini",
@@ -51,7 +94,7 @@ describe("model routing metadata", () => {
         originalModel: "balanced",
         executedModel: "openai/gpt-4o-mini",
       },
-    })).toEqual({
+    })).toMatchObject({
       originalModel: "balanced",
       executedModel: "openai/gpt-4o-mini",
       routing: {

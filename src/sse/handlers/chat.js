@@ -34,6 +34,7 @@ import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides"
 import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
 import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
+import { createModelRouting } from "@/shared/utils/modelRouting.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -79,7 +80,7 @@ async function applyAutoRouting({ body, entries, comboConfig, comboName, require
       apiKey,
       accessTags,
       Math.min(overloadDeadline || Infinity, Date.now() + classifierConfig.classifierTimeoutMs),
-      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1, routing, role: "classifier" },
+      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1, routing, role: "classifier", routeKind: "combo", routed: true },
     ),
   });
   const routed = reorderByAutoLevel(entries, classification.level, config.levelOrder);
@@ -219,6 +220,8 @@ export async function handleChat(request, clientRawRequest = null) {
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
               routing,
               role: isPanel ? "panel" : "judge",
+              routeKind: "combo",
+              routed: true,
             });
           },
           log,
@@ -232,7 +235,7 @@ export async function handleChat(request, clientRawRequest = null) {
         response = await handleComboChat({
           body,
           models: routedModels,
-          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" }),
+          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "combo", routed: true }),
           log,
           comboName: modelStr,
           comboStrategy,
@@ -240,7 +243,7 @@ export async function handleChat(request, clientRawRequest = null) {
         });
       }
     } else {
-      response = await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" });
+      response = await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "direct", routed: false });
     }
 
     // Select only the response returned by the complete external route. A failed
@@ -259,8 +262,10 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary" } = {}) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined } = {}) {
   const modelInfo = await getModelInfo(modelStr);
+  const effectiveRouteKind = routeKind || modelInfo.routeKind;
+  const effectiveRouted = typeof routed === "boolean" ? routed : modelInfo.routed;
   const requestStartTime = Date.now();
   // One id for this client request, shared by the routing log lines, the usage
   // row, and every retry inside the loop below. chatCore used to mint its own id
@@ -289,6 +294,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (!endpoint) {
       try { endpoint = new URL(request.url).pathname; } catch { endpoint = null; }
     }
+    const originalModel = clientRawRequest?.body?.model || body?.model || modelStr || null;
+    const routingMetadata = createModelRouting({
+      originalModel,
+      provider: modelInfo.provider,
+      model: modelInfo.model,
+      routeKind: effectiveRouteKind,
+      routed: effectiveRouted,
+    });
     return saveRequestUsage({
       requestId,
       trafficRequestId: getTrafficRequestId(request),
@@ -296,16 +309,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       completedAt: new Date().toISOString(),
       provider: modelInfo.provider || null,
       model: modelInfo.model || null,
-      originalModel: clientRawRequest?.body?.model || body?.model || modelStr || null,
-      executedModel: modelInfo.provider && modelInfo.model
-        ? `${modelInfo.provider}/${modelInfo.model}`
-        : modelInfo.model || null,
-      routing: {
-        originalModel: clientRawRequest?.body?.model || body?.model || modelStr || null,
-        executedModel: modelInfo.provider && modelInfo.model
-          ? `${modelInfo.provider}/${modelInfo.model}`
-          : modelInfo.model || null,
-      },
+      originalModel: routingMetadata.originalModel,
+      executedModel: routingMetadata.executedModel,
+      routing: routingMetadata,
       connectionId: null,
       apiKey,
       endpoint,
@@ -356,6 +362,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
               routing,
               role: isPanel ? "panel" : "judge",
+              routeKind: "combo",
+              routed: true,
             });
           },
           log,
@@ -370,7 +378,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" }),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "combo", routed: true }),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -528,7 +536,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
       return await handleChatCore({
         body: { ...body, model: `${provider}/${model}` },
-        modelInfo: { provider, model },
+        modelInfo: { provider, model, routeKind: effectiveRouteKind, routed: effectiveRouted },
         credentials: refreshedCredentials,
         log,
         clientRawRequest,

@@ -112,7 +112,15 @@ export async function getModelInfoCore(modelStr, aliasesOrGetter) {
     resolveModelAliasFromMap(parsed.model, aliases) ||
     resolveModelAliasFromMap(parsed.model, BUILTIN_MODEL_ALIASES);
   if (resolved) {
-    return resolved;
+    // An alias can intentionally point at a provider whose model id is the same
+    // as the public name (for example `gpt-6-sol` → `codex/gpt-6-sol`). Keep the
+    // source explicit so usage rendering does not mistake that for direct traffic.
+    const inferredProvider = inferProviderFromModelName(parsed.model);
+    return {
+      ...resolved,
+      routeKind: "alias",
+      routed: resolved.provider !== inferredProvider || resolved.model !== parsed.model,
+    };
   }
 
   // Fallback: infer provider from model name prefix

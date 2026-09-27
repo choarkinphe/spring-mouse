@@ -51,18 +51,37 @@ gateway retried; a hit in 7 means it escaped. It matches the **error-frame
 structure** (`"code":"server_is_overloaded"`), not the bare phrase — a debugging
 conversation that merely quotes the message would otherwise register as a hit.
 
-**`sm-stream-diag-collect.sh`** — collects the measurement that three failed fixes
-never took: **upstream bytes vs client-visible bytes** for every Codex turn that
-ran past 60s. Read-only; it watches no fix.
+**`sm-stream-diag-collect.sh`** — one read-only round-trip that prints everything the
+30-minute monitoring check needs, so the check does not have to grep by hand each
+time. It reports four things:
 
-Background: a Codex turn can run past 300s and end as `cancelled` with the
-request-detail row still holding the `[Streaming in progress...]` placeholder and
-`ttft=0`. That looked like "the upstream went silent", so a stall timer was added
-to the streaming pipe — but it never fired. It then looked like "the wrong path",
-so an idle watchdog was added to the forced-streaming read — it never fired
-either. Both were falsified, because the evidence contradicted itself: the record
-said nothing was produced, while the dumps showed hundreds of KB of metadata
-frames arriving the whole time.
+- **`SCAN BOUNDS`** — the ceiling's log line and any unresolved scan stop. The scan
+  has two time bounds and they are deliberately ordered:
+  `CODEX_SSE_PREAMBLE_MS` (default **60s**, the phase bound, the normal stop) and
+  `CODEX_SSE_SCAN_MAX_MS` (default **120s**, a ceiling that sits ABOVE it). **A run
+  where the ceiling never appears is the NORMAL case, not a defect** — it fires only
+  when the phase bound is disabled or raised past it. Reading `ceiling=0` as "the
+  guard is broken" is how a 5s/10s pair once reached production and cost ~15 x 503
+  per minute.
+- **`STAGE DIAGNOSTICS`** — `CODEX-STAGE` / `CHATCORE-STAGE` / `FETCH-STAGE` counts.
+  These timers fire at 30s **while a phase is still running**, so a line means that
+  phase had not finished after 30s — it does NOT mean the phase is stuck. Under the
+  60s phase bound a scan is allowed to run that long, so these are expected on slow
+  turns and are only interesting in bulk.
+- **`VISIBLE STALL`** — the client-starvation watchdog (`starved the client`). This
+  is the one that fires on the real failure: the upstream keeps sending while the
+  client receives almost nothing.
+- **`STREAM-DIAG`** — upstream bytes vs client-visible bytes, the measurement three
+  failed fixes never took.
+
+Background on the bytes: a Codex turn can run past 300s and end as `cancelled` with
+the request-detail row still holding the `[Streaming in progress...]` placeholder and
+`ttft=0`. That looked like "the upstream went silent", so a stall timer was added to
+the streaming pipe — but it never fired. It then looked like "the wrong path", so an
+idle watchdog was added to the forced-streaming read — it never fired either. Both
+were falsified, because the evidence contradicted itself: the record said nothing was
+produced, while the dumps showed hundreds of KB of metadata frames arriving the whole
+time.
 
 The missing measurement is the pair. The two taps log through `errorLine` (so they
 survive `LOG_LEVEL=WARN`) and only for turns past 60s:
@@ -84,6 +103,13 @@ not the presence or absence of bytes.
 > belonged to a fix that was reverted — it never fired on the real failure, because
 > the upstream keeps sending metadata frames and any byte-based timer is reset by
 > them. Do not read a quiet `STALL TIMEOUT` as "healthy".
+
+> On sizing the two scan bounds: size them from how long a HEALTHY turn takes to
+> produce its first output (24h measured: 591 turns at 15-25s, 165 at 25-40s, 47 at
+> 40-60s, 22 past 60s, max 245s) — NOT from how long an overload frame takes to
+> arrive (0-23s). Sizing from the frame arrival is a mistake this repo has made; it
+> briefly shipped a 25s bound that truncated healthy turns and took upstream:503
+> from 0.06/min to 0.70/min.
 
 Timestamps: the DB stores ISO-8601 UTC with a `T` separator, while SQLite's
 `datetime()` emits a SPACE. Comparing them as strings is wrong (`'T'` > `' '`), so

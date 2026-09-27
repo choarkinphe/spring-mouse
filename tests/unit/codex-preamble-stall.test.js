@@ -3,8 +3,8 @@
  *
  * Codex streams `response.created` + `response.in_progress` first (each echoing the
  * full tools schema). If the upstream then dies without ever emitting content or an
- * error, the preamble scan's own bound (CODEX_SSE_PREAMBLE_MS, default 60s) is what
- * stops it — NOT the caller's request deadline.
+ * error, the bounded preamble probe stops it rather than holding the client for the
+ * old 60-second ceiling.
  *
  * That distinction used to decide whether the stop was reported as unresolved:
  *   if (deadline === requestDeadline && !outputStarted && !matched) stoppedOnDeadline = true;
@@ -16,6 +16,8 @@
  * the final 300008 ms".
  *
  * A stop with no output and no error is unresolved regardless of WHICH bound fired.
+ * The production default is covered by the fast-fail regression below; individual
+ * tests override the module-load value to keep timing deterministic.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -56,6 +58,31 @@ function streamFromText(text) {
 }
 
 describe("codex: metadata-only stream that then hangs is unresolved, not healthy", () => {
+  it("uses the production probe default without waiting for the old 60s ceiling", async () => {
+    const previous = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
+    delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
+    vi.resetModules();
+    try {
+      const { CodexExecutor } = await import("../../open-sse/executors/codex.js");
+      const executor = new CodexExecutor();
+      const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+        .mockResolvedValue({ response: stalledAfterMetadata(), url: "u", headers: {} });
+      const started = Date.now();
+      const result = await executor.execute({
+        model: "gpt-6-astra", body: {}, stream: true, credentials: {}, log: {},
+        overloadDeadline: Date.now() + 60_000,
+      });
+      const elapsed = Date.now() - started;
+      superExecute.mockRestore();
+      expect(result.response.status).toBe(503);
+      expect(elapsed).toBeLessThan(15_000);
+    } finally {
+      if (previous === undefined) delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
+      else process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS = previous;
+      vi.resetModules();
+    }
+  }, 20000);
+
   it("answers 503 when the PREAMBLE bound stops the scan (long caller budget)", async () => {
     await withPreambleMs(300, async (CodexExecutor) => {
       const executor = new CodexExecutor();

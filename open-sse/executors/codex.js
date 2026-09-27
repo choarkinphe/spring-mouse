@@ -77,43 +77,30 @@ const CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT = 256 * 1024;
 // total ceiling below, but never later — every phase deadline is clamped by the
 // ceiling, so this knob can only shorten a scan, not extend one.
 //
-// It must stay comfortably ABOVE the time an overload takes to surface: measured on
-// production, the upstream spends 10-30s processing before it emits the overload
-// frame (~18s average), so a short bound (e.g. 2s) would cut the scan off before the
-// frame arrives and reintroduce the very bug this guards against. 0 disables THIS
-// bound only; the total ceiling still applies.
+// A bounded metadata probe is the normal pre-output policy. Waiting for the old
+// 60-second bound delayed every slow-start turn, even when the upstream was healthy.
+// A real overload frame that is already buffered is still detected; otherwise a
+// metadata-only attempt fails fast and lets combo/account routing choose another
+// candidate. Operators can raise this value for unusually slow deployments. Setting
+// it to 0 disables this phase bound, while the total ceiling below remains active.
 const CODEX_SSE_PREAMBLE_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
-  if (raw == null || raw === "") return 60 * 1000;
+  if (raw == null || raw === "") return 5 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60 * 1000;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5 * 1000;
 })();
 // The TOTAL wall-clock ceiling on one SSE preamble scan — the authoritative bound.
 // Whatever the phase logic above computes, the scan cannot outlive this: the
 // preamble deadline is clamped by it, and every read wait is raced against it.
 //
-// This used to be a 90s "backstop" sitting ABOVE the 60s preamble bound, which made
-// it unreachable: both deadlines are computed once before the loop, so
-// `min(now+60s, requestDeadline) <= now+90s` always held and the preamble bound
-// always fired first. It was dead code, and a production log showing "backstop=0"
-// read as "the backstop is broken" when it actually meant "the preamble bound
-// stopped it". The fix is to make the ceiling the binding bound rather than a
-// larger second one: the default (60s) matches the effective stop time the old
-// arrangement produced, so this changes no production timing — it only makes the
-// ceiling the thing that actually fires and says so.
-//
-// 60s is chosen to preserve the measured behaviour, not to shorten it: the upstream
-// spends ~18s (10-30s typical, 94s worst) before it emits the overload frame, and
-// catching that frame lets the SAME model retry inside the 120s budget (observed
-// working: "recovered after 1-2 retries"). Lowering this bound truncates the
-// 60-94s tail — those turns then answer 503 and the combo rotates instead of
-// retrying the same model, which is faster but less precise. Raise it only if a
-// longer wait for the frame is worth more than failing fast.
+// This remains a second backstop when the phase bound is disabled or changed, and
+// prevents a malformed stream from keeping a request open indefinitely. The shorter
+// preamble probe is the normal stop for metadata-only turns.
 const CODEX_SSE_SCAN_MAX_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
-  if (raw == null || raw === "") return 60 * 1000;
+  if (raw == null || raw === "") return 10 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 1000;
 })();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta
@@ -574,7 +561,6 @@ export class CodexExecutor extends BaseExecutor {
       // give up and hand the stream to the client instead of holding it open.
       const doneFetch = diagStage(`upstream fetch (attempt ${attempt + 1})`);
       const result = await super.execute(args);
-      doneFetch();
       doneFetch();
       const donePeek = diagStage(`peekSseTransientError (attempt ${attempt + 1})`);
       const peek = await this._peekSseTransientError(result.response, deadline, args.log);

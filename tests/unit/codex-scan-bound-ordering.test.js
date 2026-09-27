@@ -3,15 +3,8 @@
  * total wall-clock ceiling. The preamble phase bound (`CODEX_SSE_PREAMBLE_MS`) is
  * clamped by it, so the phase bound can only stop a scan EARLIER — never later.
  *
- * This is the inverse of the arrangement it replaced. That version had a 90s
- * "backstop" sitting ABOVE the 60s preamble bound, and since both deadlines are
- * computed once before the loop, `min(now+60s, RD) <= now+90s` always held: the
- * preamble bound always fired first and the backstop was dead code. A production
- * log showing "backstop=0" read as "the backstop is broken" when it actually meant
- * "the preamble bound stopped it" — which is exactly how it was misread.
- *
- * Now the ceiling is what stops an unresolved scan, and it says so. The bounds are
- * scaled ~30x in these tests so they run in seconds.
+ * The shipped defaults use a short preamble probe and a longer total backstop. The
+ * bounds are overridden and scaled in these tests so they run quickly.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,7 +52,9 @@ describe("Codex SSE scan total ceiling", () => {
   });
 
   it("the ceiling stops the scan when it is tighter than the preamble bound (the shipped default)", async () => {
-    // Shipped ordering, scaled: ceiling 1.2s < preamble 3s.
+    // Default production bounds are intentionally short enough to fail a metadata-only
+    // turn quickly; this case explicitly supplies a longer preamble phase so it can
+    // verify that the total ceiling wins when it is tighter.
     const executor = await executorWith({ preambleMs: 3000, scanMaxMs: 1200 });
     const { lines, log } = logCapture();
     const response = new Response(drippingMetadataStream(), {
@@ -104,8 +99,7 @@ describe("Codex SSE scan total ceiling", () => {
   }, 15000);
 
   it("never lets a raised preamble bound extend a scan past the ceiling", async () => {
-    // The old bug in one assertion: an operator raising the preamble bound must NOT
-    // be able to push a scan beyond the ceiling.
+    // A raised phase bound must not extend the total scan ceiling.
     const executor = await executorWith({ preambleMs: 60_000, scanMaxMs: 1000 });
     const { log } = logCapture();
     const response = new Response(drippingMetadataStream(), {
@@ -123,10 +117,8 @@ describe("Codex SSE scan total ceiling", () => {
   }, 15000);
 
   it("resolves the ceiling first when the two bounds are equal (the shipped default)", async () => {
-    // Shipped defaults are ceiling == preamble == 60s. Equal bounds are the one case
-    // where "which fired" is ambiguous, so the ceiling is checked FIRST in the loop
-    // and must win. Without that ordering an operator would again see a stop with no
-    // line naming the bound — the misread this whole change exists to prevent.
+    // Equal bounds are resolved by the total ceiling check first so the stop reason
+    // remains deterministic.
     const executor = await executorWith({ preambleMs: 1200, scanMaxMs: 1200 });
     const { lines, log } = logCapture();
     const response = new Response(drippingMetadataStream(), {

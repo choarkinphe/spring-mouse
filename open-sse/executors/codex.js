@@ -73,35 +73,47 @@ const CODEX_SSE_PEEK_BYTES = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 2 * 1024 * 1024;
 })();
 const CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT = 256 * 1024;
-// Time bound on the preamble phase, so a stalled upstream that sends
-// `response.created` and then hangs cannot hold the request open until the byte
-// ceiling. It must stay comfortably ABOVE the time an overload takes to surface:
-// measured on production, the upstream spends 10-30s processing before it emits the
-// overload frame, so a short bound (e.g. 2s) would cut the scan off before the frame
-// arrives and reintroduce the very bug this guards against. 60s clears the observed
-// worst case with margin while staying far below the 165s clients were measured to
-// wait. 0 disables the bound.
+// Phase bound on the pre-output preamble. It may stop a scan EARLIER than the
+// total ceiling below, but never later — every phase deadline is clamped by the
+// ceiling, so this knob can only shorten a scan, not extend one.
+//
+// It must stay comfortably ABOVE the time an overload takes to surface: measured on
+// production, the upstream spends 10-30s processing before it emits the overload
+// frame (~18s average), so a short bound (e.g. 2s) would cut the scan off before the
+// frame arrives and reintroduce the very bug this guards against. 0 disables THIS
+// bound only; the total ceiling still applies.
 const CODEX_SSE_PREAMBLE_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
   if (raw == null || raw === "") return 60 * 1000;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60 * 1000;
 })();
-// Hard backstop on the ENTIRE preamble scan, independent of the phase deadlines
-// above. The phase logic is already bounded (preamble 60s, post-output grace 2s),
-// but a Codex turn was observed holding a request for 300s+ with only the two
-// routing lines in the log and no requestDetail — the signature of a scan that
-// never returned. Stage instrumentation later confirmed the scan CAN run past 30s,
-// so this exists to make the ceiling unconditional: whatever the inner state does,
-// the scan cannot outlive this bound.
+// The TOTAL wall-clock ceiling on one SSE preamble scan — the authoritative bound.
+// Whatever the phase logic above computes, the scan cannot outlive this: the
+// preamble deadline is clamped by it, and every read wait is raced against it.
 //
-// It is a backstop, not the working bound — 90s sits above the 60s preamble phase
-// it must not pre-empt, and far below the ~300s at which clients give up.
+// This used to be a 90s "backstop" sitting ABOVE the 60s preamble bound, which made
+// it unreachable: both deadlines are computed once before the loop, so
+// `min(now+60s, requestDeadline) <= now+90s` always held and the preamble bound
+// always fired first. It was dead code, and a production log showing "backstop=0"
+// read as "the backstop is broken" when it actually meant "the preamble bound
+// stopped it". The fix is to make the ceiling the binding bound rather than a
+// larger second one: the default (60s) matches the effective stop time the old
+// arrangement produced, so this changes no production timing — it only makes the
+// ceiling the thing that actually fires and says so.
+//
+// 60s is chosen to preserve the measured behaviour, not to shorten it: the upstream
+// spends ~18s (10-30s typical, 94s worst) before it emits the overload frame, and
+// catching that frame lets the SAME model retry inside the 120s budget (observed
+// working: "recovered after 1-2 retries"). Lowering this bound truncates the
+// 60-94s tail — those turns then answer 503 and the combo rotates instead of
+// retrying the same model, which is faster but less precise. Raise it only if a
+// longer wait for the frame is worth more than failing fast.
 const CODEX_SSE_SCAN_MAX_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
-  if (raw == null || raw === "") return 90 * 1000;
+  if (raw == null || raw === "") return 60 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90 * 1000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
 })();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta
@@ -574,9 +586,16 @@ export class CodexExecutor extends BaseExecutor {
         // overload frame — to the client, which is the escape this whole path exists
         // to prevent. Report it as exhausted instead.
         if (peek.stoppedOnDeadline) {
+          const bound = peek.stopReason === "scan-ceiling"
+            ? `SSE scan ceiling (${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s)`
+            : peek.stopReason === "request"
+              ? `request deadline (overload budget ${fmtDuration(budgetMs)})`
+              : peek.stopReason === "preamble"
+                ? `preamble phase bound (${Math.round(CODEX_SSE_PREAMBLE_MS / 1000)}s)`
+                : "scan bound";
           args.log?.warn?.("RETRY", peek.stoppedOnCeiling
             ? `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_PEEK_BYTES / 1024)}KB ceiling before any output — giving up rather than forwarding an unresolved stream`
-            : `CODEX | SSE overload budget (${fmtDuration(budgetMs)}) spent mid-scan — giving up rather than forwarding an unresolved stream`);
+            : `CODEX | SSE scan stopped on the ${bound} with no output — giving up rather than forwarding an unresolved stream`);
           result.response = codexSseErrorResponse(
             HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || "Upstream overloaded", "sse_overload", peek.upstreamError);
           return result;
@@ -649,10 +668,10 @@ export class CodexExecutor extends BaseExecutor {
   // Caller must use replacementBody when no error matched (original body has been read).
   //
   // `log` is threaded in explicitly: this method runs OUTSIDE execute()'s scope, so a
-  // bare `args.log` here is a ReferenceError. That is not cosmetic — the backstop's
-  // log line sits immediately before its `break`, so a throw would be swallowed by the
-  // catch below and the scan would fall through to hand the client the very unresolved
-  // stream the backstop exists to stop.
+  // bare `args.log` here is a ReferenceError. That is not cosmetic — the ceiling's
+  // log line sits immediately before its `break`, so a throw would be swallowed by
+  // the catch below and the scan would fall through to hand the client the very
+  // unresolved stream the ceiling exists to stop.
   async _peekSseTransientError(response, requestDeadline = Infinity, log = null) {
     if (!response || !response.ok || !response.body) return { matched: null, message: null, accountFallback: false, replacementBody: null };
     const reader = response.body.getReader();
@@ -677,22 +696,37 @@ export class CodexExecutor extends BaseExecutor {
     // ceiling to the much smaller post-output value.
     let bufferedBytes = 0;
     let outputStarted = false;
-    // Hard time bound on the PREAMBLE phase (before any output). Without it a stalled
-    // upstream that sends `response.created` and then hangs would hold the request
-    // open until the byte ceiling; with it, the preamble scan gives up and hands the
-    // stream to the client, exactly like the post-output grace window does.
-    //
-    // Capped by the caller's request deadline, so a retry attempt cannot run past the
-    // budget the loop is spending. When that cap is what stopped the scan, the scan
-    // is UNRESOLVED (it saw neither output nor an error) — the caller must not treat
-    // that as a healthy stream, or it would hand a possibly-overloaded body to the
-    // client. `stoppedOnDeadline` carries that distinction out.
-    const preambleDeadline = Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline);
-    // Unconditional backstop for the whole scan (see CODEX_SSE_SCAN_MAX_MS). Measured
-    // from when the scan began, so no inner state can extend it.
+    // THE TOTAL CEILING. Computed first, from when the scan began, so nothing an
+    // inner phase does can extend it. It is the authoritative bound: the preamble
+    // deadline below is clamped by it, and every read wait is raced against it.
     const scanStart = Date.now();
     const scanDeadline = scanStart + CODEX_SSE_SCAN_MAX_MS;
+    // Phase bound on the PREAMBLE (before any output). Without it a stalled upstream
+    // that sends `response.created` and then hangs would hold the request open until
+    // the byte ceiling. It is `min`'d with the ceiling AND the caller's request
+    // deadline, so it can only ever stop a scan EARLIER than the ceiling — never
+    // later. That is what makes the ceiling binding under the shipped defaults
+    // (45s ceiling < 60s preamble), and it is the opposite of the old arrangement,
+    // where a 90s backstop sat above a 60s preamble bound and could never fire.
+    //
+    // Stopping here with neither output nor an error is UNRESOLVED — the caller must
+    // not treat that as a healthy stream, or it would hand a possibly-overloaded body
+    // to the client. `stoppedOnDeadline` carries that distinction out.
+    // A preamble bound of 0 disables the PHASE bound only — the total ceiling still
+    // applies, so the scan then runs until the ceiling or the caller's deadline.
+    // (`Math.min(now + 0, …)` would instead expire the phase instantly and release
+    // the stream unread, which is not what "disable the bound" should mean.)
+    const preambleDeadline = CODEX_SSE_PREAMBLE_MS > 0
+      ? Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline, scanDeadline)
+      : Math.min(requestDeadline, scanDeadline);
     let stoppedOnDeadline = false;
+    // Which bound actually stopped an unresolved scan: "bytes" (the byte ceiling),
+    // "scan-ceiling" (CODEX_SSE_SCAN_MAX_MS), "request" (the caller's budget) or
+    // "preamble" (CODEX_SSE_PREAMBLE_MS). Reported to the caller so its log line and
+    // the 503 body name the real cause instead of assuming the budget ran out — the
+    // three time bounds are now min'd together, so "which one fired" is not
+    // recoverable from the deadline value alone.
+    let stopReason = null;
     // Hitting the BYTE ceiling before any output is the same escape class as the
     // original 256KB bug: the metadata preamble (response.created + in_progress each
     // echo the full tools schema) can be hundreds of KB, so if it ever exceeds the
@@ -716,37 +750,53 @@ export class CodexExecutor extends BaseExecutor {
         const byteCeiling = outputStarted ? CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT : CODEX_SSE_PEEK_BYTES;
         if (bufferedBytes >= byteCeiling) {
           // Pre-output ceiling hit => unresolved (see stoppedOnCeiling above).
-          if (!outputStarted && !matched) stoppedOnCeiling = true;
+          if (!outputStarted && !matched) { stoppedOnCeiling = true; stopReason = "bytes"; }
           break;
         }
         // Whichever phase we are in, never block indefinitely: the preamble has its
-        // own deadline, and the post-output phase uses the grace deadline.
+        // own deadline, and the post-output phase uses the grace deadline. Both are
+        // already clamped by the total ceiling, so `deadline` can never exceed it.
         const deadline = outputStarted ? graceDeadline : preambleDeadline;
         const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
-        // The unconditional backstop (see CODEX_SSE_SCAN_MAX_MS). Checked separately
-        // from `deadline` so the phase logic above keeps its exact meaning — including
-        // the `deadline === requestDeadline` comparisons below, which decide whether a
-        // stop is reported as unresolved. Folding the backstop into `deadline` would
-        // make those comparisons always false and silently drop the 503.
+        // The total ceiling, checked FIRST so that when it is the binding bound its
+        // own line names it instead of the stop being reported as an anonymous
+        // "stopped". Checked separately from `deadline` only for this message —
+        // `deadline` is already clamped by `scanDeadline`, so the two agree whenever
+        // the ceiling is what stopped us.
+        //
+        // The line fires only for an UNRESOLVED stop. If output has already begun the
+        // ceiling is not a failure — the stream is healthy and is released — so
+        // logging "giving up" there would be a false alarm.
         if (Date.now() >= scanDeadline) {
-          log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
-          if (!outputStarted && !matched) stoppedOnDeadline = true;
+          if (!outputStarted && !matched) {
+            log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s total ceiling — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+            stoppedOnDeadline = true;
+            stopReason = "scan-ceiling";
+          }
           break;
         }
         if (deadline > 0 && remainingMs <= 0) {
-          // Stopped with neither output nor an error seen. Two ways to land here:
-          //   - the caller's request deadline ran out, or
-          //   - the preamble scan's OWN bound expired while the upstream had sent
-          //     nothing but the metadata frames.
-          // Both are UNRESOLVED, not healthy. Forwarding either one hands the client
-          // a stream that emits a couple of frames and then hangs until its own
-          // watchdog fires — the observed production failure ("2 stream events
-          // received, none in the final 300008 ms"). Report it so the caller answers
-          // 503 and the combo falls back.
-          // `CODEX_SSE_PREAMBLE_MS === 0` disables the scan's own bound, so in that
-          // configuration only a real request deadline can stop us.
-          if (!outputStarted && !matched
-            && (CODEX_SSE_PREAMBLE_MS > 0 || deadline === requestDeadline)) stoppedOnDeadline = true;
+          // Stopped with neither output nor an error seen. Landing here means the
+          // turn produced nothing the client could use, so it is UNRESOLVED, never
+          // healthy: forwarding it hands the client a stream that emits a couple of
+          // frames and then hangs until its own watchdog fires — the observed
+          // production failure ("2 stream events received, none in the final
+          // 300008 ms"). Report it so the caller answers 503 and the combo falls
+          // back.
+          //
+          // This holds whichever bound expired — the preamble phase bound, the
+          // caller's request deadline, or the total ceiling — because `deadline` is
+          // the minimum of all three and a pre-output stop with no match is never
+          // something the client can use. (The old code tried to distinguish which
+          // bound it was via `deadline === requestDeadline`, which silently failed
+          // whenever the ceiling was the minimum and PREAMBLE_MS was 0.) Name the
+          // minimum so the caller's log line stays honest.
+          if (!outputStarted && !matched) {
+            stoppedOnDeadline = true;
+            stopReason = preambleDeadline === scanDeadline ? "scan-ceiling"
+              : preambleDeadline === requestDeadline ? "request"
+              : "preamble";
+          }
           break;
         }
         if (!pendingRead) pendingRead = reader.read();
@@ -754,10 +804,11 @@ export class CodexExecutor extends BaseExecutor {
         // to the client even if the turn never completes.
         let result;
         if (deadline > 0) {
-          // The wait is bounded by the phase deadline AND the scan backstop, so a
-          // read can never park past the backstop even if the phase logic were to
-          // compute a longer wait. Without the second term the backstop would only
-          // be noticed between reads, not during one.
+          // The wait is bounded by the phase deadline AND the total ceiling, so a
+          // read can never park past the ceiling even if a phase deadline were
+          // computed past it (the post-output grace deadline is not clamped above).
+          // Without the second term the ceiling would only be noticed between reads,
+          // not during one.
           const waitMs = Math.max(1, Math.min(remainingMs, scanDeadline - Date.now()));
           let timer;
           result = await Promise.race([
@@ -769,26 +820,25 @@ export class CodexExecutor extends BaseExecutor {
           result = await pendingRead;
         }
         if (result.timedOut) {
-          // The read did not arrive before the deadline. That is UNRESOLVED whether the
-          // deadline was the caller's request budget or the preamble scan's own bound:
-          // no output, no error, and nothing left to wait on. Mark it so the caller
-          // answers 503 instead of forwarding a stream that will hang.
-          // (See the matching note on the `remainingMs <= 0` branch above for why the
-          // preamble's own bound counts, and why PREAMBLE_MS=0 is the opt-out.)
+          // The read did not arrive before the deadline. With no output and no match
+          // that is UNRESOLVED: nothing the client can use, and nothing left to wait
+          // on. Mark it so the caller answers 503 instead of forwarding a stream that
+          // will hang. After output has begun this is just the post-output grace
+          // window closing on a healthy turn, so nothing is marked and the stream is
+          // handed over below.
           //
-          // The race above waits on the SMALLER of the phase deadline and the backstop,
-          // so when the backstop is the tighter one it is what fired — and it must say
-          // so here. The backstop's own check sits at the TOP of the loop, which this
-          // `break` skips, so without this line a backstop stop would be logged as an
-          // unexplained "stoppedOnDeadline" and an operator could not tell which bound
-          // to tune. (Under the shipped defaults the preamble bound is tighter, so this
-          // line is silent and the backstop log above is the dead one — that asymmetry
-          // is what a bare "backstop=0" in the log actually means.)
-          if (Date.now() >= scanDeadline) {
-            log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+          // Because the pre-output `deadline` is clamped by the ceiling, the ceiling
+          // is normally what expires here — so it names itself, or an operator sees an
+          // unexplained "stopped" and cannot tell which knob to tune.
+          if (!outputStarted && !matched) {
+            if (Date.now() >= scanDeadline) {
+              log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s total ceiling — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+              stopReason = "scan-ceiling";
+            } else {
+              stopReason = deadline === requestDeadline ? "request" : "preamble";
+            }
+            stoppedOnDeadline = true;
           }
-          if (!outputStarted && !matched
-            && (CODEX_SSE_PREAMBLE_MS > 0 || deadline === requestDeadline)) stoppedOnDeadline = true;
           break; // pendingRead stays pending; handed off below
         }
         pendingRead = null;
@@ -880,13 +930,14 @@ export class CodexExecutor extends BaseExecutor {
         accountFallback: false,
         stoppedOnDeadline: true,
         stoppedOnCeiling,
+        stopReason,
         replacementBody: null,
         upstreamError: {
           source: "sse",
           status: response.status,
           message: stoppedOnCeiling
             ? "Upstream overloaded (metadata preamble exceeded the scan ceiling)"
-            : "Upstream overloaded (retry budget spent mid-scan)",
+            : `Upstream overloaded (SSE scan stopped on ${stopReason === "scan-ceiling" ? "the total scan ceiling" : stopReason === "request" ? "the request deadline" : stopReason === "preamble" ? "the preamble phase bound" : "the scan bound"} with no output)`,
           body: text.slice(0, 4000),
           retryAfterMs: null,
           receivedAt: new Date().toISOString(),

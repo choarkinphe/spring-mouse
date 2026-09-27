@@ -1,34 +1,22 @@
 /**
- * Which bound actually stops an unresolved Codex SSE scan — and why a
- * "backstop=0" production log is not evidence the backstop failed.
+ * The SSE preamble scan has ONE authoritative bound: `CODEX_SSE_SCAN_MAX_MS`, the
+ * total wall-clock ceiling. The preamble phase bound (`CODEX_SSE_PREAMBLE_MS`) is
+ * clamped by it, so the phase bound can only stop a scan EARLIER — never later.
  *
- * Production evidence (2026-09-27, container restarted 07:07Z):
+ * This is the inverse of the arrangement it replaced. That version had a 90s
+ * "backstop" sitting ABOVE the 60s preamble bound, and since both deadlines are
+ * computed once before the loop, `min(now+60s, RD) <= now+90s` always held: the
+ * preamble bound always fired first and the backstop was dead code. A production
+ * log showing "backstop=0" read as "the backstop is broken" when it actually meant
+ * "the preamble bound stopped it" — which is exactly how it was misread.
  *
- *   CODEX-STAGE | peekSseTransientError (attempt 1) ... 30000ms   (x6)
- *   CODEX-STAGE | peekSseTransientError (attempt 2) ... 30000ms   (x3)
- *   "backstop" log lines: 0
- *
- * That looks like the backstop never taking effect. It is not. The stage timer
- * fires WHILE a stage is still running, so those lines only prove the scan had
- * not finished after 30s — which it is allowed to be, up to its 60s preamble
- * bound. Both bounds are computed once, before the loop:
- *
- *   preambleDeadline = min(now + PREAMBLE_MS, requestDeadline)   // 60s default
- *   scanDeadline     = now + SCAN_MAX_MS                         // 90s default
- *
- * so with the shipped defaults `min(now+60s, RD) <= now+90s` always holds and the
- * preamble bound wins. The backstop can only be the binding bound when an
- * operator raises PREAMBLE_MS above SCAN_MAX_MS (or the phase logic is changed to
- * recompute its deadline per iteration). It is a guard for that, not the working
- * bound — which is exactly what the comment on CODEX_SSE_SCAN_MAX_MS says.
- *
- * Both cases are pinned below, each with the two bounds scaled down ~40x so the
- * tests run in seconds while preserving the production ordering.
+ * Now the ceiling is what stops an unresolved scan, and it says so. The bounds are
+ * scaled ~30x in these tests so they run in seconds.
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Emits `response.created` then drips metadata frames forever — no output, no error. */
-function drippingMetadataStream({ dripEveryMs = 30 } = {}) {
+function drippingMetadataStream({ dripEveryMs = 25 } = {}) {
   const encoder = new TextEncoder();
   let sent = 0;
   return new ReadableStream({
@@ -47,10 +35,10 @@ function drippingMetadataStream({ dripEveryMs = 30 } = {}) {
   });
 }
 
-/** Loads a fresh executor module with the given bounds, since they are read at import time. */
+/** Loads a fresh executor module with the given bounds (they are read at import time). */
 async function executorWith({ preambleMs, scanMaxMs }) {
-  process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS = String(preambleMs);
-  process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS = String(scanMaxMs);
+  if (preambleMs != null) process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS = String(preambleMs);
+  if (scanMaxMs != null) process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS = String(scanMaxMs);
   vi.resetModules();
   const { CodexExecutor } = await import("../../open-sse/executors/codex.js");
   return new CodexExecutor();
@@ -64,15 +52,15 @@ function logCapture() {
   };
 }
 
-describe("Codex scan bounds", () => {
+describe("Codex SSE scan total ceiling", () => {
   beforeEach(() => {
     delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
     delete process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
   });
 
-  it("stops at the preamble bound (not the backstop) when preamble < backstop, and logs no backstop", async () => {
-    // Production ordering, scaled 40x: preamble 1.5s, backstop 5s.
-    const executor = await executorWith({ preambleMs: 1500, scanMaxMs: 5000 });
+  it("the ceiling stops the scan when it is tighter than the preamble bound (the shipped default)", async () => {
+    // Shipped ordering, scaled: ceiling 1.2s < preamble 3s.
+    const executor = await executorWith({ preambleMs: 3000, scanMaxMs: 1200 });
     const { lines, log } = logCapture();
     const response = new Response(drippingMetadataStream(), {
       status: 200,
@@ -80,26 +68,23 @@ describe("Codex scan bounds", () => {
     });
 
     const started = Date.now();
-    // A request deadline far beyond both bounds, as production's 120s budget is.
     const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
     const elapsed = Date.now() - started;
 
-    // Resolved at ~the preamble bound, well before the 5s backstop.
-    expect(elapsed).toBeGreaterThan(1000);
-    expect(elapsed).toBeLessThan(4000);
+    // Stopped at the ceiling, not the 3s preamble bound.
+    expect(elapsed).toBeGreaterThan(900);
+    expect(elapsed).toBeLessThan(3000);
 
-    // Reported as UNRESOLVED (the 503 path), not handed over as a healthy stream.
+    // Unresolved (the 503 path), and it named the bound that fired.
     expect(peek.stoppedOnDeadline).toBe(true);
+    expect(peek.stopReason).toBe("scan-ceiling");
     expect(peek.replacementBody).toBeNull();
-
-    // The backstop line is absent: it never fired. This is the production signature.
-    expect(lines.some((m) => /backstop/i.test(m))).toBe(false);
+    expect(lines.some((m) => /total ceiling/i.test(m))).toBe(true);
   }, 15000);
 
-  it("fires the backstop when it is the tighter bound (preamble > backstop)", async () => {
-    // The only configuration where the backstop is reachable: an operator raising
-    // the preamble bound past it. Scaled: preamble 10s, backstop 1.2s.
-    const executor = await executorWith({ preambleMs: 10_000, scanMaxMs: 1200 });
+  it("the preamble bound can still stop a scan earlier, and is named", async () => {
+    // Ceiling 5s, preamble 1.2s: the phase bound fires first and must say so.
+    const executor = await executorWith({ preambleMs: 1200, scanMaxMs: 5000 });
     const { lines, log } = logCapture();
     const response = new Response(drippingMetadataStream(), {
       status: 200,
@@ -110,11 +95,100 @@ describe("Codex scan bounds", () => {
     const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
     const elapsed = Date.now() - started;
 
-    // Stopped at the backstop, not the 10s preamble bound.
     expect(elapsed).toBeGreaterThan(900);
     expect(elapsed).toBeLessThan(4000);
     expect(peek.stoppedOnDeadline).toBe(true);
-    // And it said so, so an operator can tell which bound did it.
-    expect(lines.some((m) => /backstop/i.test(m))).toBe(true);
+    expect(peek.stopReason).toBe("preamble");
+    // The ceiling line is absent because the ceiling did not fire.
+    expect(lines.some((m) => /total ceiling/i.test(m))).toBe(false);
+  }, 15000);
+
+  it("never lets a raised preamble bound extend a scan past the ceiling", async () => {
+    // The old bug in one assertion: an operator raising the preamble bound must NOT
+    // be able to push a scan beyond the ceiling.
+    const executor = await executorWith({ preambleMs: 60_000, scanMaxMs: 1000 });
+    const { log } = logCapture();
+    const response = new Response(drippingMetadataStream(), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const started = Date.now();
+    const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
+    const elapsed = Date.now() - started;
+
+    expect(elapsed).toBeLessThan(3000);
+    expect(peek.stoppedOnDeadline).toBe(true);
+    expect(peek.stopReason).toBe("scan-ceiling");
+  }, 15000);
+
+  it("resolves the ceiling first when the two bounds are equal (the shipped default)", async () => {
+    // Shipped defaults are ceiling == preamble == 60s. Equal bounds are the one case
+    // where "which fired" is ambiguous, so the ceiling is checked FIRST in the loop
+    // and must win. Without that ordering an operator would again see a stop with no
+    // line naming the bound — the misread this whole change exists to prevent.
+    const executor = await executorWith({ preambleMs: 1200, scanMaxMs: 1200 });
+    const { lines, log } = logCapture();
+    const response = new Response(drippingMetadataStream(), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
+    expect(peek.stoppedOnDeadline).toBe(true);
+    expect(peek.stopReason).toBe("scan-ceiling");
+    expect(lines.some((m) => /total ceiling/i.test(m))).toBe(true);
+  }, 15000);
+
+  it("does not log a ceiling stop when output has already begun (no false alarm)", async () => {
+    // A healthy turn that crosses the ceiling mid-flight must NOT be reported as
+    // "giving up" — the stream is fine and is released. The ceiling only ends an
+    // UNRESOLVED scan.
+    const executor = await executorWith({ preambleMs: 300, scanMaxMs: 300 });
+    const encoder = new TextEncoder();
+    // A reasoning delta arrives first (so output starts), then the stream drips
+    // slowly past the 300ms ceiling without ever reaching the grace thresholds.
+    let sent = 0;
+    const response = new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(encoder.encode('event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"think"}\n\n'));
+      },
+      async pull(c) {
+        await new Promise((r) => setTimeout(r, 60));
+        if (sent++ > 40) { c.close(); return; }
+        c.enqueue(encoder.encode('event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"more"}\n\n'));
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const { lines, log } = logCapture();
+    const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
+
+    // Released as healthy, and the ceiling line never fired.
+    expect(peek.stoppedOnDeadline).toBe(false);
+    expect(peek.replacementBody).toBeTruthy();
+    expect(lines.some((m) => /total ceiling/i.test(m))).toBe(false);
+  }, 15000);
+
+  it("still resolves a healthy stream promptly, well before any bound", async () => {
+    const executor = await executorWith({ preambleMs: 3000, scanMaxMs: 1200 });
+    const encoder = new TextEncoder();
+    const frames = [
+      "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + "y".repeat(300) + "\"}\n\n",
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+    ];
+    let i = 0;
+    const response = new Response(new ReadableStream({
+      async pull(controller) {
+        if (i >= frames.length) { controller.close(); return; }
+        controller.enqueue(encoder.encode(frames[i++]));
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+
+    const { log } = logCapture();
+    const started = Date.now();
+    const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
+    expect(peek.matched).toBeNull();
+    expect(peek.replacementBody).toBeTruthy();
+    expect(Date.now() - started).toBeLessThan(900);
   }, 15000);
 });

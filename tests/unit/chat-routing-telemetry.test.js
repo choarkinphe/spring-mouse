@@ -192,13 +192,47 @@ describe("chat routing telemetry lifecycle", () => {
     expect(attemptUpserts()[0].record.routingRequestId).toBe(requestId);
   });
 
+  it("hands chatCore an observer that satisfies the stream pipeline's interface", async () => {
+    // Regression guard. The session's observer exposes the RAW protocol callbacks
+    // (onHeaders/onTerminal/...), while every chatCore response path calls
+    // emitHeaders()/recordTerminal()/settle()/noteFirstToken()/hasTerminal() —
+    // the interface of the fail-open wrapper. Passing the raw observer through
+    // made the first streaming response throw
+    //   TypeError: routingObserver.emitHeaders is not a function
+    // (streamingHandler.js:93; the non-streaming and SSE→JSON paths likewise)
+    // before any byte reached the client, i.e. a 500 on every chat request.
+    //
+    // This test mocks chatCore, so it cannot exercise the call itself — instead it
+    // asserts the CONTRACT at the boundary that was actually wrong. The companion
+    // test in codex-observer-wiring.test.js drives the real pipeline end to end.
+    mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
+    let observed = null;
+    mocks.handleChatCore.mockImplementation(async (opts) => {
+      observed = opts.routingObserver;
+      return okResult();
+    });
+
+    await handleChat(request());
+    await flush();
+
+    expect(observed).toBeTruthy();
+    for (const method of ["emitHeaders", "recordTerminal", "settle", "noteFirstToken", "hasTerminal"]) {
+      expect(typeof observed[method], `observer.${method} must be a function`).toBe("function");
+    }
+  });
+
   it("prefers the chatCore observer terminal over the HTTP status", async () => {
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
     // chatCore settles the attempt observer from the upstream's own protocol
     // terminal. Here the upstream reached a real terminal even though the
     // result status alone would read as a generic failure.
     mocks.handleChatCore.mockImplementation(async (opts) => {
-      opts.routingObserver.onTerminal({ outcome: "valid_terminal", terminalReason: "terminal", upstreamStatus: 200 });
+      // Drive the observer exactly as the real stream pipeline does: record the
+      // upstream's protocol terminal, then settle (open-sse/utils/stream.js).
+      // `opts.routingObserver` is the fail-open wrapper, whose surface is
+      // emitHeaders/recordTerminal/settle — NOT the raw onTerminal callbacks.
+      opts.routingObserver.recordTerminal({ outcome: "valid_terminal", terminalReason: "terminal" });
+      opts.routingObserver.settle({ upstreamStatus: 200 });
       return { success: true, response: new Response("ok", { status: 200 }) };
     });
 
@@ -217,7 +251,8 @@ describe("chat routing telemetry lifecycle", () => {
     mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: false, modelLevel: false, transport: false });
     mocks.handleChatCore.mockImplementation(async (opts) => {
       // The upstream stream reached a real terminal...
-      opts.routingObserver.onTerminal({ outcome: "valid_terminal", terminalReason: "terminal", upstreamStatus: 200 });
+      opts.routingObserver.recordTerminal({ outcome: "valid_terminal", terminalReason: "terminal" });
+      opts.routingObserver.settle({ upstreamStatus: 200 });
       // ...then the socket dropped, so the executor reports a failure result.
       return { success: false, status: 502, error: "socket hang up", response: new Response("", { status: 502 }) };
     });

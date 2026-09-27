@@ -33,6 +33,7 @@ import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
+import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -382,11 +383,25 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
-  const openAttempt = (credentials) => routing?.openAttempt({
-    modelCallId, role: attemptRole, provider, model,
-    connectionId: credentials?.connectionId, streamMode: body?.stream === false ? "nonstream" : "stream",
-    internal: internalRequest,
-  }) || { id: null, observer: null, complete() {}, bindResponse() {}, isSettled: () => true };
+  const openAttempt = (credentials) => {
+    const attempt = routing?.openAttempt({
+      modelCallId, role: attemptRole, provider, model,
+      connectionId: credentials?.connectionId, streamMode: body?.stream === false ? "nonstream" : "stream",
+      internal: internalRequest,
+    }) || { id: null, observer: null, complete() {}, bindResponse() {}, isSettled: () => true };
+    // The session's observer exposes only the raw protocol callbacks (onHeaders/
+    // onTerminal/...). The chatCore response paths drive the OTHER interface —
+    // emitHeaders()/settle()/noteFirstToken()/recordTerminal() — which lives on
+    // this fail-open wrapper. Passing the raw observer straight through made
+    // `routingObserver.emitHeaders(...)` throw `is not a function` on the FIRST
+    // streaming (and non-streaming, and SSE→JSON) response, before a single byte
+    // reached the client: a 500 on every chat request. The wrapper also makes the
+    // observer fail-open, which the raw object is not.
+    if (attempt.observer) {
+      attempt.observer = createRoutingObserver({ observer: attempt.observer, requestStartTime }) || attempt.observer;
+    }
+    return attempt;
+  };
   const routingSettings = await getSettings();
   const overloadMaxRetries = resolveOverloadMaxRetries(
     (routingSettings.providerStrategies || {})[provider],
@@ -617,6 +632,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           const retryAfterMs = breaker.retryAfterMs || 60_000;
           const retryAt = new Date(Date.now() + retryAfterMs).toISOString();
           const human = `retry after ${Math.max(1, Math.round(retryAfterMs / 1000))}s`;
+          // usageHistory.status is the operator- and dashboard-facing record of WHY a
+          // request stopped, and these two lines are its only writer on this path.
+          // Routing telemetry (attempt.complete) records the same event into a
+          // DIFFERENT table and is not a substitute: dropping these left the failure
+          // invisible in the usage views while the request still 503'd.
+          log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
+          saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
           attempt.complete({ outcome: "failed", terminalReason: transport ? "transport_error" : modelLevel ? "model_overloaded" : "breaker_open", upstreamStatus: result.status, fallbackReason: "account_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Provider model is temporarily unavailable", retryAt, human);
@@ -650,6 +672,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         if (modelLevelFailures > overloadMaxRetries) {
           log.warn("THROTTLE", `${provider}/${model} | ${modelLevelFailures} model-level failures exceeded channel retry budget ${overloadMaxRetries}`);
           const retryAt = new Date(Date.now() + MODEL_LEVEL_RETRY_HINT_MS).toISOString();
+          saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
           attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Upstream model is busy",

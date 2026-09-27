@@ -81,44 +81,49 @@ const CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT = 256 * 1024;
 // 60-second bound delayed every slow-start turn, even when the upstream was healthy.
 // A real overload frame that is already buffered is still detected; otherwise a
 // metadata-only attempt fails fast and lets combo/account routing choose another
-// Phase bound on the pre-output preamble: the metadata-only probe. A turn that has
-// produced no output and no error by this point is treated as unresolved, so the
-// caller answers 503 and the combo/account router picks another candidate.
+// Phase bound on the pre-output preamble: how long a turn may produce NO output and
+// NO error before it is treated as unresolved (the caller answers 503 and the
+// combo/account router picks another candidate).
 //
-// 25s, chosen from the measured overload-arrival distribution rather than picked
-// round. Over 20 production samples the overload frame arrived at:
+// It must clear the time a HEALTHY turn needs to produce its first output — that is
+// the whole quantity it is bounding. It is NOT sized from how long an overload frame
+// takes to arrive, even though the same code path detects those frames. Sizing it
+// that way is a mistake this file has already made once, and production caught it:
+// the overload frame arrives in 0-23s, but healthy turns routinely need far longer
+// to first output. Measured over 24h of SUCCESSFUL codex turns (n=5402):
 //
-//   0s:4  1s:2  2s:3  3s:4  5s:1  6s:2  17s:2  23s:2
+//   ttft 15-25s: 591    25-40s: 165    40-60s: 47    >60s: 22    max: 245s
 //
-// Most arrive within 3s, but 4/20 arrive at 17-23s — and those are exactly the
-// turns the retry loop recovers ("recovered after 1-2 retries", ~92% of attempts
-// before this bound was shortened). A 5s probe cut the scan off before those frames
-// arrived, and production showed the result immediately: upstream:503 went 0 -> 53
-// per 3 minutes and `recovered after` fell to 0. 25s clears the measured 23s maximum
-// with margin while still failing far faster than the old 60s.
+// A 25s bound therefore truncated healthy turns, and the effect was immediate and
+// large — upstream:503 per minute went 0.06 (60s) -> 0.70 (25s), a 12x regression,
+// with a reported failure being a turn whose NEIGHBOUR succeeded at ttft=22797ms,
+// only 2.2s under the 25s bound.
 //
-// Raise it if a slower deployment's overloads arrive later; 0 disables this phase
-// bound, leaving the total ceiling below as the only time limit.
+// 60s is the long-standing value and the one the measurements support: at 60s the
+// 503 rate is 0.06/min, and only 22 of 5402 healthy turns (0.4%) exceed it. Raise it
+// only with ttft data for the deployment; 0 disables this phase bound, leaving the
+// total ceiling below as the only time limit.
 const CODEX_SSE_PREAMBLE_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
-  if (raw == null || raw === "") return 25 * 1000;
+  if (raw == null || raw === "") return 60 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 25 * 1000;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60 * 1000;
 })();
-// The TOTAL wall-clock ceiling on one SSE preamble scan — the authoritative bound.
-// Whatever the phase logic above computes, the scan cannot outlive this: the
-// preamble deadline is clamped by it, and every read wait is raced against it.
+// The TOTAL wall-clock ceiling on one SSE preamble scan: the guard for a phase bound
+// that has been raised, disabled, or misconfigured. It sits strictly ABOVE the phase
+// bound, so under the defaults the phase bound is what normally stops a scan and this
+// is a safety net — it fires only when CODEX_SSE_PREAMBLE_MS is 0 or set above it.
 //
-// It sits ABOVE the phase bound so it is the guard for a phase bound that is raised
-// or disabled, not the bound that normally fires. (An earlier revision put a 90s
-// ceiling above a 60s phase bound and it never fired at all; a ceiling below the
-// phase bound would instead make the phase bound the dead one. Keeping it strictly
-// larger is what makes each bound mean something.)
+// That ordering is deliberate, and the log line reflects it: a run showing this line
+// ZERO times is the normal case, not a sign the guard is broken. (An earlier revision
+// read "backstop=0" as a defect and "fixed" it by making the ceiling the binding
+// bound, which is how a 5s/10s pair briefly reached production and cost ~15 x 503 per
+// minute. The guard is meant to be idle.)
 const CODEX_SSE_SCAN_MAX_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
-  if (raw == null || raw === "") return 40 * 1000;
+  if (raw == null || raw === "") return 120 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 40 * 1000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120 * 1000;
 })();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta

@@ -70,26 +70,27 @@ describe("codex: metadata-only stream that then hangs is unresolved, not healthy
       const started = Date.now();
       const result = await executor.execute({
         model: "gpt-6-astra", body: {}, stream: true, credentials: {}, log: {},
-        overloadDeadline: Date.now() + 60_000,
+        // A caller budget far above the phase bound, so the PHASE bound is what stops
+        // this scan and the assertion measures the production default itself.
+        overloadDeadline: Date.now() + 10 * 60_000,
       });
       const elapsed = Date.now() - started;
       superExecute.mockRestore();
       expect(result.response.status).toBe(503);
-      // The production default (CODEX_SSE_PREAMBLE_MS, 25s) is what stops this, not
-      // the caller's 60s budget: the assertion is that the phase bound is well below
-      // the budget, with slack for CI scheduling. A 5s probe also satisfied this —
-      // the bound was raised back to 25s because a 5s probe cut off overload frames
-      // measured arriving at 17-23s, and production 503s went 0 -> 53 per 3 minutes.
-      // The number to keep in step with the default is the ceiling here, not the
-      // exact value: it must stay comfortably under the 60s budget.
-      expect(elapsed).toBeGreaterThan(20_000);
-      expect(elapsed).toBeLessThan(45_000);
+      // The production default is 60s. This test pins that the shipped value is what
+      // governs, with generous slack for CI scheduling — not the exact number. The
+      // bound was briefly 5s and then 25s; both truncated healthy turns, and the 25s
+      // one cost a 12x regression in upstream:503 (0.06 -> 0.70 per minute) because
+      // healthy turns routinely need >25s to first output (24h: 591 turns at 15-25s,
+      // 165 at 25-40s, 47 at 40-60s, 22 >60s). 60s is the measured value.
+      expect(elapsed).toBeGreaterThan(50_000);
+      expect(elapsed).toBeLessThan(90_000);
     } finally {
       if (previous === undefined) delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
       else process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS = previous;
       vi.resetModules();
     }
-  }, 60000);
+  }, 120000);
 
   it("answers 503 when the PREAMBLE bound stops the scan (long caller budget)", async () => {
     await withPreambleMs(300, async (CodexExecutor) => {

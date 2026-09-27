@@ -18,29 +18,31 @@ export default function ModelRouteDisplay({
   className = "",
   compact = false,
   showLabels = true,
+  wrap = false,
 }) {
   const { originalModel, executedModel } = normalizeModelRouting(record);
   const originalLabel = originalModel || clean(record.model) || "—";
   const executedLabel = executedModel || originalLabel;
   const routed = isModelRouted(record);
+  const modelClassName = wrap ? "break-words" : "truncate";
 
   if (!routed) {
     return (
       <div className={cn("min-w-0", className)} title={originalLabel}>
-        <span className="block truncate font-mono text-text-main">{originalLabel}</span>
+        <span className={cn("block font-mono text-text-main", modelClassName)}>{originalLabel}</span>
       </div>
     );
   }
 
   return (
     <div className={cn("min-w-0 space-y-0.5", className)} title={`原始：${originalLabel} → 实际：${executedLabel}`}>
-      <div className="flex min-w-0 items-center gap-1">
+      <div className="flex min-w-0 items-start gap-1">
         {showLabels && <span className="shrink-0 text-[10px] font-semibold text-primary">原始：</span>}
-        <span className="min-w-0 truncate font-medium text-primary">{originalLabel}</span>
+        <span className={cn("min-w-0", modelClassName, "font-medium text-primary")}>{originalLabel}</span>
       </div>
-      <div className="flex min-w-0 items-center gap-1">
+      <div className="flex min-w-0 items-start gap-1">
         <span className="shrink-0 text-[10px] font-semibold text-text-muted">→{showLabels ? " 实际：" : ""}</span>
-        <span className={cn("min-w-0 truncate font-mono text-text-main", compact ? "text-[11px]" : "text-xs")}>{executedLabel}</span>
+        <span className={cn("min-w-0", modelClassName, "font-mono text-text-main", compact ? "text-[11px]" : "text-xs")}>{executedLabel}</span>
       </div>
     </div>
   );
@@ -59,4 +61,5 @@ ModelRouteDisplay.propTypes = {
   className: PropTypes.string,
   compact: PropTypes.bool,
   showLabels: PropTypes.bool,
+  wrap: PropTypes.bool,
 };

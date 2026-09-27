@@ -142,41 +142,37 @@ function RecentRequests({ requests = [], className = "", onViewDetails }) {
       {!requests.length ? (
         <div className="flex flex-1 items-center justify-center text-sm text-text-muted">暂时没有请求。</div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
-          <table className="w-full min-w-[340px] border-collapse text-xs">
-            <thead className="sticky top-0 z-10 bg-bg">
-              <tr className="border-b border-border">
-                <th className="w-2 py-1.5 text-left font-semibold text-text-muted" />
-                <th className="py-1.5 text-left font-semibold text-text-muted">模型</th>
-                <th className="w-[72px] py-1.5 text-left font-semibold text-text-muted">使用人</th>
-                <th className="py-1.5 text-right font-semibold whitespace-nowrap text-text-muted">输入/输出</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted">时间</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/50">
-              {requests.map((request, index) => {
-                const succeeded = !request.status || request.status === "ok" || request.status === "success";
-                return (
-                  <tr key={index} className="transition-colors hover:bg-bg-subtle">
-                    <td className="py-1.5">
-                      <span className={`block h-1.5 w-1.5 rounded-full ${succeeded ? "bg-success" : "bg-error"}`} />
-                    </td>
-                    <td className="max-w-[140px] py-1.5">
-                      <ModelRouteDisplay record={request} compact />
-                    </td>
-                    <td className="max-w-[72px] truncate py-1.5 text-text-muted" title={request.userName}>{request.userName || "未标记"}</td>
-                    <td className="py-1.5 text-right whitespace-nowrap">
-                      <span className="text-primary">{fmt(request.promptTokens)}↑</span>{" "}
-                      <span className="text-success">{fmt(request.completionTokens)}↓</span>
-                    </td>
-                    <td className="py-1.5 text-right whitespace-nowrap text-text-muted">
-                      <TimeAgo timestamp={request.timestamp} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+          <ul className="divide-y divide-border/50" aria-label="最近请求列表">
+            {requests.map((request, index) => {
+              const succeeded = !request.status || request.status === "ok" || request.status === "success";
+              const userName = request.userName || "未标记";
+              return (
+                <li key={index} className="group px-1 py-2.5 transition-colors hover:bg-bg-subtle">
+                  <div className="flex min-w-0 items-start gap-2">
+                    <span
+                      className={`mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full ${succeeded ? "bg-success" : "bg-error"}`}
+                      title={succeeded ? "成功" : "失败"}
+                      aria-label={succeeded ? "成功" : "失败"}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <ModelRouteDisplay record={request} compact wrap className="text-xs leading-4" />
+                      <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2 text-[11px] text-text-muted">
+                        <span className="min-w-0 truncate" title={userName}>使用人：{userName}</span>
+                        <span className="shrink-0 whitespace-nowrap tabular-nums">
+                          <span className="text-primary">{fmt(request.promptTokens)}↑</span>{" "}
+                          <span className="text-success">{fmt(request.completionTokens)}↓</span>
+                        </span>
+                        <span className="shrink-0 whitespace-nowrap text-right">
+                          <TimeAgo timestamp={request.timestamp} />
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </Card>

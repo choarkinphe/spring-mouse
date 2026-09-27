@@ -113,6 +113,12 @@ describe("traffic repository", () => {
       completedAt: timestamp,
       provider: "openai",
       model: "text-embedding-3-small",
+      originalModel: "balanced",
+      executedModel: "openai/text-embedding-3-small",
+      routing: {
+        originalModel: "balanced",
+        executedModel: "openai/text-embedding-3-small",
+      },
       endpoint: "/api/v1/embeddings",
       status: "success",
       tokens: { prompt_tokens: 5, completion_tokens: 0 },
@@ -121,6 +127,12 @@ describe("traffic repository", () => {
     const result = await getUsageDetails({ page: 1, pageSize: 10 });
     expect(result.details[0]).toEqual(expect.objectContaining({
       model: "text-embedding-3-small",
+      originalModel: "balanced",
+      executedModel: "openai/text-embedding-3-small",
+      routing: {
+        originalModel: "balanced",
+        executedModel: "openai/text-embedding-3-small",
+      },
       requestBytes: 64,
       responseBytes: 256,
       totalBytes: 320,
@@ -133,6 +145,8 @@ describe("traffic repository", () => {
       totalTrafficBytes: 320,
     }));
     expect(stats.recentCallDetails[0]).toEqual(expect.objectContaining({
+      originalModel: "balanced",
+      executedModel: "openai/text-embedding-3-small",
       requestBytes: 64,
       responseBytes: 256,
       totalBytes: 320,

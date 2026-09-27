@@ -8,6 +8,7 @@ import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/Overview
 import UsageChart from "@/app/(dashboard)/dashboard/usage/components/UsageChart";
 import ChannelQuotaPanel from "@/app/(dashboard)/dashboard/usage/components/ChannelQuotaPanel";
 import { applyUsageStatsUpdate, normalizeUsageStatsSnapshot } from "@/shared/utils/usageStatsSnapshot";
+import ModelRouteDisplay from "@/shared/components/ModelRouteDisplay";
 
 // Lazy-load: keeps @xyflow/react out of the shared bundle until topology renders.
 const ProviderTopology = dynamic(
@@ -160,7 +161,9 @@ function RecentRequests({ requests = [], className = "", onViewDetails }) {
                     <td className="py-1.5">
                       <span className={`block h-1.5 w-1.5 rounded-full ${succeeded ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="max-w-[104px] truncate py-1.5 font-mono" title={request.model}>{request.model}</td>
+                    <td className="max-w-[140px] py-1.5">
+                      <ModelRouteDisplay record={request} compact />
+                    </td>
                     <td className="max-w-[72px] truncate py-1.5 text-text-muted" title={request.userName}>{request.userName || "未标记"}</td>
                     <td className="py-1.5 text-right whitespace-nowrap">
                       <span className="text-primary">{fmt(request.promptTokens)}↑</span>{" "}

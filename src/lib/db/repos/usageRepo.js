@@ -11,6 +11,7 @@ import { getTrafficBuckets } from "./trafficRepo.js";
 import { runUsageAggregation } from "../usageAggregatePool.js";
 import { applyEventToRollup, getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
 import { isDayAlignedRange, localDateKey } from "../../../../runtime/usage-rollup-read.mjs";
+import { normalizeModelRouting } from "@/shared/utils/modelRouting.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -216,11 +217,15 @@ function pushToRing(entry) {
 
 function toRecentRequest(entry, apiKeyMaps) {
   const t = entry.tokens || {};
+  const routing = normalizeModelRouting(entry);
   const apiKeyId = entry.apiKeyId || entry.apiKey || "local-no-key";
   return {
     requestId: entry.requestId || null,
     timestamp: entry.timestamp,
     model: entry.model,
+    originalModel: routing.originalModel,
+    executedModel: routing.executedModel,
+    routing: routing.routing,
     provider: entry.provider || "",
     apiKeyId,
     userName: getUsageUserName(apiKeyId, apiKeyMaps.byId),
@@ -274,12 +279,18 @@ async function ensureRingInitialized() {
   recentRing.initialized = true;
   try {
     const db = await getAdapter();
-    const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
-    recentRing.items = rows.reverse().map((r) => ({
-      timestamp: r.timestamp, provider: r.provider, model: r.model, connectionId: r.connectionId,
-      apiKey: r.apiKey, endpoint: r.endpoint, cost: r.cost, status: r.status,
-      tokens: parseJson(r.tokens, {}),
-    }));
+    const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens, meta FROM usageHistory ORDER BY id DESC LIMIT ?`, [RING_CAP]);
+    recentRing.items = rows.reverse().map((r) => {
+      const meta = parseJson(r.meta, {}) || {};
+      return {
+        timestamp: r.timestamp, provider: r.provider, model: r.model, connectionId: r.connectionId,
+        apiKey: r.apiKey, endpoint: r.endpoint, cost: r.cost, status: r.status,
+        originalModel: meta.routing?.originalModel,
+        executedModel: meta.routing?.executedModel,
+        routing: meta.routing,
+        tokens: parseJson(r.tokens, {}),
+      };
+    });
   } catch {}
 }
 
@@ -718,6 +729,12 @@ export async function saveRequestUsage(entry) {
         appName: record.appName || null,
         userAgent: record.userAgent || null,
         sourceUrl: record.sourceUrl || null,
+        routing: normalizeModelRouting({
+          model: record.model,
+          originalModel: record.originalModel,
+          executedModel: record.executedModel,
+          routing: record.routing,
+        }).routing,
       },
     };
 
@@ -762,13 +779,17 @@ export async function getUsageHistory(filter = {}) {
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
 
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens FROM usageHistory ${where} ORDER BY id ASC`, params);
+  const rows = db.all(`SELECT timestamp, provider, model, connectionId, apiKeyId AS apiKey, endpoint, cost, status, tokens, meta FROM usageHistory ${where} ORDER BY id ASC`, params);
 
-  return rows.map((r) => ({
-    timestamp: r.timestamp, provider: r.provider, model: r.model,
-    connectionId: r.connectionId, apiKeyId: r.apiKey, endpoint: r.endpoint,
-    cost: r.cost, status: r.status, tokens: parseJson(r.tokens, {}),
-  }));
+  return rows.map((r) => {
+    const meta = parseJson(r.meta, {}) || {};
+    return {
+      timestamp: r.timestamp, provider: r.provider, model: r.model,
+      ...normalizeModelRouting({ model: r.model, provider: r.provider, routing: meta.routing }),
+      connectionId: r.connectionId, apiKeyId: r.apiKey, endpoint: r.endpoint,
+      cost: r.cost, status: r.status, tokens: parseJson(r.tokens, {}),
+    };
+  });
 }
 
 // Dashboard channel list enrichment: the most recent request time per provider
@@ -866,6 +887,7 @@ export async function getUsageDetails(filter = {}) {
         timestamp: row.timestamp,
         provider: row.provider || "unknown",
         model: row.model || "unknown",
+        ...normalizeModelRouting({ provider: row.provider, model: row.model, routing: meta.routing }),
         connectionId: row.connectionId || null,
         apiKeyId,
         keyName: getUsageUserName(apiKeyId, apiKeyMaps.byId),
@@ -964,6 +986,7 @@ function getRecentCallDetails(db, period, range, apiKeyMap, providerNodeNameMap)
       keyName: keyInfo?.name || (row.apiKey === "local-no-key" ? "Local (No API Key)" : row.apiKey?.startsWith("external:") ? "External API Key" : "Deleted API Key"),
       apiKeyMasked: keyInfo ? null : (row.apiKey?.startsWith("external:") ? "External API Key" : null),
       model: row.model || "unknown",
+      ...normalizeModelRouting({ model: row.model, routing: meta.routing }),
       provider: providerNodeNameMap[row.provider] || row.provider || "unknown",
       appName: detectSourceApp(meta),
       sourceIp: meta.sourceIp || null,

@@ -70,9 +70,19 @@ export function extractUsageFromResponse(responseBody) {
 }
 
 export function buildRequestDetail(base, overrides = {}) {
+  const originalModel = base.originalModel || base.routing?.originalModel || base.model || "unknown";
+  const executedModel = base.executedModel || base.routing?.executedModel || (base.provider && base.model ? `${base.provider}/${base.model}` : base.model) || "unknown";
+  const routing = {
+    originalModel,
+    executedModel,
+    ...(base.routing && typeof base.routing === "object" ? base.routing : {}),
+  };
   return {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
+    originalModel,
+    executedModel,
+    routing,
     connectionId: base.connectionId || undefined,
     mouse: base.mouse || undefined,
     requestId: base.requestId || undefined,
@@ -107,7 +117,7 @@ export function formatDoneLine({ usage, latency }) {
   return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
 }
 
-export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", errorStatus = null, label = "USAGE", silent = false }) {
+export function saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", errorStatus = null, label = "USAGE", silent = false }) {
   tokens = tokens && typeof tokens === "object" ? tokens : {};
 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
@@ -140,6 +150,12 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     appName: appName || null,
     userAgent: userAgent || null,
     sourceUrl: sourceUrl || null,
+    originalModel: originalModel || routing?.originalModel || model || null,
+    executedModel: executedModel || routing?.executedModel || (provider && model ? `${provider}/${model}` : model || null),
+    routing: routing || {
+      originalModel: originalModel || model || null,
+      executedModel: executedModel || (provider && model ? `${provider}/${model}` : model || null),
+    },
     status: status === "error" && errorStatus ? `error:${errorStatus}` : status,
   }).catch(() => {});
 }

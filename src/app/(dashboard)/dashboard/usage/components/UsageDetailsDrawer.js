@@ -6,6 +6,7 @@ import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { formatBytes } from "@/shared/utils/formatBytes";
 import { formatDateTime as formatDateTimeTz, toDatetimeLocalValue } from "@/shared/utils/datetime";
+import ModelRouteDisplay from "@/shared/components/ModelRouteDisplay";
 
 const fmt = (value) => new Intl.NumberFormat("zh-CN").format(value || 0);
 const fmtCost = (value) => `$${Number(value || 0).toFixed(4)}`;
@@ -331,7 +332,10 @@ export default function UsageDetailsDrawer({ isOpen, onClose, subject, initialFi
                   <tr key={detail.id} className="transition-colors hover:bg-primary/[0.025]">
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-text-muted">{formatDateTime(detail.timestamp)}</td>
                     <td className="max-w-[160px] px-4 py-3"><p className="truncate font-semibold text-text-main" title={detail.keyName}>{detail.keyName}</p></td>
-                    <td className="max-w-[240px] px-4 py-3"><p className="truncate font-semibold text-text-main" title={detail.model}>{detail.model}</p><p className="mt-0.5 truncate text-[10px] text-text-muted" title={detail.provider}>{detail.provider}</p></td>
+                    <td className="max-w-[260px] px-4 py-3">
+                      <ModelRouteDisplay record={detail} compact />
+                      <p className="mt-1 truncate text-[10px] text-text-muted" title={detail.provider}>{detail.provider}</p>
+                    </td>
                     <td className="max-w-[300px] px-4 py-3">
                       {detail.userPrompt
                         ? <p className="line-clamp-2 break-words text-[11px] text-text-main" title={detail.userPrompt}>{detail.userPrompt}</p>

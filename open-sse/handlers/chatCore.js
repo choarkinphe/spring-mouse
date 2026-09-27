@@ -30,6 +30,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { createModelRouting } from "@/shared/utils/modelRouting.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -65,6 +66,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // WARN lines emitted upstream all share one identifier. Callers that do not
   // supply one (open-sse consumers, tests) keep the previous behaviour.
   const requestId = incomingRequestId || randomUUID();
+  const originalModel = clientRawRequest?.body?.model || body?.model || null;
+  const routing = createModelRouting({ originalModel, provider, model });
   const trafficRequestId = clientRawRequest?.headers?.["x-sm-traffic-request-id"] || clientRawRequest?.headers?.["X-Sm-Traffic-Request-Id"] || null;
   const startedAt = new Date(requestStartTime).toISOString();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -95,6 +98,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     provider,
     model,
     connectionId,
+    originalModel: routing.originalModel,
+    executedModel: routing.executedModel,
+    routing,
     apiKey,
     endpoint: clientRawRequest?.endpoint || null,
     sourceIp: clientRawRequest?.sourceIp || null,
@@ -473,6 +479,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY);
     if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
+      originalModel: routing.originalModel,
+      executedModel: routing.executedModel,
+      routing,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -553,6 +562,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     saveFailedUsage("upstream", statusCode);
     if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
+      originalModel: routing.originalModel,
+      executedModel: routing.executedModel,
+      routing,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -577,7 +589,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
   const captureRequestDetails = !internalRequest;
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
+  const sharedCtx = { provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 

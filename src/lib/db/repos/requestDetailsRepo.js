@@ -1,6 +1,7 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { compactJsonField, extractUserPrompt } from "@/lib/requestDetailCompact.js";
+import { normalizeModelRouting } from "@/shared/utils/modelRouting.js";
 
 // Row-count backstop for requestDetails. Age-based retention
 // (DEFAULT_RETENTION_DAYS below) is the primary lever; this only stops runaway
@@ -112,11 +113,22 @@ function prepareRecord(item, config) {
   // read it as a plain column instead of parsing every row's JSON.
   const userPrompt = extractUserPrompt(request);
 
+  const routing = normalizeModelRouting({
+    provider: item.provider,
+    model: item.model,
+    originalModel: item.originalModel,
+    executedModel: item.executedModel,
+    routing: item.routing,
+  });
+
   return {
     id: item.id || generateDetailId(item.model),
     requestId: item.requestId || null,
     provider: item.provider || null,
     model: item.model || null,
+    originalModel: routing.originalModel,
+    executedModel: routing.executedModel,
+    routing: routing.routing,
     connectionId: item.connectionId || null,
     mouse: item.mouse || undefined,
     timestamp: item.timestamp || new Date().toISOString(),
@@ -292,13 +304,18 @@ export async function getRequestDetailByRequestId(requestId) {
   const byRequestId = db.get(`SELECT data FROM requestDetails WHERE json_extract(data, '$.requestId') = ? LIMIT 1`, [requestId]);
   if (byRequestId) return parseJson(byRequestId.data, null);
 
-  const usage = db.get(`SELECT timestamp, startedAt, completedAt, provider, model, connectionId FROM usageHistory WHERE requestId = ? LIMIT 1`, [requestId]);
+  const usage = db.get(`SELECT timestamp, startedAt, completedAt, provider, model, connectionId, meta FROM usageHistory WHERE requestId = ? LIMIT 1`, [requestId]);
   if (!usage) return null;
+  const usageMeta = parseJson(usage.meta, {}) || {};
+  const routing = normalizeModelRouting({ provider: usage.provider, model: usage.model, routing: usageMeta.routing });
   return {
     id: requestId,
     timestamp: usage.timestamp,
     provider: usage.provider,
     model: usage.model,
+    originalModel: routing.originalModel,
+    executedModel: routing.executedModel,
+    routing: routing.routing,
     connectionId: usage.connectionId,
     status: "usage-only",
     latency: {

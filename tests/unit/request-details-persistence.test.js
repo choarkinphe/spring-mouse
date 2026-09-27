@@ -18,6 +18,12 @@ describe("requestDetails persistence", () => {
       const base = {
         provider: "deepseek",
         model: "deepseek-v4-flash",
+        originalModel: "balanced",
+        executedModel: "deepseek/deepseek-v4-flash",
+        routing: {
+          originalModel: "balanced",
+          executedModel: "deepseek/deepseek-v4-flash",
+        },
         connectionId: "conn-1",
         timestamp: new Date().toISOString(),
         status: "success",
@@ -41,6 +47,14 @@ describe("requestDetails persistence", () => {
       expect(detail?.providerRequest?.model).toBe("upstream");
       expect(detail?.providerRequest?.padding?.length).toBe(10000);
       expect(detail?.response?.content).toBe("world");
+      expect(detail).toEqual(expect.objectContaining({
+        originalModel: "balanced",
+        executedModel: "deepseek/deepseek-v4-flash",
+        routing: {
+          originalModel: "balanced",
+          executedModel: "deepseek/deepseek-v4-flash",
+        },
+      }));
     } finally {
       const { getAdapter } = await import("../../src/lib/db/driver.js");
       const db = await getAdapter().catch(() => null);

@@ -117,6 +117,18 @@ export function isLaterTimestamp(candidate, current) {
   return new Date(candidate) > new Date(current);
 }
 
+export function normalizeModelRouting(record = {}) {
+  const routing = record.routing && typeof record.routing === "object" ? record.routing : {};
+  const clean = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
+  const provider = clean(record.provider);
+  const model = clean(record.model);
+  const originalModel = clean(record.originalModel) || clean(routing.originalModel) || model;
+  const executedModel = clean(record.executedModel)
+    || clean(routing.executedModel)
+    || (provider && model ? `${provider}/${model}` : model)
+    || originalModel;
+  return { originalModel, executedModel, routing: { originalModel, executedModel } };
+}
 export function getUsageApiKeyFilter(range = {}, column = "apiKeyId") {
   const scopedApiKeyIds = Array.isArray(range.apiKeyIds)
     ? [...new Set(range.apiKeyIds.filter((id) => typeof id === "string" && id))]
@@ -402,6 +414,7 @@ export function getRecentCallDetails(adapter, period, range, apiKeyMap, provider
       keyName: keyInfo?.name || (row.apiKey === "local-no-key" ? "Local (No API Key)" : row.apiKey?.startsWith("external:") ? "External API Key" : "Deleted API Key"),
       apiKeyMasked: keyInfo ? null : (row.apiKey?.startsWith("external:") ? "External API Key" : null),
       model: row.model || "unknown",
+      ...normalizeModelRouting({ model: row.model, provider: row.provider, routing: meta.routing }),
       provider: providerNodeNameMap[row.provider] || row.provider || "unknown",
       appName: detectSourceApp(meta),
       sourceIp: meta.sourceIp || null,
@@ -428,15 +441,17 @@ export function buildRecentRequests(adapter, range, apiKeyMap) {
   const usageApiKeyFilter = getUsageApiKeyFilter(range);
   const scopedWhere = usageApiKeyFilter.clause ? ` WHERE ${usageApiKeyFilter.clause}` : "";
   const recentRows = adapter.all(
-    `SELECT timestamp, provider, model, apiKeyId, tokens, status FROM usageHistory${scopedWhere} ORDER BY id DESC LIMIT 100`,
+    `SELECT timestamp, provider, model, apiKeyId, tokens, status, meta FROM usageHistory${scopedWhere} ORDER BY id DESC LIMIT 100`,
     usageApiKeyFilter.params,
   );
   const seen = new Set();
   return recentRows
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
+      const meta = parseJson(r.meta, {}) || {};
+      const routing = normalizeModelRouting({ model: r.model, provider: r.provider, routing: meta.routing });
       return {
-        timestamp: r.timestamp, model: r.model, provider: r.provider || "",
+        timestamp: r.timestamp, model: r.model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing: routing.routing, provider: r.provider || "",
         apiKeyId: r.apiKeyId || "local-no-key",
         userName: getUsageUserName(r.apiKeyId || "local-no-key", apiKeyMap),
         promptTokens: t.prompt_tokens || t.input_tokens || 0,

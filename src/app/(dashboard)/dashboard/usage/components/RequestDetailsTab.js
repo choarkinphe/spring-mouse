@@ -8,6 +8,7 @@ import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { formatDateTime } from "@/shared/utils/datetime";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import ModelRouteDisplay from "@/shared/components/ModelRouteDisplay";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -359,8 +360,8 @@ export default function RequestDetailsTab() {
                     <td className="whitespace-nowrap p-4 text-sm text-text-main">
                       {formatDateTime(detail.timestamp)}
                     </td>
-                    <td className="max-w-[260px] truncate p-4 font-mono text-sm text-text-main">
-                      {detail.model}
+                    <td className="max-w-[280px] p-4">
+                      <ModelRouteDisplay record={detail} />
                     </td>
                     <td className="max-w-[180px] truncate p-4 text-sm text-text-main">
                        <span className="font-medium">
@@ -432,12 +433,16 @@ export default function RequestDetailsTab() {
                 <span className="text-text-main">{formatDateTime(selectedDetail.timestamp)}</span>
               </div>
               <div>
-                 <span className="text-text-muted">Provider:</span>{" "}
-                 <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
-               </div>
+                <span className="text-text-muted">Original request model:</span>{" "}
+                <span className="break-all font-mono text-primary">{selectedDetail.originalModel || selectedDetail.routing?.originalModel || selectedDetail.model || "—"}</span>
+              </div>
               <div>
-                <span className="text-text-muted">Model:</span>{" "}
-                <span className="text-text-main font-mono">{selectedDetail.model}</span>
+                <span className="text-text-muted">Executed model:</span>{" "}
+                <span className="break-all font-mono text-text-main">{selectedDetail.executedModel || selectedDetail.routing?.executedModel || selectedDetail.model || "—"}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">Provider:</span>{" "}
+                <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
               </div>
               <div>
                 <span className="text-text-muted">Status:</span>{" "}

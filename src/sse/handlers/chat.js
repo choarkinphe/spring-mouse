@@ -50,7 +50,15 @@ function resolveComboRoutingModels(entries, requiredCapabilities, capabilities) 
   return { models: resolved.models.map((model) => byModel.get(model) || model) };
 }
 
-async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, autoRoutingDepth = 0 }) {
+function withOriginalModelContext(clientRawRequest, originalModel) {
+  if (!clientRawRequest || !originalModel) return clientRawRequest;
+  const rawBody = clientRawRequest.body && typeof clientRawRequest.body === "object" ? clientRawRequest.body : {};
+  return rawBody.model === originalModel
+    ? clientRawRequest
+    : { ...clientRawRequest, body: { ...rawBody, model: originalModel } };
+}
+
+async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest = null, autoRoutingDepth = 0 }) {
   const config = normalizeAutoRoutingConfig(comboConfig?.autoRouting);
   const classifierConfig = autoRoutingDepth >= 2 || config.classifierModel === comboName
     ? { ...config, classifierModel: "" }
@@ -64,7 +72,7 @@ async function applyAutoRouting({ body, entries, comboConfig, comboName, require
     callModel: (classifierBody, classifierModel, classifierSignal) => handleSingleModelChat(
       classifierBody,
       classifierModel,
-      null,
+      withOriginalModelContext(clientRawRequest, comboName),
       request,
       apiKey,
       accessTags,
@@ -183,7 +191,7 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboConfig = comboStrategies[modelStr] || {};
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
     const routedEntries = comboStrategy === "auto"
-      ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, requiredCapabilities, request, overloadDeadline, log })
+      ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest })
       : resolved.models;
     const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
@@ -261,6 +269,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       completedAt: new Date().toISOString(),
       provider: modelInfo.provider || null,
       model: modelInfo.model || null,
+      originalModel: clientRawRequest?.body?.model || body?.model || modelStr || null,
+      executedModel: modelInfo.provider && modelInfo.model
+        ? `${modelInfo.provider}/${modelInfo.model}`
+        : modelInfo.model || null,
+      routing: {
+        originalModel: clientRawRequest?.body?.model || body?.model || modelStr || null,
+        executedModel: modelInfo.provider && modelInfo.model
+          ? `${modelInfo.provider}/${modelInfo.model}`
+          : modelInfo.model || null,
+      },
       connectionId: null,
       apiKey,
       endpoint,
@@ -288,7 +306,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboConfig = comboStrategies[modelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       const routedEntries = comboStrategy === "auto"
-        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, autoRoutingDepth })
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, autoRoutingDepth })
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 

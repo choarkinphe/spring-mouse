@@ -1,5 +1,5 @@
 // Stream handler with disconnect detection - shared for all providers
-import { STREAM_STALL_TIMEOUT_MS, STREAM_STALL_CHECK_INTERVAL_MS } from "../config/runtimeConfig.js";
+import { STREAM_STALL_TIMEOUT_MS, STREAM_STALL_CHECK_INTERVAL_MS, STREAM_VISIBLE_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 // Get HH:MM:SS timestamp
@@ -194,11 +194,17 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, diag = null) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, diag = null, visibleStallTimeoutMs = STREAM_VISIBLE_STALL_TIMEOUT_MS) {
   let stallCheckTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
   let lastChunkAt = Date.now();
+  // Last time the CLIENT received a byte (updated by the tap after the transform),
+  // and whether it has received one at all. The upstream clock above cannot see a
+  // turn that streams megabytes the translator buffers into nothing, so the client
+  // clock is what the real failure is measured against.
+  let lastVisibleAt = 0;
+  let sawVisible = false;
   const t0 = Date.now();
   const tag = "STREAM";
   const clearStall = () => {
@@ -212,6 +218,26 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   const checkStall = () => {
     stallCheckTimer = null;
     const now = Date.now();
+    // Client-visible starvation: bytes ARE arriving from upstream but not reaching
+    // the client. Only armed after the first visible byte — a slow START is the
+    // upstream watchdog's job, and bounding it here would abort legitimate slow
+    // starts. See STREAM_VISIBLE_STALL_TIMEOUT_MS for the measured numbers.
+    if (sawVisible) {
+      const visibleGap = now - lastVisibleAt;
+      if (visibleGap > visibleStallTimeoutMs) {
+        const msg = `client starved for ${visibleGap}ms (limit ${visibleStallTimeoutMs}ms) while upstream kept sending (chunks=${chunkCount} bytes=${totalBytes})`;
+        dbg(tag, `VISIBLE STALL TIMEOUT | ${msg}`);
+        // `diag.log` routes through errorLine, which ignores LOG_LEVEL — without it
+        // this fires silently under the production WARN level.
+        diag?.log?.(`VISIBLE STALL TIMEOUT | ${msg}`);
+        clearStall();
+        const err = new Error(`Upstream stream starved the client: ${msg}`);
+        err.code = "UPSTREAM_VISIBLE_STALL";
+        streamController.handleError?.(err);
+        streamController.abort?.();
+        return;
+      }
+    }
     const gap = now - lastChunkAt;
     if (gap > stallTimeoutMs) {
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms`);
@@ -219,10 +245,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
       stallCheckTimer = null;
-    } else {
-      stallCheckTimer = setTimeout(checkStall, STREAM_STALL_CHECK_INTERVAL_MS);
-      stallCheckTimer.unref?.();
+      return;
     }
+    stallCheckTimer = setTimeout(checkStall, STREAM_STALL_CHECK_INTERVAL_MS);
+    stallCheckTimer.unref?.();
   };
 
   const armStall = () => {
@@ -270,7 +296,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   let visibleChunks = 0;
   let visibleBytes = 0;
   let firstVisibleAt = 0;
-  let lastVisibleAt = 0;
+  let lastDiagVisibleAt = 0;
   let maxVisibleGapMs = 0;
   let diagEmitted = false;
   const emitDiag = (outcome) => {
@@ -303,12 +329,16 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
   });
 
-  // Counts client-visible output. Diagnostic only — see the note above.
+  // Counts client-visible output. Feeds both the diagnostic below and the visible
+  // stall watchdog: this is the only tap that can tell "the client is receiving"
+  // from "the upstream is sending".
   const visibleTap = new TransformStream({
     transform(chunk, controller) {
       const sz = chunk?.byteLength || chunk?.length || 0;
       if (sz > 0) {
         const now = Date.now();
+        sawVisible = true;
+        lastVisibleAt = now;
         visibleChunks++;
         visibleBytes += sz;
         if (!firstVisibleAt) firstVisibleAt = now;
@@ -318,9 +348,9 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
         // above, so it has to come from the VISIBLE tap — the upstream tap's gaps
         // are meaningless here, since the upstream keeps streaming while the client
         // sees nothing.
-        const gap = now - (lastVisibleAt || t0);
+        const gap = now - (lastDiagVisibleAt || t0);
         if (gap > maxVisibleGapMs) maxVisibleGapMs = gap;
-        lastVisibleAt = now;
+        lastDiagVisibleAt = now;
       }
       controller.enqueue(chunk);
     },

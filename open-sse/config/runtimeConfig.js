@@ -56,6 +56,29 @@ export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search")
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
 export const STREAM_STALL_CHECK_INTERVAL_MS = 1000;
 
+// How long the CLIENT may go without a byte, once it has received its first one,
+// before the turn is abandoned.
+//
+// The upstream-byte watchdog above cannot see this failure: a Codex turn can keep
+// streaming megabytes of tool-call frames for minutes while the translator buffers
+// them and the client receives almost nothing. Measured on production, the failing
+// turns look like this —
+//
+//   healthy  up_bytes=3380375  vis_bytes=1248307  max_gap_ms=7022
+//   stalled  up_bytes=3513304  vis_bytes=415      (client: "2 stream events
+//                                                   received, none in the final
+//                                                   300004 ms")
+//
+// — so the upstream is busy while the client is starved, and every byte-based
+// upstream timer is reset by the traffic it cannot use. 60s sits ~8x above the
+// longest gap a healthy turn showed and well below the client's own ~300s
+// patience, so the gateway gives up first and can still rotate to another account.
+//
+// It deliberately applies ONLY after the first visible byte: a turn that is slow to
+// produce anything is already covered by the upstream watchdog, and bounding that
+// phase here would abort legitimately slow starts.
+export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEOUT_MS", 60 * 1000);
+
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 

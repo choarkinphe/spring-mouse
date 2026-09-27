@@ -5,15 +5,55 @@ import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
-import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { ROLE, RESPONSES_ITEM, CLAUDE_STOP } from "../../translator/schema/index.js";
 import { extractUsage, mergeUsage } from "../../utils/usageTracking.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
 import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
 
-function textFromResponsesMessageItem(item) {
-  if (!item?.content || !Array.isArray(item.content)) return "";
+/**
+ * Build a Claude `Message` from a completed Responses-API turn.
+ *
+ * A Claude client hitting a forced-streaming provider (Codex) used to fall through
+ * to the OpenAI ChatCompletion shape, so the caller rejected an otherwise valid 200
+ * with "body is JSON but not a Message". The block shape here mirrors what the
+ * streaming translator emits (`openai-to-claude.js`), so a non-streaming and a
+ * streaming caller see the same structure.
+ */
+function buildClaudeMessage({ jsonResponse, textContent, toolCalls, usage, model }) {
+  const content = [];
+  if (textContent) content.push({ type: "text", text: textContent });
+  for (const call of toolCalls || []) {
+    let input = {};
+    try { input = JSON.parse(call.function?.arguments || "{}"); } catch { input = {}; }
+    content.push({ type: "tool_use", id: call.id, name: call.function?.name, input });
+  }
+
+  // Claude reports cached tokens in its own fields rather than folding them into
+  // input_tokens, so a cache-heavy turn does not look like a huge prompt.
+  const cacheRead = usage.cache_read_input_tokens || usage.cached_tokens || 0;
+  const cacheCreate = usage.cache_creation_input_tokens || 0;
+  const inputTokens = (usage.input_tokens || 0) + cacheRead + cacheCreate;
+
+  return {
+    id: jsonResponse.id || `msg_${Date.now()}`,
+    type: "message",
+    role: ROLE.ASSISTANT,
+    model: jsonResponse.model || model,
+    content,
+    stop_reason: (toolCalls || []).length > 0 ? CLAUDE_STOP.TOOL_USE : CLAUDE_STOP.END_TURN,
+    stop_sequence: null,
+    usage: {
+      input_tokens: inputTokens,
+      output_tokens: usage.output_tokens || 0,
+      ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
+      ...(cacheCreate > 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+    },
+  };
+}
+
+function textFromResponsesMessageItem(item) {  if (!item?.content || !Array.isArray(item.content)) return "";
   const byType = item.content.find((c) => c.type === "output_text");
   if (typeof byType?.text === "string") return byType.text;
   const anyText = item.content.find((c) => typeof c.text === "string");
@@ -339,6 +379,15 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
             responseId: jsonResponse.id || `resp_${Date.now()}`
           }
         };
+      } else if (sourceFormat === FORMATS.CLAUDE) {
+        // A Claude client (an Anthropic-format caller behind a forced-streaming
+        // provider) must receive a Message, not an OpenAI ChatCompletion. Without
+        // this branch it fell through to the OpenAI shape below, so the client
+        // rejected a perfectly good 200 with "body is JSON but not a Message" —
+        // which is what a Codex (forceStream) channel produced for every
+        // non-streaming /v1/messages request, while a plain openai-format channel
+        // (deepseek) never took this path at all and looked healthy.
+        finalResp = buildClaudeMessage({ jsonResponse, textContent, toolCalls, usage, model });
       } else {
         const message = { role: "assistant", content: textContent || (hasToolCalls ? null : "") };
         if (hasToolCalls) message.tool_calls = toolCalls;

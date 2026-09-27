@@ -17,7 +17,7 @@ are easy to forget; this README is the checklist.
 | `sm-clean-requestlogs.sh` | production host | `/usr/local/bin/` | root crontab, every 5 min |
 | `sm-scan-dumps.sh` | inside the container | `/app/data/sm-tools/` (bind-mounted from `<deploy>/data/sm-tools/`) | called by `sm-overload-monitor.sh` |
 | `sm-query.js` | inside the container | `/app/data/sm-tools/` | ad hoc: `sm-q.sh recent N` / `errors N` / `overload N` |
-| `sm-idle-watchdog-monitor.sh` | production host | `/tmp/` (ad hoc) | the session's idle-watchdog watch task (every 30 min) |
+| `sm-stream-diag-collect.sh` | production host | `/tmp/` (ad hoc) | the session's stream-diagnostic collector (every 30 min) |
 
 ## Why each exists
 **`sm-overload-monitor.sh`** — one ssh round-trip that prints a single JSON line
@@ -51,20 +51,39 @@ gateway retried; a hit in 7 means it escaped. It matches the **error-frame
 structure** (`"code":"server_is_overloaded"`), not the bare phrase — a debugging
 conversation that merely quotes the message would otherwise register as a hit.
 
-**`sm-idle-watchdog-monitor.sh`** — watches the Codex forced-streaming idle
-watchdog (the fix for a turn that goes silent mid-stream). Read-only.
+**`sm-stream-diag-collect.sh`** — collects the measurement that three failed fixes
+never took: **upstream bytes vs client-visible bytes** for every Codex turn that
+ran past 60s. Read-only; it watches no fix.
 
-The signal is `STALL TIMEOUT` in `docker logs`, emitted through `errorLine` so it
-survives the production `LOG_LEVEL=WARN`. What to read from it:
+Background: a Codex turn can run past 300s and end as `cancelled` with the
+request-detail row still holding the `[Streaming in progress...]` placeholder and
+`ttft=0`. That looked like "the upstream went silent", so a stall timer was added
+to the streaming pipe — but it never fired. It then looked like "the wrong path",
+so an idle watchdog was added to the forced-streaming read — it never fired
+either. Both were falsified, because the evidence contradicted itself: the record
+said nothing was produced, while the dumps showed hundreds of KB of metadata
+frames arriving the whole time.
 
-- **Fired at ~170s** — the watchdog cut off a silent upstream. Healthy: the client
-  gets a 503 and the combo rotates, instead of hanging until its own 180s timeout.
-- **Fired frequently** — the upstream account problem is still live; the watchdog
-  is containing it, not fixing it. The account panel is where to look next.
-- **Stuck turns still ending at 300s+ with NO `STALL TIMEOUT`** — the watchdog is
-  NOT on the path those requests take, which is exactly the mistake an earlier
-  attempt made (it tuned the streaming pipe's timer, but a non-streaming client
-  behind a `forceStream` provider goes through `handleForcedSSEToJson` instead).
+The missing measurement is the pair. The two taps log through `errorLine` (so they
+survive `LOG_LEVEL=WARN`) and only for turns past 60s:
+
+| `up_bytes` | `vis_bytes` | reading |
+|---|---|---|
+| large | **tiny** | stalled — the transform produced almost nothing |
+| large | large | healthy, merely slow |
+| tiny | tiny | upstream genuinely silent |
+
+First production samples already split the two shapes at the same upstream volume
+(~714KB): `codex/gpt-6-astra` converted it to **10KB** for the client, while
+`glm-cn/glm-5.3-flash` converted it to **700KB**. Note `first_vis_ms=16` on the
+first — the client gets a `message_start` almost immediately, which is why any
+"no output yet" watchdog is satisfied and never fires. The signal is the RATIO,
+not the presence or absence of bytes.
+
+> Historical note: the `STALL TIMEOUT` signal (and the watchdog that emitted it)
+> belonged to a fix that was reverted — it never fired on the real failure, because
+> the upstream keeps sending metadata frames and any byte-based timer is reset by
+> them. Do not read a quiet `STALL TIMEOUT` as "healthy".
 
 Timestamps: the DB stores ISO-8601 UTC with a `T` separator, while SQLite's
 `datetime()` emits a SPACE. Comparing them as strings is wrong (`'T'` > `' '`), so

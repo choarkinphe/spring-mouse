@@ -407,12 +407,22 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   };
   const streamController = createStreamController({
     onDisconnect: (reason) => {
+      // A streaming attempt is settled by the stream pipeline, not by chat.js. If
+      // the client goes away before the stream terminates, that settle never
+      // happens and the attempt row would sit at outcome=unknown forever. Settle
+      // it here as a cancellation; the wrapper is once-only and prefers an
+      // already-recorded protocol terminal, so a normal completion is untouched.
+      try { routingObserver?.settleCancelled?.({ terminalReason: "client_abort" }); } catch { /* telemetry is fail-open */ }
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       saveFailedUsage("cancelled");
       finishRequest();
       if (onDisconnect) onDisconnect(reason);
     },
     onError: (error) => {
+      try {
+        if (error?.name === "AbortError") routingObserver?.settleCancelled?.({ terminalReason: "client_abort" });
+        else routingObserver?.settleFailed?.({ terminalReason: "stream_error" });
+      } catch { /* telemetry is fail-open */ }
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       finishRequest();

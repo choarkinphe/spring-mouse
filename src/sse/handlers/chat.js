@@ -587,7 +587,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     });
     attempt.bindResponse(result.response);
     if (result.success) {
-      attempt.complete(attemptTerminalFromResult(result));
+      // A streaming result is a LAZY body: nothing has been read yet, so its
+      // ttft/duration/usage do not exist and `attemptTerminalFromResult` would
+      // latch durationMs=0, ttftMs=0 and null tokens — permanently, because the
+      // session's complete() is first-wins. The stream pipeline settles the
+      // attempt itself, once the stream actually terminates and it has the real
+      // numbers (open-sse/utils/stream.js settleObserver). Non-streaming results
+      // are already fully read, so they settle here as before.
+      if (!result.streaming) attempt.complete(attemptTerminalFromResult(result));
       return result.response;
     }
     if (request?.signal?.aborted || result.status === 499) {

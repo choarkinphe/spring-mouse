@@ -124,6 +124,11 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   return {
     success: true,
+    // The body is a LAZY stream: not one byte has been read at this point, so the
+    // attempt's ttft/duration/usage do not exist yet. This marker tells the caller
+    // (chat.js) not to settle the attempt from this result — the stream pipeline
+    // settles it once the stream actually terminates (open-sse/utils/stream.js).
+    streaming: true,
     response: new Response(transformedBody, { headers: SSE_HEADERS })
   };
 }

@@ -61,6 +61,9 @@ jobs:
           unit/request-details-retention.test.js
           unit/retention-settings.test.js
           unit/realtime-time-filter.test.js
+          unit/chat-routing-telemetry.test.js
+          unit/streaming-attempt-settlement.test.js
+          unit/chatcore-stream-settle-hooks.test.js
 
   build:
     needs: test

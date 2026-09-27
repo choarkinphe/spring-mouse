@@ -417,6 +417,62 @@ describe("chat routing telemetry lifecycle", () => {
     }
   });
 
+  it("does not settle a streaming attempt from the lazy success result", async () => {
+    // handleStreamingResponse returns `{ success: true, streaming: true, response }`
+    // where response is a LAZY ReadableStream — not one byte has been read, so the
+    // attempt's ttft/duration/usage do not exist yet. chat.js used to call
+    // attempt.complete(attemptTerminalFromResult(result)) here. Because the
+    // session's complete() is first-wins, that latched durationMs=0/ttftMs=0/null
+    // tokens and DISCARDED the real numbers the stream computes moments later.
+    // Production showed it: 165/165 stream attempts at durationMs=0 while
+    // completedAt-startedAt ranged 1.6s-79.7s.
+    //
+    // The settle must come from the stream pipeline (open-sse/utils/stream.js),
+    // so after handleChat returns there must be NO attempt completion yet.
+    mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
+    mocks.handleChatCore.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { success: true, streaming: true, response: new Response("sse", { status: 200 }) };
+    });
+
+    await handleChat(request());
+    await flush();
+
+    expect(attemptCompletes()).toHaveLength(0);
+  });
+
+  it("records the stream's real duration and tokens, not the dispatch placeholder", async () => {
+    mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
+    let observer = null;
+    mocks.handleChatCore.mockImplementation(async (opts) => {
+      observer = opts.routingObserver;
+      // Give the request a measurable age so a dispatch-time placeholder (≈0)
+      // is distinguishable from the stream's real duration.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { success: true, streaming: true, response: new Response("sse", { status: 200 }) };
+    });
+
+    await handleChat(request());
+    await flush();
+
+    // The attempt is still open; now drive it exactly as stream.js does when the
+    // upstream stream actually terminates.
+    expect(attemptCompletes()).toHaveLength(0);
+    observer.noteFirstToken();
+    observer.recordTerminal({ outcome: "valid_terminal", terminalReason: "terminal" });
+    observer.settle({ upstreamStatus: 200, usage: { prompt_tokens: 11, completion_tokens: 7 } });
+    await flush();
+
+    expect(attemptCompletes()).toHaveLength(1);
+    const complete = attemptCompletes()[0].record;
+    expect(complete.outcome).toBe("valid_terminal");
+    // The numbers the report consumes must come from the stream, and must not be
+    // the zeroed placeholder the early complete() used to latch.
+    expect(complete.durationMs).toBeGreaterThanOrEqual(50);
+    expect(complete.promptTokens).toBe(11);
+    expect(complete.completionTokens).toBe(7);
+  });
+
   it("does not throw when the producer rejects an event (fail-open)", async () => {
     mocks.enqueueRoutingEvent.mockImplementation(() => { throw new Error("producer exploded"); });
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));

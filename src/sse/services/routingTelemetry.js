@@ -58,6 +58,7 @@ function enumValue(set, value, fallback) {
 }
 
 function nonNegative(value) {
+  if (value === undefined || value === null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
 }

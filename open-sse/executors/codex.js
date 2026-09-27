@@ -705,6 +705,19 @@ export class CodexExecutor extends BaseExecutor {
     const preambleDeadline = CODEX_SSE_PREAMBLE_MS > 0
       ? Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline, scanDeadline)
       : Math.min(requestDeadline, scanDeadline);
+    // Which of the three time bounds a PRE-OUTPUT stop would be attributed to,
+    // resolved ONCE from the deadlines themselves. This is deliberately not a
+    // `Date.now() >= scanDeadline` test at the stop site: the wait is
+    // `min(remainingMs, scanDeadline - now)` and a `setTimeout` may fire a
+    // millisecond EARLY, so a clock comparison mis-attributed a real production stop
+    // (both bounds 60s) to "the preamble phase bound" and pointed an operator at the
+    // wrong knob. The bounds are a fixed property of these three values, so the
+    // attribution is derived from them. Ties go to the ceiling, which is checked
+    // first in the loop — that keeps the shipped defaults (phase 5s, ceiling 10s, and
+    // any equal pair) deterministic.
+    const preOutputBound = preambleDeadline === scanDeadline ? "scan-ceiling"
+      : preambleDeadline === requestDeadline ? "request"
+      : "preamble";
     let stoppedOnDeadline = false;
     // Which bound actually stopped an unresolved scan: "bytes" (the byte ceiling),
     // "scan-ceiling" (CODEX_SSE_SCAN_MAX_MS), "request" (the caller's budget) or
@@ -773,15 +786,12 @@ export class CodexExecutor extends BaseExecutor {
           // This holds whichever bound expired — the preamble phase bound, the
           // caller's request deadline, or the total ceiling — because `deadline` is
           // the minimum of all three and a pre-output stop with no match is never
-          // something the client can use. (The old code tried to distinguish which
-          // bound it was via `deadline === requestDeadline`, which silently failed
-          // whenever the ceiling was the minimum and PREAMBLE_MS was 0.) Name the
-          // minimum so the caller's log line stays honest.
+          // something the client can use. The attribution comes from
+          // `preOutputBound`, resolved once from the deadlines, so the caller's log
+          // line and 503 body stay honest about which knob to tune.
           if (!outputStarted && !matched) {
             stoppedOnDeadline = true;
-            stopReason = preambleDeadline === scanDeadline ? "scan-ceiling"
-              : preambleDeadline === requestDeadline ? "request"
-              : "preamble";
+            stopReason = preOutputBound;
           }
           break;
         }
@@ -813,16 +823,18 @@ export class CodexExecutor extends BaseExecutor {
           // window closing on a healthy turn, so nothing is marked and the stream is
           // handed over below.
           //
-          // Because the pre-output `deadline` is clamped by the ceiling, the ceiling
-          // is normally what expires here — so it names itself, or an operator sees an
-          // unexplained "stopped" and cannot tell which knob to tune.
+          // Which bound expired is taken from `preOutputBound`, NOT from a clock
+          // comparison. The wait above is `min(remainingMs, scanDeadline - now)`, and
+          // a `setTimeout` may fire a millisecond EARLY — so `Date.now() >=
+          // scanDeadline` was false on a real production stop where both bounds are
+          // 60s, and the stop was mis-attributed to "the preamble phase bound". That
+          // sends an operator to the wrong knob. The bound is a fixed property of the
+          // computed deadlines, so it is derived from them instead.
           if (!outputStarted && !matched) {
-            if (Date.now() >= scanDeadline) {
+            if (preOutputBound === "scan-ceiling") {
               log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s total ceiling — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
-              stopReason = "scan-ceiling";
-            } else {
-              stopReason = deadline === requestDeadline ? "request" : "preamble";
             }
+            stopReason = preOutputBound;
             stoppedOnDeadline = true;
           }
           break; // pendingRead stays pending; handed off below

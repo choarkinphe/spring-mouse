@@ -116,21 +116,31 @@ describe("Codex SSE scan total ceiling", () => {
     expect(peek.stopReason).toBe("scan-ceiling");
   }, 15000);
 
-  it("resolves the ceiling first when the two bounds are equal (the shipped default)", async () => {
-    // Equal bounds are resolved by the total ceiling check first so the stop reason
-    // remains deterministic.
-    const executor = await executorWith({ preambleMs: 1200, scanMaxMs: 1200 });
-    const { lines, log } = logCapture();
-    const response = new Response(drippingMetadataStream(), {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
+  it("attributes an equal-bound stop to the ceiling, deterministically (not by clock)", async () => {
+    // Equal bounds are the case where "which bound fired" is genuinely ambiguous, so
+    // the attribution is derived from the computed deadlines (the ceiling wins ties)
+    // rather than from `Date.now() >= scanDeadline` at the stop site. That clock test
+    // was a real bug: the wait is `min(remainingMs, scanDeadline - now)` and
+    // `setTimeout` may fire a millisecond EARLY, so on production — where the
+    // defaults were an equal 60s/60s — a genuine ceiling stop was mis-reported as
+    // "the preamble phase bound", pointing an operator at the wrong knob.
+    //
+    // Run it several times: a clock-based attribution is a race, so a single pass
+    // could succeed by luck. A deadline-derived one is stable.
+    for (let i = 0; i < 5; i++) {
+      const executor = await executorWith({ preambleMs: 700, scanMaxMs: 700 });
+      const { lines, log } = logCapture();
+      const response = new Response(drippingMetadataStream(), {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
 
-    const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
-    expect(peek.stoppedOnDeadline).toBe(true);
-    expect(peek.stopReason).toBe("scan-ceiling");
-    expect(lines.some((m) => /total ceiling/i.test(m))).toBe(true);
-  }, 15000);
+      const peek = await executor._peekSseTransientError(response, Date.now() + 120_000, log);
+      expect(peek.stoppedOnDeadline).toBe(true);
+      expect(peek.stopReason).toBe("scan-ceiling");
+      expect(lines.some((m) => /total ceiling/i.test(m))).toBe(true);
+    }
+  }, 20000);
 
   it("does not log a ceiling stop when output has already begun (no false alarm)", async () => {
     // A healthy turn that crosses the ceiling mid-flight must NOT be reported as

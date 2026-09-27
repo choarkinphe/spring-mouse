@@ -136,11 +136,20 @@ describe("client-visible stall watchdog", () => {
   }, 15000);
 
   it("clears the widest gap a healthy turn has shown, with margin", () => {
-    // Measured on healthy production turns: min 8.2s, p50 15.4s, p90 41.2s,
-    // max 58.1s. The first bound was 60s, picked from a single 7s sample — only
-    // ~2s above the eventual maximum, which would have aborted healthy turns.
-    const WIDEST_MEASURED_HEALTHY_GAP_MS = 58_107;
-    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeGreaterThan(WIDEST_MEASURED_HEALTHY_GAP_MS * 2);
+    // The bound has been widened twice, each time because production produced a
+    // healthy turn with a gap larger than the current bound's headroom:
+    //
+    //   60s  -> from a single 7s sample, but the real distribution was
+    //           min 8.2s / p50 15.4s / p90 41.2s / max 58.1s (only ~2s headroom)
+    //   150s -> from that 58.1s max, until production logged a COMPLETED healthy
+    //           turn at max_gap_ms=121459 — 81% of the bound, ~28s headroom
+    //   200s -> 1.65x the measured maximum
+    //
+    // The lesson is in the numbers: each bound was set from the maximum seen SO FAR,
+    // and the next sample exceeded it. Keep real margin above the worst measured
+    // value rather than a few percent.
+    const WIDEST_MEASURED_HEALTHY_GAP_MS = 121_459;
+    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeGreaterThan(WIDEST_MEASURED_HEALTHY_GAP_MS * 1.5);
   });
 
   it("still fires well before the client gives up on its own", () => {

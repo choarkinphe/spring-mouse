@@ -72,18 +72,20 @@ export const STREAM_STALL_CHECK_INTERVAL_MS = 1000;
 // — so the upstream is busy while the client is starved, and every byte-based
 // upstream timer is reset by the traffic it cannot use.
 //
-// 150s, NOT 60s. The first bound was 60s, chosen against a single healthy sample
-// showing a 7s gap. A larger sample of healthy turns then showed the gap
-// distribution is far wider — min 8.2s, p50 15.4s, p90 41.2s, max 58.1s — leaving
-// only ~2s of headroom, which would have aborted healthy turns at the first
-// unlucky sample. 150s clears the measured maximum with 2.6x margin while staying
-// well below the ~300s at which clients give up, so the gateway still gives up
-// first and can rotate accounts.
+// 200s, NOT 60s or 150s. The first bound was 60s, chosen against a single healthy
+// sample showing a 7s gap; a larger sample then showed the distribution is far
+// wider (min 8.2s, p50 15.4s, p90 41.2s, max 58.1s), so it was widened to 150s.
+// Production then produced a HEALTHY COMPLETED turn with max_gap_ms=121459 — a
+// 121.5s client-side gap on a turn that finished fine, 81% of the 150s bound and
+// leaving only ~28s of headroom. A bound that close to a measured healthy value
+// will eventually abort healthy turns, so it is 200s: 1.65x the measured maximum,
+// while still well below the ~300s at which clients give up, so the gateway gives
+// up first and can still rotate accounts.
 //
 // It deliberately applies ONLY after the first visible byte: a turn that is slow to
 // produce anything is already covered by the upstream watchdog, and bounding that
 // phase here would abort legitimately slow starts.
-export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEOUT_MS", 150 * 1000);
+export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEOUT_MS", 200 * 1000);
 
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);

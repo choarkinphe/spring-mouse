@@ -565,7 +565,7 @@ export class CodexExecutor extends BaseExecutor {
       doneFetch();
       doneFetch();
       const donePeek = diagStage(`peekSseTransientError (attempt ${attempt + 1})`);
-      const peek = await this._peekSseTransientError(result.response, deadline);
+      const peek = await this._peekSseTransientError(result.response, deadline, args.log);
       donePeek();
       if (!peek.matched) {
         // The scan stopped because the caller's deadline ran out without resolving
@@ -647,7 +647,13 @@ export class CodexExecutor extends BaseExecutor {
   // Peek first N bytes of SSE body to detect upstream transient errors.
   // Returns { matched: string|null, message: string|null, accountFallback: boolean, replacementBody: ReadableStream|null }.
   // Caller must use replacementBody when no error matched (original body has been read).
-  async _peekSseTransientError(response, requestDeadline = Infinity) {
+  //
+  // `log` is threaded in explicitly: this method runs OUTSIDE execute()'s scope, so a
+  // bare `args.log` here is a ReferenceError. That is not cosmetic — the backstop's
+  // log line sits immediately before its `break`, so a throw would be swallowed by the
+  // catch below and the scan would fall through to hand the client the very unresolved
+  // stream the backstop exists to stop.
+  async _peekSseTransientError(response, requestDeadline = Infinity, log = null) {
     if (!response || !response.ok || !response.body) return { matched: null, message: null, accountFallback: false, replacementBody: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -723,7 +729,7 @@ export class CodexExecutor extends BaseExecutor {
         // stop is reported as unresolved. Folding the backstop into `deadline` would
         // make those comparisons always false and silently drop the 503.
         if (Date.now() >= scanDeadline) {
-          args.log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+          log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
           if (!outputStarted && !matched) stoppedOnDeadline = true;
           break;
         }
@@ -769,6 +775,18 @@ export class CodexExecutor extends BaseExecutor {
           // answers 503 instead of forwarding a stream that will hang.
           // (See the matching note on the `remainingMs <= 0` branch above for why the
           // preamble's own bound counts, and why PREAMBLE_MS=0 is the opt-out.)
+          //
+          // The race above waits on the SMALLER of the phase deadline and the backstop,
+          // so when the backstop is the tighter one it is what fired — and it must say
+          // so here. The backstop's own check sits at the TOP of the loop, which this
+          // `break` skips, so without this line a backstop stop would be logged as an
+          // unexplained "stoppedOnDeadline" and an operator could not tell which bound
+          // to tune. (Under the shipped defaults the preamble bound is tighter, so this
+          // line is silent and the backstop log above is the dead one — that asymmetry
+          // is what a bare "backstop=0" in the log actually means.)
+          if (Date.now() >= scanDeadline) {
+            log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+          }
           if (!outputStarted && !matched
             && (CODEX_SSE_PREAMBLE_MS > 0 || deadline === requestDeadline)) stoppedOnDeadline = true;
           break; // pendingRead stays pending; handed off below

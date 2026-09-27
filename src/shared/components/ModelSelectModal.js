@@ -36,6 +36,7 @@ export default function ModelSelectModal({
   addedModelValues = [],
   closeOnSelect = true,
   availableModelsOnly = false,
+  directModelsOnly = false,
   presentation = "modal",
   drawerWidth = "lg",
 }) {
@@ -501,11 +502,11 @@ export default function ModelSelectModal({
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {
-    if (kindFilter || capFilter) return [];
+    if (directModelsOnly || kindFilter || capFilter) return [];
     if (!searchQuery.trim()) return combos;
     const query = searchQuery.toLowerCase();
     return combos.filter(c => c.name.toLowerCase().includes(query));
-  }, [combos, searchQuery, kindFilter, capFilter]);
+  }, [combos, searchQuery, kindFilter, capFilter, directModelsOnly]);
 
   // Filter models by search query
   const filteredGroups = useMemo(() => {
@@ -519,6 +520,14 @@ export default function ModelSelectModal({
     const filtered = {};
     Object.entries(groupedModels).forEach(([providerId, group]) => {
       let models = group.models;
+      if (directModelsOnly) {
+        models = models.filter(
+          (model) =>
+            !model.isPlaceholder &&
+            /^[^/\s]+\/\S+$/.test(model.value || "")
+        );
+        if (models.length === 0) return;
+      }
       // Filter by input-modality capability (vision/pdf/audioInput/videoInput).
       if (capFilter) {
         models = models.filter((m) => getCaps(m.value)?.[capFilter] === true);
@@ -542,7 +551,7 @@ export default function ModelSelectModal({
     });
 
     return filtered;
-  }, [groupedModels, searchQuery, addedModelValues, capFilter, getCaps]);
+  }, [groupedModels, searchQuery, addedModelValues, capFilter, directModelsOnly, getCaps]);
 
   const handleSelect = (model) => {
     const value = model?.value || model?.name || model;
@@ -586,7 +595,9 @@ export default function ModelSelectModal({
         </span>
         <span className="min-w-0 flex-1 leading-5">
           {availableModelsOnly
-            ? "仅显示渠道同步、显式启用、自定义或已有组合启用的模型；点击添加，再次点击移除。"
+            ? directModelsOnly
+              ? "仅显示可用的直连 provider/model 分类模型。"
+              : "仅显示渠道同步、显式启用、自定义或已有组合启用的模型；点击添加，再次点击移除。"
             : "Click to add, click again to remove. Changes are saved automatically."}
         </span>
         {isRefreshingCatalog && (
@@ -723,6 +734,7 @@ ModelSelectModal.propTypes = {
   addedModelValues: PropTypes.arrayOf(PropTypes.string),
   closeOnSelect: PropTypes.bool,
   availableModelsOnly: PropTypes.bool,
+  directModelsOnly: PropTypes.bool,
   presentation: PropTypes.oneOf(["modal", "drawer"]),
   drawerWidth: PropTypes.oneOf(["sm", "md", "lg", "xl", "2xl", "full"]),
 };

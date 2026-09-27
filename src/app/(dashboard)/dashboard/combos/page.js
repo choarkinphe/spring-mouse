@@ -382,11 +382,14 @@ export default function CombosPage() {
 
       updated[comboName] = next;
 
-      await fetch("/api/settings", {
+      const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ comboStrategies: updated }),
       });
+      if (!response.ok) {
+        throw new Error(`Failed to update combo strategy: ${response.status}`);
+      }
 
       setComboStrategies(updated);
     } catch (error) {
@@ -608,6 +611,7 @@ function ComboGroupRail({ groups, strategies = {}, activeId, totalCombos, totalN
 
 function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, onUpdateModels, strategy = {}, onSetStrategy, modelAliases = {}, savingModels = false }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [showClassifierSelect, setShowClassifierSelect] = useState(false);
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [models, setModels] = useState(combo.models);
   const [scheduleError, setScheduleError] = useState(null);
@@ -621,6 +625,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   );
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
+  const classifierModel = strategy.autoRouting?.classifierModel || "";
   const isFusion = current === "fusion";
   const isActive = combo.isActive !== false;
   const roundRobinLimit = strategy.stickyRoundRobinLimit || 1;
@@ -665,6 +670,15 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
     const next = Math.max(1, base + delta);
     setRrDraft(String(next));
     if (next !== roundRobinLimit) onSetStrategy({ stickyRoundRobinLimit: next });
+  };
+
+  const updateClassifierModel = (model) => {
+    onSetStrategy({
+      autoRouting: {
+        ...(strategy.autoRouting || {}),
+        classifierModel: model,
+      },
+    });
   };
 
   const persistAccessTags = async (nextTags) => {
@@ -923,6 +937,35 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                       </div>
                     </div>
                   )}
+
+                  {selected && option.value === "auto" && (
+                    <div className="border-t border-[#38bdf8]/15 px-2 py-1.5">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="shrink-0 text-[9px] text-text-muted">分类模型</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowClassifierSelect(true)}
+                          className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-2 font-mono text-[9px] text-amber-200 transition-colors hover:border-amber-400/40 hover:bg-amber-400/[0.09]"
+                          title="选择用于判断任务复杂度的模型"
+                        >
+                          <span className="material-symbols-outlined shrink-0 text-[12px]">psychology</span>
+                          <span className="truncate">{classifierModel || "未配置，使用标准层级"}</span>
+                        </button>
+                        {classifierModel && (
+                          <button
+                            type="button"
+                            onClick={() => updateClassifierModel("")}
+                            className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
+                            title="清除分类模型"
+                            aria-label="清除分类模型"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">close</span>
+                          </button>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[8px] leading-3 text-text-muted">仅用于判断简单、普通或复杂任务，不负责生成最终回答。</p>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -993,6 +1036,24 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
 
       {showJudgeSelect && (
         <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect availableModelsOnly />
+      )}
+
+      {showClassifierSelect && (
+        <ModelSelectModal
+          isOpen={showClassifierSelect}
+          onClose={() => setShowClassifierSelect(false)}
+          onSelect={(model) => {
+            const value = model?.value || "";
+            if (value.includes("/")) updateClassifierModel(value);
+            setShowClassifierSelect(false);
+          }}
+          activeProviders={activeProviders}
+          title="选择分类模型"
+          addedModelValues={classifierModel ? [classifierModel] : []}
+          availableModelsOnly
+          directModelsOnly
+          closeOnSelect
+        />
       )}
 
       {showModelSelect && (
@@ -1224,12 +1285,10 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
 
         {showAutoTier && (
           <span
-            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-400/20 bg-amber-400/[0.07] px-1.5 py-1 text-[10px] font-medium text-amber-200"
+            className="inline-flex shrink-0 items-center rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-amber-200"
             title={`自动层级：${AUTO_TIER_LABELS[autoTier]}`}
           >
-            <span className="material-symbols-outlined text-[12px] text-amber-300">equalizer</span>
-            <span className="text-amber-300/75">自动</span>
-            <span>{AUTO_TIER_LABELS[autoTier]}</span>
+            {AUTO_TIER_LABELS[autoTier]}
           </span>
         )}
 

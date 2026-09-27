@@ -9,7 +9,7 @@
 // 22 adds the per-key request-rate override on apiKeys
 // (rpmLimit / rpmQueueMax / queueTimeoutMs).
 // The columns themselves are additive, so syncSchemaFromTables() backfills them.
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -195,6 +195,69 @@ export const TABLES = {
     },
     primaryKey: "PRIMARY KEY (scope, key)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv(scope)"],
+  },
+  routingRequests: {
+    columns: {
+      routingRequestId: "TEXT PRIMARY KEY",
+      modelCallId: "TEXT",
+      trafficRequestId: "TEXT",
+      originalModel: "TEXT",
+      endpoint: "TEXT",
+      role: "TEXT NOT NULL DEFAULT 'primary'",
+      requestType: "TEXT",
+      comboName: "TEXT",
+      strategy: "TEXT",
+      autoSource: "TEXT",
+      autoLevel: "TEXT",
+      autoConfidence: "REAL",
+      startedAt: "TEXT NOT NULL",
+      completedAt: "TEXT",
+      outcome: "TEXT NOT NULL DEFAULT 'unknown'",
+      terminalReason: "TEXT",
+      attemptCount: "INTEGER NOT NULL DEFAULT 0",
+      meta: "TEXT NOT NULL DEFAULT '{}'",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_rr_started_at ON routingRequests(startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_rr_outcome_started ON routingRequests(outcome, startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_rr_original_model_started ON routingRequests(originalModel, startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_rr_traffic_request ON routingRequests(trafficRequestId)",
+    ],
+  },
+  routingAttempts: {
+    columns: {
+      attemptId: "TEXT PRIMARY KEY",
+      routingRequestId: "TEXT NOT NULL",
+      modelCallId: "TEXT",
+      role: "TEXT NOT NULL DEFAULT 'primary'",
+      provider: "TEXT",
+      model: "TEXT",
+      connectionId: "TEXT",
+      routeIndex: "INTEGER",
+      candidateIndex: "INTEGER",
+      sourceFormat: "TEXT",
+      targetFormat: "TEXT",
+      nativePassthrough: "INTEGER NOT NULL DEFAULT 0",
+      streamMode: "TEXT",
+      startedAt: "TEXT NOT NULL",
+      completedAt: "TEXT",
+      upstreamStatus: "INTEGER",
+      outcome: "TEXT NOT NULL DEFAULT 'unknown'",
+      fallbackReason: "TEXT",
+      terminalReason: "TEXT",
+      ttftMs: "INTEGER",
+      durationMs: "INTEGER",
+      promptTokens: "INTEGER",
+      completionTokens: "INTEGER",
+      meta: "TEXT NOT NULL DEFAULT '{}'",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ra_request_started ON routingAttempts(routingRequestId, startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ra_started_at ON routingAttempts(startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ra_provider_model_started ON routingAttempts(provider, model, startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ra_connection_started ON routingAttempts(connectionId, startedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ra_role_outcome_started ON routingAttempts(role, outcome, startedAt DESC)",
+    ],
   },
   usageHistory: {
     columns: {

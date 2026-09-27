@@ -6,6 +6,7 @@ import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM, CLAUDE_STOP } from "../../translator/schema/index.js";
+import { classifyRawSSEBlock } from "../../utils/routingOutcome.js";
 import { extractUsage, mergeUsage } from "../../utils/usageTracking.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
@@ -222,7 +223,9 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, originalModel, executedModel, routing, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log, streamController, recordUsage = true }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, originalModel, executedModel, routing, routingObserver: suppliedRoutingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log, streamController, recordUsage = true }) {
+  const routingObserver = suppliedRoutingObserver || (routing && typeof routing.recordTerminal === "function" ? routing : null);
+  routingObserver?.emitHeaders({ status: providerResponse.status, sourceFormat, targetFormat, streamMode: "sse_to_json", nativePassthrough: false });
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -282,6 +285,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
     try {
       const jsonResponse = await readBody(() => convertResponsesStreamToJson(diagWrapped));
+      const rawOutcome = jsonResponse?.status === "failed"
+        ? { outcome: "failed", terminalReason: "upstream_error" }
+        : { outcome: jsonResponse?.status === "incomplete" ? "incomplete" : "valid_terminal", terminalReason: jsonResponse?.status === "incomplete" ? "incomplete" : "terminal" };
+      routingObserver?.recordTerminal(rawOutcome);
+      routingObserver?.settle({ usage: jsonResponse?.usage, upstreamStatus: providerResponse.status });
       finishPending();
 
       const diagDur = Date.now() - diagT0;
@@ -415,6 +423,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   // Standard Chat Completions SSE path
   try {
     const sseText = await readBody(() => providerResponse.text());
+    const rawOutcome = classifyRawSSEBlock(sseText, targetFormat);
+    if (rawOutcome) routingObserver?.recordTerminal(rawOutcome);
+    else routingObserver?.settle({ outcome: "incomplete", terminalReason: "incomplete", upstreamStatus: providerResponse.status });
+    routingObserver?.settle({ usage: null, upstreamStatus: providerResponse.status });
     finishPending();
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {

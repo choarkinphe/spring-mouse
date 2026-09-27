@@ -43,6 +43,9 @@ const lastPruneMetaKey = "usageRetentionLastPruneAt";
 let stopping = false;
 let db = null;
 let redisClient = null;
+let routingWriter = null;
+let routingRedisClient = null;
+let routingWriterPromise = null;
 let lastPruneAt = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -357,6 +360,55 @@ async function rebuildNextDay() {
   }
 }
 
+async function startRoutingWriter() {
+  // Keep telemetry optional: a missing/unloadable helper must never prevent the
+  // billing writer from starting. The import intentionally lives inside this
+  // detached supervisor rather than at module scope.
+  let createRoutingWriter;
+  try {
+    ({ createRoutingWriter } = await import("./routing-writer.mjs"));
+  } catch (error) {
+    console.warn("[RoutingWriter] unavailable; usage writer continues:", error?.message || error);
+    return;
+  }
+
+  while (!stopping) {
+    let client = null;
+    let writer = null;
+    try {
+      client = createClient({
+        url: redisUrl,
+        disableOfflineQueue: true,
+        commandsQueueMaxLength: 128,
+        socket: { connectTimeout: 500, reconnectStrategy: false },
+      });
+      routingRedisClient = client;
+      client.on("error", (error) => console.warn("[RoutingWriter] Redis:", error.message));
+      await client.connect();
+      writer = createRoutingWriter({
+        getDatabase: () => openDatabase(),
+        batchSize: Math.max(1, Number(process.env.SPRING_MOUSE_ROUTING_BATCH_SIZE || 100)),
+        pollMs: Math.max(25, Number(process.env.SPRING_MOUSE_ROUTING_POLL_MS || 250)),
+        retentionIntervalMs: Math.max(60_000, Number(process.env.SPRING_MOUSE_ROUTING_RETENTION_INTERVAL_MS || 60 * 60 * 1000)),
+        retentionChunk: Math.max(100, Number(process.env.SPRING_MOUSE_ROUTING_RETENTION_CHUNK || 500)),
+        isStopping: () => stopping,
+      });
+      routingWriter = writer;
+      // run() returns after a bounded Redis error streak, allowing this outer
+      // loop to recreate a clean client rather than spinning on a dead socket.
+      await writer.run(client);
+    } catch (error) {
+      if (!stopping) console.warn("[RoutingWriter] unavailable; retrying:", error?.message || error);
+    } finally {
+      try { writer?.stop(); } catch {}
+      if (routingWriter === writer) routingWriter = null;
+      try { client?.destroy(); } catch {}
+      if (routingRedisClient === client) routingRedisClient = null;
+    }
+    if (!stopping) await sleep(1000);
+  }
+}
+
 async function main() {
   const client = createClient({ url: redisUrl });
   redisClient = client;
@@ -365,6 +417,11 @@ async function main() {
   try { await client.xGroupCreate(stream, group, "0", { MKSTREAM: true }); } catch (error) {
     if (!String(error?.message || "").includes("BUSYGROUP")) throw error;
   }
+
+  routingWriterPromise = startRoutingWriter().catch((error) => {
+    if (!stopping) console.warn("[RoutingWriter] supervisor stopped; usage writer continues:", error?.message || error);
+  });
+
   console.log(`[UsageWriter] ready | stream=${stream} | db=${dbFile}`);
   while (!stopping && !await recoverPending(client)) await sleep(500);
 
@@ -397,12 +454,17 @@ async function main() {
     }
   }
 
+  try { if (routingWriter) routingWriter.stop(); } catch {}
+  try { routingRedisClient?.destroy(); } catch {}
+  try { await routingWriterPromise; } catch {}
   try { if (db) db.close(); } catch {}
   try { await client.quit(); } catch {}
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
   stopping = true;
+  try { routingWriter?.stop(); } catch {}
+  try { routingRedisClient?.destroy(); } catch {}
   try { redisClient?.destroy(); } catch {}
 });
 main().catch((error) => { console.error("[UsageWriter] fatal:", error); process.exit(1); });

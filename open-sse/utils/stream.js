@@ -6,6 +6,7 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./str
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { createLiveTokenProgress } from "./liveTokenProgress.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { classifyStreamEvent, hasContentForFormat } from "./routingOutcome.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -54,7 +55,10 @@ export function createSSEStream(options = {}) {
     completedContentMaxChars = Infinity,
     inputTokenEstimate = null,
     requestId = null,
+    routingObserver: suppliedRoutingObserver = null,
+    routing = null,
   } = options;
+  const routingObserver = suppliedRoutingObserver || routing;
 
   let buffer = "";
   let usage = null;
@@ -100,6 +104,19 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+
+  const settleObserver = (info = {}) => {
+    if (!routingObserver) return;
+    try { routingObserver.settle(info); } catch { /* telemetry is fail-open */ }
+  };
+  const observeEvent = (eventName, parsed) => {
+    if (!routingObserver || !parsed) return;
+    try {
+      if (hasContentForFormat(targetFormat, parsed)) routingObserver.noteFirstToken();
+      const classified = classifyStreamEvent(targetFormat, eventName, parsed);
+      if (classified) routingObserver.recordTerminal(classified);
+    } catch { /* telemetry is fail-open */ }
+  };
 
   function captureCompletedText(kind, text) {
     if (!text || captureLimit <= 0) return;
@@ -170,6 +187,7 @@ export function createSSEStream(options = {}) {
               const parsed = JSON.parse(trimmed.slice(5).trim());
 
               const idFixed = fixInvalidId(parsed);
+              observeEvent(null, parsed);
 
               // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
               let fieldsInjected = false;
@@ -273,6 +291,7 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+        observeEvent(currentOpenAIResponsesEvent, parsed);
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -443,6 +462,12 @@ export function createSSEStream(options = {}) {
           if (onStreamComplete) {
             onStreamComplete(completedContent(), usage, ttftAt);
           }
+          settleObserver({
+            outcome: routingObserver?.hasTerminal() ? undefined : "incomplete",
+            terminalReason: routingObserver?.hasTerminal() ? undefined : "incomplete",
+            usage,
+            upstreamStatus: null,
+          });
           return;
         }
 
@@ -517,7 +542,14 @@ export function createSSEStream(options = {}) {
         if (onStreamComplete) {
           onStreamComplete(completedContent(), state?.usage, ttftAt);
         }
+        settleObserver({
+          outcome: routingObserver?.hasTerminal() ? undefined : "incomplete",
+          terminalReason: routingObserver?.hasTerminal() ? undefined : "incomplete",
+          usage: state?.usage,
+          upstreamStatus: null,
+        });
       } catch (error) {
+        settleObserver({ outcome: "failed", terminalReason: "stream_error", usage: state?.usage });
         console.log("Error in flush:", error);
       } finally {
         reqLogger?.close?.();
@@ -526,7 +558,7 @@ export function createSSEStream(options = {}) {
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -543,10 +575,11 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     completedContentMaxChars,
     inputTokenEstimate,
     requestId,
+    routingObserver,
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
@@ -559,5 +592,6 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     completedContentMaxChars,
     inputTokenEstimate,
     requestId,
+    routingObserver,
   });
 }

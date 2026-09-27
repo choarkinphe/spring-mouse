@@ -98,6 +98,7 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 RUN apk --no-cache upgrade && apk --no-cache add redis su-exec
 
 COPY --from=builder /app/runtime ./runtime
+COPY --from=builder /app/src/shared/utils/routingTelemetry.js ./src/shared/utils/routingTelemetry.js
 RUN chmod +x /app/runtime/entrypoint.sh \
   && mkdir -p /app/data /app/data-home /app/data/redis \
   && chown -R node:node /app

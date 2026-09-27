@@ -32,6 +32,7 @@ import { clearProviderModelBreaker, recordProviderModelFailure } from "../servic
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
+import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -58,7 +59,7 @@ function withOriginalModelContext(clientRawRequest, originalModel) {
     : { ...clientRawRequest, body: { ...rawBody, model: originalModel } };
 }
 
-async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest = null, autoRoutingDepth = 0 }) {
+async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest = null, autoRoutingDepth = 0, routing = null }) {
   const config = normalizeAutoRoutingConfig(comboConfig?.autoRouting);
   const classifierConfig = autoRoutingDepth >= 2 || config.classifierModel === comboName
     ? { ...config, classifierModel: "" }
@@ -77,10 +78,11 @@ async function applyAutoRouting({ body, entries, comboConfig, comboName, require
       apiKey,
       accessTags,
       Math.min(overloadDeadline || Infinity, Date.now() + classifierConfig.classifierTimeoutMs),
-      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1 },
+      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1, routing, role: "classifier" },
     ),
   });
   const routed = reorderByAutoLevel(entries, classification.level, config.levelOrder);
+  routing?.hint({ autoSource: classification.source, autoLevel: classification.level, autoConfidence: classification.confidence });
   log.info("AUTO", `Combo auto level=${classification.level} source=${classification.source} · first=${routed[0]?.model || routed[0] || "none"}`);
   return routed;
 }
@@ -110,131 +112,153 @@ export function resolveOverloadMaxRetries(strategy = {}) {
  * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    log.warn("CHAT", "Invalid JSON body");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
-
-  // Build clientRawRequest for logging (if not provided)
-  if (!clientRawRequest) {
-    const url = new URL(request.url);
-    const sourceMeta = getRequestSourceMeta(request);
-    clientRawRequest = {
-      endpoint: url.pathname,
-      body,
-      headers: Object.fromEntries(request.headers.entries()),
-      ...sourceMeta,
-    };
-  }
-  const modelStr = body.model;
-
-  // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
-
-  // Log API key (masked)
-  const authHeader = request.headers.get("Authorization");
-  const apiKey = extractApiKey(request);
-  if (authHeader && apiKey) {
-    const masked = log.maskKey(apiKey);
-    log.debug("AUTH", `API Key: ${masked}`);
-  } else {
-    log.debug("AUTH", "No API key provided (local mode)");
-  }
-
-  // Resolve supplied keys even when enforcement is off. Besides making the
-  // optional guard accurate, this records last-used time and lets the live
-  // topology show the configured API key name instead of an anonymous caller.
-  const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model: modelStr });
-  if (authFailure) return authFailure;
-  const accessTags = await resolveApiKeyAccessTags(apiKey);
-
-  if (!modelStr) {
-    log.warn("CHAT", "Missing model");
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
-  }
-
-  await refreshModelCapabilityOverrides().catch((error) => {
-    log.warn("CAPABILITIES", `Failed to load synchronized model capabilities: ${error.message}`);
+  // The session is created at the external entry point, before parsing/auth or
+  // bypass checks, so every client request has one stable routing id.
+  const routing = createRoutingTelemetrySession({
+    endpoint: clientRawRequest?.endpoint || (() => { try { return new URL(request.url).pathname; } catch { return null; } })(),
+    trafficRequestId: getTrafficRequestId(request),
   });
+  routing.open({ endpoint: clientRawRequest?.endpoint, trafficRequestId: getTrafficRequestId(request) });
+  const finishEarly = (response, terminalReason) => {
+    routing.setTerminalReason(terminalReason);
+    routing.completeFromResponse(response, terminalReason);
+    return response;
+  };
 
-  // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
-  const userAgent = request?.headers?.get("user-agent") || "";
-  const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
-  if (bypassResponse) return bypassResponse.response || bypassResponse;
-
-  const requiredCapabilities = detectRequiredCapabilities(body);
-
-  // One overload-retry deadline for the whole client request, shared by every
-  // model the combo tries. The executor's per-model budget is right for a single
-  // model, but the GPT combo chains 3-6 models that all resolve to the same
-  // upstream (cx/...), so a per-model budget multiplies: 90s x 5 = 450s, far past
-  // the 165s clients were measured to tolerate. Capping the total keeps the retry
-  // useful without letting one saturated upstream hold the request open.
-  const overloadDeadline = Date.now() + REQUEST_OVERLOAD_BUDGET_MS;
-
-  // Combo routing is self-contained: its declared capability metadata must
-  // match at least one of its own members. No global cross-combo pool is used.
-  const comboEntries = await getComboModelEntries(modelStr, accessTags);
-  if (comboEntries) {
-    const combo = await getComboByName(modelStr);
-    if (!canAccessWithTags(accessTags, combo?.accessTags)) {
-      log.warn("AUTH", `${modelStr} | denied by combo access tags`);
-      return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+  try {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      log.warn("CHAT", "Invalid JSON body");
+      return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body"), "invalid_json");
     }
-    const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
-    if (resolved.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
 
-    const comboStrategies = settings.comboStrategies || {};
-    const comboConfig = comboStrategies[modelStr] || {};
-    const comboStrategy = comboConfig.fallbackStrategy || "fallback";
-    const routedEntries = comboStrategy === "auto"
-      ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest })
-      : resolved.models;
-    const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
-
-    if (comboStrategy === "fusion") {
-      log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: fusion)`);
-      return handleFusionChat({
+    // Build clientRawRequest for logging (if not provided).
+    if (!clientRawRequest) {
+      const url = new URL(request.url);
+      const sourceMeta = getRequestSourceMeta(request);
+      clientRawRequest = {
+        endpoint: url.pathname,
         body,
-        models: routedModels,
-        handleSingleModel: (b, m, isPanel) => {
-          let cleanRawReq = clientRawRequest;
-          if (isPanel && clientRawRequest) {
-            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline);
-        },
-        log,
-        comboName: modelStr,
-        judgeModel: comboStrategies[modelStr]?.judgeModel,
-        tuning: comboStrategies[modelStr]?.fusionTuning,
-      });
+        headers: Object.fromEntries(request.headers.entries()),
+        ...sourceMeta,
+      };
+    }
+    const modelStr = body?.model;
+    routing.hint({
+      originalModel: modelStr,
+      endpoint: clientRawRequest?.endpoint,
+      trafficRequestId: getTrafficRequestId(request),
+      requestType: Array.isArray(body?.tools) && body.tools.length > 0 ? "tool" : "chat",
+    });
+
+    const authHeader = request.headers.get("Authorization");
+    const apiKey = extractApiKey(request);
+    if (authHeader && apiKey) log.debug("AUTH", `API Key: ${log.maskKey(apiKey)}`);
+    else log.debug("AUTH", "No API key provided (local mode)");
+
+    const settings = await getSettings();
+    const authFailure = await authorizeApiKey(apiKey, {
+      requireApiKey: settings.requireApiKey === true,
+      meter: true,
+      signal: request.signal,
+      model: modelStr,
+    });
+    if (authFailure) return finishEarly(authFailure, "auth_rejected");
+    const accessTags = await resolveApiKeyAccessTags(apiKey);
+
+    if (!modelStr) {
+      log.warn("CHAT", "Missing model");
+      return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model"), "missing_model");
     }
 
-    const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
-    log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
-      body,
-      models: routedModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline),
-      log,
-      comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit,
+    await refreshModelCapabilityOverrides().catch((error) => {
+      log.warn("CAPABILITIES", `Failed to load synchronized model capabilities: ${error.message}`);
     });
-  }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline);
+    const userAgent = request?.headers?.get("user-agent") || "";
+    const bypassResponse = handleBypassRequest(body, modelStr, userAgent, !!settings.ccFilterNaming);
+    if (bypassResponse) return finishEarly(bypassResponse.response || bypassResponse, "bypass");
+
+    const requiredCapabilities = detectRequiredCapabilities(body);
+    const overloadDeadline = Date.now() + REQUEST_OVERLOAD_BUDGET_MS;
+    const comboEntries = await getComboModelEntries(modelStr, accessTags);
+    let response;
+
+    if (comboEntries) {
+      const combo = await getComboByName(modelStr);
+      if (!canAccessWithTags(accessTags, combo?.accessTags)) {
+        log.warn("AUTH", `${modelStr} | denied by combo access tags`);
+        return finishEarly(errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key"), "access_denied");
+      }
+      const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
+      if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
+
+      const comboStrategies = settings.comboStrategies || {};
+      const comboConfig = comboStrategies[modelStr] || {};
+      const comboStrategy = comboConfig.fallbackStrategy || "fallback";
+      routing.hint({ strategy: comboStrategy, comboName: modelStr });
+      const routedEntries = comboStrategy === "auto"
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, routing })
+        : resolved.models;
+      const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
+
+      if (comboStrategy === "fusion") {
+        log.info("CHAT", `Combo \"${modelStr}\" with ${routedModels.length} compatible models (strategy: fusion)`);
+        response = await handleFusionChat({
+          body,
+          models: routedModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
+              routing,
+              role: isPanel ? "panel" : "judge",
+            });
+          },
+          log,
+          comboName: modelStr,
+          judgeModel: comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[modelStr]?.fusionTuning,
+        });
+      } else {
+        const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
+        log.info("CHAT", `Combo \"${modelStr}\" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+        response = await handleComboChat({
+          body,
+          models: routedModels,
+          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" }),
+          log,
+          comboName: modelStr,
+          comboStrategy,
+          comboStickyLimit,
+        });
+      }
+    } else {
+      response = await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" });
+    }
+
+    // Select only the response returned by the complete external route. A failed
+    // account/model fallback is never allowed to settle the parent prematurely.
+    routing.finalize(response);
+    return response;
+  } catch (error) {
+    routing.complete({
+      outcome: request?.signal?.aborted ? "cancelled" : "failed",
+      terminalReason: request?.signal?.aborted ? "client_abort" : "internal_error",
+    });
+    throw error;
+  }
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0 } = {}) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary" } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   const requestStartTime = Date.now();
   // One id for this client request, shared by the routing log lines, the usage
@@ -243,6 +267,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // to the account/lock/breaker events it caused.
   const requestId = randomUUID();
   const reqPrefix = `[${requestId.slice(0, 8)}] `;
+  const modelCallId = requestId;
+  const attemptRole = role;
 
   // A request rejected before an upstream account is chosen used to leave no
   // trace in the database: usageHistory only ever saw requests that reached the
@@ -300,17 +326,22 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
       const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
-      if (resolved.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
+      if (resolved.error) {
+        const response = errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
+        routing?.complete({ outcome: "failed", terminalReason: "unsupported_capability" });
+        return response;
+      }
 
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboConfig = comboStrategies[modelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       const routedEntries = comboStrategy === "auto"
-        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, autoRoutingDepth })
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, autoRoutingDepth, routing })
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
       if (comboStrategy === "fusion") {
+        routing?.hint({ strategy: "fusion", comboName: modelStr });
         log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: fusion)`);
         return handleFusionChat({
           body,
@@ -321,7 +352,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
+              routing,
+              role: isPanel ? "panel" : "judge",
+            });
           },
           log,
           comboName: modelStr,
@@ -335,7 +369,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary" }),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -348,6 +382,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+  const openAttempt = (credentials) => routing?.openAttempt({
+    modelCallId, role: attemptRole, provider, model,
+    connectionId: credentials?.connectionId, streamMode: body?.stream === false ? "nonstream" : "stream",
+    internal: internalRequest,
+  }) || { id: null, observer: null, complete() {}, bindResponse() {}, isSettled: () => true };
   const routingSettings = await getSettings();
   const overloadMaxRetries = resolveOverloadMaxRetries(
     (routingSettings.providerStrategies || {})[provider],
@@ -454,6 +493,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
+    const attempt = openAttempt(credentials);
     const result = await withRouteLease(credentials.releaseRouteSlot, clientSignal || request?.signal, async () => {
       // Account selection shown in the unified "▶" line (acc:...)
       const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
@@ -478,6 +518,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log,
         clientRawRequest,
         requestId,
+        routingObserver: attempt.observer,
         // Propagate client disconnects all the way to the upstream executor.
         // Without this, a channel that never responds can retain fetches after
         // the caller has gone away and exhaust the process under concurrency.
@@ -529,8 +570,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       });
 
     });
-    if (result.success) return result.response;
-    if (request?.signal?.aborted || result.status === 499) return errorResponse(499, "Request aborted");
+    attempt.bindResponse(result.response);
+    if (result.success) {
+      attempt.complete(attemptTerminalFromResult(result));
+      return result.response;
+    }
+    if (request?.signal?.aborted || result.status === 499) {
+      attempt.complete({ outcome: "cancelled", terminalReason: "client_abort", upstreamStatus: 499 });
+      return errorResponse(499, "Request aborted");
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
     const { shouldFallback, modelLevel, transport } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
@@ -569,8 +617,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           const retryAfterMs = breaker.retryAfterMs || 60_000;
           const retryAt = new Date(Date.now() + retryAfterMs).toISOString();
           const human = `retry after ${Math.max(1, Math.round(retryAfterMs / 1000))}s`;
-          log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
-          saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
+          attempt.complete({ outcome: "failed", terminalReason: transport ? "transport_error" : modelLevel ? "model_overloaded" : "breaker_open", upstreamStatus: result.status, fallbackReason: "account_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Provider model is temporarily unavailable", retryAt, human);
         }
@@ -587,10 +634,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       if (result.upstreamError?.origin === "sse_overload") {
         log.warn("THROTTLE", `${provider}/${model} | SSE overload outlasted the retry budget · not rotating accounts (same upstream model)`);
         saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+        attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
         return result.response;
       }
 
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      attempt.complete({ outcome: "failed", terminalReason: "account_fallback", upstreamStatus: result.status, fallbackReason: "account_fallback" });
       excludeConnectionIds.add(credentials.connectionId);
       if (modelLevel) modelLevelExcluded.add(credentials.connectionId);
       lastError = result.error;
@@ -601,7 +650,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         if (modelLevelFailures > overloadMaxRetries) {
           log.warn("THROTTLE", `${provider}/${model} | ${modelLevelFailures} model-level failures exceeded channel retry budget ${overloadMaxRetries}`);
           const retryAt = new Date(Date.now() + MODEL_LEVEL_RETRY_HINT_MS).toISOString();
-          saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+          attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Upstream model is busy",
             retryAt, `retry after ${Math.round(MODEL_LEVEL_RETRY_HINT_MS / 1000)}s`);
@@ -610,6 +659,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       continue;
     }
 
+    attempt.complete(attemptTerminalFromResult(result, { fallbackReason: "upstream_http_error" }));
     return result.response;
   }
 }

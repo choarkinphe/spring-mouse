@@ -213,9 +213,43 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   // provider still receives chat SSE chunks, which must go through the standard path.
   const isCodexResponsesApi = isResponsesProvider(provider) || targetFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
+    // Diagnostic only (no behaviour change): this path had NO stall bound at all and
+    // only ended at the 360s ceiling, so it is a prime suspect for the stuck turns.
+    // Counts upstream bytes against bytes actually converted into the JSON result,
+    // which is the pair needed to tell "upstream went quiet" from "we read fine but
+    // produced nothing". Logged via errorLine so it survives LOG_LEVEL=WARN.
+    const diagT0 = Date.now();
+    let diagUpBytes = 0;
+    let diagUpChunks = 0;
+    const diagSource = providerResponse.body;
+    const diagWrapped = diagSource && typeof diagSource.getReader === "function"
+      ? (() => {
+        const r = diagSource.getReader();
+        return new ReadableStream({
+          async pull(controller) {
+            try {
+              const { done, value } = await r.read();
+              if (done) { controller.close(); return; }
+              diagUpChunks++;
+              diagUpBytes += value?.byteLength || value?.length || 0;
+              controller.enqueue(value);
+            } catch (e) { controller.error(e); }
+          },
+          cancel(reason) { try { r.cancel(reason); } catch { /* best-effort */ } },
+        });
+      })()
+      : diagSource;
+
     try {
-      const jsonResponse = await readBody(() => convertResponsesStreamToJson(providerResponse.body));
+      const jsonResponse = await readBody(() => convertResponsesStreamToJson(diagWrapped));
       finishPending();
+
+      const diagDur = Date.now() - diagT0;
+      if (diagDur > 60000) {
+        const outBytes = JSON.stringify(jsonResponse?.output ?? null).length;
+        const outTokens = jsonResponse?.usage?.output_tokens ?? 0;
+        log?.errorLine?.("", "🔬", `SSE2JSON-DIAG ${jsonResponse?.status || "?"} | ${provider}/${model} | dur=${diagDur}ms | up_chunks=${diagUpChunks} up_bytes=${diagUpBytes} | json_out_bytes=${outBytes} out_tokens=${outTokens}`);
+      }
 
       // A failed turn is NOT a success. The upstream can fail a Responses stream
       // after emitting a few deltas (e.g. server_is_overloaded), and the previous

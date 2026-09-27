@@ -96,7 +96,14 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
   const onAbortTerminal = isResponsesPassthrough ? buildAbortedResponsesTerminalBytes : null;
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
+  // Diagnostic only: reports upstream bytes vs client-visible bytes for every turn
+  // that ran past 60s, so the two shapes (stalled vs merely slow) can be told apart
+  // from production data before any watchdog is built on the difference.
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, {
+    provider,
+    model,
+    log: (msg) => log?.errorLine?.("", "🔬", msg),
+  });
 
   if (observabilityEnabled) {
     saveRequestDetail(buildRequestDetail({

@@ -194,7 +194,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, diag = null) {
   let stallCheckTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -240,9 +240,9 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     signal: streamController.signal,
     startTime: streamController.startTime,
     isConnected: () => streamController.isConnected(),
-    handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleComplete(); },
-    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleDisconnect(r); },
+    handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag("complete"); clearStall(); streamController.handleComplete(); },
+    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag(`error:${e?.message}`); clearStall(); streamController.handleError(e); },
+    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag(`disconnect:${r}`); clearStall(); streamController.handleDisconnect(r); },
     abort: () => { clearStall(); streamController.abort(); }
   };
 
@@ -251,6 +251,35 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     streamController.signal?.addEventListener("abort", clearStall, { once: true });
   }
   dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
+
+  // ---- DIAGNOSTIC (observation only, no behaviour change) --------------------
+  //
+  // We are trying to tell a "stalled" Codex turn from a slow-but-healthy one, and
+  // the evidence so far is contradictory: the stuck turns run past 300s with
+  // ttft=0, yet the upstream is NOT silent — it streams hundreds of KB of
+  // metadata frames. So neither "no upstream bytes" nor "no client bytes" can be
+  // assumed; both have to be MEASURED before any watchdog is built on them.
+  //
+  // This tap sits AFTER the transform, so it counts what the client actually
+  // receives, and the summary below reports it next to the upstream totals. The
+  // pair is what distinguishes the two cases:
+  //   upstream huge + client tiny  → transform produced nothing (the stuck shape)
+  //   upstream huge + client huge  → healthy, just slow
+  //
+  // Logged through errorLine so it survives the production LOG_LEVEL=WARN.
+  let visibleChunks = 0;
+  let visibleBytes = 0;
+  let firstVisibleAt = 0;
+  let diagEmitted = false;
+  const emitDiag = (outcome) => {
+    if (diagEmitted) return;
+    diagEmitted = true;
+    const dur = Date.now() - t0;
+    // Only interesting when the turn ran long enough to have been a candidate.
+    if (dur < 60000) return;
+    const firstVisibleMs = firstVisibleAt ? firstVisibleAt - t0 : -1;
+    diag?.log?.(`STREAM-DIAG ${outcome} | ${diag.provider}/${diag.model} | dur=${dur}ms | up_chunks=${chunkCount} up_bytes=${totalBytes} | vis_chunks=${visibleChunks} vis_bytes=${visibleBytes} | first_vis_ms=${firstVisibleMs}`);
+  };
 
   const upstreamTap = new TransformStream({
     transform(chunk, controller) {
@@ -268,9 +297,23 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
   });
 
+  // Counts client-visible output. Diagnostic only — see the note above.
+  const visibleTap = new TransformStream({
+    transform(chunk, controller) {
+      const sz = chunk?.byteLength || chunk?.length || 0;
+      if (sz > 0) {
+        visibleChunks++;
+        visibleBytes += sz;
+        if (!firstVisibleAt) firstVisibleAt = Date.now();
+      }
+      controller.enqueue(chunk);
+    },
+  });
+
   const transformedBody = providerResponse.body
     .pipeThrough(upstreamTap)
-    .pipeThrough(transformStream);
+    .pipeThrough(transformStream)
+    .pipeThrough(visibleTap);
 
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },

@@ -70,14 +70,20 @@ export const STREAM_STALL_CHECK_INTERVAL_MS = 1000;
 //                                                   300004 ms")
 //
 // — so the upstream is busy while the client is starved, and every byte-based
-// upstream timer is reset by the traffic it cannot use. 60s sits ~8x above the
-// longest gap a healthy turn showed and well below the client's own ~300s
-// patience, so the gateway gives up first and can still rotate to another account.
+// upstream timer is reset by the traffic it cannot use.
+//
+// 150s, NOT 60s. The first bound was 60s, chosen against a single healthy sample
+// showing a 7s gap. A larger sample of healthy turns then showed the gap
+// distribution is far wider — min 8.2s, p50 15.4s, p90 41.2s, max 58.1s — leaving
+// only ~2s of headroom, which would have aborted healthy turns at the first
+// unlucky sample. 150s clears the measured maximum with 2.6x margin while staying
+// well below the ~300s at which clients give up, so the gateway still gives up
+// first and can rotate accounts.
 //
 // It deliberately applies ONLY after the first visible byte: a turn that is slow to
 // produce anything is already covered by the upstream watchdog, and bounding that
 // phase here would abort legitimately slow starts.
-export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEOUT_MS", 60 * 1000);
+export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEOUT_MS", 150 * 1000);
 
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);

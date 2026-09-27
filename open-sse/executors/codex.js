@@ -87,6 +87,22 @@ const CODEX_SSE_PREAMBLE_MS = (() => {
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60 * 1000;
 })();
+// Hard backstop on the ENTIRE preamble scan, independent of the phase deadlines
+// above. The phase logic is already bounded (preamble 60s, post-output grace 2s),
+// but a Codex turn was observed holding a request for 300s+ with only the two
+// routing lines in the log and no requestDetail — the signature of a scan that
+// never returned. Stage instrumentation later confirmed the scan CAN run past 30s,
+// so this exists to make the ceiling unconditional: whatever the inner state does,
+// the scan cannot outlive this bound.
+//
+// It is a backstop, not the working bound — 90s sits above the 60s preamble phase
+// it must not pre-empt, and far below the ~300s at which clients give up.
+const CODEX_SSE_SCAN_MAX_MS = (() => {
+  const raw = process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
+  if (raw == null || raw === "") return 90 * 1000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90 * 1000;
+})();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta
 // (the previous behaviour) let that error through as a 200-OK stream, so the combo
@@ -666,6 +682,10 @@ export class CodexExecutor extends BaseExecutor {
     // that as a healthy stream, or it would hand a possibly-overloaded body to the
     // client. `stoppedOnDeadline` carries that distinction out.
     const preambleDeadline = Math.min(Date.now() + CODEX_SSE_PREAMBLE_MS, requestDeadline);
+    // Unconditional backstop for the whole scan (see CODEX_SSE_SCAN_MAX_MS). Measured
+    // from when the scan began, so no inner state can extend it.
+    const scanStart = Date.now();
+    const scanDeadline = scanStart + CODEX_SSE_SCAN_MAX_MS;
     let stoppedOnDeadline = false;
     // Hitting the BYTE ceiling before any output is the same escape class as the
     // original 256KB bug: the metadata preamble (response.created + in_progress each
@@ -697,6 +717,16 @@ export class CodexExecutor extends BaseExecutor {
         // own deadline, and the post-output phase uses the grace deadline.
         const deadline = outputStarted ? graceDeadline : preambleDeadline;
         const remainingMs = deadline > 0 ? deadline - Date.now() : 0;
+        // The unconditional backstop (see CODEX_SSE_SCAN_MAX_MS). Checked separately
+        // from `deadline` so the phase logic above keeps its exact meaning — including
+        // the `deadline === requestDeadline` comparisons below, which decide whether a
+        // stop is reported as unresolved. Folding the backstop into `deadline` would
+        // make those comparisons always false and silently drop the 503.
+        if (Date.now() >= scanDeadline) {
+          args.log?.errorLine?.("", "⏱", `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s backstop — giving up (matched=${matched || "none"}, output=${outputStarted}, bytes=${bufferedBytes})`);
+          if (!outputStarted && !matched) stoppedOnDeadline = true;
+          break;
+        }
         if (deadline > 0 && remainingMs <= 0) {
           // Stopped with neither output nor an error seen. Two ways to land here:
           //   - the caller's request deadline ran out, or
@@ -718,10 +748,15 @@ export class CodexExecutor extends BaseExecutor {
         // to the client even if the turn never completes.
         let result;
         if (deadline > 0) {
+          // The wait is bounded by the phase deadline AND the scan backstop, so a
+          // read can never park past the backstop even if the phase logic were to
+          // compute a longer wait. Without the second term the backstop would only
+          // be noticed between reads, not during one.
+          const waitMs = Math.max(1, Math.min(remainingMs, scanDeadline - Date.now()));
           let timer;
           result = await Promise.race([
             pendingRead,
-            new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), remainingMs); }),
+            new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), waitMs); }),
           ]);
           clearTimeout(timer);
         } else {

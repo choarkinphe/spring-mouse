@@ -135,10 +135,17 @@ describe("client-visible stall watchdog", () => {
     expect(state.errors.filter((e) => e.code === "UPSTREAM_VISIBLE_STALL")).toHaveLength(0);
   }, 15000);
 
-  it("keeps the bound well above a healthy turn and below client patience", () => {
-    // 8x the longest gap a healthy turn showed (7s) …
-    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeGreaterThan(7_000 * 4);
-    // … and far below the ~300s at which the client gives up on its own.
-    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeLessThan(180_000);
+  it("clears the widest gap a healthy turn has shown, with margin", () => {
+    // Measured on healthy production turns: min 8.2s, p50 15.4s, p90 41.2s,
+    // max 58.1s. The first bound was 60s, picked from a single 7s sample — only
+    // ~2s above the eventual maximum, which would have aborted healthy turns.
+    const WIDEST_MEASURED_HEALTHY_GAP_MS = 58_107;
+    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeGreaterThan(WIDEST_MEASURED_HEALTHY_GAP_MS * 2);
+  });
+
+  it("still fires well before the client gives up on its own", () => {
+    // The client abandons at ~300s ("none in the final 300004 ms"), so the gateway
+    // must fire first — otherwise it waits on a caller that has already gone.
+    expect(STREAM_VISIBLE_STALL_TIMEOUT_MS).toBeLessThan(300_000);
   });
 });

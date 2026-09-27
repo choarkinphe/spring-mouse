@@ -81,26 +81,44 @@ const CODEX_SSE_PEEK_BYTES_AFTER_OUTPUT = 256 * 1024;
 // 60-second bound delayed every slow-start turn, even when the upstream was healthy.
 // A real overload frame that is already buffered is still detected; otherwise a
 // metadata-only attempt fails fast and lets combo/account routing choose another
-// candidate. Operators can raise this value for unusually slow deployments. Setting
-// it to 0 disables this phase bound, while the total ceiling below remains active.
+// Phase bound on the pre-output preamble: the metadata-only probe. A turn that has
+// produced no output and no error by this point is treated as unresolved, so the
+// caller answers 503 and the combo/account router picks another candidate.
+//
+// 25s, chosen from the measured overload-arrival distribution rather than picked
+// round. Over 20 production samples the overload frame arrived at:
+//
+//   0s:4  1s:2  2s:3  3s:4  5s:1  6s:2  17s:2  23s:2
+//
+// Most arrive within 3s, but 4/20 arrive at 17-23s — and those are exactly the
+// turns the retry loop recovers ("recovered after 1-2 retries", ~92% of attempts
+// before this bound was shortened). A 5s probe cut the scan off before those frames
+// arrived, and production showed the result immediately: upstream:503 went 0 -> 53
+// per 3 minutes and `recovered after` fell to 0. 25s clears the measured 23s maximum
+// with margin while still failing far faster than the old 60s.
+//
+// Raise it if a slower deployment's overloads arrive later; 0 disables this phase
+// bound, leaving the total ceiling below as the only time limit.
 const CODEX_SSE_PREAMBLE_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
-  if (raw == null || raw === "") return 5 * 1000;
+  if (raw == null || raw === "") return 25 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5 * 1000;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 25 * 1000;
 })();
 // The TOTAL wall-clock ceiling on one SSE preamble scan — the authoritative bound.
 // Whatever the phase logic above computes, the scan cannot outlive this: the
 // preamble deadline is clamped by it, and every read wait is raced against it.
 //
-// This remains a second backstop when the phase bound is disabled or changed, and
-// prevents a malformed stream from keeping a request open indefinitely. The shorter
-// preamble probe is the normal stop for metadata-only turns.
+// It sits ABOVE the phase bound so it is the guard for a phase bound that is raised
+// or disabled, not the bound that normally fires. (An earlier revision put a 90s
+// ceiling above a 60s phase bound and it never fired at all; a ceiling below the
+// phase bound would instead make the phase bound the dead one. Keeping it strictly
+// larger is what makes each bound mean something.)
 const CODEX_SSE_SCAN_MAX_MS = (() => {
   const raw = process.env.SPRING_MOUSE_CODEX_SSE_SCAN_MAX_MS;
-  if (raw == null || raw === "") return 10 * 1000;
+  if (raw == null || raw === "") return 40 * 1000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 1000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 40 * 1000;
 })();
 // A capacity/overload rejection is not always the first frame: Codex can stream a
 // few output deltas and only then fail the turn. Breaking out on the first delta

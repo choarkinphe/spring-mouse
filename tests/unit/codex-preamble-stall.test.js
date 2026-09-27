@@ -58,7 +58,7 @@ function streamFromText(text) {
 }
 
 describe("codex: metadata-only stream that then hangs is unresolved, not healthy", () => {
-  it("uses the production probe default without waiting for the old 60s ceiling", async () => {
+  it("uses the production probe default, bounded by the phase bound not the caller budget", async () => {
     const previous = process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
     delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
     vi.resetModules();
@@ -75,13 +75,21 @@ describe("codex: metadata-only stream that then hangs is unresolved, not healthy
       const elapsed = Date.now() - started;
       superExecute.mockRestore();
       expect(result.response.status).toBe(503);
-      expect(elapsed).toBeLessThan(15_000);
+      // The production default (CODEX_SSE_PREAMBLE_MS, 25s) is what stops this, not
+      // the caller's 60s budget: the assertion is that the phase bound is well below
+      // the budget, with slack for CI scheduling. A 5s probe also satisfied this —
+      // the bound was raised back to 25s because a 5s probe cut off overload frames
+      // measured arriving at 17-23s, and production 503s went 0 -> 53 per 3 minutes.
+      // The number to keep in step with the default is the ceiling here, not the
+      // exact value: it must stay comfortably under the 60s budget.
+      expect(elapsed).toBeGreaterThan(20_000);
+      expect(elapsed).toBeLessThan(45_000);
     } finally {
       if (previous === undefined) delete process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS;
       else process.env.SPRING_MOUSE_CODEX_SSE_PREAMBLE_MS = previous;
       vi.resetModules();
     }
-  }, 20000);
+  }, 60000);
 
   it("answers 503 when the PREAMBLE bound stops the scan (long caller budget)", async () => {
     await withPreambleMs(300, async (CodexExecutor) => {

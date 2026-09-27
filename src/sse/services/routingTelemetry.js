@@ -274,7 +274,20 @@ export function createRoutingTelemetrySession({ endpoint = null, trafficRequestI
       const complete = (record = {}) => {
         if (attempt.completed) return;
         attempt.completed = true;
-        const observed = normalizeObserverInfo({ ...attempt.header, ...record });
+        // Header facts (upstream status, formats, stream mode) are recorded when the
+        // response headers arrive; the terminal snapshot then fills in the rest.
+        // A terminal callback may carry an explicit `null` for a field it does not
+        // know — stream.js settles with `upstreamStatus: null` because the HTTP
+        // status is not in scope at flush — and a plain spread let that null ERASE
+        // the status onHeaders had already captured, so every streamed attempt
+        // recorded a null upstreamStatus. Null/absent means "unknown", never
+        // "clear", so those keys are skipped when merging the terminal snapshot.
+        const merged = { ...attempt.header };
+        for (const [key, value] of Object.entries(record)) {
+          if (value === undefined || value === null || value === "") continue;
+          merged[key] = value;
+        }
+        const observed = normalizeObserverInfo(merged);
         const terminal = {
           outcome: normalizeOutcome(record.outcome),
           terminalReason: normalizeReason(record.terminalReason, null),

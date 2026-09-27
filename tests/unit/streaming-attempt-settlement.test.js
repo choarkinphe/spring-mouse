@@ -116,6 +116,29 @@ describe("streaming attempt settlement", () => {
     expect(attempt.terminal?.completionTokens).toBe(7);
   });
 
+  it("keeps the upstream status recorded from headers when the terminal settle carries null", async () => {
+    // stream.js settles with `upstreamStatus: null` — the HTTP status is not in
+    // scope at flush — while emitHeaders() already recorded the real status into
+    // attempt.header. A plain `{...header, ...record}` let that null ERASE the
+    // status, so every streamed attempt recorded a null upstreamStatus (observed
+    // in production: 17/17 post-deploy rows null, 372/372 pre-deploy rows 200).
+    // Null means "unknown", never "clear".
+    const session = createRoutingTelemetrySession({ endpoint: "/v1/chat/completions", trafficRequestId: "t" });
+    const attempt = session.openAttempt({ modelCallId: "mc", role: "primary", provider: "probe", model: "model-x", connectionId: "conn-1" });
+    const observer = createRoutingObserver({ observer: attempt.observer, requestStartTime: Date.now() });
+
+    // Headers arrive first and carry the real status...
+    observer.emitHeaders({ status: 201, sourceFormat: "openai", targetFormat: "openai", streamMode: "stream" });
+    // ...then the stream terminates with the null status it cannot know.
+    observer.recordTerminal({ outcome: "valid_terminal", terminalReason: "terminal" });
+    observer.settle({ upstreamStatus: null, usage: { prompt_tokens: 3, completion_tokens: 4 } });
+
+    expect(attempt.terminal?.upstreamStatus).toBe(201);
+    // The rest of the terminal snapshot still lands.
+    expect(attempt.terminal?.promptTokens).toBe(3);
+    expect(attempt.terminal?.completionTokens).toBe(4);
+  });
+
   it("does not settle the attempt until the stream has actually been read", async () => {
     const session = createRoutingTelemetrySession({ endpoint: "/v1/chat/completions", trafficRequestId: "t" });
     const attempt = session.openAttempt({ modelCallId: "mc", role: "primary", provider: "probe", model: "model-x", connectionId: "conn-1" });

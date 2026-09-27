@@ -270,6 +270,8 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   let visibleChunks = 0;
   let visibleBytes = 0;
   let firstVisibleAt = 0;
+  let lastVisibleAt = 0;
+  let maxVisibleGapMs = 0;
   let diagEmitted = false;
   const emitDiag = (outcome) => {
     if (diagEmitted) return;
@@ -278,7 +280,11 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     // Only interesting when the turn ran long enough to have been a candidate.
     if (dur < 60000) return;
     const firstVisibleMs = firstVisibleAt ? firstVisibleAt - t0 : -1;
-    diag?.log?.(`STREAM-DIAG ${outcome} | ${diag.provider}/${diag.model} | dur=${dur}ms | up_chunks=${chunkCount} up_bytes=${totalBytes} | vis_chunks=${visibleChunks} vis_bytes=${visibleBytes} | first_vis_ms=${firstVisibleMs}`);
+    // `max_gap_ms` is the number the fix needs: the longest the CLIENT went without
+    // a byte on a turn that was fine. A watchdog can only be set above that. It is
+    // tracked on the visible tap, because the upstream tap's gaps are meaningless
+    // here — the upstream keeps streaming while the client sees nothing.
+    diag?.log?.(`STREAM-DIAG ${outcome} | ${diag.provider}/${diag.model} | dur=${dur}ms | up_chunks=${chunkCount} up_bytes=${totalBytes} | vis_chunks=${visibleChunks} vis_bytes=${visibleBytes} | first_vis_ms=${firstVisibleMs} max_gap_ms=${maxVisibleGapMs}`);
   };
 
   const upstreamTap = new TransformStream({
@@ -302,9 +308,19 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     transform(chunk, controller) {
       const sz = chunk?.byteLength || chunk?.length || 0;
       if (sz > 0) {
+        const now = Date.now();
         visibleChunks++;
         visibleBytes += sz;
-        if (!firstVisibleAt) firstVisibleAt = Date.now();
+        if (!firstVisibleAt) firstVisibleAt = now;
+        // Longest stretch the client went without a byte. Measured from the request
+        // start for the first gap (a turn can be silent before its first byte), and
+        // between chunks after that. This is the number a watchdog must be set
+        // above, so it has to come from the VISIBLE tap — the upstream tap's gaps
+        // are meaningless here, since the upstream keeps streaming while the client
+        // sees nothing.
+        const gap = now - (lastVisibleAt || t0);
+        if (gap > maxVisibleGapMs) maxVisibleGapMs = gap;
+        lastVisibleAt = now;
       }
       controller.enqueue(chunk);
     },

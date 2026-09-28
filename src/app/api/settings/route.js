@@ -273,6 +273,16 @@ export async function PATCH(request) {
       if (parsedSeconds) return parsedSeconds * 1000;
       return ms == null ? null : positiveInt(ms);
     };
+    // Same as `durationMs` but 0 is a real value rather than "unset". Only for knobs
+    // where 0 means "disabled" — for the rest, treating 0 as unset is what keeps a
+    // blank dashboard field from silently switching a feature off.
+    const durationMsAllowZero = (seconds, ms) => {
+      const parsedSeconds = Number.parseInt(seconds, 10);
+      if (Number.isFinite(parsedSeconds) && parsedSeconds >= 0) return parsedSeconds * 1000;
+      const parsedMs = Number.parseInt(ms, 10);
+      if (Number.isFinite(parsedMs) && parsedMs >= 0) return parsedMs;
+      return null;
+    };
     const normalize = (entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
       const result = {};
@@ -324,6 +334,12 @@ export async function PATCH(request) {
       if (overloadRetryBaseDelayMs != null) result.overloadRetryBaseDelayMs = overloadRetryBaseDelayMs;
       const overloadRetryMaxDelayMs = durationMs(entry.overloadRetryMaxDelaySeconds, entry.overloadRetryMaxDelayMs);
       if (overloadRetryMaxDelayMs != null) result.overloadRetryMaxDelayMs = overloadRetryMaxDelayMs;
+      // How much budget a retry must have left to be started at all. An attempt
+      // costs 10-30s to reach a first token, so a retry started with less room is
+      // cut off by the scan deadline and reported as an overload it is not — and it
+      // spends budget the combo's remaining models need. 0 disables the guard.
+      const overloadRetryMinAttemptMs = durationMsAllowZero(entry.overloadRetryMinAttemptSeconds, entry.overloadRetryMinAttemptMs);
+      if (overloadRetryMinAttemptMs != null) result.overloadRetryMinAttemptMs = overloadRetryMinAttemptMs;
       return Object.keys(result).length ? result : null;
     };
     body.providerStrategies = Object.fromEntries(

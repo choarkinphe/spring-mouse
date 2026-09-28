@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_OVERLOAD_RETRY,
   REQUEST_OVERLOAD_BUDGET_MS,
+  hasRoomForRetry,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
 } from "../../open-sse/config/runtimeConfig.js";
@@ -237,6 +238,109 @@ describe("request-wide overload budget", () => {
     expect(REQUEST_OVERLOAD_BUDGET_MS).toBeGreaterThan(DEFAULT_OVERLOAD_RETRY.budgetMs);
     expect(REQUEST_OVERLOAD_BUDGET_MS).toBeLessThanOrEqual(165_000);
   });
+});
+
+// A retry needs room for a WHOLE attempt after its backoff, not merely a positive
+// remainder. Measured on production (n=594 attempts), a codex attempt costs 10-30s
+// to reach its first token, and every retry started with less room than that was
+// cut off by the scan deadline and reported as "SSE scan stopped on the request
+// deadline … with no output" — 12 of them, each indistinguishable from a real
+// overload, each spending budget the combo's remaining models needed.
+describe("a retry must have room for a whole attempt", () => {
+  it("measures the room AFTER the backoff, not just a positive remainder", () => {
+    // 20s of budget, a 15s backoff: only 5s would be left to actually attempt in.
+    expect(hasRoomForRetry({ deadline: 20_000, now: 0, waitMs: 15_000, minAttemptMs: 15_000 })).toBe(false);
+    // Same budget and floor, a short backoff: 15s of room is exactly enough.
+    expect(hasRoomForRetry({ deadline: 20_000, now: 0, waitMs: 5_000, minAttemptMs: 15_000 })).toBe(true);
+  });
+
+  it("always allows the guaranteed minRetries, whatever the room", () => {
+    // The floor exists to stop retries the budget cannot fit — never to strip the
+    // guaranteed ones, or a single slow attempt could leave the request with none.
+    expect(hasRoomForRetry({ deadline: 0, now: 0, waitMs: 0, minAttemptMs: 15_000, retryNumber: 1, minRetries: 1 })).toBe(true);
+    expect(hasRoomForRetry({ deadline: 0, now: 0, waitMs: 0, minAttemptMs: 15_000, retryNumber: 2, minRetries: 1 })).toBe(false);
+  });
+
+  it("falls back to 'any positive budget' when the floor is disabled", () => {
+    expect(hasRoomForRetry({ deadline: 100, now: 0, waitMs: 99, minAttemptMs: 0 })).toBe(true);
+    expect(hasRoomForRetry({ deadline: 100, now: 0, waitMs: 100, minAttemptMs: 0 })).toBe(false);
+  });
+
+  it("is overridable per channel, and a floor above the budget disables itself", () => {
+    expect(resolveOverloadRetryConfig({ overloadRetryMinAttemptMs: 20_000 }).minAttemptMs).toBe(20_000);
+    expect(DEFAULT_OVERLOAD_RETRY.minAttemptMs).toBe(15_000);
+    // A floor >= the whole budget would refuse EVERY retry including the guaranteed
+    // ones — a contradictory pair, so the floor is dropped and the budget governs.
+    const incoherent = resolveOverloadRetryConfig({ overloadRetryBudgetMs: 1_000, overloadRetryMinAttemptMs: 5_000 });
+    expect(incoherent.minAttemptMs).toBe(0);
+    expect(incoherent.budgetMs).toBe(1_000);
+  });
+
+  it("stops the loop instead of burning the budget on an attempt that cannot fit", async () => {
+    // 6s of shared budget, a 15s floor, and a 5s backoff: after the backoff only
+    // 1-3.5s would remain, far below what an attempt needs. The loop must refuse
+    // retry 1 outright rather than start it and be cut off by the deadline.
+    const calls = { count: 0 };
+    const lines = [];
+    const executor = new CodexExecutor();
+    executor.config = { ...executor.config, overloadRetry: {
+      budgetMs: 60_000, baseDelayMs: 5_000, maxDelayMs: 5_000, factor: 1, minRetries: 0, maxAttempts: 50, minSleepMs: 1, minAttemptMs: 15_000,
+    } };
+    vi.spyOn(executor, "_peekSseTransientError").mockImplementation(async () => {
+      calls.count += 1;
+      return {
+        matched: "server_is_overloaded",
+        message: "Our servers are currently overloaded. Please try again later.",
+        accountFallback: false,
+        replacementBody: null,
+        upstreamError: { source: "sse", status: 200, message: "overloaded", body: "", retryAfterMs: null },
+      };
+    });
+    const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+      .mockResolvedValue({ response: sse(OVERLOAD_FRAME), url: "u", headers: {} });
+
+    const result = await executor.execute({
+      model: "gpt-6-sol", body: {}, stream: true, credentials: {}, overloadDeadline: Date.now() + 6_000,
+      log: { warn: (t, m) => lines.push(`${t} ${m}`), debug: () => {} },
+    });
+    superExecute.mockRestore();
+
+    // Exactly one upstream attempt: the retry was refused, not started and killed.
+    expect(calls.count).toBe(1);
+    expect(result.response.status).toBe(503);
+    expect(result.response.__smUpstreamError?.origin).toBe("sse_overload");
+    // The refusal must be legible at WARN — it is the difference between "the
+    // upstream stayed overloaded" and "we chose to hand over to the next model".
+    expect(lines.join("\n")).toMatch(/below the 15s an attempt needs — not starting retry 1/);
+  }, 15_000);
+
+  it("still performs the guaranteed minRetries before applying the floor", async () => {
+    const calls = { count: 0 };
+    const executor = new CodexExecutor();
+    // A 1s backoff (not the 5s above) so the two guaranteed retries do not cost
+    // 10s of real sleeping — the assertion is about which retries run, not timing.
+    executor.config = { ...executor.config, overloadRetry: {
+      budgetMs: 60_000, baseDelayMs: 1_000, maxDelayMs: 1_000, factor: 1, minRetries: 2, maxAttempts: 50, minSleepMs: 1, minAttemptMs: 15_000,
+    } };
+    vi.spyOn(executor, "_peekSseTransientError").mockImplementation(async () => {
+      calls.count += 1;
+      return {
+        matched: "server_is_overloaded", message: "overloaded", accountFallback: false, replacementBody: null,
+        upstreamError: { source: "sse", status: 200, message: "overloaded", body: "", retryAfterMs: null },
+      };
+    });
+    const superExecute = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+      .mockResolvedValue({ response: sse(OVERLOAD_FRAME), url: "u", headers: {} });
+
+    const result = await executor.execute({
+      model: "gpt-6-sol", body: {}, stream: true, credentials: {}, overloadDeadline: Date.now() + 6_000, log: {},
+    });
+    superExecute.mockRestore();
+
+    // 1 initial attempt + the 2 guaranteed retries; retry 3 is refused by the floor.
+    expect(calls.count).toBe(3);
+    expect(result.response.status).toBe(503);
+  }, 15_000);
 });
 
 describe("channel strategy drives the retry curve", () => {

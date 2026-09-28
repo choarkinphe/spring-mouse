@@ -13,6 +13,7 @@ import {
   HTTP_STATUS,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
+  hasRoomForRetry,
 } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
@@ -561,7 +562,7 @@ export class CodexExecutor extends BaseExecutor {
     // Precedence: the channel's strategy entry (dashboard-tunable, per provider)
     // wins over the executor's own config, which wins over the built-in defaults.
     const overloadRetry = resolveOverloadRetryConfig(args.credentials?.providerStrategy, this.config.overloadRetry);
-    const { budgetMs, minRetries, maxAttempts, minSleepMs } = overloadRetry;
+    const { budgetMs, minRetries, maxAttempts, minSleepMs, minAttemptMs } = overloadRetry;
     // The per-model budget is capped by the caller's request-wide deadline: a combo
     // whose members all reach the same saturated upstream must not spend a fresh
     // 90s per model (measured: the GPT chain has 3-6 such models). Past that
@@ -643,7 +644,7 @@ export class CodexExecutor extends BaseExecutor {
           HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
         return result;
       }
-      attempt++;
+      const nextAttempt = attempt + 1;
       // An upstream Retry-After, when present, wins over the local curve because
       // it is the only authoritative recovery estimate we get; otherwise the
       // delay grows exponentially. Full jitter keeps concurrent requests that all
@@ -651,13 +652,37 @@ export class CodexExecutor extends BaseExecutor {
       // the very burst that overloaded the upstream.
       const upstreamDelayMs = Number.isFinite(peek.upstreamError?.retryAfterMs) && peek.upstreamError.retryAfterMs > 0
         ? peek.upstreamError.retryAfterMs
-        : resolveOverloadDelayMs(attempt, overloadRetry);
+        : resolveOverloadDelayMs(nextAttempt, overloadRetry);
       // Never sleep past the deadline: the remaining budget caps the wait, but
       // `minSleepMs` keeps the sleep meaningful instead of a zero-delay hot loop
       // against an upstream that is already saturated.
       const remainingMs = Math.max(0, deadline - Date.now());
       const targetMs = Math.min(upstreamDelayMs, Math.max(remainingMs, minSleepMs));
       const waitMs = Math.max(1, Math.round(targetMs * (0.5 + Math.random() * 0.5)));
+      // A retry needs room for a whole attempt AFTER its backoff, not merely a
+      // positive remainder. Measured on production, a codex attempt costs 10-30s to
+      // reach its first token (median 10.8s, p75 19.6s over n=1478 successful turns),
+      // and every retry that began with less room than that was cut off by the scan
+      // deadline and reported as "SSE scan stopped on the request deadline … with no
+      // output" — indistinguishable from a real overload, and it spends budget the
+      // combo's remaining models need. Across one production window, 5 of 156 retry
+      // decisions had under 15s of room and each one paired to such a scan-stop
+      // within 0.6s of its own deadline; all 95 recoveries in that window had more
+      // room than this floor. Refusing to start such an attempt is what hands
+      // control to the next combo member while the client can still be served.
+      // `minRetries` stays guaranteed (hasRoomForRetry honours it), so this can
+      // never leave a request with no retry at all. A floor of 0 disables the
+      // guard, leaving the budget (and the `exhausted` path above) to govern.
+      if (minAttemptMs > 0 && !hasRoomForRetry({
+        deadline, now: Date.now(), waitMs, minAttemptMs, retryNumber: nextAttempt, minRetries: effectiveMinRetries,
+      })) {
+        const roomMs = Math.max(0, deadline - (Date.now() + waitMs));
+        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — ${fmtDuration(roomMs)} left after a ${fmtDuration(waitMs)} backoff, below the ${fmtDuration(minAttemptMs)} an attempt needs — not starting retry ${nextAttempt}, handing the request to the next candidate`);
+        result.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
+        return result;
+      }
+      attempt = nextAttempt;
       // WARN, not DEBUG: under the production LOG_LEVEL=WARN a debug line is invisible,
       // so the retry — the whole point of the overload budget — left no trace when it
       // succeeded, and only the exhaustion path was observable. Retries are rare and

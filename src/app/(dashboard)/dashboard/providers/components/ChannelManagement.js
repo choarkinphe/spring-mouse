@@ -1604,6 +1604,11 @@ const STRATEGY_DEFAULTS = {
   overloadRetryBudgetSeconds: 90,
   overloadRetryBaseDelaySeconds: 3,
   overloadRetryMaxDelaySeconds: 15,
+  // Room a retry must have left to be started at all. A codex attempt costs 10-30s
+  // to reach its first token, so a retry started with less than this is cut off by
+  // the scan deadline and reported as an overload it is not. Mirrors
+  // runtimeConfig.js's `minAttemptMs` (15s); 0 disables the guard.
+  overloadRetryMinAttemptSeconds: 15,
 };
 
 function channelStrategyForm(strategy = {}) {
@@ -1625,6 +1630,11 @@ function channelStrategyForm(strategy = {}) {
     overloadRetryBudgetSeconds: toSeconds(strategy.overloadRetryBudgetMs, STRATEGY_DEFAULTS.overloadRetryBudgetSeconds),
     overloadRetryBaseDelaySeconds: toSeconds(strategy.overloadRetryBaseDelayMs, STRATEGY_DEFAULTS.overloadRetryBaseDelaySeconds),
     overloadRetryMaxDelaySeconds: toSeconds(strategy.overloadRetryMaxDelayMs, STRATEGY_DEFAULTS.overloadRetryMaxDelaySeconds),
+    // Unlike the three above, 0 is meaningful here (it disables the guard), so this
+    // one must not be floored to 1 the way `toSeconds` does.
+    overloadRetryMinAttemptSeconds: strategy.overloadRetryMinAttemptMs == null
+      ? STRATEGY_DEFAULTS.overloadRetryMinAttemptSeconds
+      : Math.max(0, Math.round((Number(strategy.overloadRetryMinAttemptMs) || 0) / 1000)),
   };
 }
 
@@ -1677,6 +1687,9 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
       overloadRetryBudgetSeconds: Math.max(1, Number(form.overloadRetryBudgetSeconds) || 1),
       overloadRetryBaseDelaySeconds: Math.max(1, Number(form.overloadRetryBaseDelaySeconds) || 1),
       overloadRetryMaxDelaySeconds: Math.max(1, Number(form.overloadRetryMaxDelaySeconds) || 1),
+      // 0 is a valid value here: it disables the minimum-room guard. Do not floor it
+      // to 1, which would silently mean "never retry with under a second left".
+      overloadRetryMinAttemptSeconds: Math.max(0, Number(form.overloadRetryMinAttemptSeconds) || 0),
     });
   };
 
@@ -1767,6 +1780,7 @@ function ChannelStrategyModal({ providerId, strategy = {}, saving, error, onClos
             {numberField("overloadRetryBudgetSeconds", "重试总预算（秒）", 1, 600, "单个模型最多重试多久；用满后返回 503，交给组合的下一个模型。")}
             {numberField("overloadRetryBaseDelaySeconds", "首次退避（秒）", 1, 120, "第一次重试前的等待；之后按 3 倍递增。")}
             {numberField("overloadRetryMaxDelaySeconds", "单次退避上限（秒）", 1, 120, "单次等待的天花板，避免退避无限增长。")}
+            {numberField("overloadRetryMinAttemptSeconds", "重试所需剩余预算（秒）", 0, 120, "退避后剩余预算低于此值就不再重试，直接返回 503 交给组合的下一个模型。一次上游尝试通常要 10-30 秒才出第一个 token，剩余不够时重试必然被扫描截止时间掐断，还会拖累后面的模型。0 表示不限制。")}
           </div>
         </section>
 

@@ -144,10 +144,17 @@ export const DEFAULT_RETRY_CONFIG = {
 //   maxDelayMs  — ceiling for a single backoff
 //   factor      — backoff multiplier
 //   minRetries  — retries allowed even after the budget is spent, so a single
-//                 slow attempt cannot consume the whole budget on its own
+//                 slow attempt cannot consume the whole budget on its own. It is
+//                 overridden by `minAttemptMs`: a retry that cannot reach a first
+//                 token is not worth forcing.
 //   maxAttempts — hard cap, so a malformed config cannot loop forever
 //   minSleepMs  — floor for a single backoff, so the loop can never hot-loop
 //                 against an upstream that is already saturated
+//   minAttemptMs — the smallest remaining budget a retry may be STARTED into.
+//                 Below it the retry is cut off by the scan deadline and reported
+//                 as "no output", which wastes the attempt AND spends the combo's
+//                 remaining models' time on a model that is already saturated.
+//                 0 disables the guard (retry while any budget is left).
 export const DEFAULT_OVERLOAD_RETRY = {
   budgetMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_BUDGET_MS", 90 * 1000),
   baseDelayMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_BASE_DELAY_MS", 3 * 1000),
@@ -156,6 +163,7 @@ export const DEFAULT_OVERLOAD_RETRY = {
   minRetries: 1,
   maxAttempts: 10,
   minSleepMs: 1000,
+  minAttemptMs: envMs("SPRING_MOUSE_OVERLOAD_RETRY_MIN_ATTEMPT_MS", 15 * 1000),
 };
 
 // Backoff for overload retry number `attempt` (1-based), before jitter.
@@ -188,7 +196,26 @@ export function pickOverloadRetryOverrides(strategy = {}) {
   if (baseDelayMs) out.baseDelayMs = baseDelayMs;
   const maxDelayMs = positiveMs(strategy.overloadRetryMaxDelayMs);
   if (maxDelayMs) out.maxDelayMs = maxDelayMs;
+  const minAttemptMs = positiveMs(strategy.overloadRetryMinAttemptMs);
+  if (minAttemptMs) out.minAttemptMs = minAttemptMs;
   return out;
+}
+
+// Whether the retry loop may START the `retryNumber`-th upstream attempt when the
+// backoff ahead of it is `waitMs`. A retry that begins with less room than
+// `minAttemptMs` is not a retry at all: the attempt costs 10-30s to reach a first
+// token on production, so the scan stops it at the deadline and reports "no
+// output" — indistinguishable from a genuine overload, and it burns the
+// request-wide budget the combo's remaining models need.
+//
+// `minRetries` is still honoured: those retries are guaranteed while the budget is
+// live, so one slow attempt cannot leave the request with no retry at all. The
+// floor only cuts retries the budget cannot fit.
+export function hasRoomForRetry({ deadline, now, waitMs = 0, minAttemptMs = 0, retryNumber = 1, minRetries = 0 } = {}) {
+  if (retryNumber <= minRetries) return true;
+  const roomMs = deadline - (now + waitMs);
+  if (!(minAttemptMs > 0)) return roomMs > 0;
+  return roomMs >= minAttemptMs;
 }
 
 // The effective overload-retry config for one call. `executorConfig` is the
@@ -198,6 +225,12 @@ export function resolveOverloadRetryConfig(strategy = {}, executorConfig = {}) {
   const config = { ...DEFAULT_OVERLOAD_RETRY, ...executorConfig, ...pickOverloadRetryOverrides(strategy) };
   // A base above the ceiling would make the curve non-monotonic; clamp instead.
   if (config.baseDelayMs > config.maxDelayMs) config.baseDelayMs = config.maxDelayMs;
+  // A floor at or above the whole budget would refuse EVERY retry, including the
+  // guaranteed `minRetries` ones — a contradictory pair, so the floor is dropped
+  // and the budget alone governs. That also keeps a deliberately tiny budget (a
+  // test, or an operator tuning a channel down to a few hundred ms) behaving as a
+  // budget rather than silently becoming "no retries at all".
+  if (config.minAttemptMs >= config.budgetMs) config.minAttemptMs = 0;
   return config;
 }
 

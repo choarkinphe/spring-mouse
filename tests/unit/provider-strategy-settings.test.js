@@ -181,6 +181,23 @@ describe("provider strategy settings", () => {
     });
   });
 
+  it("stores the minimum-room guard, including the 0 that disables it", async () => {
+    // A retry needs this much budget left to be started at all; an attempt costs
+    // 10-30s to reach a first token, so a retry started with less is cut off by the
+    // scan deadline and reported as an overload it is not. 0 is a REAL value here
+    // (it disables the guard), unlike every other duration on this entry where 0
+    // means "unset" — so it must survive the round-trip instead of being dropped.
+    const enabled = await saveStrategy({ overloadRetryMinAttemptSeconds: 15 });
+    expect(enabled).toEqual({ overloadRetryMinAttemptMs: 15_000 });
+
+    const disabled = await saveStrategy({ overloadRetryMinAttemptSeconds: 0 });
+    expect(disabled).toEqual({ overloadRetryMinAttemptMs: 0 });
+
+    // The raw-ms form is accepted too, matching the other durations.
+    const raw = await saveStrategy({ overloadRetryMinAttemptMs: 20_000 });
+    expect(raw).toEqual({ overloadRetryMinAttemptMs: 20_000 });
+  });
+
   it("ignores non-positive numbers instead of persisting them", async () => {
     const saved = await saveStrategy({
       providerMaxConcurrentStreams: 0,

@@ -64,6 +64,7 @@ jobs:
           unit/chat-routing-telemetry.test.js
           unit/streaming-attempt-settlement.test.js
           unit/chatcore-stream-settle-hooks.test.js
+          unit/codex-overload-retry-budget.test.js
 
   build:
     needs: test

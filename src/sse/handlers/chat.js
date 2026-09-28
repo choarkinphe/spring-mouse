@@ -266,6 +266,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const modelInfo = await getModelInfo(modelStr);
   const effectiveRouteKind = routeKind || modelInfo.routeKind;
   const effectiveRouted = typeof routed === "boolean" ? routed : modelInfo.routed;
+  let provider = modelInfo.provider;
+  const model = modelInfo.model;
+  const implicitClaudeFallback = typeof modelStr === "string"
+    && !modelStr.includes("/")
+    && /^claude-/i.test(modelStr)
+    && modelInfo?.provider === "anthropic"
+    && modelInfo.model === modelStr
+    && !modelInfo.routeKind;
   const requestStartTime = Date.now();
   // One id for this client request, shared by the routing log lines, the usage
   // row, and every retry inside the loop below. chatCore used to mint its own id
@@ -297,8 +305,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const originalModel = clientRawRequest?.body?.model || body?.model || modelStr || null;
     const routingMetadata = createModelRouting({
       originalModel,
-      provider: modelInfo.provider,
-      model: modelInfo.model,
+      provider: provider,
+      model: model,
       routeKind: effectiveRouteKind,
       routed: effectiveRouted,
     });
@@ -390,7 +398,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
   }
 
-  const { provider, model } = modelInfo;
+  const { provider: initialProvider } = modelInfo;
   const openAttempt = (credentials) => {
     const attempt = routing?.openAttempt({
       modelCallId, role: attemptRole, provider, model,
@@ -411,9 +419,24 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return attempt;
   };
   const routingSettings = await getSettings();
-  const overloadMaxRetries = resolveOverloadMaxRetries(
+  let overloadMaxRetries = resolveOverloadMaxRetries(
     (routingSettings.providerStrategies || {})[provider],
   );
+
+  const switchToImplicitClaudeFallback = () => {
+    if (!implicitClaudeFallback || provider !== initialProvider) return false;
+    provider = "claude";
+    overloadMaxRetries = resolveOverloadMaxRetries(
+      (routingSettings.providerStrategies || {})[provider],
+    );
+    excludeConnectionIds.clear();
+    modelLevelExcluded.clear();
+    lastError = null;
+    lastStatus = null;
+    modelLevelFailures = 0;
+    log.info("FALLBACK", `${modelStr} | no usable anthropic account · trying claude OAuth channel`);
+    return true;
+  };
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -466,6 +489,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (credentials?.accessDenied) {
       saveOutcome("blocked:access_denied");
       return errorResponse(HTTP_STATUS.FORBIDDEN, credentials.resource === "model" ? "Model is not available for this API key" : "No provider account is available for this API key");
+    }
+
+    // An unprefixed Claude Desktop model is inferred as Anthropic for API-key
+    // compatibility. If that channel has no usable account, retry the same
+    // model through the configured Claude OAuth channel before returning 404/503.
+    if ((credentials == null || credentials.allRateLimited) && switchToImplicitClaudeFallback()) {
+      continue;
     }
 
     if (!credentials || credentials.allRateLimited) {

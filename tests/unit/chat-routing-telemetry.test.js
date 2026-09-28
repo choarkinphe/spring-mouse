@@ -169,6 +169,34 @@ beforeEach(() => {
 });
 
 describe("chat routing telemetry lifecycle", () => {
+  it("falls back from an unprefixed Claude model to the Claude OAuth provider", async () => {
+    mocks.getModelInfo.mockResolvedValue({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(connection("claude-account"));
+    mocks.handleChatCore.mockImplementation(async ({ modelInfo }) => {
+      expect(modelInfo.provider).toBe("claude");
+      return okResult();
+    });
+
+    const res = await handleChat(request("claude-sonnet-4-5"));
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider))
+      .toEqual(["anthropic", "claude"]);
+  });
+
+  it("does not fall back for an explicitly selected Anthropic provider", async () => {
+    mocks.getModelInfo.mockResolvedValue({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    mocks.getProviderCredentials.mockResolvedValue(null);
+
+    const res = await handleChat(request("anthropic/claude-sonnet-4-5"));
+
+    expect(res.status).toBe(404);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+    expect(mocks.getProviderCredentials.mock.calls[0][0]).toBe("anthropic");
+  });
+
   it("opens and completes exactly one request around a single successful model call", async () => {
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
     mocks.handleChatCore.mockResolvedValue(okResult());

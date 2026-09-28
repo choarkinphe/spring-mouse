@@ -35,6 +35,7 @@ import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
 import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
+import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -185,29 +186,64 @@ export async function handleChat(request, clientRawRequest = null) {
 
     const requiredCapabilities = detectRequiredCapabilities(body);
     const overloadDeadline = Date.now() + REQUEST_OVERLOAD_BUDGET_MS;
-    const comboEntries = await getComboModelEntries(modelStr, accessTags);
+    const originalModelStr = modelStr;
+    let routedModelStr = modelStr;
+    let defaultRouteKind = null;
+    let defaultRouteError = null;
+
+    if (isClaudeMessagesRouteRequest(request.url, modelStr)) {
+      // Existing aliases and combo names retain their explicit meaning. A disabled
+      // or empty combo must not be silently replaced by the global default route.
+      const originalCombo = await getComboByName(modelStr);
+      const originalInfo = originalCombo ? null : await getModelInfo(modelStr);
+      const hasExplicitRoute = Boolean(originalCombo)
+        || originalInfo?.routeKind === "alias"
+        || originalInfo?.routeKind === "combo";
+
+      if (!hasExplicitRoute && settings.claudeMessagesRoute) {
+        const target = settings.claudeMessagesRoute;
+        if (!target.includes("/")) {
+          const targetCombo = await getComboByName(target);
+          defaultRouteError = getClaudeMessagesComboError(targetCombo);
+          if (!defaultRouteError) {
+            routedModelStr = target;
+            defaultRouteKind = "combo";
+          }
+        } else {
+          routedModelStr = target;
+          defaultRouteKind = "alias";
+        }
+      }
+    }
+
+    if (defaultRouteError) {
+      log.warn("CHAT", `${originalModelStr} | invalid Claude Messages route target: ${defaultRouteError}`);
+      return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, defaultRouteError), "internal_error");
+    }
+
+    const comboEntries = await getComboModelEntries(routedModelStr, accessTags);
     let response;
 
     if (comboEntries) {
-      const combo = await getComboByName(modelStr);
+      const combo = await getComboByName(routedModelStr);
       if (!canAccessWithTags(accessTags, combo?.accessTags)) {
-        log.warn("AUTH", `${modelStr} | denied by combo access tags`);
+        log.warn("AUTH", `${routedModelStr} | denied by combo access tags`);
         return finishEarly(errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key"), "access_denied");
       }
       const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
       if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
 
       const comboStrategies = settings.comboStrategies || {};
-      const comboConfig = comboStrategies[modelStr] || {};
+      const comboConfig = comboStrategies[routedModelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
-      routing.hint({ strategy: comboStrategy, comboName: modelStr });
+      routing.hint({ strategy: comboStrategy, comboName: routedModelStr });
       const routedEntries = comboStrategy === "auto"
-        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, routing })
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: routedModelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, routing })
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
       if (comboStrategy === "fusion") {
-        log.info("CHAT", `Combo \"${modelStr}\" with ${routedModels.length} compatible models (strategy: fusion)`);
+        log.info("CHAT", `Combo \"${routedModelStr}\" with ${routedModels.length} compatible models (strategy: fusion)`);
         response = await handleFusionChat({
           body,
           models: routedModels,
@@ -225,25 +261,30 @@ export async function handleChat(request, clientRawRequest = null) {
             });
           },
           log,
-          comboName: modelStr,
-          judgeModel: comboStrategies[modelStr]?.judgeModel,
-          tuning: comboStrategies[modelStr]?.fusionTuning,
+          comboName: routedModelStr,
+          judgeModel: comboStrategies[routedModelStr]?.judgeModel,
+          tuning: comboStrategies[routedModelStr]?.fusionTuning,
         });
       } else {
         const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
-        log.info("CHAT", `Combo \"${modelStr}\" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+        log.info("CHAT", `Combo \"${routedModelStr}\" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
         response = await handleComboChat({
           body,
           models: routedModels,
           handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "combo", routed: true }),
           log,
-          comboName: modelStr,
+          comboName: routedModelStr,
           comboStrategy,
           comboStickyLimit,
         });
       }
     } else {
-      response = await handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "direct", routed: false });
+      response = await handleSingleModelChat(body, routedModelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, {
+        routing,
+        role: "primary",
+        routeKind: defaultRouteKind || "direct",
+        routed: Boolean(defaultRouteKind),
+      });
     }
 
     // Select only the response returned by the complete external route. A failed
@@ -315,8 +356,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       trafficRequestId: getTrafficRequestId(request),
       startedAt: new Date(requestStartTime).toISOString(),
       completedAt: new Date().toISOString(),
-      provider: modelInfo.provider || null,
-      model: modelInfo.model || null,
+      provider: provider || null,
+      model: model || null,
       originalModel: routingMetadata.originalModel,
       executedModel: routingMetadata.executedModel,
       routing: routingMetadata,

@@ -5,7 +5,8 @@ import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
-import { ROLE, RESPONSES_ITEM, CLAUDE_STOP } from "../../translator/schema/index.js";
+import { ROLE, RESPONSES_ITEM, CLAUDE_STOP, CLAUDE_BLOCK } from "../../translator/schema/index.js";
+import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { classifyRawSSEBlock } from "../../utils/routingOutcome.js";
 import { extractUsage, mergeUsage } from "../../utils/usageTracking.js";
 
@@ -50,6 +51,64 @@ function buildClaudeMessage({ jsonResponse, textContent, toolCalls, usage, model
       output_tokens: usage.output_tokens || 0,
       ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
       ...(cacheCreate > 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+    },
+  };
+}
+
+/**
+ * Convert a Chat Completions JSON body into a Claude `Message`.
+ *
+ * A Claude Messages client (`POST /v1/messages`) routed to a force-streaming
+ * provider (openai, codex, grok-cli, …) is served by this module's SSE→JSON path.
+ * That path collapsed the stream into a ChatCompletion, so the client rejected an
+ * otherwise valid 200 with "body is JSON but not a Message" — exactly the failure
+ * the Responses-format branch was added to fix, but for the Claude caller.
+ *
+ * `parsed` carries OpenAI usage (prompt_tokens/completion_tokens) because
+ * parseSSEToOpenAIResponse normalized the stream's usage. This mirrors the shape
+ * the streaming translator emits (openai-to-claude.js), so a non-streaming and a
+ * streaming Claude caller see the same Message.
+ */
+function chatCompletionToClaudeMessage(parsed, fallbackModel) {
+  const choice = parsed?.choices?.[0];
+  const message = choice?.message || {};
+  const content = [];
+
+  // Reasoning → thinking block first (mirrors the streaming path's block order).
+  const reasoning = message.reasoning_content || message.reasoning;
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    content.push({ type: CLAUDE_BLOCK.THINKING, thinking: reasoning });
+  }
+  if (typeof message.content === "string" && message.content.length > 0) {
+    content.push({ type: CLAUDE_BLOCK.TEXT, text: message.content });
+  }
+  for (const tc of message.tool_calls || []) {
+    const fn = tc.function || {};
+    let input = {};
+    try { input = JSON.parse(fn.arguments || "{}"); } catch { input = {}; }
+    content.push({
+      type: CLAUDE_BLOCK.TOOL_USE,
+      id: tc.id || `toolu_${Date.now()}_${content.length}`,
+      name: fn.name || "",
+      input,
+    });
+  }
+  if (content.length === 0) content.push({ type: CLAUDE_BLOCK.TEXT, text: "" });
+
+  const usage = parsed?.usage || {};
+  return {
+    id: String(parsed?.id || `msg_${Date.now()}`).replace(/^chatcmpl-/, ""),
+    type: "message",
+    role: ROLE.ASSISTANT,
+    model: parsed?.model || fallbackModel || "unknown",
+    content,
+    // Chat finish_reason → Claude stop_reason (stop→end_turn, length→max_tokens,
+    // tool_calls→tool_use), same mapping the streaming translator uses.
+    stop_reason: fromOpenAIFinish(choice?.finish_reason, FORMATS.CLAUDE),
+    stop_sequence: null,
+    usage: {
+      input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
+      output_tokens: usage.completion_tokens || usage.output_tokens || 0,
     },
   };
 }
@@ -482,15 +541,17 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       }
     }
 
-    // A Responses-format client (e.g. Codex) forced this provider to stream,
-    // but wants JSON back. parseSSEToOpenAIResponse yields a Chat Completions
-    // body; convert it to the Responses `output` shape so tool_calls are not
-    // lost on the non-streaming return path. Inlined (not imported from
-    // nonStreamingHandler.js) to avoid a circular import: nonStreamingHandler
-    // already imports parseSSEToOpenAIResponse from this module.
+    // A Claude Messages client (`POST /v1/messages`) forced this provider to
+    // stream, but wants JSON back. parseSSEToOpenAIResponse yields a Chat
+    // Completions body; reshape it into a Claude `Message` so the caller does not
+    // reject an otherwise valid 200 with "body is JSON but not a Message".
+    // Inlined (not imported from nonStreamingHandler.js) to avoid a circular
+    // import: nonStreamingHandler already imports parseSSEToOpenAIResponse here.
     const finalBody = sourceFormat === FORMATS.OPENAI_RESPONSES
       ? chatCompletionToResponses(parsed, customToolNames)
-      : parsed;
+      : sourceFormat === FORMATS.CLAUDE
+        ? chatCompletionToClaudeMessage(parsed, model)
+        : parsed;
 
     return { success: true, response: new Response(JSON.stringify(finalBody), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {

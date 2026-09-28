@@ -126,8 +126,8 @@ const connection = (id) => ({
   releaseRouteSlot: vi.fn(),
 });
 
-function request(model = "probe/model-x") {
-  return new Request("https://router.test/v1/chat/completions", {
+function request(model = "probe/model-x", endpoint = "/v1/chat/completions") {
+  return new Request(`https://router.test${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
@@ -197,6 +197,166 @@ describe("chat routing telemetry lifecycle", () => {
     expect(mocks.getProviderCredentials.mock.calls[0][0]).toBe("anthropic");
   });
 
+  it("routes a bare Claude Messages model to the configured OpenAI target without querying Anthropic", async () => {
+    const originalModel = "claude-sonnet-4-5";
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      claudeMessagesRoute: "openai/gpt-4o",
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getModelInfo.mockImplementation(async (model) => {
+      if (model === originalModel) return { provider: "anthropic", model };
+      if (model === "openai/gpt-4o") return { provider: "openai", model: "gpt-4o" };
+      return { provider: "probe", model };
+    });
+    mocks.getProviderCredentials.mockResolvedValue(connection("openai-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+
+    const res = await handleChat(request(originalModel, "/v1/messages"));
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["openai"]);
+    expect(coreOptions.modelInfo).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o",
+      routeKind: "alias",
+      routed: true,
+    });
+    expect(coreOptions.body.model).toBe("openai/gpt-4o");
+    expect(coreOptions.clientRawRequest.body.model).toBe(originalModel);
+  });
+
+  it("routes the alternate Claude Messages endpoint to a configured DeepSeek target", async () => {
+    const originalModel = "claude-sonnet-4-5";
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      claudeMessagesRoute: "deepseek/deepseek-chat",
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getModelInfo.mockImplementation(async (model) => {
+      if (model === originalModel) return { provider: "anthropic", model };
+      if (model === "deepseek/deepseek-chat") return { provider: "deepseek", model: "deepseek-chat" };
+      return { provider: "probe", model };
+    });
+    mocks.getProviderCredentials.mockResolvedValue(connection("deepseek-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+
+    const res = await handleChat(request(originalModel, "/api/v1/messages"));
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["deepseek"]);
+    expect(coreOptions.modelInfo).toMatchObject({
+      provider: "deepseek",
+      model: "deepseek-chat",
+      routeKind: "alias",
+      routed: true,
+    });
+    expect(coreOptions.body.model).toBe("deepseek/deepseek-chat");
+    expect(coreOptions.clientRawRequest.body.model).toBe(originalModel);
+  });
+
+  it("does not apply the Claude Messages default route to Chat Completions", async () => {
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      claudeMessagesRoute: "openai/gpt-4o",
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getModelInfo.mockResolvedValue({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    mocks.getProviderCredentials.mockResolvedValue(connection("anthropic-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+
+    const res = await handleChat(request("claude-sonnet-4-5", "/v1/chat/completions"));
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["anthropic"]);
+    expect(coreOptions.modelInfo).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    expect(coreOptions.body.model).toBe("anthropic/claude-sonnet-4-5");
+  });
+
+  it("does not rewrite an explicitly prefixed model on the Claude Messages endpoint", async () => {
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      claudeMessagesRoute: "openai/gpt-4o",
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getModelInfo.mockResolvedValue({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    mocks.getProviderCredentials.mockResolvedValue(connection("anthropic-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+
+    const res = await handleChat(request("anthropic/claude-sonnet-4-5", "/v1/messages"));
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["anthropic"]);
+    expect(coreOptions.body.model).toBe("anthropic/claude-sonnet-4-5");
+    expect(coreOptions.modelInfo).toMatchObject({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      routeKind: "direct",
+      routed: false,
+    });
+  });
+  it("routes a bare Claude Messages model through a configured combo target", async () => {
+    const originalModel = "claude-sonnet-4-5";
+    const combo = { name: "desktop-models", kind: "llm", isActive: true, models: ["openai/gpt-4o"], accessTags: [] };
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      claudeMessagesRoute: "desktop-models",
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getComboByName.mockImplementation(async (name) => name === "desktop-models" ? combo : null);
+    mocks.getComboModelEntries.mockImplementation(async (model) => model === "desktop-models" ? ["openai/gpt-4o"] : null);
+    mocks.getModelInfo.mockImplementation(async (model) => {
+      if (model === originalModel) return { provider: "anthropic", model };
+      if (model === "openai/gpt-4o") return { provider: "openai", model: "gpt-4o" };
+      return { provider: "probe", model };
+    });
+    mocks.getProviderCredentials.mockResolvedValue(connection("openai-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+    mocks.handleComboChat.mockImplementation(async (options) => options.handleSingleModel(options.body, options.models[0]));
+
+    const res = await handleChat(request(originalModel, "/v1/messages"));
+    await flush();
+
+    expect(res.status).toBe(200);
+    expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["openai"]);
+    expect(mocks.handleComboChat.mock.calls[0][0].comboName).toBe("desktop-models");
+    expect(coreOptions.modelInfo).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o",
+      routeKind: "combo",
+      routed: true,
+    });
+  });
   it("opens and completes exactly one request around a single successful model call", async () => {
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
     mocks.handleChatCore.mockResolvedValue(okResult());

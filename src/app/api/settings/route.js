@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
+import { getSettings, updateSettings, getComboByName } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
+import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -209,6 +210,20 @@ export async function PATCH(request) {
     if (Object.prototype.hasOwnProperty.call(body, "usageDashboardScopeTags")) {
       body.usageDashboardScopeTags = normalizeAccessTags(body.usageDashboardScopeTags);
     }
+
+    if (Object.prototype.hasOwnProperty.call(body, "claudeMessagesRoute")) {
+      try {
+        body.claudeMessagesRoute = normalizeClaudeMessagesRoute(body.claudeMessagesRoute);
+        if (body.claudeMessagesRoute && !body.claudeMessagesRoute.includes("/")) {
+          const combo = await getComboByName(body.claudeMessagesRoute);
+          const comboError = getClaudeMessagesComboError(combo);
+          if (comboError) throw new Error(comboError);
+        }
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+
 
     if (Object.prototype.hasOwnProperty.call(body, "modelAccessTags")) {
       const source = body.modelAccessTags && typeof body.modelAccessTags === "object" && !Array.isArray(body.modelAccessTags)

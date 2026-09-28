@@ -25,6 +25,9 @@ const DEFAULT_SETTINGS = {
   tailscaleUrl: "",
   providerStrategies: {},
   providerChannelOrder: [],
+  // Optional target for bare Claude Desktop Messages model names. Empty keeps
+  // the historical Anthropic/OAuth inference path unchanged.
+  claudeMessagesRoute: "",
   apiKeyAccessTags: {},
   usageDashboardScopeTags: [],
   modelAccessTags: {},

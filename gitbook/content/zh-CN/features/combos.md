@@ -26,6 +26,26 @@ Spring Mouse 会按顺序自动尝试每个模型,直到成功为止。
 
 ---
 
+## Claude Desktop 的 Messages 请求
+
+Claude Desktop 的 inference configuration 可以固定使用 Claude Messages 协议，而不需要把模型名称改成 GPT 或 DeepSeek。配置 Spring Mouse 的地址后，在 Dashboard 的「设置 → Claude Desktop 路由」中填写默认目标：
+
+```text
+Base URL: http://localhost:8008/v1
+Model: claude-sonnet-4-5
+
+Claude Messages 默认目标:
+  openai/gpt-4o
+  deepseek/deepseek-chat
+  desktop-models
+```
+
+目标可以是 `provider/model`，也可以是「组合」页面中已经创建的 LLM 组合名。使用组合时，GPT、DeepSeek 或其他兼容通道会继续按照组合的回退、轮询或融合策略执行。例如，先创建一个名为 `desktop-models` 的组合，再把它填入 Claude Desktop 路由设置即可。
+
+该设置只对 `/v1/messages` 或 `/api/v1/messages` 中的裸 `claude-*` 模型名生效。显式的 `openai/...`、`deepseek/...`、`anthropic/...` 模型、已有别名/组合，以及 `/v1/chat/completions` 请求不会被这个默认值覆盖。留空并保存会恢复原有的 Anthropic/OAuth 模型推断；因此没有 Anthropic 接口时，应填写一个已配置的 GPT、DeepSeek 或组合目标。
+
+---
+
 ## 为什么使用组合?
 
 ### 1. 最大化订阅价值

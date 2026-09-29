@@ -30,7 +30,10 @@ export default function SegmentedControl({
           type="button"
           onClick={() => onChange(option.value)}
           className={cn(
-            "shrink-0 rounded-[8px] font-medium transition-all",
+            // inline-flex + items-center so an icon and the label share a centre
+            // line. With the default baseline alignment the icon (an inline-block
+            // with line-height:1) rides ~7px above the label instead.
+            "inline-flex items-center justify-center gap-1.5 shrink-0 rounded-[8px] font-medium transition-all",
             size === "xs" ? "px-2" : "px-4",
             sizes[size],
             value === option.value
@@ -39,7 +42,10 @@ export default function SegmentedControl({
           )}
         >
           {option.icon && (
-            <span className="material-symbols-outlined text-[16px] mr-1.5">
+            // `!` is required: globals.css sets `.material-symbols-outlined
+            // { font-size: 24px }` at the same specificity, and without the
+            // important suffix the icon renders 24px instead of 16px.
+            <span className="material-symbols-outlined text-[16px]! shrink-0">
               {option.icon}
             </span>
           )}

@@ -4,6 +4,7 @@ import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
+import { getActiveComboModels } from "open-sse/services/combo.js";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute";
@@ -230,7 +231,8 @@ export async function PATCH(request) {
         body.claudeMessagesRoute = normalizeClaudeMessagesRoute(body.claudeMessagesRoute);
         if (body.claudeMessagesRoute && !body.claudeMessagesRoute.includes("/")) {
           const combo = await getComboByName(body.claudeMessagesRoute);
-          const comboError = getClaudeMessagesComboError(combo);
+          const activeModels = combo?.models ? getActiveComboModels(combo.models, new Date()) : null;
+          const comboError = getClaudeMessagesComboError(combo, activeModels);
           if (comboError) throw new Error(comboError);
         }
       } catch (error) {

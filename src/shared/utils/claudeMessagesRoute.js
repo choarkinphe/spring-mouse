@@ -17,8 +17,8 @@ export function normalizeClaudeMessagesRoute(value) {
   }
   const slash = route.indexOf("/");
   if (slash >= 0) {
-    // Model ids may themselves contain slashes (e.g. OpenRouter models), but
-    // provider/model targets must not start or end with a slash.
+    // Legacy provider/model values may contain slashes in the model id, but
+    // the target itself must still have a provider prefix and a model suffix.
     if (slash === 0 || route.endsWith("/")) {
       throw new Error("claudeMessagesRoute must be provider/model or a combo name");
     }
@@ -28,10 +28,17 @@ export function normalizeClaudeMessagesRoute(value) {
   return route;
 }
 
-export function getClaudeMessagesComboError(combo) {
+export function getClaudeMessagesComboError(combo, activeModels = null) {
   if (!combo) return "claudeMessagesRoute target combo does not exist";
   if (combo.isActive === false) return "claudeMessagesRoute target combo is disabled";
-  if (combo.kind && combo.kind !== "llm") return "claudeMessagesRoute target must be an LLM combo";
-  if (!Array.isArray(combo.models) || combo.models.length === 0) return "claudeMessagesRoute target combo has no models";
+  if (combo.kind && combo.kind !== "llm") {
+    return "claudeMessagesRoute target must be an LLM combo";
+  }
+  if (!Array.isArray(combo.models) || combo.models.length === 0) {
+    return "claudeMessagesRoute target combo has no models";
+  }
+  if (Array.isArray(activeModels) && activeModels.length === 0) {
+    return "claudeMessagesRoute target combo has no currently available models";
+  }
   return null;
 }

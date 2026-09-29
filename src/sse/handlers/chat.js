@@ -204,7 +204,8 @@ export async function handleChat(request, clientRawRequest = null) {
         const target = settings.claudeMessagesRoute;
         if (!target.includes("/")) {
           const targetCombo = await getComboByName(target);
-          defaultRouteError = getClaudeMessagesComboError(targetCombo);
+          const activeModels = targetCombo?.models ? (await getComboModelEntries(target, accessTags)) : null;
+          defaultRouteError = getClaudeMessagesComboError(targetCombo, activeModels);
           if (!defaultRouteError) {
             routedModelStr = target;
             defaultRouteKind = "combo";

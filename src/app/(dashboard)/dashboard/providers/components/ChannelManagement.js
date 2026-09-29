@@ -347,6 +347,115 @@ function ChannelDataScopeNotice() {
   );
 }
 
+function ClaudeMessagesRouteCard() {
+  const [route, setRoute] = useState("");
+  const [combos, setCombos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState({ type: "", message: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [settingsResponse, combosResponse] = await Promise.all([
+        fetch("/api/settings", { cache: "no-store" }),
+        fetch("/api/combos/llm", { cache: "no-store" }),
+      ]);
+      const settings = settingsResponse.ok ? await settingsResponse.json() : {};
+      const comboData = combosResponse.ok ? await combosResponse.json() : {};
+      setRoute(typeof settings.claudeMessagesRoute === "string" ? settings.claudeMessagesRoute : "");
+      setCombos(Array.isArray(comboData.combos) ? comboData.combos : []);
+    } catch (error) {
+      console.error("Failed to load Claude Messages route:", error);
+      setStatus({ type: "error", message: "无法读取 Claude Desktop 路由配置" });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const task = setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(task);
+  }, [load]);
+
+  const save = async (value) => {
+    setSaving(true);
+    setStatus({ type: "", message: "" });
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeMessagesRoute: value }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "保存 Claude Desktop 路由失败");
+      setRoute(typeof data.claudeMessagesRoute === "string" ? data.claudeMessagesRoute : "");
+      setStatus({
+        type: "success",
+        message: value ? "Claude Desktop 默认组合已保存" : "已清除默认组合，将恢复原有模型推断",
+      });
+      if (value) await load();
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || "保存 Claude Desktop 路由失败" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isLegacyDirectRoute = route.includes("/");
+  const selectedCombo = combos.some((combo) => combo.name === route) ? route : "";
+  const routeIsStale = Boolean(route) && !isLegacyDirectRoute && !selectedCombo;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-violet-400/20 bg-violet-400/[0.035]" aria-labelledby="claude-messages-route-title">
+      <div className="flex flex-col gap-3 border-b border-violet-400/10 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-400/[0.12] text-violet-300">
+            <span className="material-symbols-outlined text-[18px]! leading-none">alt_route</span>
+          </span>
+          <div className="min-w-0">
+            <h2 id="claude-messages-route-title" className="text-sm font-semibold text-text-main">Claude Desktop 兼容</h2>
+            <p className="mt-0.5 text-xs leading-5 text-text-muted">为 Claude Desktop 的裸 <code>claude-*</code> 请求选择默认 LLM 组合。</p>
+          </div>
+        </div>
+        <a href="/dashboard/combos" className="shrink-0 text-xs text-primary hover:underline">管理组合 →</a>
+      </div>
+
+      <div className="flex flex-col gap-3 px-4 py-4">
+        <Select
+          label="Claude Desktop 默认组合"
+          value={selectedCombo}
+          onChange={(event) => void save(event.target.value)}
+          placeholder={loading ? "正在读取组合…" : "不设置（使用原有模型推断）"}
+          placeholderDisabled={false}
+          disabled={loading || saving}
+          options={combos.map((combo) => ({
+            value: combo.name,
+            label: `${combo.name}${combo.groupName ? ` · ${combo.groupName}` : ""} · ${combo.activeModelCount} 个可用模型`,
+          }))}
+          hint="只列出启用、属于 LLM 且当前至少有一个可执行成员的组合。组合中的 GPT、DeepSeek 或其他渠道会继续按组合策略调度。"
+        />
+
+        {(isLegacyDirectRoute || routeIsStale) && (
+          <div className="rounded-lg border border-amber-400/20 bg-amber-400/[0.08] px-3 py-2 text-xs leading-5 text-amber-200">
+            {isLegacyDirectRoute
+              ? <>当前仍在使用旧的直接模型目标 <code>{route}</code>。新配置请从上面的组合中选择；清空后会停用该默认路由。</>
+              : <>当前配置的组合 <code>{route}</code> 暂时不可用或已被删除。请选择新的组合，或清空以停用该默认路由。</>}
+          </div>
+        )}
+
+        {status.message && (
+          <p className={`border-t border-white/[0.07] pt-3 text-xs ${status.type === "error" ? "text-rose-300" : "text-emerald-300"}`}>
+            {status.message}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function getSetupMethods(provider, category) {
   if (provider.noAuth) return ["none"];
   if (Array.isArray(provider.authModes) && provider.authModes.length > 0) return provider.authModes;
@@ -1489,11 +1598,7 @@ function ChannelDetailDrawer({ providerId, onClose, onUpdated }) {
 }
 
 function ChannelOrderModal({ isOpen, groups, saving, error, onClose, onSave }) {
-  const [orderedProviderIds, setOrderedProviderIds] = useState([]);
-
-  useEffect(() => {
-    if (isOpen) setOrderedProviderIds(groups.map((group) => group.provider));
-  }, [isOpen, groups]);
+  const [orderedProviderIds, setOrderedProviderIds] = useState(() => groups.map((group) => group.provider));
 
   const moveProvider = (index, offset) => {
     const targetIndex = index + offset;
@@ -2395,6 +2500,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
         )}
       />
       <ChannelDataScopeNotice />
+      <ClaudeMessagesRouteCard />
 
       {loading ? (
         <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
@@ -2473,6 +2579,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
       />
 
       <ChannelOrderModal
+        key={`${channelOrderModalOpen ? "open" : "closed"}:${channelGroups.map((group) => group.provider).join(",")}`}
         isOpen={channelOrderModalOpen}
         groups={channelGroups}
         saving={savingChannelOrder}

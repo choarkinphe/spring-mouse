@@ -55,6 +55,8 @@ vi.mock("open-sse/services/combo.js", () => ({
   detectRequiredCapabilities: vi.fn(() => new Set()),
   getComboModelsForRequest: vi.fn((models) => (Array.isArray(models) ? models : [])),
   getUnsupportedComboRequestCapability: vi.fn(() => null),
+  getActiveComboModels: mocks.getActiveComboModels,
+  getActiveComboModels: vi.fn((models) => models),
 }));
 vi.mock("open-sse/services/autoRouting.js", () => ({
   classifyAutoRequest: mocks.classifyAutoRequest,

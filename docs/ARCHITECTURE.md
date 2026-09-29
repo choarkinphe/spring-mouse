@@ -219,15 +219,15 @@ sequenceDiagram
 4. 在原候选模型都无法满足能力时，从配置的能力兜底池补充候选；
 5. 按策略的回退、轮询或融合方式执行。
 
-对于 Claude Desktop 的 Messages 请求，Dashboard 还支持一个可选的 `claudeMessagesRoute` 设置。它只匹配 `/v1/messages` 或 `/api/v1/messages` 中的裸 `claude-*` 模型名，并在上述模型解析前将执行目标映射到配置的 `provider/model` 或有效 LLM 组合。例如：
+对于 Claude Desktop 的 Messages 请求，Dashboard 在「渠道管理」提供可选的 Claude Desktop 默认组合设置。选择器只展示启用、类型为 LLM、至少有一个当前可执行成员的组合；组合中的目标可以来自 GPT、DeepSeek 或其他兼容通道。例如：
 
 ```text
-claude-sonnet-4-5 -> openai/gpt-4o
-claude-sonnet-4-5 -> deepseek/deepseek-chat
 claude-sonnet-4-5 -> desktop-models
 ```
 
-映射不会修改客户端原始请求；协议识别仍依据 Messages endpoint，执行模型则进入正常的凭据、能力、调度、熔断、并发和账号回退流程。显式 provider/model、已有别名或组合以及 Chat Completions endpoint 保持原有优先级。配置为空时保持历史的 Anthropic/OAuth 推断与回退行为。请求遥测同时保留 `originalModel`（客户端模型）和 `executedModel`（实际目标），以便区分调用方协议与实际费用/通道。
+映射不会修改客户端原始请求；协议识别仍依据 Messages endpoint，执行模型则进入正常的凭据、能力、调度、熔断、并发和账号回退流程。它只匹配 `/v1/messages` 或 `/api/v1/messages` 中的裸 `claude-*` 模型名。显式 provider/model、已有别名或组合以及 Chat Completions endpoint 保持原有优先级。设置为空时保持历史的 Anthropic/OAuth 推断与回退行为。请求遥测同时保留 `originalModel`（客户端模型）和 `executedModel`（实际目标），以便区分调用方协议与实际费用/通道。
+
+历史版本保存的 `provider/model` 直接目标（例如 `openai/gpt-4o` 或 `deepseek/deepseek-chat`）仍然兼容，但新的配置应在「渠道管理」中直接选择组合；如果已保存的组合被删除、禁用或暂时没有可执行成员，网关会拒绝该默认路由，而不会悄悄改走 Anthropic 或其他模型。
 
 ### 6.3 通道账号选择
 

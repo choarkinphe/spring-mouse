@@ -65,9 +65,6 @@ export default function ProfilePage() {
   const [apiKeyRateLimitForm, setApiKeyRateLimitForm] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
   const [apiKeyRateLimitStatus, setApiKeyRateLimitStatus] = useState({ type: "", message: "" });
   const [apiKeyRateLimitLoading, setApiKeyRateLimitLoading] = useState(false);
-  const [claudeMessagesRoute, setClaudeMessagesRoute] = useState("");
-  const [claudeMessagesRouteStatus, setClaudeMessagesRouteStatus] = useState({ type: "", message: "" });
-  const [claudeMessagesRouteLoading, setClaudeMessagesRouteLoading] = useState(false);
   // Off-host replication. The credential inputs start empty on every load — the
   // saved values are never sent to the browser, so an untouched field means
   // "keep what is stored" rather than "erase it".
@@ -81,7 +78,6 @@ export default function ProfilePage() {
       .then((res) => res.json())
       .then((data) => {
         setSettings(data);
-        setClaudeMessagesRoute(data?.claudeMessagesRoute || "");
         setBackupForm({
           enabled: data?.backupEnabled === true,
           replicaUrl: data?.backupReplicaUrl || "",
@@ -522,33 +518,6 @@ export default function ProfilePage() {
       setIpAccessStatus({ type: "error", message: error.message || "An error occurred" });
     } finally {
       setIpAccessLoading(false);
-    }
-  };
-
-  const updateClaudeMessagesRoute = async (event) => {
-    event.preventDefault();
-    await saveClaudeMessagesRoute(claudeMessagesRoute.trim());
-  };
-
-  const saveClaudeMessagesRoute = async (routeValue) => {
-    setClaudeMessagesRouteLoading(true);
-    setClaudeMessagesRouteStatus({ type: "", message: "" });
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claudeMessagesRoute: routeValue }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "保存 Claude Messages 路由失败");
-      const savedRoute = data.claudeMessagesRoute || "";
-      setClaudeMessagesRoute(savedRoute);
-      setSettings((prev) => ({ ...prev, ...data }));
-      setClaudeMessagesRouteStatus({ type: "success", message: savedRoute ? "Claude Messages 默认路由已保存" : "已清除默认路由，将恢复原有模型推断" });
-    } catch (error) {
-      setClaudeMessagesRouteStatus({ type: "error", message: error.message || "保存 Claude Messages 路由失败" });
-    } finally {
-      setClaudeMessagesRouteLoading(false);
     }
   };
 
@@ -1242,66 +1211,8 @@ export default function ProfilePage() {
         </SettingsZone>
 
         <SettingsZone
-          id="claude-messages-route"
-          index="03"
-          title="Claude Desktop 路由"
-          description="将 Claude Messages 请求转发到已配置的 GPT、DeepSeek 或组合回退链。"
-        >
-          <Card>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg bg-violet-500/10 text-violet-500 shrink-0">
-                <span className="material-symbols-outlined text-[20px]">alt_route</span>
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-base sm:text-lg font-semibold">Claude Messages 默认目标</h3>
-                <p className="text-xs sm:text-sm text-text-muted mt-0.5">
-                  只影响 Claude Desktop 调用 <code>/v1/messages</code> 时传入的裸 <code>claude-*</code> 模型名。
-                </p>
-              </div>
-            </div>
-            <form onSubmit={updateClaudeMessagesRoute} className="flex flex-col gap-4">
-              <Input
-                label="目标模型或组合名"
-                placeholder="openai/gpt-4o、deepseek/deepseek-chat 或 desktop-models"
-                value={claudeMessagesRoute}
-                onChange={(event) => setClaudeMessagesRoute(event.target.value)}
-                disabled={loading || claudeMessagesRouteLoading}
-                spellCheck={false}
-              />
-              <div className="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2.5 text-xs leading-5 text-text-muted">
-                <p>可填写 provider/model（例如 <code>openai/gpt-4o</code>、<code>deepseek/deepseek-chat</code>），也可填写「组合」页面中已存在的 LLM 组合名，让 GPT、DeepSeek 等渠道按组合策略自动回退。</p>
-                <p className="mt-1">留空并保存会恢复原有的 Anthropic/OAuth 模型推断；显式 provider、已有别名和组合不会被此默认值覆盖。</p>
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                <Button type="submit" loading={claudeMessagesRouteLoading} disabled={loading}>
-                  保存路由
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={loading || claudeMessagesRouteLoading || !claudeMessagesRoute}
-                  onClick={() => {
-                    void saveClaudeMessagesRoute("");
-                  }}
-                >
-                  清空
-                </Button>
-                <a href="/dashboard/combos" className="text-xs text-primary hover:underline sm:ml-2">
-                  配置组合回退链 →
-                </a>
-              </div>
-              {claudeMessagesRouteStatus.message && (
-                <p className={`border-t border-border/50 pt-3 text-xs sm:text-sm ${claudeMessagesRouteStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
-                  {claudeMessagesRouteStatus.message}
-                </p>
-              )}
-            </form>
-          </Card>
-        </SettingsZone>
-
-        <SettingsZone
           id="api-key-quota"
-          index="04"
+          index="03"
           title="API Key 配额"
           description="配置所有密钥共用的 5 小时与周 Token 额度；每把密钥在集成与凭据页选择是否限额。"
         >
@@ -1403,7 +1314,7 @@ export default function ProfilePage() {
 
         <SettingsZone
           id="token-saver"
-          index="05"
+          index="04"
           title="Token 节省"
           description="配置工具输出、上下文与模型输出的压缩策略，降低调用成本。"
         >
@@ -1411,7 +1322,7 @@ export default function ProfilePage() {
         </SettingsZone>
 
         <SettingsZone
-          index="06"
+          index="05"
           title="数据维护"
           description="通过加密备份导出和导入，在设备之间安全迁移配置。"
         >

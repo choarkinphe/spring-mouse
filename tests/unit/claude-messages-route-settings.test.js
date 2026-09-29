@@ -7,11 +7,13 @@ process.env.DATA_DIR = await mkdtemp(path.join(tmpdir(), "spring-mouse-claude-ro
 
 let PATCH;
 let GET;
+let getClaudeCombos;
 let getSettings;
 let createCombo;
 
 beforeAll(async () => {
   ({ PATCH, GET } = await import("@/app/api/settings/route.js"));
+  ({ GET: getClaudeCombos } = await import("@/app/api/combos/llm/route.js"));
   ({ getSettings, createCombo } = await import("@/lib/localDb"));
 });
 
@@ -39,6 +41,44 @@ describe("Claude Messages route setting", () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).claudeMessagesRoute).toBe("desktop-models");
+  });
+
+  it("lists only currently usable LLM combos for the picker", async () => {
+    await createCombo({ name: "available-picker-combo", kind: "llm", models: ["openai/gpt-4o"] });
+    await createCombo({ name: "empty-picker-combo", kind: "llm", models: [] });
+    await createCombo({ name: "disabled-picker-combo", kind: "llm", models: ["openai/gpt-4o"], isActive: false });
+    await createCombo({ name: "web-picker-combo", kind: "webSearch", models: ["openai/gpt-4o"] });
+
+    const res = await getClaudeCombos();
+    expect(res.status).toBe(200);
+    const names = (await res.json()).combos.map((combo) => combo.name);
+    expect(names).toContain("available-picker-combo");
+    expect(names).not.toContain("empty-picker-combo");
+    expect(names).not.toContain("disabled-picker-combo");
+    expect(names).not.toContain("web-picker-combo");
+  });
+
+  it("rejects a combo whose members are all outside their schedule", async () => {
+    await createCombo({
+      name: "scheduled-picker-combo",
+      kind: "llm",
+      models: [{
+        model: "openai/gpt-4o",
+        schedule: {
+          timezone: "UTC",
+          active: [],
+          inactive: [
+            { start: "00:00", end: "12:00" },
+            { start: "12:00", end: "00:00" },
+          ],
+          activeEnabled: true,
+          inactiveEnabled: true,
+        },
+      }],
+    });
+
+    const res = await PATCH(patchRequest({ claudeMessagesRoute: "scheduled-picker-combo" }));
+    expect(res.status).toBe(400);
   });
 
   it("clears the route when an empty value is saved", async () => {

@@ -108,7 +108,7 @@ export default function ProfilePage() {
   const [ipAccessDrawerOpen, setIpAccessDrawerOpen] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
-  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
+  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "", destinationId: null });
   const pendingImportRef = useRef(null);
   const importFileRef = useRef(null);
   // Anchor for locating the scroll container the zone rail listens on.
@@ -148,10 +148,9 @@ export default function ProfilePage() {
   const [backupStatus, setBackupStatus] = useState(null);
   const [backupMessage, setBackupMessage] = useState({ type: "", message: "" });
   const [backupLoading, setBackupLoading] = useState(false);
-  // Which half of the merged backup card is showing. "continuous" is the
-  // litestream replica (default), "portable" is the JSON export/import that can
-  // be carried to another server — the two mechanisms the card unifies.
-  const [backupView, setBackupView] = useState("continuous");
+  // Drives the refresh icon's spin. Separate from `backupLoading` (which every
+  // destination mutation shares) so the icon only turns while THIS refresh runs.
+  const [backupRefreshing, setBackupRefreshing] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -856,18 +855,20 @@ export default function ProfilePage() {
 
   // Confirm password modal, then run export or import.
   const handleDbAuthConfirm = async () => {
-    const { mode, password } = dbAuth;
-    setDbAuth({ open: false, mode: "", password: "" });
+    const { mode, password, destinationId } = dbAuth;
+    setDbAuth({ open: false, mode: "", password: "", destinationId: null });
     if (mode === "export") await handleExportDatabase(password);
     else if (mode === "import") await runImportDatabase(password);
-    else if (mode === "restore") await runBackupRestore(password);
+    else if (mode === "restore") await runBackupRestore(password, destinationId);
   };
 
   const refreshBackupStatus = async () => {
+    setBackupRefreshing(true);
     try {
       const res = await fetch("/api/settings/backup", { cache: "no-store" });
       if (res.ok) setBackupStatus(await res.json());
     } catch { /* the poll will retry */ }
+    finally { setBackupRefreshing(false); }
   };
 
   // The drawer works on a DRAFT. Adding posts a new destination; editing PATCHes
@@ -999,14 +1000,14 @@ export default function ProfilePage() {
   // same password-confirmation modal as import. The request answers with
   // `restarting: true`; the server then exits and entrypoint.sh swaps the
   // database in before any process opens it.
-  const runBackupRestore = async (password) => {
+  const runBackupRestore = async (password, destinationId = null) => {
     setBackupLoading(true);
     setBackupMessage({ type: "", message: "" });
     try {
       const res = await fetch("/api/settings/backup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "restore", password }),
+        body: JSON.stringify({ action: "restore", password, destinationId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "恢复失败");
@@ -1023,12 +1024,14 @@ export default function ProfilePage() {
     }
   };
 
-  const handleRestoreClick = () => {
-    if (!backupStatus?.running) {
+  const handleRestoreClick = (destinationId) => {
+    // Restoring a NAMED location needs no running child — the replica is on
+    // remote storage. Only the legacy "active destination" path requires it.
+    if (!destinationId && !backupStatus?.running) {
       setBackupMessage({ type: "error", message: "复制进程未运行，无法从远端恢复" });
       return;
     }
-    setDbAuth({ open: true, mode: "restore", password: "" });
+    setDbAuth({ open: true, mode: "restore", password: "", destinationId: destinationId || null });
   };
 
   // Only rendered inside the confirm modal, so the wording matches the action.
@@ -1533,11 +1536,20 @@ export default function ProfilePage() {
           title="数据维护"
           description="持续备份数据库以防主机损坏，或导出 JSON 快照在设备与服务器之间迁移。"
         >
-        {/* ONE card, two mechanisms. Continuous replication streams the whole
-            SQLite file (crash-safe, needs a restart to restore, not portable);
-            the JSON export is a point-in-time snapshot that can be carried to
-            another server or version. They were two cards, which made them look
-            like alternatives — they are two tools for the same job. */}
+        {/* ONE card. Continuous replication streams the whole SQLite file
+            (crash-safe, needs a restart to restore); the JSON export is a
+            point-in-time snapshot of the CONFIG that can be carried to another
+            server or version. They are not alternatives — replication and
+            export are independent, and export is available whether or not
+            replication is on. So export sits in the header, not behind a view
+            switch.
+
+            Recovery is the part with more than one shape, and each belongs with
+            the mechanism that owns its data:
+              - 从备份恢复 ← restores the WHOLE database from the replica
+                             (below, with the save destinations)
+              - 导入配置   ← replaces only the config from an uploaded JSON
+                             (below, beside the export button) */}
         <Card>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex items-center gap-3 sm:gap-4">
@@ -1549,96 +1561,156 @@ export default function ProfilePage() {
                   <h2 className="text-lg sm:text-xl font-semibold">备份与恢复</h2>
                   <Badge variant={backupState.variant} size="sm">{backupState.label}</Badge>
                 </div>
-                <p className="text-sm text-text-muted mt-0.5">把数据库持续备份到本地或远端，也可导出快照迁移到其他服务器。</p>
+                <p className="text-sm text-text-muted mt-0.5">把数据库持续备份到本地或远端，也可导出配置迁移到其他服务器。</p>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                icon="upload"
+                onClick={() => importFileRef.current?.click()}
+                disabled={dbLoading}
+              >
+                导入配置
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                icon="download"
+                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
+                loading={dbLoading}
+              >
+                导出配置
+              </Button>
               <span className="text-sm text-text-muted">启用</span>
               <Toggle
                 checked={backupEnabled === true}
                 onChange={() => toggleBackupEnabled(!(backupEnabled === true))}
                 disabled={loading || backupLoading}
               />
+              <input
+                ref={importFileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={handleImportDatabase}
+              />
             </div>
           </div>
 
-          {/* Indented to the card title's TEXT column, not the card's content
-              edge: the header puts a 40/48px icon before the title, so the title
-              text starts at icon + gap (52px on mobile, 64px from sm up). The
-              switch matches the title instead of the icon, which is what the
-              operator expects under a heading. */}
-          <div className="mt-4 pl-[52px] sm:pl-16">
-            <SegmentedControl
-              value={backupView}
-              onChange={setBackupView}
-              options={[
-                { value: "continuous", label: "持续备份", icon: "sync" },
-                { value: "portable", label: "便携导出", icon: "file_download" },
-              ]}
-            />
-          </div>
-
-          {backupView === "continuous" && (
-            <div className="flex flex-col gap-4 pt-4 mt-4 border-t border-border">
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-medium text-sm sm:text-base">保存位置</p>
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      可保存多个，但 litestream 同一数据库只允许一个副本，所以同一时间只有一个是「启用中」。
-                    </p>
-                  </div>
-                  <Button type="button" variant="secondary" icon="add" onClick={openAddDestination} disabled={loading || backupLoading} className="shrink-0">
-                    添加保存位置
-                  </Button>
-                </div>
-
-                {destinations.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border-subtle bg-surface-2 px-4 py-6 text-center">
-                    <p className="text-sm text-text-muted">还没有保存位置。添加一个即可开始持续备份。</p>
-                  </div>
-                ) : (
-                  <ul className="flex flex-col divide-y divide-border-subtle rounded-lg border border-border-subtle">
-                    {destinations.map((destination) => (
-                      <li key={destination.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate font-medium text-sm">{destination.label}</span>
-                            <Badge variant="default" size="sm">{DESTINATION_TYPES[destination.type]?.label || destination.type}</Badge>
-                            {destination.isActive && <Badge variant="success" size="sm">启用中</Badge>}
-                            {!destination.hasCredentials && <Badge variant="warning" size="sm">缺少凭据</Badge>}
-                          </div>
-                          <p className="mt-1 break-all text-xs text-text-muted"><code>{destination.displayUrl || "—"}</code></p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {!destination.isActive && (
-                            <Button type="button" variant="outline" size="sm" onClick={() => activateDestination(destination.id)} disabled={loading || backupLoading}>
-                              设为启用
-                            </Button>
-                          )}
-                          <Button type="button" variant="ghost" size="sm" onClick={() => openEditDestination(destination)} disabled={loading || backupLoading || destination.type === "url"} title={destination.type === "url" ? "旧版 URL 保存位置不可编辑，请新增一个保存位置后删除它" : undefined}>
-                            编辑
-                          </Button>
-                          <Button type="button" variant="ghost" size="sm" onClick={() => removeDestination(destination)} disabled={loading || backupLoading}>
-                            删除
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <p className="text-xs text-text-muted">
-                  凭据加密后仅保存在本机设置中，不会回传到浏览器。远端桶请自行开启服务端加密（OSS SSE / S3 SSE）。
+          {(dbStatus.message || backupMessage.message) && (
+            <div className="flex flex-col gap-1 mt-3">
+              {dbStatus.message && (
+                <p className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                  {dbStatus.message}
                 </p>
+              )}
+              {backupMessage.message && (
+                <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                  {backupMessage.message}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* The switch controls continuous backup, so the whole configuration
+              surface only appears once it is on. */}
+          {backupEnabled === true && (
+          <div className="flex flex-col gap-4 pt-4 mt-4 border-t border-border">
+            <div className="flex flex-col gap-3">
+              {/* Heading row: the section title on the left, the two actions that
+                  act on the whole list on the right. They are icon-only so they
+                  read as list-level controls rather than competing with the
+                  per-row buttons below. */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-medium text-sm sm:text-base">保存位置</p>
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    可保存多个，但 litestream 同一数据库只允许一个副本，所以同一时间只有一个是「启用中」。
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    iconOnly
+                    icon="add"
+                    onClick={openAddDestination}
+                    disabled={loading || backupLoading}
+                    title="添加保存位置"
+                    aria-label="添加保存位置"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    iconOnly
+                    icon="refresh"
+                    loading={backupRefreshing}
+                    onClick={refreshBackupStatus}
+                    disabled={loading || backupLoading}
+                    title="刷新状态"
+                    aria-label="刷新状态"
+                  />
+                </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
-                <Button type="button" variant="outline" onClick={refreshBackupStatus} disabled={loading || backupLoading}>
-                  刷新状态
-                </Button>
-              </div>
+              {destinations.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border-subtle bg-surface-2 px-4 py-6 text-center">
+                  <p className="text-sm text-text-muted">还没有保存位置。添加一个即可开始持续备份。</p>
+                </div>
+              ) : (
+                <ul className="flex flex-col divide-y divide-border-subtle rounded-lg border border-border-subtle">
+                  {destinations.map((destination) => (
+                    <li key={destination.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="truncate font-medium text-sm">{destination.label}</span>
+                          <Badge variant="default" size="sm">{DESTINATION_TYPES[destination.type]?.label || destination.type}</Badge>
+                          {destination.isActive && <Badge variant="success" size="sm">启用中</Badge>}
+                          {!destination.hasCredentials && <Badge variant="warning" size="sm">缺少凭据</Badge>}
+                        </div>
+                        <p className="mt-1 break-all text-xs text-text-muted"><code>{destination.displayUrl || "—"}</code></p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {!destination.isActive && (
+                          <Button type="button" variant="outline" size="sm" onClick={() => activateDestination(destination.id)} disabled={loading || backupLoading}>
+                            设为启用
+                          </Button>
+                        )}
+                        {/* Restores THIS location's replica — the button lives on
+                            the row so "which backup" is unambiguous. */}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          icon="restore"
+                          onClick={() => handleRestoreClick(destination.id)}
+                          disabled={loading || backupLoading || backupStatus?.restore?.canSwapOnBoot === false}
+                          title={backupStatus?.restore?.canSwapOnBoot === false ? "当前部署不支持在重启时替换数据库（仅 Docker 部署可用）" : `从「${destination.label}」恢复`}
+                        >
+                          恢复
+                        </Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => openEditDestination(destination)} disabled={loading || backupLoading || destination.type === "url"} title={destination.type === "url" ? "旧版 URL 保存位置不可编辑，请新增一个保存位置后删除它" : undefined}>
+                          编辑
+                        </Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => removeDestination(destination)} disabled={loading || backupLoading}>
+                          删除
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-text-muted">
+                凭据加密后仅保存在本机设置中，不会回传到浏览器。远端桶请自行开启服务端加密（OSS SSE / S3 SSE）。
+              </p>
 
-              <div className="flex flex-col gap-2 pt-4 border-t border-border">
+              <div className="flex flex-col gap-2">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
                   <p className="text-text-muted">
                     复制进程：<span className={backupStatus?.running ? "text-green-600 dark:text-green-400" : "text-text-muted"}>{backupStatus?.running ? `运行中${backupStatus.pid ? `（PID ${backupStatus.pid}）` : ""}` : "未运行"}</span>
@@ -1665,74 +1737,9 @@ export default function ProfilePage() {
                     <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-2 text-[11px] leading-4 text-text-muted whitespace-pre-wrap break-all">{backupStatus.recentLog.slice(-12).join("\n")}</pre>
                   </details>
                 )}
-
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    icon="restore"
-                    onClick={handleRestoreClick}
-                    loading={backupLoading}
-                    disabled={loading || backupStatus?.restore?.canSwapOnBoot === false}
-                    className="w-full sm:w-auto"
-                  >
-                    从备份恢复
-                  </Button>
-                  <p className="text-xs text-text-muted">
-                    {backupStatus?.restore?.canSwapOnBoot === false
-                      ? "当前部署不支持在重启时替换数据库（仅 Docker 部署可用）；请手动停服后恢复 SQLite 文件。"
-                      : "用最近一次备份覆盖当前数据库，服务会自动重启；替换前的数据库会另存一份。"}
-                  </p>
-                </div>
-
-                {backupMessage.message && (
-                  <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
-                    {backupMessage.message}
-                  </p>
-                )}
               </div>
             </div>
-          )}
-
-          {backupView === "portable" && (
-            <div className="flex flex-col gap-3 pt-4 mt-4 border-t border-border">
-              <p className="text-xs text-text-muted">
-                导出为一份 JSON 快照，包含设置、供应商连接、API Key 等配置（不含请求明细）。
-                它不依赖本机路径与版本，是迁移到其他服务器时唯一可用的方式；导入会覆盖当前配置。
-              </p>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <Button
-                  variant="secondary"
-                  icon="download"
-                  onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
-                  loading={dbLoading}
-                  className="w-full sm:w-auto"
-                >
-                  导出快照
-                </Button>
-                <Button
-                  variant="outline"
-                  icon="upload"
-                  onClick={() => importFileRef.current?.click()}
-                  disabled={dbLoading}
-                  className="w-full sm:w-auto"
-                >
-                  导入快照
-                </Button>
-                <input
-                  ref={importFileRef}
-                  type="file"
-                  accept="application/json,.json"
-                  className="hidden"
-                  onChange={handleImportDatabase}
-                />
-              </div>
-              {dbStatus.message && (
-                <p className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
-                  {dbStatus.message}
-                </p>
-              )}
-            </div>
+          </div>
           )}
         </Card>
 
@@ -1998,12 +2005,12 @@ export default function ProfilePage() {
 
       <Modal
         isOpen={dbAuth.open}
-        onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
-        title={dbAuth.mode === "restore" ? "确认从远端恢复" : "Confirm Password"}
+        onClose={() => setDbAuth({ open: false, mode: "", password: "", destinationId: null })}
+        title={dbAuth.mode === "restore" ? "确认从备份恢复" : "Confirm Password"}
         size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading || backupLoading}>
+            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "", destinationId: null })} disabled={dbLoading || backupLoading}>
               Cancel
             </Button>
             <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading || backupLoading} disabled={!dbAuth.password}>
@@ -2014,7 +2021,9 @@ export default function ProfilePage() {
       >
         {dbAuth.mode === "restore" ? (
           <p className="text-red-500 mb-3 text-sm">
-            这会把当前数据库替换为远端最近的一次备份，重启后生效。替换前的数据库会另存一份，但请确认你确实要回滚。
+            {dbAuth.destinationId
+              ? `这会把当前数据库替换为「${destinations.find((d) => d.id === dbAuth.destinationId)?.label || "所选保存位置"}」上的最近一次备份，重启后生效。替换前的数据库会另存一份，但请确认你确实要回滚。`
+              : "这会把当前数据库替换为远端最近的一次备份，重启后生效。替换前的数据库会另存一份，但请确认你确实要回滚。"}
           </p>
         ) : (
           <p className="text-text-muted mb-3 text-sm">

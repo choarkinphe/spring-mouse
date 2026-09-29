@@ -20,9 +20,26 @@
 #     所以备份时把当前镜像钉成 spring-mouse:pre-<REV>-<时间戳>，回滚直接
 #     用这个本地 tag 起容器，永不 pull。这就是"可随时回退功能"的保证。
 #
-#  2) 【数据库回滚】用 sqlite3 .backup 而不是 cp。
-#     库在跑（WAL 模式），cp 出来的是撕裂的快照。.backup 走 SQLite 的在线
-#     备份 API，得到一个自洽的库。备份时容器可以继续服务。
+#  2) 【数据库回滚】用 VACUUM INTO，不用 sqlite3 .backup，也不用 cp。
+#     库在跑（WAL 模式），cp 出来的是撕裂的快照。
+#
+#     ⚠️ 这里曾经用 `sqlite3 .backup`，那是错的，而且烧掉过一台生产主机：
+#     CLI 的 `.backup` 只要发现源库被改过就【从第 1 页重新开始】，生产在持续
+#     写入，于是它永远不收敛，只是无限重写同一批页。实测：一个 1.4GB 的库，
+#     15 分钟累计写 258GB（~287MB/s）且快照文件大小一直不变，I/O 风暴把主机
+#     拖死。而且当时这步没有任何超时，没人能拦住它。
+#
+#     VACUUM INTO 是【单遍、流式、原子】的：它读一次源库、写一个新文件，
+#     源库被并发写入不会让它重来（读到的是事务一致的快照）。它还会顺手压掉
+#     碎片，产物比 .backup 小。用它，并且【必须】带超时——任何"在线备份"
+#     都不该有无界运行的可能。
+#
+#     备份期间容器继续服务（WAL 下读写不互相阻塞）。
+#
+#  2b) 每一步都有超时，且失败【不阻断部署】。
+#     备份是"能回退"的保险，不是部署的前提。备份失败时部署应该继续并在
+#     日志里醒目告警，而不是卡在备份上——这次事故里，一个不收敛的备份
+#     既没有产出备份，又拖垮了主机，是双输。
 #
 #  3) 迁移是【向前、跳版本安全】的（src/lib/db/migrate.js）：旧镜像遇到
 #     schemaVersion 更高时只是跳过迁移，不会报错。但 024 建了两张新表，
@@ -99,15 +116,32 @@ do_backup() {
   cp -a "${SM_DIR}/.env" "${dir}/.env" 2>/dev/null || true
 
   # 3) 数据库一致性快照（容器可继续服务）
+  #
+  # VACUUM INTO，不是 `sqlite3 .backup`（见文件头 2)。单遍、流式、原子：源库被
+  # 并发写入不会让它从头重来。用 `timeout` 硬性封顶——在线备份绝不允许无界运行。
+  # 备份失败【不阻断部署】：它是回退保险，不是部署前提；卡在备份上会像上次那样
+  # 既拿不到备份、又拖垮主机。
   local dbf; dbf="$(db_file)"
+  local snap_timeout="${SM_BACKUP_TIMEOUT_SEC:-600}"
   if [ -f "$dbf" ]; then
-    log "在线备份数据库（sqlite3 .backup）…"
-    if sqlite3 "$dbf" ".backup '${dir}/data.sqlite'"; then
-      log "数据库快照：$(du -h "${dir}/data.sqlite" | cut -f1)"
+    local snap="${dir}/data.sqlite"
+    rm -f "$snap"
+    log "在线备份数据库（VACUUM INTO，上限 ${snap_timeout}s）…"
+    local t0 t1
+    t0="$(date +%s)"
+    # 注意：VACUUM INTO 的目标文件必须【不存在】。上面已 rm。
+    if timeout "$snap_timeout" sqlite3 "$dbf" "VACUUM INTO '${snap}'"; then
+      t1="$(date +%s)"
+      log "数据库快照：$(du -h "$snap" | cut -f1)（耗时 $((t1 - t0))s）"
     else
-      # 兜底：容器里没有 sqlite3 时，主机有就用主机的；都失败则报错但不阻断部署
-      log "警告：sqlite3 .backup 失败，尝试只读复制（可能不一致）"
-      cp -a "$dbf" "${dir}/data.sqlite.inconsistent" || true
+      local rc=$?
+      rm -f "$snap"
+      if [ "$rc" = "124" ]; then
+        log "⚠️  备份超过 ${snap_timeout}s 仍未完成，已中止（部署继续，但本次【没有】数据库快照）"
+      else
+        log "⚠️  数据库备份失败（rc=$rc），部署继续，但本次【没有】数据库快照"
+      fi
+      log "   提示：可稍后手动重跑 'sh $0 backup'；若反复超时，先查库是否有长事务。"
     fi
     # 记录 schemaVersion，便于回滚前核对
     sqlite3 "$dbf" "SELECT value FROM _meta WHERE key='schemaVersion';" > "${dir}/schema-version.txt" 2>/dev/null || true
@@ -252,7 +286,9 @@ do_rollback_db() {
   # 把回滚前的库再存一份，万一回滚错了还能回来
   local safety="${dir}/pre-rollback-$(date '+%Y%m%d-%H%M%S').sqlite"
   log "回滚前先自保一份：$safety"
-  [ -f "$dbf" ] && sqlite3 "$dbf" ".backup '${safety}'" 2>/dev/null || true
+  # 容器已停，没有并发写入，所以这里的 .backup 能收敛；但仍加超时封顶，
+  # 保持"任何备份都有界"这条规矩。
+  [ -f "$dbf" ] && timeout 300 sqlite3 "$dbf" ".backup '${safety}'" 2>/dev/null || true
 
   log "恢复快照到 $dbf"
   rm -f "${dbf}-wal" "${dbf}-shm"

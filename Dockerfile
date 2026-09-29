@@ -7,6 +7,31 @@ ARG CLOUDFLARED_IMAGE=cloudflare/cloudflared:latest
 
 FROM ${CLOUDFLARED_IMAGE} AS cloudflared
 
+# Litestream — the single static Go binary that replicates the SQLite database
+# off-host (see src/lib/backup/). Downloaded per-architecture and verified
+# against the release checksums: this process holds the backup credentials, so a
+# tampered download would be a straight path to exfiltrating the whole database.
+# The version and both hashes are pinned; bumping them is a deliberate act.
+ARG LITESTREAM_VERSION=0.5.17
+FROM ${NODE_IMAGE} AS litestream
+ARG LITESTREAM_VERSION
+ARG TARGETARCH
+RUN apk --no-cache add curl && \
+    case "${TARGETARCH}" in \
+      amd64) ls_arch=x86_64; \
+             ls_sha=cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d ;; \
+      arm64) ls_arch=arm64; \
+             ls_sha=f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e51819baa5 ;; \
+      *) echo "litestream: unsupported TARGETARCH '${TARGETARCH}'" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/litestream.tar.gz \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-${ls_arch}.tar.gz" && \
+    echo "${ls_sha}  /tmp/litestream.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/litestream.tar.gz -C /usr/local/bin litestream && \
+    chmod +x /usr/local/bin/litestream && \
+    rm -f /tmp/litestream.tar.gz && \
+    /usr/local/bin/litestream version
+
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
@@ -62,6 +87,16 @@ ENV CLOUDFLARED_BIN=/usr/local/bin/cloudflared
 
 COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 RUN /usr/local/bin/cloudflared --version
+
+# Off-host database replication. Overrideable for custom deployments, matching
+# the CLOUDFLARED_BIN convention above.
+ENV LITESTREAM_BIN=/usr/local/bin/litestream
+COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
+RUN /usr/local/bin/litestream version
+# Tells the app that runtime/entrypoint.sh performs the boot-time restore swap.
+# Without it the dashboard refuses to restore rather than exiting into a
+# service that nothing would restart (see src/lib/backup/restore.js).
+ENV SPRING_MOUSE_BOOT_RESTORE=1
 
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static

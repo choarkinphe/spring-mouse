@@ -91,6 +91,16 @@ const DEFAULT_SETTINGS = {
   // How long to keep requestDetails rows, in days. Independent of the record
   // cap (`observabilityMaxRecords`), which bounds count rather than age.
   requestDetailsRetentionDays: 30,
+  // Continuous off-host replication of the database via litestream. Off by
+  // default: it ships data to a third party, so an operator opts in and names
+  // the destination. `backupReplicaUrl` is any URL litestream accepts
+  // (oss://, s3://, gs://, sftp://, webdavs://, file://) — the destination is a
+  // string, not a code path. Credentials are stored ENCRYPTED (see
+  // src/lib/backup/crypto.js) and never returned to the client.
+  backupEnabled: false,
+  backupReplicaUrl: "",
+  backupAccessKeyIdEncrypted: null,
+  backupAccessKeySecretEncrypted: null,
 };
 
 async function readRaw() {

@@ -65,6 +65,11 @@ jobs:
           unit/streaming-attempt-settlement.test.js
           unit/chatcore-stream-settle-hooks.test.js
           unit/codex-overload-retry-budget.test.js
+          unit/backup-litestream.test.js
+          unit/backup-supervisor.test.js
+          unit/backup-restore.test.js
+          unit/backup-stage-restore.test.js
+          unit/backup-litestream-lifecycle.test.js
 
   build:
     needs: test

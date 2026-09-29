@@ -7,6 +7,7 @@ import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreTo
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
 import { killAllBridges } from "@/lib/mcp/stdioSseBridge";
 import { startCloudflareTunnelSupervisor, stopCloudflareTunnelSupervisor } from "@/shared/services/cloudflareTunnelSupervisor";
+import { stopBackupSupervisor } from "@/lib/backup/supervisor";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -49,6 +50,7 @@ export async function initializeApp() {
         try { removeAllDNSEntriesSync(); } catch { /* best effort */ }
         try { killAllBridges(); } catch { /* best effort */ }
         try { stopCloudflareTunnelSupervisor(); } catch { /* best effort */ }
+        try { stopBackupSupervisor(); } catch { /* best effort */ }
         process.exit();
       };
       process.on("SIGINT", cleanup);
@@ -56,6 +58,12 @@ export async function initializeApp() {
       process.on("exit", () => {
         try { removeAllDNSEntriesSync(); } catch { /* ignore */ }
         try { stopCloudflareTunnelSupervisor(); } catch { /* ignore */ }
+        // litestream is a separate process, so it survives this one unless it is
+        // explicitly signalled. A leftover replicator would keep writing while a
+        // replacement starts, and two of them on one replica interleave LTX
+        // files. `exit` handlers cannot await, so this only sends the signal —
+        // the supervisor's next start adopts or replaces by PID.
+        try { stopBackupSupervisor(); } catch { /* ignore */ }
       });
       g.signalHandlersRegistered = true;
     }
@@ -127,6 +135,14 @@ async function runHeavyStartup() {
   import("@/lib/db/rollupMaintainer.js")
     .then(({ startRollupMaintainer }) => startRollupMaintainer())
     .catch((e) => console.log("[RollupMaintainer] start failed:", e.message));
+
+  // Off-host database replication. Opt-in via settings; a no-op when disabled,
+  // so registering unconditionally is safe. Started here (rather than only from
+  // the settings PATCH) so replication resumes by itself after a restart
+  // instead of waiting for someone to open the settings page.
+  import("@/lib/backup/supervisor.js")
+    .then(({ startBackupSupervisor }) => startBackupSupervisor())
+    .catch((e) => console.log("[Backup] supervisor start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

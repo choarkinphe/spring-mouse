@@ -7,6 +7,9 @@ import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute";
+import { encryptBackupSecret, canDecryptBackupSecret } from "@/lib/backup/crypto";
+import { normalizeReplicaUrl } from "@/lib/backup/litestreamConfig";
+import { applyBackupSettings } from "@/lib/backup/supervisor";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -19,6 +22,9 @@ const SETTINGS_RESPONSE_HEADERS = {
 const PROTECTED_SETTING_KEYS = [
   "password", "mitmSudoEncrypted", "totpEnabled", "totpSecretEncrypted",
   "totpRecoveryCodeHashes", "totpPendingSecretEncrypted", "totpPendingRecoveryCodeHashes",
+  // Backup credentials are written only through the encrypted path below, never
+  // straight from the request body.
+  "backupAccessKeyIdEncrypted", "backupAccessKeySecretEncrypted",
 ];
 const RETIRED_SSO_SETTING_KEYS = [
   "authMode", "ssoType", "oidcIssuerUrl", "oidcClientId", "oidcClientSecret",
@@ -35,12 +41,20 @@ function toSafeSettings(settings) {
     totpRecoveryCodeHashes,
     totpPendingSecretEncrypted,
     totpPendingRecoveryCodeHashes,
+    backupAccessKeyIdEncrypted,
+    backupAccessKeySecretEncrypted,
     ...safeSettings
   } = settings;
   safeSettings.cloudflareTunnelConfigured = !!cloudflareTunnelToken;
   safeSettings.totpEnabled = totpEnabled === true && !!totpSecretEncrypted;
   safeSettings.totpSetupPending = !!totpPendingSecretEncrypted;
   safeSettings.totpRecoveryCodeCount = Array.isArray(totpRecoveryCodeHashes) ? totpRecoveryCodeHashes.length : 0;
+  // Report only whether credentials exist and are usable — never the values.
+  // `canDecryptBackupSecret` also catches the case where the key file was lost,
+  // so the UI can say "re-enter your credentials" instead of silently failing
+  // at the first upload.
+  safeSettings.backupCredentialsConfigured = canDecryptBackupSecret(backupAccessKeyIdEncrypted)
+    && canDecryptBackupSecret(backupAccessKeySecretEncrypted);
   return safeSettings;
 }
 
@@ -263,6 +277,43 @@ export async function PATCH(request) {
       }
     }
 
+    // Backup destination. The URL is validated here rather than at first upload
+    // so a typo'd scheme fails while the operator is looking at the field, not
+    // hours later when they assume backups exist.
+    if (Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl")) {
+      try {
+        body.backupReplicaUrl = normalizeReplicaUrl(body.backupReplicaUrl);
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "backupEnabled")) {
+      body.backupEnabled = body.backupEnabled === true;
+      // Enabling without a destination would start a process that exits
+      // immediately; refuse instead of accepting a setting that cannot work.
+      if (body.backupEnabled) {
+        const url = Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl")
+          ? body.backupReplicaUrl
+          : (await getCurrentSettings()).backupReplicaUrl;
+        if (!url) {
+          return NextResponse.json({ error: "A backup URL is required before backup can be enabled" }, { status: 400 });
+        }
+      }
+    }
+    // Credentials arrive in plaintext over the (session-authenticated) request
+    // and are encrypted before they touch the database. An empty string means
+    // "leave what is stored alone", matching the cloudflareTunnelToken
+    // convention — otherwise a blank field on a form save would erase them.
+    for (const [field, column] of [
+      ["backupAccessKeyId", "backupAccessKeyIdEncrypted"],
+      ["backupAccessKeySecret", "backupAccessKeySecretEncrypted"],
+    ]) {
+      if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+      const value = String(body[field] ?? "").trim();
+      delete body[field];
+      if (value) body[column] = encryptBackupSecret(value);
+    }
+
     if (Object.prototype.hasOwnProperty.call(body, "comboStrategies")) {
       try {
         body.comboStrategies = normalizeComboStrategies(body.comboStrategies, { strict: true });
@@ -408,6 +459,22 @@ export async function PATCH(request) {
           configurePricingAutoSync(settings);
         })
         .catch((error) => console.warn("[PricingAutoSync] settings update failed:", error.message));
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(body, "backupEnabled") ||
+      Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl") ||
+      Object.prototype.hasOwnProperty.call(body, "backupAccessKeyIdEncrypted") ||
+      Object.prototype.hasOwnProperty.call(body, "backupAccessKeySecretEncrypted")
+    ) {
+      // Apply immediately: restart replication with the new destination, or stop
+      // it. Awaited so the response reflects whether the new config actually
+      // works, rather than reporting success and failing on the next tick.
+      try {
+        await applyBackupSettings(settings);
+      } catch (error) {
+        return NextResponse.json({ error: `Backup configuration failed: ${error.message}` }, { status: 400 });
+      }
     }
 
     return NextResponse.json(toSafeSettings(settings), { headers: SETTINGS_RESPONSE_HEADERS });

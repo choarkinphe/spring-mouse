@@ -59,9 +59,14 @@ production release. Two things make it worth using instead of hand-rolled steps:
   pull after a bad release can hand you the same bad image. The script tags the
   running image locally as `spring-mouse:pre-<rev>-<ts>` at backup time and rolls
   back to that tag, never pulling.
-- **The DB snapshot uses `sqlite3 .backup`, not `cp`.** The live DB is in WAL
-  mode, so a `cp` is a torn snapshot. `.backup` uses SQLite's online-backup API
-  and is consistent while the container keeps serving.
+- **The DB snapshot uses `VACUUM INTO`, not `cp` and not `.backup`.** The live DB
+  is in WAL mode, so a `cp` is a torn snapshot. `sqlite3 .backup` is consistent
+  but **not convergent**: it restarts from page 1 whenever the source is written
+  during the copy, so against a DB under continuous write it never finishes —
+  this is what filled a host's disk and froze its snapshot. `VACUUM INTO` is a
+  single streaming pass that always terminates, and it is wrapped in `timeout`
+  so a stuck snapshot can never block a deploy. Snapshot failure is logged and
+  **non-blocking**: a deploy proceeds without one rather than hanging.
 
 Migration compatibility is what makes the two rollbacks separable: the migration
 chain is **forward and skip-version safe** (`src/lib/db/migrate.js` filters

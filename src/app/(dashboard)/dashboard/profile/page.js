@@ -68,6 +68,13 @@ export default function ProfilePage() {
   const [claudeMessagesRoute, setClaudeMessagesRoute] = useState("");
   const [claudeMessagesRouteStatus, setClaudeMessagesRouteStatus] = useState({ type: "", message: "" });
   const [claudeMessagesRouteLoading, setClaudeMessagesRouteLoading] = useState(false);
+  // Off-host replication. The credential inputs start empty on every load — the
+  // saved values are never sent to the browser, so an untouched field means
+  // "keep what is stored" rather than "erase it".
+  const [backupForm, setBackupForm] = useState({ enabled: false, replicaUrl: "", accessKeyId: "", accessKeySecret: "" });
+  const [backupStatus, setBackupStatus] = useState(null);
+  const [backupMessage, setBackupMessage] = useState({ type: "", message: "" });
+  const [backupLoading, setBackupLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -75,6 +82,12 @@ export default function ProfilePage() {
       .then((data) => {
         setSettings(data);
         setClaudeMessagesRoute(data?.claudeMessagesRoute || "");
+        setBackupForm({
+          enabled: data?.backupEnabled === true,
+          replicaUrl: data?.backupReplicaUrl || "",
+          accessKeyId: "",
+          accessKeySecret: "",
+        });
         setProxyForm({
           outboundProxyEnabled: data?.outboundProxyEnabled === true,
           outboundProxyUrl: data?.outboundProxyUrl || "",
@@ -121,6 +134,28 @@ export default function ProfilePage() {
       .catch(() => {});
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Replication status. Polled rather than fetched once because the whole point
+  // of showing it is to notice when the replicator has DIED — a single fetch on
+  // page load would only ever show the state at that moment. GET is read-only
+  // and cheap (no child process is spawned by it).
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch("/api/settings/backup", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!cancelled && data) setBackupStatus(data);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
     };
   }, []);
 
@@ -739,7 +774,120 @@ export default function ProfilePage() {
     setDbAuth({ open: false, mode: "", password: "" });
     if (mode === "export") await handleExportDatabase(password);
     else if (mode === "import") await runImportDatabase(password);
+    else if (mode === "restore") await runBackupRestore(password);
   };
+
+  const refreshBackupStatus = async () => {
+    try {
+      const res = await fetch("/api/settings/backup", { cache: "no-store" });
+      if (res.ok) setBackupStatus(await res.json());
+    } catch { /* the poll will retry */ }
+  };
+
+  // Credentials are only sent when the operator actually typed something;
+  // omitting the keys leaves the stored values untouched. Enabling is part of
+  // the same PATCH so a URL and its credentials are validated together.
+  const saveBackupConfig = async (event) => {
+    event?.preventDefault?.();
+    setBackupLoading(true);
+    setBackupMessage({ type: "", message: "" });
+    try {
+      const payload = {
+        backupReplicaUrl: backupForm.replicaUrl.trim(),
+        backupEnabled: backupForm.enabled === true,
+      };
+      if (backupForm.accessKeyId.trim()) payload.backupAccessKeyId = backupForm.accessKeyId.trim();
+      if (backupForm.accessKeySecret.trim()) payload.backupAccessKeySecret = backupForm.accessKeySecret.trim();
+
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "保存备份配置失败");
+
+      setSettings((prev) => ({ ...prev, ...data }));
+      // Clear the credential fields: they are write-only, and leaving them in
+      // the DOM would make the next save resend a secret that is already stored.
+      setBackupForm((prev) => ({ ...prev, accessKeyId: "", accessKeySecret: "" }));
+      await refreshBackupStatus();
+      setBackupMessage({ type: "success", message: payload.backupEnabled ? "备份配置已保存，正在启动复制" : "备份配置已保存" });
+    } catch (error) {
+      setBackupMessage({ type: "error", message: error.message || "保存备份配置失败" });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const toggleBackupEnabled = async (enabled) => {
+    setBackupForm((prev) => ({ ...prev, enabled }));
+    setBackupLoading(true);
+    setBackupMessage({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backupEnabled: enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "切换备份状态失败");
+      setSettings((prev) => ({ ...prev, ...data }));
+      await refreshBackupStatus();
+      setBackupMessage({ type: "success", message: enabled ? "异地备份已开启" : "异地备份已关闭" });
+    } catch (error) {
+      setBackupForm((prev) => ({ ...prev, enabled: !enabled }));
+      setBackupMessage({ type: "error", message: error.message || "切换备份状态失败" });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  // Restore is destructive and irreversible from the UI, so it goes through the
+  // same password-confirmation modal as import. The request answers with
+  // `restarting: true`; the server then exits and entrypoint.sh swaps the
+  // database in before any process opens it.
+  const runBackupRestore = async (password) => {
+    setBackupLoading(true);
+    setBackupMessage({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore", password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "恢复失败");
+      setBackupMessage({
+        type: "success",
+        message: data.restarting
+          ? `已从远端恢复 ${data.bytes ? `${(data.bytes / 1024 / 1024).toFixed(0)} MB` : "数据"}，服务正在重启以应用…`
+          : "恢复已完成",
+      });
+    } catch (error) {
+      setBackupMessage({ type: "error", message: error.message || "恢复失败" });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleRestoreClick = () => {
+    if (!backupStatus?.running) {
+      setBackupMessage({ type: "error", message: "复制进程未运行，无法从远端恢复" });
+      return;
+    }
+    setDbAuth({ open: true, mode: "restore", password: "" });
+  };
+
+  // Only rendered inside the confirm modal, so the wording matches the action.
+  const dbAuthVerb = dbAuth.mode === "export" ? "export" : dbAuth.mode === "restore" ? "restore" : "import";
+  const backupState = !backupForm.replicaUrl.trim()
+    ? { label: "未配置", variant: "default" }
+    : backupStatus?.running
+      ? { label: "复制中", variant: "success" }
+      : backupForm.enabled
+        ? { label: "已启用，未运行", variant: "warning" }
+        : { label: "已配置，未启用", variant: "default" };
 
   const observabilityEnabled = settings.enableObservability === true;
   const requestLogFileDumpsEnabled = settings.enableRequestLogFileDumps === true;
@@ -1316,6 +1464,141 @@ export default function ProfilePage() {
           </div>
         </Card>
 
+        {/* Off-host replication. The card above exports a JSON snapshot by hand;
+            this one streams the whole SQLite file to remote storage continuously
+            so a disk failure is survivable without anyone remembering to click. */}
+        <Card>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="size-10 sm:size-12 rounded-lg bg-[#38bdf8]/10 text-[#38bdf8] flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-xl sm:text-2xl">cloud_sync</span>
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg sm:text-xl font-semibold">异地持续备份</h2>
+                  <Badge variant={backupState.variant} size="sm">{backupState.label}</Badge>
+                </div>
+                <p className="text-sm text-text-muted mt-0.5">用 litestream 把 SQLite 持续增量复制到远端存储，主机损坏时可一键恢复。</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-sm text-text-muted">启用</span>
+              <Toggle
+                checked={backupForm.enabled === true}
+                onChange={() => toggleBackupEnabled(!(backupForm.enabled === true))}
+                disabled={loading || backupLoading}
+              />
+            </div>
+          </div>
+
+          <form onSubmit={saveBackupConfig} className="flex flex-col gap-4 pt-4 border-t border-border">
+            <div className="flex flex-col gap-2">
+              <label className="font-medium text-sm sm:text-base">备份目标地址</label>
+              <Input
+                placeholder="oss://bucket.oss-cn-hangzhou.aliyuncs.com/spring-mouse"
+                value={backupForm.replicaUrl}
+                onChange={(event) => setBackupForm((prev) => ({ ...prev, replicaUrl: event.target.value }))}
+                disabled={loading || backupLoading}
+                spellCheck={false}
+              />
+              <p className="text-xs text-text-muted">
+                支持 <code>oss://</code>、<code>s3://</code>、<code>gs://</code>、<code>sftp://</code>、<code>webdavs://</code>、<code>file://</code>。
+                用 <code>file:///绝对路径</code> 可备份到已挂载的异地磁盘。远端桶请自行开启服务端加密（OSS SSE / S3 SSE）。
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">AccessKey ID</label>
+                <Input
+                  placeholder={settings.backupCredentialsConfigured ? "已保存；留空可保持不变" : "LTAI..."}
+                  value={backupForm.accessKeyId}
+                  onChange={(event) => setBackupForm((prev) => ({ ...prev, accessKeyId: event.target.value }))}
+                  disabled={loading || backupLoading}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">AccessKey Secret</label>
+                <Input
+                  type="password"
+                  placeholder={settings.backupCredentialsConfigured ? "已保存；留空可保持不变" : "••••••••"}
+                  value={backupForm.accessKeySecret}
+                  onChange={(event) => setBackupForm((prev) => ({ ...prev, accessKeySecret: event.target.value }))}
+                  disabled={loading || backupLoading}
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-text-muted">
+              凭据加密后保存在本机设置中，不会回传到浏览器；<code>file://</code> 目标无需填写。密钥文件丢失时重新输入即可，不影响已上传的备份。
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button type="submit" variant="secondary" loading={backupLoading} disabled={loading}>
+                保存配置
+              </Button>
+              <Button type="button" variant="outline" onClick={refreshBackupStatus} disabled={loading || backupLoading}>
+                刷新状态
+              </Button>
+            </div>
+          </form>
+
+          <div className="mt-4 flex flex-col gap-2 pt-4 border-t border-border">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+              <p className="text-text-muted">
+                复制进程：<span className={backupStatus?.running ? "text-green-600 dark:text-green-400" : "text-text-muted"}>{backupStatus?.running ? `运行中${backupStatus.pid ? `（PID ${backupStatus.pid}）` : ""}` : "未运行"}</span>
+              </p>
+              <p className="text-text-muted break-all">
+                生效地址：<code>{backupStatus?.replicaUrl || "—"}</code>
+              </p>
+            </div>
+
+            {backupStatus?.replicaUrlError && (
+              <p className="text-xs text-red-500">配置错误：{backupStatus.replicaUrlError}</p>
+            )}
+            {backupStatus?.lastError && (
+              <p className="text-xs text-red-500 break-all">最近错误：{backupStatus.lastError}</p>
+            )}
+            {backupStatus?.restore?.pending && (
+              <p className="text-xs text-amber-500">
+                已暂存一次恢复，等待重启后生效{backupStatus.restore.pendingSince ? `（${new Date(backupStatus.restore.pendingSince).toLocaleString()}）` : ""}。
+              </p>
+            )}
+            {backupStatus?.recentLog?.length > 0 && (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-text-muted">查看复制日志</summary>
+                <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-2 text-[11px] leading-4 text-text-muted whitespace-pre-wrap break-all">{backupStatus.recentLog.slice(-12).join("\n")}</pre>
+              </details>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                icon="restore"
+                onClick={handleRestoreClick}
+                loading={backupLoading}
+                disabled={loading || backupStatus?.restore?.canSwapOnBoot === false}
+                className="w-full sm:w-auto"
+              >
+                从远端恢复
+              </Button>
+              <p className="text-xs text-text-muted">
+                {backupStatus?.restore?.canSwapOnBoot === false
+                  ? "当前部署不支持在重启时替换数据库（仅 Docker 部署可用）；请手动停服后恢复 SQLite 文件。"
+                  : "用远端最近一次备份覆盖当前数据库，服务会自动重启；替换前的数据库会另存一份。"}
+              </p>
+            </div>
+
+            {backupMessage.message && (
+              <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                {backupMessage.message}
+              </p>
+            )}
+          </div>
+        </Card>
+
 
         </SettingsZone>
 
@@ -1470,22 +1753,28 @@ export default function ProfilePage() {
       <Modal
         isOpen={dbAuth.open}
         onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
-        title="Confirm Password"
+        title={dbAuth.mode === "restore" ? "确认从远端恢复" : "Confirm Password"}
         size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading}>
+            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading || backupLoading}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading} disabled={!dbAuth.password}>
+            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading || backupLoading} disabled={!dbAuth.password}>
               Confirm
             </Button>
           </>
         }
       >
-        <p className="text-text-muted mb-3 text-sm">
-          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
-        </p>
+        {dbAuth.mode === "restore" ? (
+          <p className="text-red-500 mb-3 text-sm">
+            这会把当前数据库替换为远端最近的一次备份，重启后生效。替换前的数据库会另存一份，但请确认你确实要回滚。
+          </p>
+        ) : (
+          <p className="text-text-muted mb-3 text-sm">
+            Enter your current password to {dbAuthVerb} the database.
+          </p>
+        )}
         <Input
           type="password"
           value={dbAuth.password}

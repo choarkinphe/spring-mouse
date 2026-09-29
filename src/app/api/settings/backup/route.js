@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSettings } from "@/lib/localDb";
 import { getBackupStatus, startLitestream, stopLitestream } from "@/lib/backup/litestream";
+import { setBackupEnabled } from "@/lib/backup/destinationsStore";
 import { performRestore, getRestoreState } from "@/lib/backup/restore";
 import { verifyDashboardPassword } from "@/lib/auth/dashboardSession";
 
@@ -30,6 +31,27 @@ export async function GET() {
     return NextResponse.json({ ...status, restore }, { headers: HEADERS });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+// PATCH — the enable switch. `{ enabled: boolean }`. Kept off the generic
+// settings PATCH because the engine must be started against the CANDIDATE state
+// before the row is written; persisting first (as that handler used to) left the
+// database enabled even when the start failed.
+export async function PATCH(request) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    if (typeof body.enabled !== "boolean") {
+      return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
+    }
+    await setBackupEnabled(body.enabled);
+    const settings = await getSettings();
+    return NextResponse.json(
+      { ok: true, enabled: settings.backupEnabled === true, status: await getBackupStatus(settings) },
+      { headers: HEADERS },
+    );
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
 }
 

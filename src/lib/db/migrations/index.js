@@ -20,8 +20,9 @@ import m016 from "./016-mouse-client-ids.js";
 import m019 from "./019-normalize-legacy-mouses.js";
 import m020 from "./020-drop-usage-daily.js";
 import m024 from "./024-routing-telemetry.js";
+import m025 from "./025-backup-destinations.js";
 
-export const MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m019, m020, m024].sort((a, b) => a.version - b.version);
+export const MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m019, m020, m024, m025].sort((a, b) => a.version - b.version);
 
 export function latestVersion() {
   return MIGRATIONS.length ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;

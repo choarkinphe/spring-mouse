@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_FILE } from "@/lib/db/paths.js";
-import { BACKUP_DIR, LITESTREAM_BIN, resolveBackupConfig, stopLitestream } from "./litestream.js";
+import { BACKUP_DIR, LITESTREAM_BIN, resolveActiveDestination, stopLitestream, writeConfigIfNeeded } from "./litestream.js";
 import { buildEnv } from "./litestreamConfig.js";
 
 export const STAGING_FILE = path.join(BACKUP_DIR, "restore-staging.sqlite");
@@ -72,18 +72,29 @@ async function checkIntegrity(filePath) {
 // Download the replica into the staging file. `timestamp` restores as of a
 // point in time when provided.
 export async function stageRestore({ settings = null, timestamp = "" } = {}) {
-  const { replicaUrl, accessKeyId, accessKeySecret } = await resolveBackupConfig(settings);
+  const { destination, secret, databasePath } = await resolveActiveDestination(settings);
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   try { fs.rmSync(STAGING_FILE, { force: true }); } catch {}
 
-  const env = buildEnv({ accessKeyId, accessKeySecret, replicaUrl });
-  // The replica URL is passed POSITIONALLY and the config file is NOT used:
-  // litestream rejects "-config" together with a replica URL ("cannot specify a
-  // replica URL and the -config flag"), and the URL alone carries everything
-  // restore needs (scheme + path; credentials come from the env above).
-  const args = ["restore", "-o", STAGING_FILE];
-  if (timestamp) args.push("-timestamp", String(timestamp));
-  args.push(replicaUrl);
+  const env = buildEnv({ ...destination, secret });
+  const args = ["restore"];
+  if (destination.type === "url") {
+    // Legacy shape: the plain URL carries everything, and litestream refuses
+    // "-config" together with a positional replica URL. Passing the URL keeps
+    // pre-existing installs on the exact path they have always used.
+    args.push("-o", STAGING_FILE);
+    if (timestamp) args.push("-timestamp", String(timestamp));
+    args.push(destination.config.url);
+  } else {
+    // Typed destinations use the FIELD form, whose extra parameters (sftp
+    // key-path, s3 endpoint, …) live only in the config file. litestream then
+    // takes the DATABASE PATH positionally, which must match the config's
+    // `path:` — it does, because both are DATA_FILE.
+    const configPath = writeConfigIfNeeded({ ...destination, secret });
+    args.push("-config", configPath, "-o", STAGING_FILE);
+    if (timestamp) args.push("-timestamp", String(timestamp));
+    args.push(databasePath);
+  }
 
   const result = await run(LITESTREAM_BIN, args, { env });
   if (result.code !== 0 || !fs.existsSync(STAGING_FILE)) {

@@ -4,13 +4,13 @@ import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
-import { getActiveComboModels } from "open-sse/services/combo.js";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute";
-import { encryptBackupSecret, canDecryptBackupSecret } from "@/lib/backup/crypto";
-import { normalizeReplicaUrl } from "@/lib/backup/litestreamConfig";
-import { applyBackupSettings } from "@/lib/backup/supervisor";
+import { getActiveComboModels } from "open-sse/services/combo.js";
+import { canDecryptBackupSecret } from "@/lib/backup/crypto";
+import { getDefaultReplicaUrl } from "@/lib/backup/litestreamConfig";
+import { listPublicDestinations } from "@/lib/backup/destinationsStore";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -26,6 +26,18 @@ const PROTECTED_SETTING_KEYS = [
   // Backup credentials are written only through the encrypted path below, never
   // straight from the request body.
   "backupAccessKeyIdEncrypted", "backupAccessKeySecretEncrypted",
+  // The destination list carries an encrypted secret blob per entry, the active
+  // pointer decides what replicates, and the enable switch must start the engine
+  // before it is persisted. All three are written by the dedicated endpoints
+  // under /api/settings/backup/destinations, which validate and apply the engine
+  // FIRST — mass-assigning them here would reintroduce the "400 but the row is
+  // already enabled" ordering bug this replaced.
+  "backupDestinations", "backupActiveDestinationId", "backupEnabled",
+  // The legacy single-URL field is READ-ONLY now: nothing writes it, and the
+  // engine only reads it as a fallback for an install migration 025 could not
+  // convert. Leaving it mass-assignable would let a stale client create a
+  // second, invisible source of truth beside the destination list.
+  "backupReplicaUrl",
 ];
 const RETIRED_SSO_SETTING_KEYS = [
   "authMode", "ssoType", "oidcIssuerUrl", "oidcClientId", "oidcClientSecret",
@@ -44,6 +56,9 @@ function toSafeSettings(settings) {
     totpPendingRecoveryCodeHashes,
     backupAccessKeyIdEncrypted,
     backupAccessKeySecretEncrypted,
+    // The stored list holds an encrypted secret blob per entry; it is replaced
+    // below with a secret-free projection so the ciphertext never leaves the server.
+    backupDestinations,
     ...safeSettings
   } = settings;
   safeSettings.cloudflareTunnelConfigured = !!cloudflareTunnelToken;
@@ -56,6 +71,12 @@ function toSafeSettings(settings) {
   // at the first upload.
   safeSettings.backupCredentialsConfigured = canDecryptBackupSecret(backupAccessKeyIdEncrypted)
     && canDecryptBackupSecret(backupAccessKeySecretEncrypted);
+  // The destination list, secret-free. `backupDestinations` is a PROTECTED key
+  // so this projection is the only shape the client ever sees.
+  safeSettings.backupDestinations = listPublicDestinations(settings);
+  // The local path the UI pre-fills when no destination is set. Server-computed
+  // so the client never has to guess the data directory.
+  safeSettings.backupDefaultReplicaUrl = getDefaultReplicaUrl();
   return safeSettings;
 }
 
@@ -279,42 +300,12 @@ export async function PATCH(request) {
       }
     }
 
-    // Backup destination. The URL is validated here rather than at first upload
-    // so a typo'd scheme fails while the operator is looking at the field, not
-    // hours later when they assume backups exist.
-    if (Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl")) {
-      try {
-        body.backupReplicaUrl = normalizeReplicaUrl(body.backupReplicaUrl);
-      } catch (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(body, "backupEnabled")) {
-      body.backupEnabled = body.backupEnabled === true;
-      // Enabling without a destination would start a process that exits
-      // immediately; refuse instead of accepting a setting that cannot work.
-      if (body.backupEnabled) {
-        const url = Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl")
-          ? body.backupReplicaUrl
-          : (await getCurrentSettings()).backupReplicaUrl;
-        if (!url) {
-          return NextResponse.json({ error: "A backup URL is required before backup can be enabled" }, { status: 400 });
-        }
-      }
-    }
-    // Credentials arrive in plaintext over the (session-authenticated) request
-    // and are encrypted before they touch the database. An empty string means
-    // "leave what is stored alone", matching the cloudflareTunnelToken
-    // convention — otherwise a blank field on a form save would erase them.
-    for (const [field, column] of [
-      ["backupAccessKeyId", "backupAccessKeyIdEncrypted"],
-      ["backupAccessKeySecret", "backupAccessKeySecretEncrypted"],
-    ]) {
-      if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
-      const value = String(body[field] ?? "").trim();
-      delete body[field];
-      if (value) body[column] = encryptBackupSecret(value);
-    }
+    // Backup. The destination list, the active pointer and the enable switch are
+    // all owned by the dedicated endpoints under /api/settings/backup/destinations
+    // — which apply the engine BEFORE persisting, so a failed start cannot leave
+    // the row enabled. Writing them here would reintroduce that ordering bug, so
+    // they are PROTECTED (see PROTECTED_SETTING_KEYS) and the legacy single-URL
+    // translation has been removed.
 
     if (Object.prototype.hasOwnProperty.call(body, "comboStrategies")) {
       try {
@@ -461,22 +452,6 @@ export async function PATCH(request) {
           configurePricingAutoSync(settings);
         })
         .catch((error) => console.warn("[PricingAutoSync] settings update failed:", error.message));
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(body, "backupEnabled") ||
-      Object.prototype.hasOwnProperty.call(body, "backupReplicaUrl") ||
-      Object.prototype.hasOwnProperty.call(body, "backupAccessKeyIdEncrypted") ||
-      Object.prototype.hasOwnProperty.call(body, "backupAccessKeySecretEncrypted")
-    ) {
-      // Apply immediately: restart replication with the new destination, or stop
-      // it. Awaited so the response reflects whether the new config actually
-      // works, rather than reporting success and failing on the next tick.
-      try {
-        await applyBackupSettings(settings);
-      } catch (error) {
-        return NextResponse.json({ error: `Backup configuration failed: ${error.message}` }, { status: 400 });
-      }
     }
 
     return NextResponse.json(toSafeSettings(settings), { headers: SETTINGS_RESPONSE_HEADERS });

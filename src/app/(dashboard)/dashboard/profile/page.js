@@ -1,31 +1,100 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Image from "next/image";
-import { Badge, Card, Button, DashboardHero, Drawer, SegmentedControl, Toggle, Input } from "@/shared/components";
+import { Badge, Card, Button, DashboardHero, Drawer, SegmentedControl, Select, Toggle, Input } from "@/shared/components";
 import Modal from "@/shared/components/Modal";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { DESTINATION_TYPES, DESTINATION_TYPE_ORDER } from "@/shared/constants/backupDestinations";
 import TokenSaverClient from "../token-saver/TokenSaverClient";
+
+// The destination picker, built from the SAME table the server validates with
+// (src/shared/constants/backupDestinations.js) — so a type can never be offered
+// here that the API would reject, and each type's fields are rendered from one
+// source instead of being hand-written per scheme. That table has no node
+// imports, which is why it can be shared with this client component.
+const DESTINATION_TYPE_OPTIONS = DESTINATION_TYPE_ORDER.map((value) => ({
+  value,
+  label: DESTINATION_TYPES[value].label,
+}));
+
+// What a blank drawer looks like for a given type: every config field starts
+// empty (booleans off) and every secret field empty.
+function emptyDestinationDraft(type = "file") {
+  const spec = DESTINATION_TYPES[type] ?? DESTINATION_TYPES.file;
+  const config = {};
+  for (const field of spec.configFields) config[field.key] = field.type === "boolean" ? false : "";
+  const secret = {};
+  for (const field of spec.secretFields) secret[field.key] = "";
+  return { type, label: "", config, secret };
+}
+
+// The settings page is one long scroll. This is its table of contents: the rail
+// on the left jumps to a zone and highlights whichever one is in view. The ids
+// are load-bearing — /dashboard/token-saver redirects to #token-saver and the
+// pxpipe page links to it too, so those three ids must not be renamed.
+const SETTINGS_ZONES = [
+  { id: "zone-access", index: "01", title: "访问与安全", icon: "shield" },
+  { id: "zone-network", index: "02", title: "网络与可观测性", icon: "lan" },
+  { id: "api-key-quota", index: "03", title: "API Key 配额", icon: "data_usage" },
+  { id: "token-saver", index: "04", title: "Token 节省", icon: "savings" },
+  { id: "zone-data", index: "05", title: "数据维护", icon: "inventory_2" },
+];
 
 function SettingsZone({ id, index, title, description, children }) {
   return (
-    <section id={id} className="scroll-mt-6 grid gap-4 xl:grid-cols-[11rem_minmax(0,1fr)] xl:gap-7">
-      <div className="xl:pt-5">
-        <div className="inline-flex items-center gap-2 text-[10px] font-mono font-semibold uppercase tracking-[0.18em] text-[#38bdf8]">
-          <span className="h-px w-5 bg-[#38bdf8]/70" />
-          {index}
+    <section id={id} className="scroll-mt-6 flex flex-col gap-4">
+      <div>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[#38bdf8]">{index}</span>
+          <h2 className="text-base font-semibold text-text-main">{title}</h2>
         </div>
-        <h2 className="mt-2 text-base font-semibold text-text-main">{title}</h2>
-        <p className="mt-1 max-w-[13rem] text-xs leading-5 text-text-muted">{description}</p>
+        <p className="mt-1 text-xs leading-5 text-text-muted">{description}</p>
       </div>
-      <div className="min-w-0">{children}</div>
+      {/* The zone owns the vertical rhythm between its cards. Previously each zone
+          had to add its own gap, and the one that forgot (数据维护) rendered its
+          two cards flush against each other. Stacking here makes that impossible. */}
+      <div className="min-w-0 flex flex-col gap-4">{children}</div>
     </section>
+  );
+}
+
+// Sticky section rail, mirroring the master-detail rail on the routing and media
+// pages (combos/page.js, media-providers/page.js) so the shell behaves the same.
+// Below lg it collapses into a horizontal, scrollable chip strip.
+function SettingsNav({ activeId, onSelect }) {
+  return (
+    <aside aria-label="设置分区" className="min-w-0 lg:sticky lg:top-4">
+      <p className="hidden px-2.5 pb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted lg:block">
+        设置分区
+      </p>
+      <div className="custom-scrollbar flex gap-1.5 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+        {SETTINGS_ZONES.map((zone) => {
+          const active = zone.id === activeId;
+          return (
+            <button
+              key={zone.id}
+              type="button"
+              onClick={() => onSelect(zone.id)}
+              aria-current={active ? "true" : undefined}
+              className={`group flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors lg:w-full ${active ? "bg-[#38bdf8]/10 text-[#7dd3fc]" : "text-text-muted hover:bg-surface-2 hover:text-text-main"}`}
+            >
+              <span className={`material-symbols-outlined text-[17px] leading-none ${active ? "text-[#38bdf8]" : "text-text-muted group-hover:text-text-main"}`}>{zone.icon}</span>
+              <span className="min-w-0 flex-1 truncate font-medium">{zone.title}</span>
+              <span className="hidden shrink-0 font-mono text-[10px] tabular-nums text-[#647688] lg:block">{zone.index}</span>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 
 export default function ProfilePage() {
   const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(true);
+  // Which zone the rail highlights. Purely presentational — no data depends on it.
+  const [activeZone, setActiveZone] = useState(SETTINGS_ZONES[0].id);
   const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
   const [passStatus, setPassStatus] = useState({ type: "", message: "" });
   const [passLoading, setPassLoading] = useState(false);
@@ -42,6 +111,8 @@ export default function ProfilePage() {
   const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
   const pendingImportRef = useRef(null);
   const importFileRef = useRef(null);
+  // Anchor for locating the scroll container the zone rail listens on.
+  const pageRef = useRef(null);
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
@@ -65,25 +136,31 @@ export default function ProfilePage() {
   const [apiKeyRateLimitForm, setApiKeyRateLimitForm] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
   const [apiKeyRateLimitStatus, setApiKeyRateLimitStatus] = useState({ type: "", message: "" });
   const [apiKeyRateLimitLoading, setApiKeyRateLimitLoading] = useState(false);
-  // Off-host replication. The credential inputs start empty on every load — the
-  // saved values are never sent to the browser, so an untouched field means
-  // "keep what is stored" rather than "erase it".
-  const [backupForm, setBackupForm] = useState({ enabled: false, replicaUrl: "", accessKeyId: "", accessKeySecret: "" });
+  // Off-host replication. The destination list lives on the server; the client
+  // only ever receives a secret-free projection (`backupDestinations`, each entry
+  // with a derived `displayUrl` and a `hasCredentials` flag). The drawer holds a
+  // DRAFT — a full destination built from the shared type table — so switching
+  // type rebuilds its fields from the same spec the API validates against.
+  const [backupEnabled, setBackupEnabled] = useState(false);
+  const [destinations, setDestinations] = useState([]);
+  const [activeDestinationId, setActiveDestinationId] = useState(null);
+  const [destinationDrawer, setDestinationDrawer] = useState({ open: false, editingId: null, draft: emptyDestinationDraft("file") });
   const [backupStatus, setBackupStatus] = useState(null);
   const [backupMessage, setBackupMessage] = useState({ type: "", message: "" });
   const [backupLoading, setBackupLoading] = useState(false);
+  // Which half of the merged backup card is showing. "continuous" is the
+  // litestream replica (default), "portable" is the JSON export/import that can
+  // be carried to another server — the two mechanisms the card unifies.
+  const [backupView, setBackupView] = useState("continuous");
 
   useEffect(() => {
     fetch("/api/settings")
       .then((res) => res.json())
       .then((data) => {
         setSettings(data);
-        setBackupForm({
-          enabled: data?.backupEnabled === true,
-          replicaUrl: data?.backupReplicaUrl || "",
-          accessKeyId: "",
-          accessKeySecret: "",
-        });
+        setBackupEnabled(data?.backupEnabled === true);
+        setDestinations(Array.isArray(data?.backupDestinations) ? data.backupDestinations : []);
+        setActiveDestinationId(data?.backupActiveDestinationId ?? null);
         setProxyForm({
           outboundProxyEnabled: data?.outboundProxyEnabled === true,
           outboundProxyUrl: data?.outboundProxyUrl || "",
@@ -118,6 +195,46 @@ export default function ProfilePage() {
         setLoading(false);
       });
   }, []);
+
+  // Highlight the zone currently in view. The scroll container is the dashboard
+  // shell's overflow-y-auto <main> child (DashboardLayout.js), not window, so the
+  // listener goes on the nearest scrollable ancestor of this page. A zone counts
+  // as current once its top has passed the top of the viewport, so the last such
+  // zone wins as you scroll down.
+  useEffect(() => {
+    const root = pageRef.current;
+    if (!root) return;
+    let container = root.parentElement;
+    while (container && container !== document.body) {
+      const overflowY = getComputedStyle(container).overflowY;
+      if (overflowY === "auto" || overflowY === "scroll") break;
+      container = container.parentElement;
+    }
+    const scroller = container && container !== document.body ? container : window;
+
+    const onScroll = () => {
+      const threshold = (scroller === window ? 0 : scroller.getBoundingClientRect().top) + 96;
+      let current = SETTINGS_ZONES[0].id;
+      for (const zone of SETTINGS_ZONES) {
+        const el = document.getElementById(zone.id);
+        if (el && el.getBoundingClientRect().top <= threshold) current = zone.id;
+      }
+      setActiveZone(current);
+    };
+
+    onScroll();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, []);
+
+  const jumpToZone = (id) => {
+    setActiveZone(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -753,59 +870,125 @@ export default function ProfilePage() {
     } catch { /* the poll will retry */ }
   };
 
-  // Credentials are only sent when the operator actually typed something;
-  // omitting the keys leaves the stored values untouched. Enabling is part of
-  // the same PATCH so a URL and its credentials are validated together.
-  const saveBackupConfig = async (event) => {
+  // The drawer works on a DRAFT. Adding posts a new destination; editing PATCHes
+  // one by id, and blank secret fields mean "keep the stored credential" — the
+  // server merges the stored blob, so an edit that only renames a destination
+  // does not wipe its password.
+  const saveDestination = async (event) => {
     event?.preventDefault?.();
+    const { editingId, draft } = destinationDrawer;
     setBackupLoading(true);
     setBackupMessage({ type: "", message: "" });
     try {
-      const payload = {
-        backupReplicaUrl: backupForm.replicaUrl.trim(),
-        backupEnabled: backupForm.enabled === true,
-      };
-      if (backupForm.accessKeyId.trim()) payload.backupAccessKeyId = backupForm.accessKeyId.trim();
-      if (backupForm.accessKeySecret.trim()) payload.backupAccessKeySecret = backupForm.accessKeySecret.trim();
-
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
+      const url = editingId
+        ? `/api/settings/backup/destinations/${editingId}`
+        : "/api/settings/backup/destinations";
+      const res = await fetch(url, {
+        method: editingId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ type: draft.type, label: draft.label, config: draft.config, secret: draft.secret }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "保存备份配置失败");
-
-      setSettings((prev) => ({ ...prev, ...data }));
-      // Clear the credential fields: they are write-only, and leaving them in
-      // the DOM would make the next save resend a secret that is already stored.
-      setBackupForm((prev) => ({ ...prev, accessKeyId: "", accessKeySecret: "" }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "保存保存位置失败");
+      setDestinations(Array.isArray(data.destinations) ? data.destinations : []);
+      // The new destination becomes active only when it was the first one; pick
+      // the active id back up so the list marks the right row.
+      const refreshed = await fetch("/api/settings").then((r) => r.json()).catch(() => null);
+      if (refreshed?.backupActiveDestinationId !== undefined) setActiveDestinationId(refreshed.backupActiveDestinationId);
+      setDestinationDrawer({ open: false, editingId: null, draft: emptyDestinationDraft("file") });
       await refreshBackupStatus();
-      setBackupMessage({ type: "success", message: payload.backupEnabled ? "备份配置已保存，正在启动复制" : "备份配置已保存" });
+      setBackupMessage({ type: "success", message: editingId ? "保存位置已更新" : "保存位置已添加" });
     } catch (error) {
-      setBackupMessage({ type: "error", message: error.message || "保存备份配置失败" });
+      setBackupMessage({ type: "error", message: error.message || "保存保存位置失败" });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const openAddDestination = () => {
+    setBackupMessage({ type: "", message: "" });
+    setDestinationDrawer({ open: true, editingId: null, draft: emptyDestinationDraft("file") });
+  };
+
+  const openEditDestination = (destination) => {
+    setBackupMessage({ type: "", message: "" });
+    const spec = DESTINATION_TYPES[destination.type] ?? DESTINATION_TYPES.file;
+    const config = {};
+    for (const field of spec.configFields) {
+      const value = destination.config?.[field.key];
+      config[field.key] = field.type === "boolean" ? value === true : (value ?? "");
+    }
+    const secret = {};
+    for (const field of spec.secretFields) secret[field.key] = "";
+    setDestinationDrawer({
+      open: true,
+      editingId: destination.id,
+      draft: { type: destination.type, label: destination.label || "", config, secret },
+    });
+  };
+
+  const activateDestination = async (id) => {
+    setBackupLoading(true);
+    setBackupMessage({ type: "", message: "" });
+    try {
+      const res = await fetch(`/api/settings/backup/destinations/${id}/activate`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "切换保存位置失败");
+      setDestinations(Array.isArray(data.destinations) ? data.destinations : []);
+      setActiveDestinationId(id);
+      await refreshBackupStatus();
+      setBackupMessage({ type: "success", message: "已切换到该保存位置" });
+    } catch (error) {
+      setBackupMessage({ type: "error", message: error.message || "切换保存位置失败" });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const removeDestination = async (destination) => {
+    if (!window.confirm(`删除保存位置「${destination.label}」？正在使用它的复制会停止。`)) return;
+    setBackupLoading(true);
+    setBackupMessage({ type: "", message: "" });
+    try {
+      const res = await fetch(`/api/settings/backup/destinations/${destination.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "删除保存位置失败");
+      setDestinations(Array.isArray(data.destinations) ? data.destinations : []);
+      const refreshed = await fetch("/api/settings").then((r) => r.json()).catch(() => null);
+      if (refreshed?.backupActiveDestinationId !== undefined) setActiveDestinationId(refreshed.backupActiveDestinationId);
+      if (refreshed?.backupEnabled !== undefined) setBackupEnabled(refreshed.backupEnabled === true);
+      await refreshBackupStatus();
+      setBackupMessage({ type: "success", message: "保存位置已删除" });
+    } catch (error) {
+      setBackupMessage({ type: "error", message: error.message || "删除保存位置失败" });
     } finally {
       setBackupLoading(false);
     }
   };
 
   const toggleBackupEnabled = async (enabled) => {
-    setBackupForm((prev) => ({ ...prev, enabled }));
+    setBackupEnabled(enabled);
     setBackupLoading(true);
     setBackupMessage({ type: "", message: "" });
     try {
-      const res = await fetch("/api/settings", {
+      // The dedicated endpoint starts the engine BEFORE persisting, so a failed
+      // enable leaves the row untouched instead of enabled-but-broken.
+      const res = await fetch("/api/settings/backup", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ backupEnabled: enabled }),
+        body: JSON.stringify({ enabled }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "切换备份状态失败");
-      setSettings((prev) => ({ ...prev, ...data }));
+      // Enabling with no saved destination seeds a local one, so the list can
+      // gain a row here; re-read it rather than assuming.
+      const refreshed = await fetch("/api/settings").then((r) => r.json()).catch(() => null);
+      if (refreshed?.backupDestinations) setDestinations(refreshed.backupDestinations);
+      if (refreshed?.backupActiveDestinationId !== undefined) setActiveDestinationId(refreshed.backupActiveDestinationId);
       await refreshBackupStatus();
-      setBackupMessage({ type: "success", message: enabled ? "异地备份已开启" : "异地备份已关闭" });
+      setBackupMessage({ type: "success", message: enabled ? "持续备份已开启" : "持续备份已关闭" });
     } catch (error) {
-      setBackupForm((prev) => ({ ...prev, enabled: !enabled }));
+      setBackupEnabled(!enabled);
       setBackupMessage({ type: "error", message: error.message || "切换备份状态失败" });
     } finally {
       setBackupLoading(false);
@@ -850,39 +1033,61 @@ export default function ProfilePage() {
 
   // Only rendered inside the confirm modal, so the wording matches the action.
   const dbAuthVerb = dbAuth.mode === "export" ? "export" : dbAuth.mode === "restore" ? "restore" : "import";
-  const backupState = !backupForm.replicaUrl.trim()
+  // The badge reflects the STORED state: a configured destination plus the
+  // enable switch. "复制中" additionally requires the child process to be alive.
+  const backupState = destinations.length === 0
     ? { label: "未配置", variant: "default" }
     : backupStatus?.running
       ? { label: "复制中", variant: "success" }
-      : backupForm.enabled
+      : backupEnabled
         ? { label: "已启用，未运行", variant: "warning" }
         : { label: "已配置，未启用", variant: "default" };
+  // The drawer's field spec for the currently selected type — config fields,
+  // secret fields and the hint all come from the shared table.
+  const draftSpec = DESTINATION_TYPES[destinationDrawer.draft.type] ?? DESTINATION_TYPES.file;
+  // A blank secret on an EDIT means "keep the stored credential", so the field
+  // can be left alone. On ADD it is required (unless a key path covers SSH auth).
+  const draftEditing = Boolean(destinationDrawer.editingId);
+  const draftMissingRequired = useMemo(() => {
+    const { draft } = destinationDrawer;
+    for (const field of draftSpec.configFields) {
+      if (field.required && !String(draft.config[field.key] ?? "").trim()) return true;
+    }
+    if (draftEditing) return false;
+    if (draft.type === "sftp") {
+      return !String(draft.secret.password ?? "").trim() && !String(draft.config.keyPath ?? "").trim();
+    }
+    return draftSpec.secretFields.some((field) => field.required && !String(draft.secret[field.key] ?? "").trim());
+  }, [destinationDrawer, draftSpec, draftEditing]);
 
   const observabilityEnabled = settings.enableObservability === true;
   const requestLogFileDumpsEnabled = settings.enableRequestLogFileDumps === true;
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 pb-8 pt-1 sm:px-0 sm:pt-2">
-      <div className="flex flex-col gap-7">
-        <DashboardHero
-          eyebrow="System preferences"
-          title="设置"
-          description="配置控制台访问、安全入口、服务代理与本地数据维护。"
-          icon="settings"
+    <div ref={pageRef} className="mx-auto w-full max-w-6xl px-4 pb-8 pt-1 sm:px-0 sm:pt-2">
+      <DashboardHero
+        eyebrow="System preferences"
+        title="设置"
+        description="配置控制台访问、安全入口、服务代理与本地数据维护。"
+        icon="settings"
+      >
+        <Badge variant={settings.requireLogin ? "success" : "warning"} size="md" icon="shield">{settings.requireLogin ? "登录保护已开启" : "登录保护未开启"}</Badge>
+        <Badge variant={settings.totpEnabled ? "success" : "default"} size="md" icon="verified_user">{settings.totpEnabled ? "二次认证已开启" : "二次认证未开启"}</Badge>
+        <Badge
+          variant={cloudflareTunnelStatus?.connected ? "success" : cloudflareTunnelStatus?.running ? "warning" : "default"}
+          size="md"
+          icon="public"
         >
-          <Badge variant={settings.requireLogin ? "success" : "warning"} size="md" icon="shield">{settings.requireLogin ? "登录保护已开启" : "登录保护未开启"}</Badge>
-          <Badge variant={settings.totpEnabled ? "success" : "default"} size="md" icon="verified_user">{settings.totpEnabled ? "二次认证已开启" : "二次认证未开启"}</Badge>
-          <Badge
-            variant={cloudflareTunnelStatus?.connected ? "success" : cloudflareTunnelStatus?.running ? "warning" : "default"}
-            size="md"
-            icon="public"
-          >
-            {cloudflareTunnelStatus?.connected ? "外部通道已连接" : cloudflareTunnelStatus?.running ? "外部通道连接中" : "外部通道未运行"}
-          </Badge>
-          <Badge variant={proxyForm.outboundProxyEnabled ? "info" : "default"} size="md" icon="lan">{proxyForm.outboundProxyEnabled ? "出站代理已启用" : "直连模式"}</Badge>
-        </DashboardHero>
+          {cloudflareTunnelStatus?.connected ? "外部通道已连接" : cloudflareTunnelStatus?.running ? "外部通道连接中" : "外部通道未运行"}
+        </Badge>
+        <Badge variant={proxyForm.outboundProxyEnabled ? "info" : "default"} size="md" icon="lan">{proxyForm.outboundProxyEnabled ? "出站代理已启用" : "直连模式"}</Badge>
+      </DashboardHero>
 
+      <div className="mt-7 grid items-start gap-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <SettingsNav activeId={activeZone} onSelect={jumpToZone} />
+        <div className="flex min-w-0 flex-col gap-7">
         <SettingsZone
+          id="zone-access"
           index="01"
           title="访问与安全"
           description="控制 Dashboard 的登录保护，并配置外部安全访问入口。"
@@ -969,6 +1174,7 @@ export default function ProfilePage() {
         </SettingsZone>
 
         <SettingsZone
+          id="zone-network"
           index="02"
           title="网络与可观测性"
           description="管理上游网络代理，并控制用量与诊断数据采集。"
@@ -1258,7 +1464,7 @@ export default function ProfilePage() {
             )}
           </Card>
 
-          <div className="mt-5">
+          <div>
             <Card>
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500 shrink-0">
@@ -1314,7 +1520,7 @@ export default function ProfilePage() {
 
         <SettingsZone
           id="token-saver"
-          index="04"
+          index="05"
           title="Token 节省"
           description="配置工具输出、上下文与模型输出的压缩策略，降低调用成本。"
         >
@@ -1322,200 +1528,220 @@ export default function ProfilePage() {
         </SettingsZone>
 
         <SettingsZone
-          index="05"
+          id="zone-data"
+          index="06"
           title="数据维护"
-          description="通过加密备份导出和导入，在设备之间安全迁移配置。"
+          description="持续备份数据库以防主机损坏，或导出 JSON 快照在设备与服务器之间迁移。"
         >
-        {/* Backup and restore */}
+        {/* ONE card, two mechanisms. Continuous replication streams the whole
+            SQLite file (crash-safe, needs a restart to restore, not portable);
+            the JSON export is a point-in-time snapshot that can be carried to
+            another server or version. They were two cards, which made them look
+            like alternatives — they are two tools for the same job. */}
         <Card>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-            <div className="flex items-center gap-3 sm:gap-4">
-              <div className="size-10 sm:size-12 rounded-lg bg-[#38bdf8]/10 text-[#38bdf8] flex items-center justify-center shrink-0">
-                <span className="material-symbols-outlined text-xl sm:text-2xl">inventory_2</span>
-              </div>
-              <div>
-                <h2 className="text-lg sm:text-xl font-semibold">备份与恢复</h2>
-                <p className="text-sm text-text-muted">导出当前配置，或从备份安全恢复</p>
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-col gap-3 pt-4 border-t border-border">
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Button
-                variant="secondary"
-                icon="download"
-                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
-                loading={dbLoading}
-                className="w-full sm:w-auto"
-              >
-                Download Backup
-              </Button>
-              <Button
-                variant="outline"
-                icon="upload"
-                onClick={() => importFileRef.current?.click()}
-                disabled={dbLoading}
-                className="w-full sm:w-auto"
-              >
-                Import Backup
-              </Button>
-              <input
-                ref={importFileRef}
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={handleImportDatabase}
-              />
-            </div>
-            {dbStatus.message && (
-              <p className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
-                {dbStatus.message}
-              </p>
-            )}
-          </div>
-        </Card>
-
-        {/* Off-host replication. The card above exports a JSON snapshot by hand;
-            this one streams the whole SQLite file to remote storage continuously
-            so a disk failure is survivable without anyone remembering to click. */}
-        <Card>
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex items-center gap-3 sm:gap-4">
               <div className="size-10 sm:size-12 rounded-lg bg-[#38bdf8]/10 text-[#38bdf8] flex items-center justify-center shrink-0">
                 <span className="material-symbols-outlined text-xl sm:text-2xl">cloud_sync</span>
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg sm:text-xl font-semibold">异地持续备份</h2>
+                  <h2 className="text-lg sm:text-xl font-semibold">备份与恢复</h2>
                   <Badge variant={backupState.variant} size="sm">{backupState.label}</Badge>
                 </div>
-                <p className="text-sm text-text-muted mt-0.5">用 litestream 把 SQLite 持续增量复制到远端存储，主机损坏时可一键恢复。</p>
+                <p className="text-sm text-text-muted mt-0.5">把数据库持续备份到本地或远端，也可导出快照迁移到其他服务器。</p>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-sm text-text-muted">启用</span>
               <Toggle
-                checked={backupForm.enabled === true}
-                onChange={() => toggleBackupEnabled(!(backupForm.enabled === true))}
+                checked={backupEnabled === true}
+                onChange={() => toggleBackupEnabled(!(backupEnabled === true))}
                 disabled={loading || backupLoading}
               />
             </div>
           </div>
 
-          <form onSubmit={saveBackupConfig} className="flex flex-col gap-4 pt-4 border-t border-border">
-            <div className="flex flex-col gap-2">
-              <label className="font-medium text-sm sm:text-base">备份目标地址</label>
-              <Input
-                placeholder="oss://bucket.oss-cn-hangzhou.aliyuncs.com/spring-mouse"
-                value={backupForm.replicaUrl}
-                onChange={(event) => setBackupForm((prev) => ({ ...prev, replicaUrl: event.target.value }))}
-                disabled={loading || backupLoading}
-                spellCheck={false}
-              />
-              <p className="text-xs text-text-muted">
-                支持 <code>oss://</code>、<code>s3://</code>、<code>gs://</code>、<code>sftp://</code>、<code>webdavs://</code>、<code>file://</code>。
-                用 <code>file:///绝对路径</code> 可备份到已挂载的异地磁盘。远端桶请自行开启服务端加密（OSS SSE / S3 SSE）。
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col gap-2">
-                <label className="font-medium text-sm sm:text-base">AccessKey ID</label>
-                <Input
-                  placeholder={settings.backupCredentialsConfigured ? "已保存；留空可保持不变" : "LTAI..."}
-                  value={backupForm.accessKeyId}
-                  onChange={(event) => setBackupForm((prev) => ({ ...prev, accessKeyId: event.target.value }))}
-                  disabled={loading || backupLoading}
-                  autoComplete="off"
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <label className="font-medium text-sm sm:text-base">AccessKey Secret</label>
-                <Input
-                  type="password"
-                  placeholder={settings.backupCredentialsConfigured ? "已保存；留空可保持不变" : "••••••••"}
-                  value={backupForm.accessKeySecret}
-                  onChange={(event) => setBackupForm((prev) => ({ ...prev, accessKeySecret: event.target.value }))}
-                  disabled={loading || backupLoading}
-                  autoComplete="new-password"
-                />
-              </div>
-            </div>
-            <p className="text-xs text-text-muted">
-              凭据加密后保存在本机设置中，不会回传到浏览器；<code>file://</code> 目标无需填写。密钥文件丢失时重新输入即可，不影响已上传的备份。
-            </p>
-
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Button type="submit" variant="secondary" loading={backupLoading} disabled={loading}>
-                保存配置
-              </Button>
-              <Button type="button" variant="outline" onClick={refreshBackupStatus} disabled={loading || backupLoading}>
-                刷新状态
-              </Button>
-            </div>
-          </form>
-
-          <div className="mt-4 flex flex-col gap-2 pt-4 border-t border-border">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
-              <p className="text-text-muted">
-                复制进程：<span className={backupStatus?.running ? "text-green-600 dark:text-green-400" : "text-text-muted"}>{backupStatus?.running ? `运行中${backupStatus.pid ? `（PID ${backupStatus.pid}）` : ""}` : "未运行"}</span>
-              </p>
-              <p className="text-text-muted break-all">
-                生效地址：<code>{backupStatus?.replicaUrl || "—"}</code>
-              </p>
-            </div>
-
-            {backupStatus?.replicaUrlError && (
-              <p className="text-xs text-red-500">配置错误：{backupStatus.replicaUrlError}</p>
-            )}
-            {backupStatus?.lastError && (
-              <p className="text-xs text-red-500 break-all">最近错误：{backupStatus.lastError}</p>
-            )}
-            {backupStatus?.restore?.pending && (
-              <p className="text-xs text-amber-500">
-                已暂存一次恢复，等待重启后生效{backupStatus.restore.pendingSince ? `（${new Date(backupStatus.restore.pendingSince).toLocaleString()}）` : ""}。
-              </p>
-            )}
-            {backupStatus?.recentLog?.length > 0 && (
-              <details className="text-xs">
-                <summary className="cursor-pointer text-text-muted">查看复制日志</summary>
-                <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-2 text-[11px] leading-4 text-text-muted whitespace-pre-wrap break-all">{backupStatus.recentLog.slice(-12).join("\n")}</pre>
-              </details>
-            )}
-
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                icon="restore"
-                onClick={handleRestoreClick}
-                loading={backupLoading}
-                disabled={loading || backupStatus?.restore?.canSwapOnBoot === false}
-                className="w-full sm:w-auto"
-              >
-                从远端恢复
-              </Button>
-              <p className="text-xs text-text-muted">
-                {backupStatus?.restore?.canSwapOnBoot === false
-                  ? "当前部署不支持在重启时替换数据库（仅 Docker 部署可用）；请手动停服后恢复 SQLite 文件。"
-                  : "用远端最近一次备份覆盖当前数据库，服务会自动重启；替换前的数据库会另存一份。"}
-              </p>
-            </div>
-
-            {backupMessage.message && (
-              <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
-                {backupMessage.message}
-              </p>
-            )}
+          {/* Indented to the card title's TEXT column, not the card's content
+              edge: the header puts a 40/48px icon before the title, so the title
+              text starts at icon + gap (52px on mobile, 64px from sm up). The
+              switch matches the title instead of the icon, which is what the
+              operator expects under a heading. */}
+          <div className="mt-4 pl-[52px] sm:pl-16">
+            <SegmentedControl
+              value={backupView}
+              onChange={setBackupView}
+              options={[
+                { value: "continuous", label: "持续备份", icon: "sync" },
+                { value: "portable", label: "便携导出", icon: "file_download" },
+              ]}
+            />
           </div>
+
+          {backupView === "continuous" && (
+            <div className="flex flex-col gap-4 pt-4 mt-4 border-t border-border">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-medium text-sm sm:text-base">保存位置</p>
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      可保存多个，但 litestream 同一数据库只允许一个副本，所以同一时间只有一个是「启用中」。
+                    </p>
+                  </div>
+                  <Button type="button" variant="secondary" icon="add" onClick={openAddDestination} disabled={loading || backupLoading} className="shrink-0">
+                    添加保存位置
+                  </Button>
+                </div>
+
+                {destinations.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border-subtle bg-surface-2 px-4 py-6 text-center">
+                    <p className="text-sm text-text-muted">还没有保存位置。添加一个即可开始持续备份。</p>
+                  </div>
+                ) : (
+                  <ul className="flex flex-col divide-y divide-border-subtle rounded-lg border border-border-subtle">
+                    {destinations.map((destination) => (
+                      <li key={destination.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate font-medium text-sm">{destination.label}</span>
+                            <Badge variant="default" size="sm">{DESTINATION_TYPES[destination.type]?.label || destination.type}</Badge>
+                            {destination.isActive && <Badge variant="success" size="sm">启用中</Badge>}
+                            {!destination.hasCredentials && <Badge variant="warning" size="sm">缺少凭据</Badge>}
+                          </div>
+                          <p className="mt-1 break-all text-xs text-text-muted"><code>{destination.displayUrl || "—"}</code></p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {!destination.isActive && (
+                            <Button type="button" variant="outline" size="sm" onClick={() => activateDestination(destination.id)} disabled={loading || backupLoading}>
+                              设为启用
+                            </Button>
+                          )}
+                          <Button type="button" variant="ghost" size="sm" onClick={() => openEditDestination(destination)} disabled={loading || backupLoading || destination.type === "url"} title={destination.type === "url" ? "旧版 URL 保存位置不可编辑，请新增一个保存位置后删除它" : undefined}>
+                            编辑
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => removeDestination(destination)} disabled={loading || backupLoading}>
+                            删除
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="text-xs text-text-muted">
+                  凭据加密后仅保存在本机设置中，不会回传到浏览器。远端桶请自行开启服务端加密（OSS SSE / S3 SSE）。
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-border">
+                <Button type="button" variant="outline" onClick={refreshBackupStatus} disabled={loading || backupLoading}>
+                  刷新状态
+                </Button>
+              </div>
+
+              <div className="flex flex-col gap-2 pt-4 border-t border-border">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                  <p className="text-text-muted">
+                    复制进程：<span className={backupStatus?.running ? "text-green-600 dark:text-green-400" : "text-text-muted"}>{backupStatus?.running ? `运行中${backupStatus.pid ? `（PID ${backupStatus.pid}）` : ""}` : "未运行"}</span>
+                  </p>
+                  <p className="text-text-muted break-all">
+                    生效地址：<code>{backupStatus?.replicaUrl || "—"}</code>
+                  </p>
+                </div>
+
+                {backupStatus?.replicaUrlError && (
+                  <p className="text-xs text-red-500">配置错误：{backupStatus.replicaUrlError}</p>
+                )}
+                {backupStatus?.lastError && (
+                  <p className="text-xs text-red-500 break-all">最近错误：{backupStatus.lastError}</p>
+                )}
+                {backupStatus?.restore?.pending && (
+                  <p className="text-xs text-amber-500">
+                    已暂存一次恢复，等待重启后生效{backupStatus.restore.pendingSince ? `（${new Date(backupStatus.restore.pendingSince).toLocaleString()}）` : ""}。
+                  </p>
+                )}
+                {backupStatus?.recentLog?.length > 0 && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-text-muted">查看复制日志</summary>
+                    <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-border-subtle bg-surface-2 p-2 text-[11px] leading-4 text-text-muted whitespace-pre-wrap break-all">{backupStatus.recentLog.slice(-12).join("\n")}</pre>
+                  </details>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    icon="restore"
+                    onClick={handleRestoreClick}
+                    loading={backupLoading}
+                    disabled={loading || backupStatus?.restore?.canSwapOnBoot === false}
+                    className="w-full sm:w-auto"
+                  >
+                    从备份恢复
+                  </Button>
+                  <p className="text-xs text-text-muted">
+                    {backupStatus?.restore?.canSwapOnBoot === false
+                      ? "当前部署不支持在重启时替换数据库（仅 Docker 部署可用）；请手动停服后恢复 SQLite 文件。"
+                      : "用最近一次备份覆盖当前数据库，服务会自动重启；替换前的数据库会另存一份。"}
+                  </p>
+                </div>
+
+                {backupMessage.message && (
+                  <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                    {backupMessage.message}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {backupView === "portable" && (
+            <div className="flex flex-col gap-3 pt-4 mt-4 border-t border-border">
+              <p className="text-xs text-text-muted">
+                导出为一份 JSON 快照，包含设置、供应商连接、API Key 等配置（不含请求明细）。
+                它不依赖本机路径与版本，是迁移到其他服务器时唯一可用的方式；导入会覆盖当前配置。
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Button
+                  variant="secondary"
+                  icon="download"
+                  onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
+                  loading={dbLoading}
+                  className="w-full sm:w-auto"
+                >
+                  导出快照
+                </Button>
+                <Button
+                  variant="outline"
+                  icon="upload"
+                  onClick={() => importFileRef.current?.click()}
+                  disabled={dbLoading}
+                  className="w-full sm:w-auto"
+                >
+                  导入快照
+                </Button>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={handleImportDatabase}
+                />
+              </div>
+              {dbStatus.message && (
+                <p className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                  {dbStatus.message}
+                </p>
+              )}
+            </div>
+          )}
         </Card>
-
 
         </SettingsZone>
 
         <div className="border-t border-border-subtle pt-5 text-center text-xs sm:text-sm text-text-muted">
           <p>{APP_CONFIG.name} v{APP_CONFIG.version}</p>
           <p className="mt-1">Local Mode - All data stored on your machine</p>
+        </div>
         </div>
       </div>
 
@@ -1599,6 +1825,115 @@ export default function ProfilePage() {
           <div className="flex justify-end gap-2 border-t border-border/50 pt-4">
             <Button type="button" variant="ghost" onClick={closeIpAccessDrawer} disabled={ipAccessLoading}>取消</Button>
             <Button type="submit" loading={ipAccessLoading}>保存规则</Button>
+          </div>
+        </form>
+      </Drawer>
+
+      {/* Add / edit a backup destination. The fields are rendered from the shared
+          type table, so picking SFTP shows host/user/path/password and picking S3
+          shows bucket/region/AccessKey — the mismatch that started this rework
+          cannot recur, because there is no per-type form to keep in sync. */}
+      <Drawer
+        isOpen={destinationDrawer.open}
+        onClose={() => { if (!backupLoading) setDestinationDrawer((prev) => ({ ...prev, open: false })); }}
+        title={draftEditing ? "编辑保存位置" : "添加保存位置"}
+        width="lg"
+      >
+        <form onSubmit={saveDestination} className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium">类型</label>
+            <Select
+              options={DESTINATION_TYPE_OPTIONS}
+              value={destinationDrawer.draft.type}
+              onChange={(event) => {
+                // Rebuild the draft for the new type so its fields (and only its
+                // fields) exist — a stale `bucket` from the previous type would
+                // otherwise be submitted.
+                const type = event.target.value;
+                setDestinationDrawer((prev) => ({ ...prev, draft: { ...emptyDestinationDraft(type), label: prev.draft.label } }));
+              }}
+              disabled={draftEditing || backupLoading}
+              aria-label="保存位置类型"
+            />
+            {draftSpec.hint && <p className="text-xs text-text-muted">{draftSpec.hint}</p>}
+            {draftEditing && <p className="text-xs text-text-muted">类型创建后不可更改，如需更换请删除后重新添加。</p>}
+          </div>
+
+          <div className="flex flex-col gap-2 border-t border-border/50 pt-5">
+            <label className="text-sm font-medium">名称</label>
+            <Input
+              placeholder={draftSpec.label}
+              value={destinationDrawer.draft.label}
+              onChange={(event) => setDestinationDrawer((prev) => ({ ...prev, draft: { ...prev.draft, label: event.target.value } }))}
+              disabled={backupLoading}
+            />
+          </div>
+
+          <div className="flex flex-col gap-4 border-t border-border/50 pt-5">
+            {draftSpec.configFields.map((field) => (
+              <div key={field.key} className="flex flex-col gap-2">
+                <label className="text-sm font-medium">{field.label}{field.required ? "" : "（可选）"}</label>
+                {field.type === "boolean" ? (
+                  <Toggle
+                    checked={destinationDrawer.draft.config[field.key] === true}
+                    onChange={() => setDestinationDrawer((prev) => ({
+                      ...prev,
+                      draft: { ...prev.draft, config: { ...prev.draft.config, [field.key]: !prev.draft.config[field.key] } },
+                    }))}
+                    disabled={backupLoading}
+                  />
+                ) : (
+                  <Input
+                    placeholder={field.placeholder}
+                    value={destinationDrawer.draft.config[field.key] ?? ""}
+                    onChange={(event) => setDestinationDrawer((prev) => ({
+                      ...prev,
+                      draft: { ...prev.draft, config: { ...prev.draft.config, [field.key]: event.target.value } },
+                    }))}
+                    disabled={backupLoading}
+                    spellCheck={false}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {draftSpec.secretFields.length > 0 && (
+            <div className="flex flex-col gap-4 border-t border-border/50 pt-5">
+              <p className="text-xs text-text-muted">
+                凭据加密后仅保存在本机，不会回传到浏览器。
+                {draftEditing && "留空表示保持已保存的凭据不变。"}
+              </p>
+              {draftSpec.secretFields.map((field) => (
+                <div key={field.key} className="flex flex-col gap-2">
+                  <label className="text-sm font-medium">{field.label}{field.required && !draftEditing ? "" : "（可选）"}</label>
+                  <Input
+                    type={field.type === "password" ? "password" : "text"}
+                    placeholder={draftEditing ? "已保存；留空保持不变" : ""}
+                    value={destinationDrawer.draft.secret[field.key] ?? ""}
+                    onChange={(event) => setDestinationDrawer((prev) => ({
+                      ...prev,
+                      draft: { ...prev.draft, secret: { ...prev.draft.secret, [field.key]: event.target.value } },
+                    }))}
+                    disabled={backupLoading}
+                    autoComplete={field.type === "password" ? "new-password" : "off"}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {backupMessage.message && destinationDrawer.open && (
+            <p className={`text-xs sm:text-sm ${backupMessage.type === "error" ? "text-red-500" : "text-green-500"}`}>
+              {backupMessage.message}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 border-t border-border/50 pt-4">
+            <Button type="button" variant="ghost" onClick={() => setDestinationDrawer((prev) => ({ ...prev, open: false }))} disabled={backupLoading}>取消</Button>
+            <Button type="submit" loading={backupLoading} disabled={draftMissingRequired}>
+              {draftEditing ? "保存修改" : "添加"}
+            </Button>
           </div>
         </form>
       </Drawer>

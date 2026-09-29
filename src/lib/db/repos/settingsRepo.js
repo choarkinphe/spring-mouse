@@ -93,11 +93,16 @@ const DEFAULT_SETTINGS = {
   requestDetailsRetentionDays: 30,
   // Continuous off-host replication of the database via litestream. Off by
   // default: it ships data to a third party, so an operator opts in and names
-  // the destination. `backupReplicaUrl` is any URL litestream accepts
-  // (oss://, s3://, gs://, sftp://, webdavs://, file://) — the destination is a
-  // string, not a code path. Credentials are stored ENCRYPTED (see
-  // src/lib/backup/crypto.js) and never returned to the client.
+  // the destination. A destination is a typed record (type + non-secret config
+  // fields + an encrypted secret blob); the list can hold several but only
+  // `backupActiveDestinationId` is replicating — litestream allows one replica
+  // per database. Credentials are stored ENCRYPTED (see src/lib/backup/crypto.js)
+  // and never returned to the client. The legacy `backupReplicaUrl` +
+  // AccessKey columns are kept for backward-compat reads; migration 025 moves
+  // them into the list.
   backupEnabled: false,
+  backupDestinations: [],
+  backupActiveDestinationId: null,
   backupReplicaUrl: "",
   backupAccessKeyIdEncrypted: null,
   backupAccessKeySecretEncrypted: null,

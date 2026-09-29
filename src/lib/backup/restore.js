@@ -71,8 +71,8 @@ async function checkIntegrity(filePath) {
 
 // Download the replica into the staging file. `timestamp` restores as of a
 // point in time when provided.
-export async function stageRestore({ settings = null, timestamp = "" } = {}) {
-  const { destination, secret, databasePath } = await resolveActiveDestination(settings);
+export async function stageRestore({ settings = null, timestamp = "", destinationId = null } = {}) {
+  const { destination, secret, databasePath } = await resolveActiveDestination(settings, { destinationId });
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   try { fs.rmSync(STAGING_FILE, { force: true }); } catch {}
 
@@ -146,13 +146,13 @@ export function getRestoreState() {
 
 // Full restore: stop replication, download, verify, mark. The caller is
 // responsible for exiting the process afterwards so entrypoint can swap.
-export async function performRestore({ settings = null, timestamp = "" } = {}) {
+export async function performRestore({ settings = null, timestamp = "", destinationId = null } = {}) {
   // Checked BEFORE downloading: staging a snapshot this deployment cannot
   // apply would leave a marker behind that a later Docker boot might act on.
   if (!canSwapOnBoot()) return { ok: false, error: NO_SWAP_MESSAGE };
 
   stopLitestream();
-  const staged = await stageRestore({ settings, timestamp });
+  const staged = await stageRestore({ settings, timestamp, destinationId });
   if (!staged.ok) return staged;
   markRestorePending();
   return { ...staged, marker: MARKER_FILE, target: DATA_FILE };

@@ -118,12 +118,24 @@ function currentChildIsRunning() {
 // Returns the ACTIVE destination plus its decrypted secret. Which destination
 // is active, and how a legacy install maps onto one, is decided in
 // destinations.js — this function only decrypts.
-export async function resolveActiveDestination(settings = null) {
+// Resolves the destination to replicate to / restore from. With no
+// `destinationId` it is the ACTIVE one, and the enable switch is required (that
+// is the replication path). With a `destinationId` the caller named a specific
+// saved location — used by per-location restore — and the switch is NOT
+// required, because the replica lives on remote storage whether or not local
+// replication is currently running.
+export async function resolveActiveDestination(settings = null, { destinationId = null } = {}) {
   const s = settings || (await getSettings());
-  if (s.backupEnabled !== true) throw new Error("Backup is disabled");
 
-  const { destination, destinations, legacy } = getActiveDestination(s);
-  if (!destination) throw new Error("No backup destination configured");
+  const { destination: active, destinations, legacy } = getActiveDestination(s);
+  let destination = active;
+  if (destinationId) {
+    destination = destinations.find((d) => d.id === destinationId) ?? null;
+    if (!destination) throw new Error("Backup destination not found");
+  } else {
+    if (s.backupEnabled !== true) throw new Error("Backup is disabled");
+    if (!destination) throw new Error("No backup destination configured");
+  }
 
   const type = destination.type;
   // file and gs need no credentials; sftp may authenticate with a key path

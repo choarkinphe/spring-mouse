@@ -82,11 +82,15 @@ export async function POST(request) {
       if (!(await authorize(request, body.password))) {
         return NextResponse.json({ error: "Invalid password" }, { status: 401 });
       }
-      if (settings.backupEnabled !== true) {
+      // Restoring from a NAMED saved location does not require the enable
+      // switch: the replica is on remote storage regardless of whether local
+      // replication is currently on. The legacy path (no id) still does.
+      const destinationId = String(body.destinationId || "").trim() || null;
+      if (!destinationId && settings.backupEnabled !== true) {
         return NextResponse.json({ error: "Backup is disabled in settings" }, { status: 400 });
       }
 
-      const result = await performRestore({ settings, timestamp: body.timestamp || "" });
+      const result = await performRestore({ settings, timestamp: body.timestamp || "", destinationId });
       if (!result.ok) {
         return NextResponse.json({ error: result.error || "Restore failed" }, { status: 400 });
       }

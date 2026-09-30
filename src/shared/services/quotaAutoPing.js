@@ -239,12 +239,24 @@ async function pingConnection(conn, provider, providerConfig, handler, deps, sta
 
   const usage = await withAutoPingDeadline(
     `${provider}:${connection.id} usage`,
-    (signal) => handler.getUsage(connection.accessToken, proxyOptions, { signal }),
+    (signal) => handler.getUsage(connection.accessToken, proxyOptions, {
+      signal,
+      // Account-scoped upstreams (Codex) need the connection identity, not just the token.
+      providerSpecificData: connection.providerSpecificData,
+    }),
   );
   const quotas = usage?.quotas || {};
   const quota = quotas?.[providerConfig.quotaKey];
   const resetAt = quota?.resetAt;
-  if (!resetAt) return;
+  if (!resetAt) {
+    // A soft failure ({message}) used to vanish here silently. Back off like a
+    // hard failure so it cannot be retried every tick, and say why at WARN.
+    if (usage?.message) {
+      state.failureCache[key] = Date.now();
+      console.warn(`[AutoPing] ${provider}:${connection.id}: no resetAt (${usage.message})`);
+    }
+    return;
+  }
 
   state.resetCache[key] = resetAt;
 

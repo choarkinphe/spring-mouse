@@ -88,18 +88,58 @@ function getCodexReviewRateLimit(data) {
   }) || null;
 }
 
+/**
+ * Compact, secret-free summary of a wham/usage payload for diagnostics.
+ * Never includes the token; only window percentages, reset times and top-level keys.
+ */
+function summarizeCodexUsagePayload(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return `body=${Array.isArray(data) ? "array" : typeof data}`;
+  const rateLimit = getCodexRateLimitBody(data.rate_limit || data.rate_limits || data.rate_limits_by_limit_id?.codex || {});
+  const describe = (window) => {
+    if (!window) return "none";
+    const used = toFiniteNumber(window.used_percent ?? window.percent_used, 0);
+    const resetAt = window.reset_at ?? window.resets_at ?? window.resetAt ?? "-";
+    return `${used}%@${resetAt}`;
+  };
+  const primary = rateLimit?.primary_window || rateLimit?.primary || null;
+  const secondary = rateLimit?.secondary_window || rateLimit?.secondary || null;
+  return [
+    `plan=${data.plan_type || data.summary?.plan || "?"}`,
+    `primary=${describe(primary)}`,
+    `secondary=${describe(secondary)}`,
+    `resetCredits=${toFiniteNumber(data.rate_limit_reset_credits?.available_count, 0)}`,
+    `keys=${Object.keys(data).slice(0, 12).join(",")}`,
+  ].join(" ");
+}
+
 export async function getCodexUsage(accessToken, proxyOptions = null, options = {}) {
+  // The wham/usage endpoint is account-scoped: without ChatGPT-Account-ID it can
+  // answer with a snapshot that does not belong to this connection (or refuse
+  // outright), which is exactly the "quota never refreshes" symptom. Every other
+  // Codex upstream call already sends it — see getCodexRateLimitResetCredits below.
+  const accountId = getCodexAccountId(options?.providerSpecificData);
   try {
+    const headers = {
+      "Authorization": `Bearer ${accessToken}`,
+      "Accept": "application/json",
+      "OpenAI-Beta": "codex-1",
+      "originator": "codex_cli_rs",
+    };
+    if (accountId) headers["ChatGPT-Account-ID"] = accountId;
+
     const response = await proxyAwareFetch(CODEX_CONFIG.usageUrl, {
       method: "GET",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Accept": "application/json",
-      },
+      headers,
       signal: options?.signal,
     }, proxyOptions);
 
     if (!response.ok) {
+      // Logged at WARN so it survives the production LOG_LEVEL=WARN default.
+      const detail = await response.text().catch(() => "");
+      const snippet = String(detail || "").replace(/\s+/g, " ").trim().slice(0, 300);
+      console.warn(
+        `[Codex Usage] HTTP ${response.status} accountId=${accountId ? "yes" : "no"} body=${snippet || "<empty>"}`,
+      );
       return { message: `Codex connected. Usage API temporarily unavailable (${response.status}).` };
     }
 
@@ -111,6 +151,13 @@ export async function getCodexUsage(accessToken, proxyOptions = null, options = 
 
     appendCodexQuotaWindows(quotas, "", normalRateLimit);
     appendCodexQuotaWindows(quotas, "review", reviewRateLimit);
+
+    if (Object.keys(quotas).length === 0) {
+      // A 200 that carries no window at all is the silent "nothing to show" case.
+      console.warn(
+        `[Codex Usage] HTTP 200 but no quota windows. accountId=${accountId ? "yes" : "no"} ${summarizeCodexUsagePayload(data)}`,
+      );
+    }
 
     return {
       plan: data.plan_type || data.summary?.plan || "unknown",

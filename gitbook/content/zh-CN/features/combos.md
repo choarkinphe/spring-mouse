@@ -42,6 +42,8 @@ Claude Desktop 默认组合:
 
 该设置只对 `/v1/messages` 或 `/api/v1/messages` 中的裸 `claude-*` 模型名生效。显式的 `openai/...`、`deepseek/...`、`anthropic/...` 模型、已有别名/组合，以及 `/v1/chat/completions` 请求不会被这个默认值覆盖。历史版本保存的 `provider/model` 直接目标（例如 `openai/gpt-4o` 或 `deepseek/deepseek-chat`）仍兼容，但新配置应直接选择组合；已保存但删除、禁用或当前无可执行成员的组合不会自动回退到 Anthropic。
 
+Claude Desktop 的模型列表由网关的 `GET /v1/models` 提供：它只把上面选定的默认组合作为**唯一**可发现模型返回（条目带 `anthropic_family_tier` 提示，Desktop 才会在模型选择器中显示这个非 Claude 命名的组合）。若选择器为空，说明默认组合未设置、被禁用、类型不是 LLM、当前调度时段内没有可执行成员，或该 Key 的访问标签无权访问它。注意：发现只校验组合的配置与调度，**不**校验运行时状态，因此请求仍可能因凭据失效、上游报错、限流或配额耗尽而失败，届时走正常的账号回退流程。
+
 ---
 
 ## 为什么使用组合?
@@ -368,14 +370,15 @@ Settings → Models → Advanced:
 
 ### Claude Desktop
 
-编辑 `~/.claude/config.json`:
-```json
-{
-  "anthropic_api_base": "http://localhost:8008/v1",
-  "anthropic_api_key": "your-spring-mouse-api-key",
-  "model": "budget-combo"
-}
+先在仪表盘的「渠道管理」中设置 **Claude Desktop 默认组合**（从「组合」页面已创建的组合里选一个），再把 Spring Mouse 作为 inference gateway 填入 Claude Desktop 的设置：
+
 ```
+Base URL:  http://localhost:8008        (网关根地址，不要带 /v1)
+API key:   your-spring-mouse-api-key    (以 x-api-key 发送)
+Model:     交给发现（来自 GET /v1/models）
+```
+
+Claude Desktop 会对该 Base URL 调用 `GET /v1/models` 发现模型；Spring Mouse 会把默认组合作为唯一可发现模型返回，从而出现在选择器中。发现只校验组合是否启用、是否为 LLM、当前调度时段内是否有成员——不校验运行时状态，因此请求仍可能因凭据失效、上游报错、限流或配额耗尽而失败（届时走正常账号回退）。选择器为空时请参考 troubleshooting。
 
 ### Codex CLI
 

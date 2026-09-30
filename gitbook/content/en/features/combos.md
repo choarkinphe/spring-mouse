@@ -350,14 +350,15 @@ Settings → Models → Advanced:
 
 ### Claude Desktop
 
-Edit `~/.claude/config.json`:
-```json
-{
-  "anthropic_api_base": "http://localhost:8008/v1",
-  "anthropic_api_key": "your-spring-mouse-api-key",
-  "model": "budget-combo"
-}
+First set the **Claude Desktop default combo** in the dashboard (**Channel Management**), choosing a combo you created on the Combos page. Then add Spring Mouse as an inference gateway in Claude Desktop's settings:
+
 ```
+Base URL:  http://localhost:8008        (gateway root — do NOT append /v1)
+API key:   your-spring-mouse-api-key    (sent as x-api-key)
+Model:     leave to discovery (from GET /v1/models)
+```
+
+Claude Desktop discovers models by calling `GET /v1/models` on that base URL. Spring Mouse answers with your default combo as the single discoverable model, so it appears in the picker. Discovery only checks that the combo is enabled, LLM-kind, and has a member available in the current schedule — it does not check runtime health, so a request can still fail on expired credentials, upstream errors, rate limits, or exhausted quota (the gateway then runs its normal account fallback). If the picker is empty, see the troubleshooting guide.
 
 ### Codex CLI
 

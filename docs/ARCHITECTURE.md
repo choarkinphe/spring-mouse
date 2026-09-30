@@ -229,6 +229,25 @@ claude-sonnet-4-5 -> desktop-models
 
 历史版本保存的 `provider/model` 直接目标（例如 `openai/gpt-4o` 或 `deepseek/deepseek-chat`）仍然兼容，但新的配置应在「渠道管理」中直接选择组合；如果已保存的组合被删除、禁用或暂时没有可执行成员，网关会拒绝该默认路由，而不会悄悄改走 Anthropic 或其他模型。
 
+### 6.2.1 Claude Desktop 模型发现（`GET /v1/models`）
+
+Claude Desktop 的第三方网关在配置后会调用 `GET /v1/models` 发现可用模型。Spring Mouse 的 `src/app/api/v1/models/route.js` 按请求协议返回两种响应：
+
+- 无 `anthropic-version` 头（OpenAI 兼容客户端）：返回 `{ "object": "list", "data": [...] }`，与历史行为一致；其中**被选为默认路由的那个组合条目**会额外合并发现字段（见下），其余条目保持不变。
+- 带 `anthropic-version` 头时：返回 Anthropic Models 列表信封 `{ data, has_more, first_id, last_id }`，其中仅包含**一个**条目——由 `settings.claudeMessagesRoute` 指定的默认组合（例如 `deepseek-flash`），其 `id` 即组合名；不满足条件时 `data` 为空数组。
+
+之所以要区分，是因为 Claude Desktop 的自动发现只会展示「可识别为 Claude」的模型 id；组合名（如 `deepseek-flash`）不是 Claude id，若不带标记就会被 Desktop 过滤掉、导致模型选择器为空。因此该条目会附带：
+
+- `anthropic_family_tier`（固定为 `sonnet`）与 `is_family_default: true`——这是**客户端展示用的分桶提示**，让 Desktop 把该条目归入 Claude 模型选择器；它**不**代表上游真实模型家族、能力或上下文窗口。网关不会伪造 `max_tokens`、`capabilities` 或 1M 上下文声明。
+- `display_name`：组合有 `groupName` 时为 `组合名 · groupName`，否则为组合名。
+- `created_at` 取组合的真实创建时间，缺省使用固定的 `1970-01-01T00:00:00.000Z`。
+
+只有当默认组合通过配置校验时才会发布该条目：组合存在、`kind` 为 LLM、当前调度时段内至少有一个可执行成员，并且发起请求的 Key 的访问标签可访问该组合。否则返回空 `data`（不报错、也不暴露任何未授权目标）。该校验不包含熔断/冷却状态。
+
+需要强调：发现**不等于**路由成功。发现只校验组合的配置与调度是否可用，实际请求仍可能在运行时因凭据失效、上游错误、限流或配额耗尽而失败——这些都要走正常的账号回退流程。数据库读取失败会向上抛出为 500，不会被静默吞掉。
+
+该端点不替代 `inferenceModels`：若在 Claude Desktop 中显式配置了模型列表，客户端会直接使用该列表而不调用发现。
+
 ### 6.3 通道账号选择
 
 Provider 内部可有多个已认证连接。`src/sse/services/auth.js` 根据：

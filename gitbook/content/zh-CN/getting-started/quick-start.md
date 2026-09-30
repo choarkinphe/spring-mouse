@@ -96,14 +96,15 @@ Settings → Models → Advanced:
 
 ### Claude Desktop
 
-编辑 `~/.claude/config.json`:
+把 Spring Mouse 作为 inference gateway 填入 Claude Desktop 的设置：
 
-```json
-{
-  "anthropic_api_base": "http://localhost:8008/v1",
-  "anthropic_api_key": "your-spring-mouse-api-key"
-}
 ```
+Base URL:  http://localhost:8008        (网关根地址，不要带 /v1)
+API key:   your-spring-mouse-api-key    (以 x-api-key 发送)
+Model:     交给发现（来自 GET /v1/models）
+```
+
+然后在仪表盘的「渠道管理」中设置 **Claude Desktop 默认组合**（从「组合」页面已创建的组合里选一个）。Claude Desktop 会对该 Base URL 调用 `GET /v1/models` 发现模型，Spring Mouse 会把该默认组合作为唯一可发现模型返回。若选择器为空，说明默认组合未设置、被禁用、当前调度时段内没有可执行成员，或该 Key 无权访问它。
 
 ### Cline / Continue / RooCode
 

@@ -96,14 +96,15 @@ Settings → Models → Advanced:
 
 ### Claude Desktop
 
-Edit `~/.claude/config.json`:
+Add Spring Mouse as an inference gateway in Claude Desktop's settings:
 
-```json
-{
-  "anthropic_api_base": "http://localhost:8008/v1",
-  "anthropic_api_key": "your-spring-mouse-api-key"
-}
 ```
+Base URL:  http://localhost:8008        (gateway root — do NOT append /v1)
+API key:   your-spring-mouse-api-key    (sent as x-api-key)
+Model:     leave to discovery (from GET /v1/models)
+```
+
+Then set the **Claude Desktop default combo** in the dashboard (Channel Management) — pick a combo you created on the Combos page. Claude Desktop discovers models by calling `GET /v1/models` on the base URL, and Spring Mouse answers with that default combo as the single discoverable model. If the picker is empty, the default combo is unset, disabled, has no member available in the current schedule, or your API key can't access it.
 
 ### Cline / Continue / RooCode
 

@@ -344,6 +344,39 @@ Common issues and solutions when using Spring Mouse.
 
 ---
 
+## Claude Desktop Shows No Models
+
+**Problem:** Claude Desktop connects to Spring Mouse but the model picker is empty ("no usable models").
+
+**Cause:** Desktop discovers models from `GET /v1/models`. Spring Mouse advertises exactly one discoverable model — your **Claude Desktop default combo** — and only when that combo passes its config/schedule check. The list is empty when:
+
+- no default combo is set (Dashboard → Channel Management → Claude Desktop default),
+- the combo is disabled, deleted, or not LLM-kind,
+- every member is outside its schedule right now,
+- or your API key's access tags don't include that combo.
+
+**Solutions:**
+
+1. **Set the default combo:**
+   ```
+   Dashboard → Channel Management → Claude Desktop default
+   ```
+   Pick a combo you already created on the Combos page. The selector only offers combos that are enabled, LLM-kind, and have a member available in the current schedule.
+
+2. **Check what the gateway advertises (Anthropic protocol):**
+   ```bash
+   curl http://localhost:8008/v1/models \
+     -H "anthropic-version: 2023-06-01" \
+     -H "x-api-key: your-spring-mouse-api-key"
+   ```
+   An empty `data` array means the default combo failed the config/schedule check (see causes above). A non-empty `data` with one entry means discovery is working — reselect the model in Desktop.
+
+3. **If discovery shows the model but requests still fail**, the problem is downstream, not discovery: discovery only checks the combo's config and schedule. The actual call can still fail at runtime on expired credentials, upstream errors, rate limits, or exhausted quota. Check the request log for the real upstream error.
+
+> The discovery entry carries a `sonnet` family-tier hint so Desktop's picker buckets it as a Claude model. That marker is a **client-compatibility hint only** — it does not change which upstream model actually serves the request.
+
+---
+
 ## Need More Help?
 
 - **GitHub Issues:** [github.com/decolua/spring-mouse/issues](https://github.com/decolua/spring-mouse/issues)

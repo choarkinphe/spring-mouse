@@ -6,7 +6,7 @@ import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-import { getProviderConnections, getCombos, getCustomModels, getModelAliases, getSettings } from "@/lib/localDb";
+import { getProviderConnections, getCombos, getComboByName, getCustomModels, getModelAliases, getSettings } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
@@ -22,6 +22,8 @@ import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/p
 import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags";
 import { getActiveComboModels } from "open-sse/services/combo.js";
+import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
+import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKTOP_FALLBACK_CREATED_AT } from "@/shared/utils/claudeDesktopDiscovery.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -597,9 +599,35 @@ export async function OPTIONS() {
   });
 }
 
+/** Desktop requires a family marker to discover opaque combo IDs. */
+export async function buildClaudeDesktopModelEntry(settings, accessTags) {
+  const route = typeof settings?.claudeMessagesRoute === "string"
+    ? settings.claudeMessagesRoute.trim()
+    : "";
+  if (!route || route.includes("/")) return null;
+
+  const combo = await getComboByName(route);
+  if (!combo) return null;
+  const activeModels = getActiveComboModels(combo.models, new Date(), accessTags ?? undefined);
+  if (getClaudeMessagesComboError(combo, activeModels)) return null;
+  if (accessTags != null && !canAccessWithTags(accessTags, combo.accessTags)) return null;
+
+  return {
+    type: "model",
+    id: combo.name,
+    display_name: combo.groupName?.trim() ? `${combo.name} · ${combo.groupName.trim()}` : combo.name,
+    created_at: combo.createdAt || CLAUDE_DESKTOP_FALLBACK_CREATED_AT,
+    anthropic_family_tier: CLAUDE_DESKTOP_DEFAULT_TIER,
+    is_family_default: true,
+  };
+}
+
 /**
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
+ *
+ * The envelope follows anthropic-version when present. Both envelopes mark the
+ * selected combo because Desktop discovery does not always send that header.
  */
 async function handleGET(request) {
   try {
@@ -610,7 +638,17 @@ async function handleGET(request) {
     const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
     if (authFailure) return authFailure;
     const accessTags = await resolveApiKeyAccessTags(apiKey);
-    const data = await buildModelsList([LLM_KIND], { skipDynamicFetch, accessTags });
+
+    if (request?.headers?.get("anthropic-version")) {
+      const entry = await buildClaudeDesktopModelEntry(settings, accessTags);
+      return Response.json(buildAnthropicModelsEnvelope(entry ? [entry] : []), {
+        headers: { "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
+    const models = await buildModelsList([LLM_KIND], { skipDynamicFetch, accessTags });
+    const entry = await buildClaudeDesktopModelEntry(settings, accessTags);
+    const data = models.map(model => model.id === entry?.id ? { ...model, ...entry } : model);
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });

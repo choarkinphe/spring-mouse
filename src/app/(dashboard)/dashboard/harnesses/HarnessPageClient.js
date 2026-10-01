@@ -13,8 +13,8 @@ import {
 } from "@/shared/components";
 import {
   BUILTIN_HARNESSES,
-  HARNESS_MODEL_OPTIONS,
   resolveHarnessModelOptions,
+  resolveHarnessProfiles,
 } from "@/shared/utils/harnessRoute";
 
 // How each `unavailableReason` from /api/combos/llm reads in the picker. A combo
@@ -33,19 +33,19 @@ const HARNESS_GUIDES = {
     icon: "desktop_windows",
     description: "在 Claude Desktop 的「第三方推理」里填写网关地址，工具会用它的模型列表发起 Messages 请求。",
     basePath: "/claude-desktop/v1",
-    example: "Base URL 填 https://你的域名/claude-desktop/v1",
+    example: "Base URL 填 ",
   },
   "claude-code": {
     icon: "terminal",
     description: "Claude Code 通过 ANTHROPIC_BASE_URL 接入，模型名由这里映射到真实通道。",
     basePath: "/claude-code/v1",
-    example: "ANTHROPIC_BASE_URL=https://你的域名/claude-code/v1",
+    example: "ANTHROPIC_BASE_URL=",
   },
   codex: {
     icon: "code",
     description: "Codex 使用 Responses 协议，指向该前缀后可用同一个 Key 调用任意通道。",
     basePath: "/codex/v1",
-    example: "base_url 填 https://你的域名/codex/v1",
+    example: "base_url 填 ",
   },
 };
 
@@ -64,6 +64,7 @@ const HARNESS_GUIDES = {
 function MappingRow({
   mapping,
   modelOptions,
+  knownModelOptions = modelOptions,
   targetOptions,
   disabled,
   onChange,
@@ -73,7 +74,7 @@ function MappingRow({
   const [focused, setFocused] = useState(false);
 
   const value = mapping.match;
-  const isKnownModel = modelOptions.includes(value);
+  const isKnownModel = knownModelOptions.includes(value);
 
   // The first known id that extends what has been typed, used for both the Tab
   // completion and the ghost suffix shown behind the caret. Matching is
@@ -260,16 +261,30 @@ function HarnessRail({ profiles, activePrefix, onSelect }) {
   );
 }
 
-function HarnessDetail({ harness, profile, combos, customModels, onChange, onAddModel, onDeleteModel }) {
+function HarnessDetail({
+  harness, profile, combos, customModels, discoveredModels, modelSource, refreshingModels,
+  saving, status, onSave, onRefreshModels, onChange, onAddModel, onDeleteModel,
+}) {
   const guide = HARNESS_GUIDES[harness.prefix] || {};
+  const [origin, setOrigin] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setOrigin(window.location.origin), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const enabled = profile.enabled !== false;
   // Stable identity for the mapping list so the derived options below do not
   // recompute on every render.
   const mappings = useMemo(() => profile.mappings || [], [profile.mappings]);
-  const builtinModels = HARNESS_MODEL_OPTIONS[harness.prefix] || [];
+  const knownModelOptions = useMemo(
+    () => resolveHarnessModelOptions(harness.prefix, customModels, discoveredModels || []),
+    [harness.prefix, customModels, discoveredModels],
+  );
   const modelOptions = useMemo(
-    () => resolveHarnessModelOptions(harness.prefix, customModels),
-    [harness.prefix, customModels],
+    () => [...new Set([
+      ...knownModelOptions,
+      ...mappings.map((mapping) => mapping.match).filter((match) => match && !match.includes("*")),
+    ])],
+    [knownModelOptions, mappings],
   );
   // `customModels` is the whole per-prefix map; the panel below needs just this
   // harness's own list.
@@ -278,6 +293,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
     return Array.isArray(list) ? list : [];
   }, [customModels, harness.prefix]);
   const basePath = guide.basePath || `/${harness.prefix}/v1`;
+  const baseUrl = `${origin}${basePath}`;
 
   // The right-hand picker offers everything 路由策略 has configured and enabled:
   // first the combos themselves (the usual target), then the individual member
@@ -360,6 +376,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
             </Badge>
             <Toggle
               checked={enabled}
+              disabled={saving}
               onChange={(value) => onChange({ ...profile, enabled: value })}
               ariaLabel={`启用 ${harness.label}`}
             />
@@ -370,9 +387,9 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
           <Card.Section className="flex flex-col gap-2">
             <span className="text-xs font-medium text-text-muted">接入地址</span>
             <code className="block break-all rounded-[8px] bg-surface-2 px-3 py-2 font-mono text-xs text-text-main">
-              https://你的域名{basePath}
+              {baseUrl}
             </code>
-            <p className="text-xs leading-5 text-text-muted">{guide.example}</p>
+            <p className="text-xs leading-5 text-text-muted">{guide.example}{baseUrl}</p>
           </Card.Section>
 
           <div className="flex flex-col gap-2">
@@ -386,7 +403,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={!enabled}
+                disabled={!enabled || saving}
                 onClick={() => updateMappings([...mappings, { match: "", target: "" }])}
               >
                 <span className="material-symbols-outlined text-[18px]">add</span>
@@ -407,8 +424,9 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
                     key={index}
                     mapping={mapping}
                     modelOptions={modelOptions}
+                    knownModelOptions={knownModelOptions}
                     targetOptions={options}
-                    disabled={!enabled}
+                    disabled={!enabled || saving}
                     onChange={(next) => {
                       const copy = [...mappings];
                       copy[index] = next;
@@ -429,14 +447,23 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
           </div>
 
           <Card.Section className="flex flex-col gap-2">
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm font-medium text-text-main">自定义模型名</span>
-              <Tooltip text="左侧输入框按 Tab 补全时用这份列表。内置的是该工具的常见模型名；工具升级后开始发送新的名字时，在这里保存一次即可补全。">
-                <span className="material-symbols-outlined cursor-help text-[16px] text-text-muted">help</span>
-              </Tooltip>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium text-text-main">模型提示 / 自定义模型名</span>
+                <Tooltip text="自动合并公共模型目录、渠道已同步的名字和本地目录，新版本优先。公共目录可能延迟收录；仍可直接输入任意名字或通配。">
+                  <span className="material-symbols-outlined cursor-help text-[16px] text-text-muted">help</span>
+                </Tooltip>
+              </div>
+              <Button variant="ghost" size="sm" onClick={onRefreshModels} disabled={refreshingModels}>
+                <span className="material-symbols-outlined text-[18px]">refresh</span>
+                {refreshingModels ? "获取中…" : "刷新模型提示"}
+              </Button>
             </div>
-            <p className="text-xs leading-5 text-text-muted">
-              内置 {builtinModels.length} 个；这里保存的名字会追加到左侧的 Tab 补全列表。
+            <p className="text-xs leading-5 text-text-muted" role="status">
+              {refreshingModels ? "正在获取模型目录…" : modelSource === "catalog"
+                ? "已合并公共模型目录（缓存 10 分钟）与本地列表"
+                : "公共目录暂不可用，使用本地目录与离线提示"}
+              ；共 {modelOptions.length} 个提示。自定义名字会追加到 Tab 补全列表。
             </p>
             {customModelList.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -449,6 +476,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
                     <button
                       type="button"
                       onClick={() => onDeleteModel(model)}
+                      disabled={saving}
                       aria-label={`删除自定义模型名 ${model}`}
                       className="flex size-4 items-center justify-center rounded text-text-muted hover:bg-white/[0.06] hover:text-red-400"
                     >
@@ -459,9 +487,18 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
               </div>
             )}
             <p className="text-[11px] leading-4 text-text-muted">
-              保存配置后生效。
+              点击下方按钮，仅保存当前工具的映射、启用状态和自定义模型名。
             </p>
           </Card.Section>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
+            <div role="status" className={`text-xs ${status?.type === "error" ? "text-red-400" : "text-emerald-400"}`}>
+              {status?.message}
+            </div>
+            <Button onClick={onSave} disabled={saving}>
+              {saving ? "保存中…" : `保存 ${harness.label} 配置`}
+            </Button>
+          </div>
         </div>
       </Card>
     </section>
@@ -474,11 +511,16 @@ export default function HarnessPageClient() {
   const [combos, setCombos] = useState([]);
   const [activePrefix, setActivePrefix] = useState(BUILTIN_HARNESSES[0].prefix);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState({ type: "", message: "" });
+  const [saving, setSaving] = useState({});
+  const [statuses, setStatuses] = useState({});
+  const [loadError, setLoadError] = useState("");
+  const [modelHints, setModelHints] = useState({});
+  const [modelSources, setModelSources] = useState({});
+  const [refreshingModels, setRefreshingModels] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError("");
     try {
       const [settingsResponse, combosResponse] = await Promise.all([
         fetch("/api/settings", { cache: "no-store" }),
@@ -489,12 +531,11 @@ export default function HarnessPageClient() {
         // 路由策略 page has configured and enabled, not just the combo names.
         fetch("/api/combos/llm?includeUnavailable=1&includeMembers=1", { cache: "no-store" }),
       ]);
-      const settings = settingsResponse.ok ? await settingsResponse.json() : {};
-      const comboData = combosResponse.ok ? await combosResponse.json() : {};
+      if (!settingsResponse.ok || !combosResponse.ok) throw new Error("无法读取 Harness 配置");
+      const settings = await settingsResponse.json();
+      const comboData = await combosResponse.json();
 
-      const stored = settings.harnessProfiles && typeof settings.harnessProfiles === "object"
-        ? settings.harnessProfiles
-        : {};
+      const stored = resolveHarnessProfiles(settings);
       // Materialize every built-in harness so the rail is stable before the
       // first save; a stored profile only overrides what it actually sets.
       const merged = {};
@@ -515,7 +556,7 @@ export default function HarnessPageClient() {
       setCombos(Array.isArray(comboData.combos) ? comboData.combos : []);
     } catch (error) {
       console.error("Failed to load harness profiles:", error);
-      setStatus({ type: "error", message: "无法读取 Harness 配置" });
+      setLoadError("无法读取 Harness 配置，请重试；未加载成功前不会覆盖现有配置。");
     } finally {
       setLoading(false);
     }
@@ -526,13 +567,38 @@ export default function HarnessPageClient() {
     return () => clearTimeout(task);
   }, [load]);
 
+  const refreshModels = useCallback(async () => {
+    setRefreshingModels(true);
+    try {
+      const response = await fetch("/api/harnesses/models", { cache: "no-store" });
+      if (!response.ok) throw new Error("模型目录暂不可用");
+      const data = await response.json();
+      setModelHints(data.models || {});
+      setModelSources(data.sources || {});
+    } catch {
+      // Keep any previous vocabulary; free text and offline hints always work.
+      setModelSources({});
+    } finally {
+      setRefreshingModels(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const task = setTimeout(() => void refreshModels(), 0);
+    return () => clearTimeout(task);
+  }, [refreshModels]);
+
+  const clearStatus = (prefix) => setStatuses((current) => ({ ...current, [prefix]: {} }));
+
   const updateProfile = (prefix, next) => {
+    clearStatus(prefix);
     setProfiles((current) => ({ ...current, [prefix]: next }));
   };
 
   const addCustomModel = (prefix, model) => {
     const value = typeof model === "string" ? model.trim() : "";
     if (!value) return;
+    clearStatus(prefix);
     setCustomModels((current) => {
       const list = Array.isArray(current[prefix]) ? current[prefix] : [];
       if (list.includes(value)) return current;
@@ -541,6 +607,7 @@ export default function HarnessPageClient() {
   };
 
   const deleteCustomModel = (prefix, model) => {
+    clearStatus(prefix);
     setCustomModels((current) => {
       const list = Array.isArray(current[prefix]) ? current[prefix] : [];
       const next = list.filter((item) => item !== model);
@@ -554,33 +621,34 @@ export default function HarnessPageClient() {
     });
   };
 
-  const save = async () => {
-    setSaving(true);
-    setStatus({ type: "", message: "" });
+  const save = async (prefix) => {
+    setSaving((current) => ({ ...current, [prefix]: true }));
+    clearStatus(prefix);
     try {
-      // Drop blank rows so an unfinished input never blocks the save.
-      const payload = {};
-      for (const [prefix, profile] of Object.entries(profiles)) {
-        payload[prefix] = {
-          ...profile,
-          mappings: (profile.mappings || []).filter(
-            (mapping) => mapping.match.trim() && mapping.target.trim(),
-          ),
-        };
-      }
-      const response = await fetch("/api/settings", {
+      const profile = profiles[prefix];
+      const response = await fetch(`/api/harnesses/${prefix}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ harnessProfiles: payload, harnessModels: customModels }),
+        body: JSON.stringify({
+          profile: {
+            ...profile,
+            mappings: (profile.mappings || []).filter(
+              (mapping) => mapping.match.trim() && mapping.target.trim(),
+            ),
+          },
+          models: customModels[prefix] || [],
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "保存 Harness 配置失败");
-      setStatus({ type: "success", message: "Harness 配置已保存" });
-      await load();
+      setProfiles((current) => ({ ...current, [prefix]: data.profile }));
+      setCustomModels((current) => ({ ...current, [prefix]: data.models }));
+      const label = BUILTIN_HARNESSES.find((harness) => harness.prefix === prefix)?.label;
+      setStatuses((current) => ({ ...current, [prefix]: { type: "success", message: `${label} 配置已保存` } }));
     } catch (error) {
-      setStatus({ type: "error", message: error.message || "保存 Harness 配置失败" });
+      setStatuses((current) => ({ ...current, [prefix]: { type: "error", message: error.message || "保存 Harness 配置失败" } }));
     } finally {
-      setSaving(false);
+      setSaving((current) => ({ ...current, [prefix]: false }));
     }
   };
 
@@ -604,11 +672,6 @@ export default function HarnessPageClient() {
         title="Harness"
         description="让外部工具用同一个 Key 接入：给每个工具一个专属地址，由服务端把它的模型名映射到真实组合。"
         icon="extension"
-        action={
-          <Button onClick={save} disabled={loading || saving}>
-            {saving ? "保存中…" : "保存配置"}
-          </Button>
-        }
       >
         <Badge variant="primary" size="md" icon="extension">
           {BUILTIN_HARNESSES.length} 个内置工具
@@ -618,16 +681,10 @@ export default function HarnessPageClient() {
         </Badge>
       </DashboardHero>
 
-      {status.message && (
-        <div
-          role="status"
-          className={
-            status.type === "error"
-              ? "rounded-[10px] border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400"
-              : "rounded-[10px] border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-400"
-          }
-        >
-          {status.message}
+      {loadError && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-[10px] border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+          {loadError}
+          <Button variant="ghost" size="sm" onClick={load} disabled={loading}>重试</Button>
         </div>
       )}
 
@@ -636,7 +693,7 @@ export default function HarnessPageClient() {
           <ModuleSkeleton title="正在加载外部工具" icon="extension" lines={4} className="min-h-[240px]" />
           <ModuleSkeleton title="正在读取模型映射" icon="route" lines={6} className="min-h-[320px]" />
         </div>
-      ) : (
+      ) : loadError ? null : (
         // Mirrors the channel list: a harness rail on the left, the selected
         // tool's address and mapping table on the right.
         <div className="grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">
@@ -651,6 +708,13 @@ export default function HarnessPageClient() {
             profile={activeProfile}
             combos={combos}
             customModels={customModels}
+            discoveredModels={modelHints[activeHarness.prefix]}
+            modelSource={modelSources[activeHarness.prefix]}
+            refreshingModels={refreshingModels}
+            saving={saving[activeHarness.prefix] === true}
+            status={statuses[activeHarness.prefix]}
+            onSave={() => save(activeHarness.prefix)}
+            onRefreshModels={refreshModels}
             onChange={(next) => updateProfile(activeHarness.prefix, next)}
             onAddModel={(model) => addCustomModel(activeHarness.prefix, model)}
             onDeleteModel={(model) => deleteCustomModel(activeHarness.prefix, model)}

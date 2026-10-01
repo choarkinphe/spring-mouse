@@ -133,13 +133,12 @@ describe("normalizeHarnessProfiles", () => {
 describe("operator-maintained model ids", () => {
   it("keeps known prefixes and drops duplicates against the built-ins", () => {
     const result = normalizeHarnessModels({
-      "claude-code": ["claude-opus-5", "claude-opus-4-6", "claude-opus-5", "  claude-sonnet-4-5  "],
+      "claude-code": ["claude-opus-next", "claude-opus-4-6", "claude-opus-next", "  claude-sonnet-4-5  "],
       "not-a-harness": ["whatever"],
     });
-    // `claude-opus-4-6` is already built in, and the repeated `claude-opus-5`
-    // is kept once — re-saving a merged list must not fail or duplicate.
+    // A built-in is dropped, while a repeated custom id is kept once.
     expect(Object.keys(result)).toEqual(["claude-code"]);
-    expect(result["claude-code"]).toEqual(["claude-opus-5", "claude-sonnet-4-5"]);
+    expect(result["claude-code"]).toEqual(["claude-opus-next", "claude-sonnet-4-5"]);
   });
 
   it("drops invalid ids and omits empty lists", () => {

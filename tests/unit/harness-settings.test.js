@@ -86,7 +86,7 @@ describe("harnessModels validation", () => {
   it("persists operator-added ids, dropping duplicates and invalid entries", async () => {
     const res = await PATCH(patchRequest({
       harnessModels: {
-        "claude-code": ["claude-opus-5", "claude-opus-4-6", "has space"],
+        "claude-code": ["claude-opus-next", "claude-opus-5", "claude-opus-4-6", "has space"],
         codex: [],
         "not-a-harness": ["whatever"],
       },
@@ -94,7 +94,7 @@ describe("harnessModels validation", () => {
 
     expect(res.status).toBe(200);
     const stored = (await getSettings()).harnessModels;
-    expect(stored["claude-code"]).toEqual(["claude-opus-5"]);
+    expect(stored["claude-code"]).toEqual(["claude-opus-next"]);
     expect(stored.codex).toBeUndefined();
     expect(stored["not-a-harness"]).toBeUndefined();
   });

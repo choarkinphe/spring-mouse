@@ -29,8 +29,8 @@ export const BUILTIN_HARNESSES = [
 const BUILTIN_PREFIX_SET = new Set(BUILTIN_HARNESSES.map((item) => item.prefix));
 
 // The model ids each tool sends on its own. These are the tool's vocabulary, not
-// Spring Mouse targets: the dashboard pairs one of these with a combo, so the
-// left-hand side of a mapping is a fixed choice rather than free text. Ids are
+// Spring Mouse targets: the dashboard uses these as offline completion hints,
+// alongside the automatically fetched catalog and free-text input. Ids are
 // taken from the tool's own defaults and kept in the shape the tool emits
 // (Claude Desktop and Claude Code both speak Anthropic ids; Codex speaks
 // OpenAI/Codex ids), because that is exactly what arrives in `body.model`.
@@ -41,6 +41,12 @@ const BUILTIN_PREFIX_SET = new Set(BUILTIN_HARNESSES.map((item) => item.prefix))
 // lets the operator append their own ids — see `normalizeHarnessModels` and
 // `settings.harnessModels` — and those are merged on top of these defaults.
 const CLAUDE_MODEL_IDS = [
+  "claude-fable-5-1",
+  "claude-fable-5",
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-sonnet-5-5",
+  "claude-sonnet-5",
   "claude-opus-4-6",
   "claude-sonnet-4-6",
   "claude-haiku-4-5-20251001",
@@ -99,16 +105,15 @@ export function normalizeHarnessModels(value) {
 }
 
 /**
- * The full model list for one harness: built-ins first, then the operator's
- * custom ids, de-duplicated. Order is stable so the dropdown does not reshuffle
- * between renders.
+ * The full completion list: refreshed vocabulary first, offline hints, then
+ * operator-maintained ids. Existing two-argument callers retain their order.
  */
-export function resolveHarnessModelOptions(prefix, customModels) {
+export function resolveHarnessModelOptions(prefix, customModels, discoveredModels = []) {
   const builtin = HARNESS_MODEL_OPTIONS[prefix] || [];
   const custom = Array.isArray(customModels?.[prefix]) ? customModels[prefix] : [];
-  const seen = new Set(builtin);
-  const merged = [...builtin];
-  for (const model of custom) {
+  const seen = new Set();
+  const merged = [];
+  for (const model of [...discoveredModels, ...builtin, ...custom]) {
     if (typeof model !== "string" || !model.trim()) continue;
     const trimmed = model.trim();
     if (seen.has(trimmed)) continue;

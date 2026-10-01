@@ -183,6 +183,12 @@ export async function updateSettings(updates) {
   db.transaction(function () {
     const row = db.get(`SELECT data FROM settings WHERE id = 1`);
     const current = row ? parseJson(row.data, {}) : {};
+    // Updaters merge nested settings against the latest row, not a cached read.
+    // They must be synchronous: SQLite transactions cannot span an await.
+    updates = typeof updates === "function" ? updates(mergeWithDefaults(current)) : updates;
+    if (updates && typeof updates.then === "function") {
+      throw new Error("Settings updater must be synchronous");
+    }
     next = { ...current, ...updates };
     db.run(
       `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,

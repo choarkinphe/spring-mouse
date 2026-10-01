@@ -259,7 +259,7 @@ https://<域名>/codex/v1/responses           -> Codex
 
 **优先级**：harness 映射 > `claudeMessagesRoute`（legacy）> 组合名 > 别名 > 前缀推断。与既有规则一致，客户端显式给出的 `provider/model` 或组合名**不**被覆盖——映射只作用于「按原名无法直接路由」的裸模型名。未命中映射时保持原有解析路径不变。
 
-映射会写入遥测：`routing.routeKind` 记为 `harness`，`originalModel` 保留客户端模型名，`executedModel` 为实际目标，从而在「最近的请求」里能区分「原始」与「实际」。
+映射会写入遥测：`routing.routeKind` 记为 `harness`，`originalModel` 保留客户端模型名，`executedModel` 为实际目标，从而在「最近的请求」里能区分「原始」与「实际」。**该标记必须穿过组合分支**：映射目标通常是组合，而组合路径早期硬编码 `routeKind: "combo"`，会把经 `/claude-code/...` 进来的请求与被显式指定同名组合的请求记成一样，前缀这一运维意图就此丢失。因此组合分支沿用调用方传入的 `harness`，只有真正按组合名进来的请求才回落为 `combo`；legacy `claudeMessagesRoute` 命中时仍记 `combo`（它是全局兜底，不区分工具）。
 
 #### 兼容与迁移
 

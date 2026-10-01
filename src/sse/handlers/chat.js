@@ -250,6 +250,14 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboEntries = await getComboModelEntries(routedModelStr, accessTags);
     let response;
 
+    // A harness mapping is the operator's per-tool intent, so when it resolves to
+    // a combo the provenance must survive the combo branch instead of being
+    // flattened to "combo" — otherwise a request through /claude-code/v1/... is
+    // indistinguishable from a caller naming that combo directly. Any other way
+    // of landing here (explicit combo name, legacy claudeMessagesRoute) leaves
+    // defaultRouteKind null, and "combo" is then the honest answer.
+    const comboRouteKind = defaultRouteKind === "harness" ? "harness" : "combo";
+
     if (comboEntries) {
       const combo = await getComboByName(routedModelStr);
       if (!canAccessWithTags(accessTags, combo?.accessTags)) {
@@ -282,7 +290,7 @@ export async function handleChat(request, clientRawRequest = null) {
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
               routing,
               role: isPanel ? "panel" : "judge",
-              routeKind: "combo",
+              routeKind: comboRouteKind,
               routed: true,
             });
           },
@@ -297,7 +305,7 @@ export async function handleChat(request, clientRawRequest = null) {
         response = await handleComboChat({
           body,
           models: routedModels,
-          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "combo", routed: true }),
+          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: comboRouteKind, routed: true }),
           log,
           comboName: routedModelStr,
           comboStrategy,
@@ -422,6 +430,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
+      // This nested combo is a member of an outer combo (or an alias that
+      // resolves to one), so the provenance handed in by the caller is the
+      // client-facing truth: a harness-mapped combo keeps "harness" all the way
+      // down. Only a genuinely combo-named request falls back to "combo".
+      const nestedRouteKind = routeKind === "harness" ? "harness" : "combo";
+
       if (comboStrategy === "fusion") {
         routing?.hint({ strategy: "fusion", comboName: modelStr });
         log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: fusion)`);
@@ -437,7 +451,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, accessTags, overloadDeadline, {
               routing,
               role: isPanel ? "panel" : "judge",
-              routeKind: "combo",
+              routeKind: nestedRouteKind,
               routed: true,
             });
           },
@@ -453,7 +467,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: "combo", routed: true }),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: nestedRouteKind, routed: true }),
         log,
         comboName: modelStr,
         comboStrategy,

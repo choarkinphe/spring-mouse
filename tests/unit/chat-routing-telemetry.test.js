@@ -359,6 +359,48 @@ describe("chat routing telemetry lifecycle", () => {
       routed: true,
     });
   });
+  it("keeps routeKind harness when a harness mapping targets a combo", async () => {
+    // The harness prefix names the operator's per-tool intent, so it must
+    // survive the combo branch. Recording "combo" here made a /claude-code
+    // request indistinguishable from a caller who named the combo directly.
+    const originalModel = "claude-sonnet-4-5";
+    const combo = { name: "desktop-models", kind: "llm", isActive: true, models: ["openai/gpt-4o"], accessTags: [] };
+    let coreOptions;
+    mocks.getSettings.mockResolvedValue({
+      requireApiKey: false,
+      harnessProfiles: {
+        "claude-code": { enabled: true, mappings: [{ match: "claude-*", target: "desktop-models" }] },
+      },
+      comboStrategies: {},
+      providerStrategies: {},
+      providerThinking: {},
+    });
+    mocks.getComboByName.mockImplementation(async (name) => name === "desktop-models" ? combo : null);
+    mocks.getComboModelEntries.mockImplementation(async (model) => model === "desktop-models" ? ["openai/gpt-4o"] : null);
+    mocks.getModelInfo.mockImplementation(async (model) => {
+      if (model === originalModel) return { provider: "anthropic", model };
+      if (model === "openai/gpt-4o") return { provider: "openai", model: "gpt-4o" };
+      return { provider: "probe", model };
+    });
+    mocks.getProviderCredentials.mockResolvedValue(connection("openai-account"));
+    mocks.handleChatCore.mockImplementation(async (options) => {
+      coreOptions = options;
+      return okResult();
+    });
+    mocks.handleComboChat.mockImplementation(async (options) => options.handleSingleModel(options.body, options.models[0]));
+
+    const res = await handleChat(request(originalModel, "/claude-code/v1/messages"));
+    await flush();
+
+    expect(res.status).toBe(200);
+    expect(mocks.handleComboChat.mock.calls[0][0].comboName).toBe("desktop-models");
+    expect(coreOptions.modelInfo).toMatchObject({
+      provider: "openai",
+      model: "gpt-4o",
+      routeKind: "harness",
+      routed: true,
+    });
+  });
   it("opens and completes exactly one request around a single successful model call", async () => {
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
     mocks.handleChatCore.mockResolvedValue(okResult());

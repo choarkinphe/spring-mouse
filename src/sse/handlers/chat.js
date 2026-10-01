@@ -36,7 +36,7 @@ import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../ser
 import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute.js";
-import { resolveHarnessTarget } from "@/shared/utils/harnessRoute.js";
+import { resolveHarnessTarget, resolveLegacyClaudeMessagesRoute } from "@/shared/utils/harnessRoute.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -196,7 +196,9 @@ export async function handleChat(request, clientRawRequest = null) {
     // by its dedicated URL prefix (/claude-code/v1/..., /codex/v1/...), which
     // the rewrite preserves, so one API key can serve every tool.
     const harness = resolveHarnessTarget(request.url, modelStr, settings);
-    const isClaudeMessagesRoute = isClaudeMessagesRouteRequest(request.url, modelStr);
+    const legacyClaudeMessagesRoute = resolveLegacyClaudeMessagesRoute(settings);
+    const isClaudeMessagesRoute = Boolean(legacyClaudeMessagesRoute)
+      && isClaudeMessagesRouteRequest(request.url, modelStr);
 
     if (harness || isClaudeMessagesRoute) {
       // Existing aliases and combo names retain their explicit meaning: a
@@ -224,8 +226,8 @@ export async function handleChat(request, clientRawRequest = null) {
             // so it needs no extra telemetry field.
             defaultRouteKind = "harness";
           }
-        } else if (settings.claudeMessagesRoute) {
-          const target = settings.claudeMessagesRoute;
+        } else if (legacyClaudeMessagesRoute) {
+          const target = legacyClaudeMessagesRoute;
           if (!target.includes("/")) {
             const targetCombo = await getComboByName(target);
             const activeModels = targetCombo?.models ? (await getComboModelEntries(target, accessTags)) : null;

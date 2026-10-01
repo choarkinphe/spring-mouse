@@ -25,8 +25,8 @@ const DEFAULT_SETTINGS = {
   tailscaleUrl: "",
   providerStrategies: {},
   providerChannelOrder: [],
-  // Optional target for bare Claude Desktop Messages model names. Empty keeps
-  // the historical Anthropic/OAuth inference path unchanged.
+  // Legacy target for bare Claude Messages model names, used only when no
+  // explicit harness profiles exist. Empty keeps Anthropic/OAuth inference.
   claudeMessagesRoute: "",
   // Per-tool model mappings keyed by harness prefix (claude-desktop,
   // claude-code, codex). A tool points its base URL at /{prefix}/v1/... and

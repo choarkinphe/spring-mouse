@@ -100,7 +100,7 @@ beforeEach(async () => {
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(claudeUpstreamMessage("deepseek-chat"));
   await resetCombos();
-  await updateSettings({ requireApiKey: false, claudeMessagesRoute: "", apiKeyAccessTags: {} });
+  await updateSettings({ requireApiKey: false, claudeMessagesRoute: "", harnessProfiles: {}, apiKeyAccessTags: {} });
 });
 
 describe("Claude Desktop discovery (GET /v1/models)", () => {
@@ -243,6 +243,27 @@ describe("Claude Desktop Messages (POST /v1/messages)", () => {
     const json = await res.json();
     expect(json.type).toBe("message");
     expect(json.content).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  it.each(["/v1/messages", "/api/v1/messages"])("ignores a stale legacy combo after Harness migration (%s)", async (endpoint) => {
+    await seedUpstream();
+    await createCombo({ name: COMBO_ID, kind: "llm", models: ["deepseek/deepseek-chat"] });
+    await updateSettings({
+      claudeMessagesRoute: COMBO_ID,
+      harnessProfiles: {
+        "claude-code": { enabled: true, mappings: [{ match: "claude-*", target: COMBO_ID }] },
+      },
+    });
+
+    const original = messagesRequest("claude-opus-5");
+    const res = await postMessages(new Request(`https://router.test${endpoint}`, original));
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const mapped = await postMessages(new Request("https://router.test/claude-code/v1/messages", messagesRequest("claude-opus-5")));
+    expect(mapped.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe("deepseek-chat");
   });
 
   it("fails closed when the configured combo is unavailable", async () => {

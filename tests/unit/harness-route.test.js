@@ -10,6 +10,7 @@ import {
   normalizeHarnessModels,
   resolveHarnessModelOptions,
   resolveHarnessProfiles,
+  resolveLegacyClaudeMessagesRoute,
   resolveHarnessTarget,
 } from "../../src/shared/utils/harnessRoute.js";
 
@@ -171,6 +172,39 @@ describe("operator-maintained model ids", () => {
     expect(resolveHarnessModelOptions("codex", undefined)).toEqual(HARNESS_MODEL_OPTIONS.codex);
     expect(resolveHarnessModelOptions("codex", {})).toEqual(HARNESS_MODEL_OPTIONS.codex);
     expect(resolveHarnessModelOptions("unknown-prefix", {})).toEqual([]);
+  });
+});
+
+describe("resolveLegacyClaudeMessagesRoute", () => {
+  it.each([undefined, null, {}])("keeps compatibility without explicit profiles (%s)", (harnessProfiles) => {
+    expect(resolveLegacyClaudeMessagesRoute({
+      claudeMessagesRoute: "  deepseek-flash  ", harnessProfiles,
+    })).toBe("deepseek-flash");
+  });
+
+  it.each([
+    { "claude-desktop": { enabled: true, mappings: [{ match: "claude-*", target: "p/x" }] } },
+    { "claude-code": { enabled: false, mappings: [] } },
+    { codex: { enabled: true, mappings: [] } },
+  ])("disables the legacy route whenever a valid explicit profile exists (%j)", (harnessProfiles) => {
+    expect(resolveLegacyClaudeMessagesRoute({
+      claudeMessagesRoute: "deepseek-flash", harnessProfiles,
+    })).toBe("");
+  });
+
+  it("uses the same normalization as the profile read path", () => {
+    const settings = {
+      claudeMessagesRoute: "deepseek-flash",
+      harnessProfiles: { unknown: { mappings: [] }, "claude-code": null },
+    };
+    expect(resolveLegacyClaudeMessagesRoute(settings)).toBe("deepseek-flash");
+    expect(resolveHarnessProfiles(settings)["claude-desktop"].mappings[0].target).toBe("deepseek-flash");
+  });
+
+  it("returns empty when no legacy route is configured", () => {
+    expect(resolveLegacyClaudeMessagesRoute(null)).toBe("");
+    expect(resolveLegacyClaudeMessagesRoute({})).toBe("");
+    expect(resolveLegacyClaudeMessagesRoute({ claudeMessagesRoute: "   " })).toBe("");
   });
 });
 

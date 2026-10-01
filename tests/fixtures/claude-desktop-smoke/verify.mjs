@@ -44,4 +44,37 @@ for (const id of [model.id, "claude-sonnet-4-5"]) {
     console.log(`[smoke] PASS ${id} stream=${stream}: ${text.slice(0, 220)}`);
   }
 }
+const migrated = await fetch(`${base}/api/settings`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    harnessProfiles: {
+      "claude-code": { enabled: true, mappings: [{ match: "claude-*", target: model.id }] },
+    },
+  }),
+});
+assert.equal(migrated.status, 200, await migrated.text());
+for (const id of ["claude-sonnet-5-5", "claude-opus-5"]) {
+  for (const endpoint of ["/v1/messages", "/api/v1/messages"]) {
+    const response = await fetch(`${base}${endpoint}`, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: id, stream: false, max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const text = await response.text();
+    assert.equal(response.status, 404, text);
+    assert.match(text, /No active credentials for provider/);
+    console.log(`[smoke] PASS migrated ${endpoint} ${id}: 404, legacy combo ignored`);
+  }
+  for (const stream of [false, true]) {
+    const response = await fetch(`${base}/claude-code/v1/messages`, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: id, stream, max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const text = await response.text();
+    assert.equal(response.status, 200, text);
+    assert.match(text, /hello from mock/);
+    if (stream) assert.match(text, /event: message_stop/);
+    console.log(`[smoke] PASS migrated Harness ${id} stream=${stream}: 200, explicit mapping used`);
+  }
+}
 console.log('[smoke] ALL HTTP CHECKS PASSED');

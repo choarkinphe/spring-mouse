@@ -257,13 +257,13 @@ https://<域名>/codex/v1/responses           -> Codex
 
 因此 `PATCH /api/settings` 对 `harnessProfiles` 的校验**不检查组合当前是否在调度时段内**——只检查存在、启用、是 LLM 组合、且有成员（即上面那组结构性条件）。调度是运行时的概念，由路由器在请求时用 `getComboTargetError` 兜住；把它放到保存时校验会让页面上「展示并标注」的条目变成不可保存的死路。两侧的判据必须保持一致：保存校验通过什么，选择器就展示什么。
 
-**优先级**：harness 映射 > `claudeMessagesRoute`（legacy）> 组合名 > 别名 > 前缀推断。与既有规则一致，客户端显式给出的 `provider/model` 或组合名**不**被覆盖——映射只作用于「按原名无法直接路由」的裸模型名。未命中映射时保持原有解析路径不变。
+**路由规则**：客户端显式给出的 `provider/model`、组合名或别名**不**被覆盖。其余裸模型名在专属路径前缀下尝试 harness 映射；旧 `claudeMessagesRoute` 仅在没有有效显式 `harnessProfiles` 时对裸 `/v1/messages`（含 `/api/v1/messages`）保留兼容兜底。一旦配置任何有效显式 profile（即使禁用或映射为空），旧兜底停用。未命中映射时保持原有模型解析与 Provider 前缀推断路径，不代表一律拒绝请求。
 
 映射会写入遥测：`routing.routeKind` 记为 `harness`，`originalModel` 保留客户端模型名，`executedModel` 为实际目标，从而在「最近的请求」里能区分「原始」与「实际」。**该标记必须穿过组合分支**：映射目标通常是组合，而组合路径早期硬编码 `routeKind: "combo"`，会把经 `/claude-code/...` 进来的请求与被显式指定同名组合的请求记成一样，前缀这一运维意图就此丢失。因此组合分支沿用调用方传入的 `harness`，只有真正按组合名进来的请求才回落为 `combo`；legacy `claudeMessagesRoute` 命中时仍记 `combo`（它是全局兜底，不区分工具）。
 
 #### 兼容与迁移
 
-旧的 `settings.claudeMessagesRoute`（原位于「渠道管理」）保留兼容：当 `harnessProfiles` 为空时，读取侧会把它合成为一条 `claude-desktop` profile（`match: "claude-*"`，`target` 取原值），因此升级后 Claude Desktop 行为不变。原「渠道管理」中的配置卡片已移除，入口统一收敛到「Harness」页。
+旧的 `settings.claudeMessagesRoute`（原位于「渠道管理」）仅为未迁移安装保留兼容：当规范化后的 `harnessProfiles` 为空时，读取侧会把它合成为一条 `claude-desktop` profile（`match: "claude-*"`，`target` 取原值），裸 Messages 入口也继续使用旧兜底。存在有效显式 Harness 配置后，读取与执行侧统一忽略旧字段，避免页面已不显示的旧默认路由仍把 Sonnet/Opus 改写到同一目标。旧字段不自动删除，客户端配置与数据库无需改写；移除全部显式 profiles 会恢复旧兼容规则。原「渠道管理」中的配置卡片已移除，入口统一收敛到「Harness」页。
 
 `/codex` 前缀原先只有一条 `{ source: "/codex/:path*", destination: "/api/v1/responses" }`，把所有子路径折叠到 responses 路由（该路由无 GET），导致 `GET /codex/v1/models` 返回 405。现新增 `/codex/v1/:path*` 规则并排在其前，模型发现可用；旧规则保留以兼容直接打 `/codex/responses` 的客户端。
 

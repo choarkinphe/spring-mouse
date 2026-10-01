@@ -254,6 +254,15 @@ export function normalizeHarnessProfiles(value) {
   return result;
 }
 
+/** Legacy routing is only active until explicit harness profiles are configured. */
+export function resolveLegacyClaudeMessagesRoute(settings) {
+  const explicit = normalizeHarnessProfiles(settings?.harnessProfiles);
+  if (Object.keys(explicit).length > 0) return "";
+  return typeof settings?.claudeMessagesRoute === "string"
+    ? settings.claudeMessagesRoute.trim()
+    : "";
+}
+
 /**
  * Read the effective harness profiles, synthesizing a Claude Desktop profile
  * from the legacy `claudeMessagesRoute` setting when no explicit
@@ -264,9 +273,7 @@ export function resolveHarnessProfiles(settings) {
   const explicit = normalizeHarnessProfiles(settings?.harnessProfiles);
   if (Object.keys(explicit).length > 0) return explicit;
 
-  const legacy = typeof settings?.claudeMessagesRoute === "string"
-    ? settings.claudeMessagesRoute.trim()
-    : "";
+  const legacy = resolveLegacyClaudeMessagesRoute(settings);
   if (!legacy) return explicit;
 
   return {

@@ -269,6 +269,34 @@ describe("chat routing telemetry lifecycle", () => {
     expect(coreOptions.clientRawRequest.body.model).toBe(originalModel);
   });
 
+  it.each([
+    { "claude-desktop": { enabled: true, mappings: [{ match: "claude-*", target: "desktop-models" }] } },
+    { "claude-code": { enabled: false, mappings: [] } },
+    { codex: { enabled: true, mappings: [] } },
+  ])("ignores legacy targets on bare Messages endpoints with explicit profiles (%j)", async (harnessProfiles) => {
+    mocks.getModelInfo.mockImplementation(async (model) => ({ provider: "anthropic", model }));
+    mocks.getProviderCredentials.mockResolvedValue(connection("anthropic-account"));
+    mocks.handleChatCore.mockResolvedValue(okResult());
+
+    for (const claudeMessagesRoute of ["deepseek-flash", "deepseek/deepseek-chat"]) {
+      mocks.getSettings.mockResolvedValue({ requireApiKey: false, claudeMessagesRoute, harnessProfiles });
+      for (const endpoint of ["/v1/messages", "/api/v1/messages"]) {
+        for (const model of ["claude-sonnet-5-5", "claude-opus-5"]) {
+          vi.clearAllMocks();
+          const res = await handleChat(request(model, endpoint));
+          expect(res.status).toBe(200);
+          expect(mocks.getComboByName).not.toHaveBeenCalled();
+          expect(mocks.handleComboChat).not.toHaveBeenCalled();
+          expect(mocks.getProviderCredentials.mock.calls.map(([provider]) => provider)).toEqual(["anthropic"]);
+          expect(mocks.handleChatCore.mock.calls[0][0].modelInfo).toMatchObject({
+            provider: "anthropic", model, routeKind: "direct", routed: false,
+          });
+          expect(mocks.handleChatCore.mock.calls[0][0].clientRawRequest.body.model).toBe(model);
+        }
+      }
+    }
+  });
+
   it("does not apply the Claude Messages default route to Chat Completions", async () => {
     let coreOptions;
     mocks.getSettings.mockResolvedValue({
@@ -368,6 +396,7 @@ describe("chat routing telemetry lifecycle", () => {
     let coreOptions;
     mocks.getSettings.mockResolvedValue({
       requireApiKey: false,
+      claudeMessagesRoute: "stale-legacy-combo",
       harnessProfiles: {
         "claude-code": { enabled: true, mappings: [{ match: "claude-*", target: "desktop-models" }] },
       },

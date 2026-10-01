@@ -219,9 +219,9 @@ sequenceDiagram
 4. 在原候选模型都无法满足能力时，从配置的能力兜底池补充候选；
 5. 按策略的回退、轮询或融合方式执行。
 
-### 6.2.2 Harness 支持（按路径前缀的模型映射）
+### 6.2.2 Harness（按路径前缀的模型映射）
 
-外部工具（Claude Desktop、Claude Code、Codex）各自使用专属的 URL 前缀接入，配置在 Dashboard 的「Harness 支持」页：
+外部工具（Claude Desktop、Claude Code、Codex）各自使用专属的 URL 前缀接入，配置在 Dashboard 的「Harness」页：
 
 ```text
 https://<域名>/claude-desktop/v1/messages   -> Claude Desktop
@@ -248,13 +248,22 @@ https://<域名>/codex/v1/responses           -> Codex
 
 映射匹配规则：`match` 支持**单个**前缀或后缀 `*` 通配（如 `claude-opus-*`、`*-preview`）；精确匹配优先于通配，通配之间取字面量最长者，因此 `claude-opus-*` 胜过 `claude-*`。`target` 必须是 `provider/model` 或组合名。
 
+页面按「渠道管理」的左右分栏组织：左栏是内置工具列表（含启用状态与映射条数），右栏是该工具的接入地址与映射表。
+
+映射表两侧都是下拉：
+
+- **左侧**是该工具自带的模型名。默认来自 `HARNESS_MODEL_OPTIONS`（避免手输拼错），但这**不是封闭集合**——工具升级后可能开始发送列表里没有的 id（线上真实流量出现过 `claude-opus-5`、`claude-sonnet-4-5`），而只有运维能看到。因此运维可以在「自定义模型名」里保存额外的 id，存入 `settings.harnessModels[<prefix>]`，由 `resolveHarnessModelOptions` 合并到内置列表之后；保存与删除都在页面上完成，无需发版。下拉末位的「自定义…」仍保留临时输入（可直接写通配，如 `claude-opus-*`），但**不**写入列表。
+- **右侧**是组合下拉，数据来自 `GET /api/combos/llm?includeUnavailable=1`。该端点**先**过滤掉结构性不可用的组合（未启用、非 LLM、无成员）——这些在两种模式下都不返回，因为 `PATCH /api/settings` 会拒绝它们，选择器不应给出一个保存必败的选项——**再**把仅因调度时段而暂时不可用的组合标为 `available: false` / `unavailableReason: "scheduled-out"`。页面据此把这类组合**标注出来而不是隐藏**：映射是持久配置，此刻处于调度空档的组合（如 09:00–18:00 之外）往往正是运维要为有效时段配置的目标。不带 `includeUnavailable` 时端点行为不变（只返回可用组合），旧的 Claude Messages 选择器依赖这一点。
+
+因此 `PATCH /api/settings` 对 `harnessProfiles` 的校验**不检查组合当前是否在调度时段内**——只检查存在、启用、是 LLM 组合、且有成员（即上面那组结构性条件）。调度是运行时的概念，由路由器在请求时用 `getComboTargetError` 兜住；把它放到保存时校验会让页面上「展示并标注」的条目变成不可保存的死路。两侧的判据必须保持一致：保存校验通过什么，选择器就展示什么。
+
 **优先级**：harness 映射 > `claudeMessagesRoute`（legacy）> 组合名 > 别名 > 前缀推断。与既有规则一致，客户端显式给出的 `provider/model` 或组合名**不**被覆盖——映射只作用于「按原名无法直接路由」的裸模型名。未命中映射时保持原有解析路径不变。
 
 映射会写入遥测：`routing.routeKind` 记为 `harness`，`originalModel` 保留客户端模型名，`executedModel` 为实际目标，从而在「最近的请求」里能区分「原始」与「实际」。
 
 #### 兼容与迁移
 
-旧的 `settings.claudeMessagesRoute`（原位于「渠道管理」）保留兼容：当 `harnessProfiles` 为空时，读取侧会把它合成为一条 `claude-desktop` profile（`match: "claude-*"`，`target` 取原值），因此升级后 Claude Desktop 行为不变。原「渠道管理」中的配置卡片已移除，入口统一收敛到「Harness 支持」页。
+旧的 `settings.claudeMessagesRoute`（原位于「渠道管理」）保留兼容：当 `harnessProfiles` 为空时，读取侧会把它合成为一条 `claude-desktop` profile（`match: "claude-*"`，`target` 取原值），因此升级后 Claude Desktop 行为不变。原「渠道管理」中的配置卡片已移除，入口统一收敛到「Harness」页。
 
 `/codex` 前缀原先只有一条 `{ source: "/codex/:path*", destination: "/api/v1/responses" }`，把所有子路径折叠到 responses 路由（该路由无 GET），导致 `GET /codex/v1/models` 返回 405。现新增 `/codex/v1/:path*` 规则并排在其前，模型发现可用；旧规则保留以兼容直接打 `/codex/responses` 的客户端。
 
@@ -423,7 +432,7 @@ Dashboard 是 Next.js 页面，主要模块包括：
 - 概览与用量总览；
 - 通道管理；
 - 路由策略；
-- Harness 支持（外部工具的接入地址与模型映射，见 §6.2.2）；
+- Harness（外部工具的接入地址与模型映射，见 §6.2.2）；
 - Endpoint / API Key；
 - 媒体服务；
 - 配额；

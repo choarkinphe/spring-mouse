@@ -7,7 +7,7 @@ import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute";
-import { normalizeHarnessProfiles } from "@/shared/utils/harnessRoute";
+import { normalizeHarnessProfiles, normalizeHarnessModels } from "@/shared/utils/harnessRoute";
 import { getActiveComboModels } from "open-sse/services/combo.js";
 import { canDecryptBackupSecret } from "@/lib/backup/crypto";
 import { getDefaultReplicaUrl } from "@/lib/backup/litestreamConfig";
@@ -266,18 +266,30 @@ export async function PATCH(request) {
     if (Object.prototype.hasOwnProperty.call(body, "harnessProfiles")) {
       try {
         const profiles = normalizeHarnessProfiles(body.harnessProfiles);
-        // A mapping whose target is a combo must reference a combo that exists
-        // and is currently usable, so a saved profile cannot silently dead-end.
+        // A mapping whose target is a combo must reference a combo that exists,
+        // is enabled, is an LLM combo and has members. Deliberately NOT checked:
+        // whether the combo is inside its schedule *right now*. A mapping is a
+        // durable config, not a click; a combo that is dark at 18:42 is exactly
+        // what the operator means to use at 09:00, and rejecting it would make
+        // the dashboard's "show every combo, annotate the dark ones" list
+        // unsaveable. Schedule is enforced at request time by the router anyway.
         for (const [prefix, profile] of Object.entries(profiles)) {
           for (const mapping of profile.mappings) {
             if (mapping.target.includes("/")) continue;
             const combo = await getComboByName(mapping.target);
-            const activeModels = combo?.models ? getActiveComboModels(combo.models, new Date()) : null;
-            const comboError = getComboTargetError(combo, activeModels, `${prefix} harness mapping`);
+            const comboError = getComboTargetError(combo, null, `${prefix} harness mapping`);
             if (comboError) throw new Error(comboError);
           }
         }
         body.harnessProfiles = profiles;
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "harnessModels")) {
+      try {
+        body.harnessModels = normalizeHarnessModels(body.harnessModels);
       } catch (error) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }

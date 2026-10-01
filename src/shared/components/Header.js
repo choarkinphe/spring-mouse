@@ -132,7 +132,7 @@ const getPageInfo = (pathname) => {
     };
   if (pathname.includes("/harnesses"))
     return {
-      title: "Harness 支持",
+      title: "Harness",
       description: "为外部工具配置专属接入地址与模型映射",
       icon: "extension",
       breadcrumbs: [],

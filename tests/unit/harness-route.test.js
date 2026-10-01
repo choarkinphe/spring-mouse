@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   BUILTIN_HARNESSES,
+  HARNESS_MODEL_OPTIONS,
   resolveHarnessPrefix,
   matchHarnessMapping,
   isValidHarnessMatch,
   isValidHarnessTarget,
   normalizeHarnessProfiles,
+  normalizeHarnessModels,
+  resolveHarnessModelOptions,
   resolveHarnessProfiles,
   resolveHarnessTarget,
 } from "../../src/shared/utils/harnessRoute.js";
@@ -124,6 +127,51 @@ describe("normalizeHarnessProfiles", () => {
     expect(normalizeHarnessProfiles(null)).toEqual({});
     expect(() => normalizeHarnessProfiles("nope")).toThrow();
     expect(() => normalizeHarnessProfiles([])).toThrow();
+  });
+});
+
+describe("operator-maintained model ids", () => {
+  it("keeps known prefixes and drops duplicates against the built-ins", () => {
+    const result = normalizeHarnessModels({
+      "claude-code": ["claude-opus-5", "claude-opus-4-6", "claude-opus-5", "  claude-sonnet-4-5  "],
+      "not-a-harness": ["whatever"],
+    });
+    // `claude-opus-4-6` is already built in, and the repeated `claude-opus-5`
+    // is kept once — re-saving a merged list must not fail or duplicate.
+    expect(Object.keys(result)).toEqual(["claude-code"]);
+    expect(result["claude-code"]).toEqual(["claude-opus-5", "claude-sonnet-4-5"]);
+  });
+
+  it("drops invalid ids and omits empty lists", () => {
+    const result = normalizeHarnessModels({
+      codex: ["gpt-5.6", "has space", "claude-*-4-5", ""],
+      "claude-code": [],
+    });
+    expect(result.codex).toEqual(["gpt-5.6"]);
+    expect(result["claude-code"]).toBeUndefined();
+  });
+
+  it("treats null as empty and rejects non-objects", () => {
+    expect(normalizeHarnessModels(null)).toEqual({});
+    expect(() => normalizeHarnessModels("nope")).toThrow();
+    expect(() => normalizeHarnessModels([])).toThrow();
+  });
+
+  it("merges custom ids after the built-ins without reordering or duplicating", () => {
+    const merged = resolveHarnessModelOptions("claude-code", {
+      "claude-code": ["claude-opus-5", "claude-opus-4-6"],
+    });
+    expect(merged.slice(0, HARNESS_MODEL_OPTIONS["claude-code"].length)).toEqual(
+      HARNESS_MODEL_OPTIONS["claude-code"],
+    );
+    expect(merged).toContain("claude-opus-5");
+    expect(merged.filter((id) => id === "claude-opus-4-6")).toHaveLength(1);
+  });
+
+  it("returns only the built-ins when nothing custom is stored", () => {
+    expect(resolveHarnessModelOptions("codex", undefined)).toEqual(HARNESS_MODEL_OPTIONS.codex);
+    expect(resolveHarnessModelOptions("codex", {})).toEqual(HARNESS_MODEL_OPTIONS.codex);
+    expect(resolveHarnessModelOptions("unknown-prefix", {})).toEqual([]);
   });
 });
 

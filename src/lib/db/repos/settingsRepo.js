@@ -33,6 +33,12 @@ const DEFAULT_SETTINGS = {
   // the server rewrites its model ids. Empty falls back to the legacy
   // claudeMessagesRoute for Claude Desktop.
   harnessProfiles: {},
+  // Operator-maintained extra model ids per harness prefix, merged on top of the
+  // built-in HARNESS_MODEL_OPTIONS for the mapping table's left-hand dropdown.
+  // A tool release can start sending an id the built-in list does not know
+  // about, and only the operator can see that; this is the escape hatch that
+  // avoids waiting for a release to map it.
+  harnessModels: {},
   apiKeyAccessTags: {},
   usageDashboardScopeTags: [],
   modelAccessTags: {},

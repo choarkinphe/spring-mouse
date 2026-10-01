@@ -1,7 +1,7 @@
 import HarnessPageClient from "./HarnessPageClient";
 
 export const metadata = {
-  title: "Harness 支持",
+  title: "Harness",
 };
 
 export default function HarnessesPage() {

@@ -28,9 +28,100 @@ export const BUILTIN_HARNESSES = [
 
 const BUILTIN_PREFIX_SET = new Set(BUILTIN_HARNESSES.map((item) => item.prefix));
 
+// The model ids each tool sends on its own. These are the tool's vocabulary, not
+// Spring Mouse targets: the dashboard pairs one of these with a combo, so the
+// left-hand side of a mapping is a fixed choice rather than free text. Ids are
+// taken from the tool's own defaults and kept in the shape the tool emits
+// (Claude Desktop and Claude Code both speak Anthropic ids; Codex speaks
+// OpenAI/Codex ids), because that is exactly what arrives in `body.model`.
+//
+// This list is a **starting point, not a closed set**: a tool release can start
+// sending an id that was never in it (real traffic has carried `claude-opus-5`
+// and `claude-sonnet-4-5`), and only the operator can see that. So the dashboard
+// lets the operator append their own ids — see `normalizeHarnessModels` and
+// `settings.harnessModels` — and those are merged on top of these defaults.
+const CLAUDE_MODEL_IDS = [
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+  "claude-opus-4-5-20251101",
+  "claude-sonnet-4-5-20250929",
+];
+
+export const HARNESS_MODEL_OPTIONS = {
+  "claude-desktop": [...CLAUDE_MODEL_IDS],
+  "claude-code": [...CLAUDE_MODEL_IDS],
+  codex: [
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5-codex",
+    "gpt-5.2",
+  ],
+};
+
+/**
+ * Validate and normalize `settings.harnessModels` — operator-maintained extra
+ * model ids per harness prefix. These are merged with `HARNESS_MODEL_OPTIONS`
+ * for the mapping table's left-hand dropdown, so an operator whose tool sends an
+ * id the built-in list does not know about can add it without a release.
+ *
+ * Duplicates (within the list and against the built-ins) are dropped rather than
+ * rejected, so re-saving a list the UI already merged cannot fail.
+ */
+export function normalizeHarnessModels(value) {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("harnessModels must be an object");
+  }
+
+  const result = {};
+  for (const [prefix, models] of Object.entries(value)) {
+    if (!BUILTIN_PREFIX_SET.has(prefix)) continue;
+    if (!Array.isArray(models)) continue;
+
+    const seen = new Set(HARNESS_MODEL_OPTIONS[prefix] || []);
+    const kept = [];
+    for (const model of models.slice(0, MAX_HARNESS_MODELS)) {
+      if (!isValidHarnessMatch(model)) continue;
+      const trimmed = model.trim();
+      // A custom entry only earns its place by not being a built-in; otherwise
+      // the dropdown would show the same id twice.
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      kept.push(trimmed);
+    }
+    if (kept.length > 0) result[prefix] = kept;
+  }
+  return result;
+}
+
+/**
+ * The full model list for one harness: built-ins first, then the operator's
+ * custom ids, de-duplicated. Order is stable so the dropdown does not reshuffle
+ * between renders.
+ */
+export function resolveHarnessModelOptions(prefix, customModels) {
+  const builtin = HARNESS_MODEL_OPTIONS[prefix] || [];
+  const custom = Array.isArray(customModels?.[prefix]) ? customModels[prefix] : [];
+  const seen = new Set(builtin);
+  const merged = [...builtin];
+  for (const model of custom) {
+    if (typeof model !== "string" || !model.trim()) continue;
+    const trimmed = model.trim();
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    merged.push(trimmed);
+  }
+  return merged;
+}
+
 const MAX_MATCH_LENGTH = 200;
 const MAX_TARGET_LENGTH = 200;
 const MAX_MAPPINGS = 100;
+const MAX_HARNESS_MODELS = 50;
 
 /** First path segment of a request URL, or null when unparseable. */
 export function resolveHarnessPrefix(url) {

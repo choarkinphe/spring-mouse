@@ -1,6 +1,31 @@
 "use client";
 
+import { useMemo } from "react";
 import { cn } from "@/shared/utils/cn";
+
+/**
+ * Group options for rendering. An option may carry a `group` string to be
+ * placed under an `<optgroup>`; options without one stay in an unlabelled run,
+ * so every existing caller keeps the flat list it had. Groups appear in the
+ * order their first member does, and the unlabelled run keeps its own slot, so
+ * a caller can interleave them deliberately.
+ */
+function groupOptions(options) {
+  const groups = [];
+  const byLabel = new Map();
+  for (const option of options) {
+    const label = typeof option?.group === "string" && option.group ? option.group : null;
+    const key = label ?? "";
+    let group = byLabel.get(key);
+    if (!group) {
+      group = { label, options: [] };
+      byLabel.set(key, group);
+      groups.push(group);
+    }
+    group.options.push(option);
+  }
+  return groups;
+}
 
 export default function Select({
   label,
@@ -20,6 +45,8 @@ export default function Select({
   placeholderDisabled = true,
   ...props
 }) {
+  const groups = useMemo(() => groupOptions(options), [options]);
+
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {label && (
@@ -47,11 +74,23 @@ export default function Select({
           <option value="" disabled={placeholderDisabled}>
             {placeholder}
           </option>
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
+          {groups.map((group) =>
+            group.label ? (
+              <optgroup key={group.label} label={group.label}>
+                {group.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : (
+              group.options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))
+            )
+          )}
         </select>
         <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-text-muted">
           <span className="material-symbols-outlined text-[20px]">expand_more</span>

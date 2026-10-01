@@ -358,6 +358,28 @@ export function getActiveComboModels(models, now = new Date(), subjectAccessTags
   return entries?.map((entry) => entry.model) ?? null;
 }
 
+/**
+ * Every model a combo is *configured* with, in order, de-duplicated, ignoring
+ * schedules and access tags. This is the combo's own vocabulary rather than a
+ * permission boundary: callers use it to offer the member ids as routing
+ * targets (a harness mapping may point straight at `provider/model`), where the
+ * operator wants to see what the combo is made of even when a member is outside
+ * its window right now. Availability stays a runtime concern — the router
+ * re-checks the schedule when the request actually arrives.
+ */
+export function getComboModelIds(models) {
+  if (!Array.isArray(models)) return [];
+  const seen = new Set();
+  const ids = [];
+  for (const entry of models) {
+    const { model } = comboModelEntry(entry);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    ids.push(model);
+  }
+  return ids;
+}
+
 function rotateModelsFromIndex(models, currentIndex) {
   const rotatedModels = [...models];
   for (let i = 0; i < currentIndex; i++) {

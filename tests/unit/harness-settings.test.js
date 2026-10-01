@@ -136,4 +136,55 @@ describe("combo picker availability", () => {
     expect(byName["picker-disabled"]).toBeUndefined();
     expect(byName["picker-web"]).toBeUndefined();
   });
+
+  it("omits member ids by default so the legacy response shape is unchanged", async () => {
+    // The Claude Messages picker reads this endpoint without the flag; adding a
+    // field unconditionally would change a response other callers already parse.
+    const res = await getCombos(comboListRequest());
+    const combos = (await res.json()).combos;
+
+    // Guard the loop below against passing vacuously on an empty list.
+    expect(combos.length).toBeGreaterThan(0);
+    for (const combo of combos) expect(combo).not.toHaveProperty("models");
+  });
+
+  it("attaches configured member ids when includeMembers is set", async () => {
+    await createCombo({
+      name: "picker-members",
+      kind: "llm",
+      // Member entries may be objects, and a schedule must not filter the
+      // vocabulary: the harness picker offers every configured member id as a
+      // target even while one is outside its window, because availability is
+      // re-checked when the request actually arrives.
+      models: [
+        { model: "cx/gpt-5.6-sol" },
+        "openai/gpt-4o",
+        { model: "cx/gpt-5.6-sol" },
+        {
+          model: "dark-member",
+          schedule: {
+            timezone: "UTC",
+            active: [],
+            inactive: [
+              { start: "00:00", end: "12:00" },
+              { start: "12:00", end: "00:00" },
+            ],
+            activeEnabled: true,
+            inactiveEnabled: true,
+          },
+        },
+      ],
+    });
+
+    const res = await getCombos(comboListRequest("?includeUnavailable=1&includeMembers=1"));
+    const combos = (await res.json()).combos;
+    const byName = Object.fromEntries(combos.map((combo) => [combo.name, combo]));
+
+    // De-duplicated, order-preserving, and schedule-ignored.
+    expect(byName["picker-members"].models)
+      .toEqual(["cx/gpt-5.6-sol", "openai/gpt-4o", "dark-member"]);
+    // A combo in a schedule gap still reports its members, so an operator can
+    // point a tool straight at one of them.
+    expect(byName["dark-combo"].models).toEqual(["openai/gpt-4o"]);
+  });
 });

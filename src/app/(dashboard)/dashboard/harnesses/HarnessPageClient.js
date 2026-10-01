@@ -50,82 +50,124 @@ const HARNESS_GUIDES = {
 };
 
 /**
- * One row of the mapping table: pick a model the tool knows about, pick the
- * combo it should actually run. The left side is a fixed list because it is the
- * tool's own vocabulary — free text there would only ever be a typo.
+ * One row of the mapping table: type the model the tool sends, pick what it
+ * should actually run — a routing strategy (combo) or one of the models inside
+ * one.
+ *
+ * The left side is a plain input rather than a dropdown. The tool's vocabulary
+ * is open-ended: a release can start sending an id nobody listed, and a mapping
+ * may legitimately be a wildcard (`claude-opus-*`). A closed `<select>` could
+ * express neither without a detour through "自定义…", so the field accepts free
+ * text and Tab completes it against the known ids — the list is a convenience,
+ * not a fence.
  */
 function MappingRow({
   mapping,
   modelOptions,
-  comboOptions,
+  targetOptions,
   disabled,
   onChange,
   onRemove,
   onAddModel,
-  onDeleteModel,
 }) {
-  const [customModel, setCustomModel] = useState(false);
+  const [focused, setFocused] = useState(false);
 
-  const isKnownModel = modelOptions.includes(mapping.match);
-  // Rows are keyed by index, so a delete can hand this component's state to a
-  // different mapping. Deriving from `isKnownModel` keeps a stale flag harmless:
-  // a known model always renders the dropdown, whatever the leftover state says.
-  const showCustom = !isKnownModel && (customModel || Boolean(mapping.match));
+  const value = mapping.match;
+  const isKnownModel = modelOptions.includes(value);
 
-  const modelValue = showCustom ? "__custom__" : mapping.match;
+  // The first known id that extends what has been typed, used for both the Tab
+  // completion and the ghost suffix shown behind the caret. Matching is
+  // case-insensitive so `Claude-Opus` still completes; the stored value keeps
+  // whatever the operator typed. A value with surrounding whitespace is left
+  // alone — the overlay aligns by character count, and a model id never has any.
+  const completion = useMemo(() => {
+    if (!value || value !== value.trim()) return null;
+    const lower = value.toLowerCase();
+    return (
+      modelOptions.find(
+        (model) => model.toLowerCase() !== lower && model.toLowerCase().startsWith(lower),
+      ) || null
+    );
+  }, [value, modelOptions]);
 
-  // Saving the typed id into the maintained list is what makes it selectable
-  // from then on; the mapping itself is already set to it.
-  const commitPendingModel = () => onAddModel?.(mapping.match);
+  // Only offer the ghost while the field has focus: otherwise an unfocused row
+  // would look like it already holds a longer value than it does.
+  const ghost = focused && completion ? completion.slice(value.length) : "";
+
+  // Saving the typed id into the maintained list is what makes it complete from
+  // then on; the mapping itself is already set to it.
+  const commitPendingModel = () => {
+    if (value.trim() && !isKnownModel) onAddModel?.(value.trim());
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Tab" && completion && !event.shiftKey) {
+      // Only swallow Tab when there is something to complete — otherwise the
+      // operator would lose keyboard navigation out of the field.
+      event.preventDefault();
+      onChange({ ...mapping, match: completion });
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitPendingModel();
+    }
+  };
 
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <Select
-          aria-label="客户端模型"
-          value={modelValue}
-          disabled={disabled}
-          onChange={(event) => {
-            if (event.target.value === "__custom__") {
-              setCustomModel(true);
-              return;
-            }
-            setCustomModel(false);
-            onChange({ ...mapping, match: event.target.value });
-          }}
-          options={[
-            ...modelOptions.map((model) => ({ value: model, label: model })),
-            { value: "__custom__", label: "自定义…" },
-          ]}
-          placeholder="选择模型"
-          selectClassName="font-mono text-xs"
-        />
-        {showCustom && (
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-1.5">
-              <input
-                aria-label="自定义模型名"
-                placeholder="claude-opus-5"
-                value={mapping.match}
+        <div className="relative">
+          <input
+            aria-label="客户端模型"
+            placeholder="客户端模型名，如 claude-opus-5；输入后按 Tab 补全"
+            value={value}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...mapping, match: event.target.value })}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded-[10px] border border-transparent bg-surface-2 px-3 py-2.5 font-mono text-xs text-text-main placeholder:text-text-muted focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:opacity-50"
+          />
+          {ghost && (
+            // Sits behind the input and never takes the pointer, so the
+            // operator sees what Tab would insert without the field looking
+            // like it already contains it.
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-0 flex items-center overflow-hidden px-3 font-mono text-xs"
+            >
+              <span className="invisible whitespace-pre">{value}</span>
+              <span className="whitespace-pre text-text-muted/50">{ghost}</span>
+            </span>
+          )}
+        </div>
+        {completion && (
+          <p className="flex items-center gap-1 text-[11px] leading-4 text-text-muted">
+            <kbd className="rounded border border-border-subtle bg-surface-2 px-1 font-mono text-[10px]">Tab</kbd>
+            <span>
+              补全为 <code className="font-mono text-text-main">{completion}</code>
+            </span>
+          </p>
+        )}
+        {!isKnownModel && value.trim() && (
+          <div className="flex items-center gap-1.5">
+            <Tooltip text="把这个名字加进该工具的可补全列表，之后输入前缀即可 Tab 补全；只影响本页的选项，不会改动已保存的映射。">
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={disabled}
-                onChange={(event) => onChange({ ...mapping, match: event.target.value })}
-                className="min-w-0 flex-1 rounded-[10px] border border-transparent bg-surface-2 px-3 py-2 font-mono text-xs text-text-main placeholder:text-text-muted focus:border-brand-500/40 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:opacity-50"
-              />
-              <Tooltip text="把这个名字加进该工具的下拉列表，之后可以直接选；只影响本页的选项，不会改动已保存的映射。">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={disabled || !mapping.match.trim()}
-                  onClick={commitPendingModel}
-                  aria-label="保存到模型列表"
-                >
-                  <span className="material-symbols-outlined text-[18px]">bookmark_add</span>
-                </Button>
-              </Tooltip>
-            </div>
-            <p className="text-[11px] leading-4 text-text-muted">
-              也可以直接在这里输入通配（如 <code className="font-mono">claude-opus-*</code>），不加入列表。
-            </p>
+                onClick={commitPendingModel}
+                aria-label="保存到模型列表"
+              >
+                <span className="material-symbols-outlined text-[18px]">bookmark_add</span>
+              </Button>
+            </Tooltip>
+            <span className="text-[11px] leading-4 text-text-muted">
+              或直接使用通配（如 <code className="font-mono">claude-opus-*</code>）
+            </span>
           </div>
         )}
       </div>
@@ -134,12 +176,12 @@ function MappingRow({
 
       <div className="min-w-0 flex-1">
         <Select
-          aria-label="映射到的组合"
+          aria-label="映射到的目标"
           value={mapping.target}
           disabled={disabled}
           onChange={(event) => onChange({ ...mapping, target: event.target.value })}
-          options={comboOptions}
-          placeholder="选择组合"
+          options={targetOptions}
+          placeholder="选择组合或模型"
           selectClassName="font-mono text-xs"
         />
       </div>
@@ -237,44 +279,71 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
   }, [customModels, harness.prefix]);
   const basePath = guide.basePath || `/${harness.prefix}/v1`;
 
-  const comboOptions = useMemo(
-    () =>
-      combos
-        .filter((combo) => combo && typeof combo.name === "string" && combo.name.trim())
-        .map((combo) => {
-          const count =
-            typeof combo.activeModelCount === "number" ? combo.activeModelCount : null;
-          // Every combo is listed; an unavailable one is annotated rather than
-          // hidden, because a mapping is durable config and the dark combo may
-          // be exactly what the operator wants to map for its active window.
-          if (combo.available === false) {
-            const reason = COMBO_UNAVAILABLE_LABEL[combo.unavailableReason] || "当前不可用";
-            return { value: combo.name, label: `${combo.name}（${reason}）` };
-          }
-          return {
-            value: combo.name,
-            label: count === null ? combo.name : `${combo.name}（${count} 个可用模型）`,
-          };
-        }),
-    [combos],
-  );
+  // The right-hand picker offers everything 路由策略 has configured and enabled:
+  // first the combos themselves (the usual target), then the individual member
+  // models those combos are built from. A target may be either a combo name or a
+  // `provider/model`, and pointing a tool straight at a model should not require
+  // inventing a one-member combo first — so the member ids are selectable too,
+  // grouped so the two kinds never blur together.
+  const targetOptions = useMemo(() => {
+    const comboOptions = [];
+    const memberOptions = [];
+    const seenMembers = new Set();
+
+    for (const combo of combos) {
+      if (!combo || typeof combo.name !== "string" || !combo.name.trim()) continue;
+
+      const count = typeof combo.activeModelCount === "number" ? combo.activeModelCount : null;
+      // Every combo is listed; an unavailable one is annotated rather than
+      // hidden, because a mapping is durable config and the dark combo may be
+      // exactly what the operator wants to map for its active window.
+      if (combo.available === false) {
+        const reason = COMBO_UNAVAILABLE_LABEL[combo.unavailableReason] || "当前不可用";
+        comboOptions.push({
+          value: combo.name,
+          label: `${combo.name}（${reason}）`,
+          group: "模型组合",
+        });
+      } else {
+        comboOptions.push({
+          value: combo.name,
+          label: count === null ? combo.name : `${combo.name}（${count} 个可用模型）`,
+          group: "模型组合",
+        });
+      }
+
+      // A combo name is also a valid value here, and a member id may repeat
+      // across combos — each value must appear once or the picker would show
+      // duplicates for one choice.
+      const members = Array.isArray(combo.models) ? combo.models : [];
+      for (const model of members) {
+        if (typeof model !== "string" || !model.trim()) continue;
+        const id = model.trim();
+        if (seenMembers.has(id) || id === combo.name) continue;
+        seenMembers.add(id);
+        memberOptions.push({ value: id, label: id, group: "组合内模型" });
+      }
+    }
+
+    return [...comboOptions, ...memberOptions];
+  }, [combos]);
 
   // A mapping may still point at a combo that has since been renamed or removed.
   // Surface it as an option so the row shows the real stored value instead of
   // silently snapping to the placeholder.
   const rows = useMemo(() => {
-    const known = new Set(comboOptions.map((option) => option.value));
+    const known = new Set(targetOptions.map((option) => option.value));
     return mappings.map((mapping) => {
-      if (!mapping.target || known.has(mapping.target)) return { mapping, options: comboOptions };
+      if (!mapping.target || known.has(mapping.target)) return { mapping, options: targetOptions };
       return {
         mapping,
         options: [
-          ...comboOptions,
+          ...targetOptions,
           { value: mapping.target, label: `${mapping.target}（已失效）` },
         ],
       };
     });
-  }, [mappings, comboOptions]);
+  }, [mappings, targetOptions]);
 
   const updateMappings = (next) => onChange({ ...profile, mappings: next });
 
@@ -310,7 +379,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <span className="text-sm font-medium text-text-main">模型映射</span>
-                <Tooltip text="左侧是该工具自带的模型名，右侧选择它实际要调用的组合。工具升级换模型名时，用「自定义…」补一条即可。">
+                <Tooltip text="左侧填该工具请求里带的模型名，输入后按 Tab 从已知列表补全，也可以直接写通配（claude-opus-*）或任意新名字。右侧选它实际要调用的目标：可以是「路由策略」里的组合，也可以是组合中已启用的某个模型（provider/model）。">
                   <span className="material-symbols-outlined cursor-help text-[16px] text-text-muted">help</span>
                 </Tooltip>
               </div>
@@ -338,7 +407,7 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
                     key={index}
                     mapping={mapping}
                     modelOptions={modelOptions}
-                    comboOptions={options}
+                    targetOptions={options}
                     disabled={!enabled}
                     onChange={(next) => {
                       const copy = [...mappings];
@@ -347,7 +416,6 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
                     }}
                     onRemove={() => updateMappings(mappings.filter((_, i) => i !== index))}
                     onAddModel={onAddModel}
-                    onDeleteModel={onDeleteModel}
                   />
                 ))}
               </div>
@@ -363,12 +431,12 @@ function HarnessDetail({ harness, profile, combos, customModels, onChange, onAdd
           <Card.Section className="flex flex-col gap-2">
             <div className="flex items-center gap-1.5">
               <span className="text-sm font-medium text-text-main">自定义模型名</span>
-              <Tooltip text="左侧下拉默认只列出该工具内置的模型名。工具升级后开始发送新的模型名时，在这里保存一次，之后就能直接从下拉里选。">
+              <Tooltip text="左侧输入框按 Tab 补全时用这份列表。内置的是该工具的常见模型名；工具升级后开始发送新的名字时，在这里保存一次即可补全。">
                 <span className="material-symbols-outlined cursor-help text-[16px] text-text-muted">help</span>
               </Tooltip>
             </div>
             <p className="text-xs leading-5 text-text-muted">
-              内置 {builtinModels.length} 个；这里保存的名字会追加到左侧下拉列表。
+              内置 {builtinModels.length} 个；这里保存的名字会追加到左侧的 Tab 补全列表。
             </p>
             {customModelList.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -416,7 +484,10 @@ export default function HarnessPageClient() {
         fetch("/api/settings", { cache: "no-store" }),
         // `includeUnavailable` lists every LLM combo with an availability flag,
         // so the picker can show the dark ones annotated instead of hiding them.
-        fetch("/api/combos/llm?includeUnavailable=1", { cache: "no-store" }),
+        // `includeMembers` attaches each combo's member ids, so the same picker
+        // can also offer a single `provider/model` target — everything the
+        // 路由策略 page has configured and enabled, not just the combo names.
+        fetch("/api/combos/llm?includeUnavailable=1&includeMembers=1", { cache: "no-store" }),
       ]);
       const settings = settingsResponse.ok ? await settingsResponse.json() : {};
       const comboData = combosResponse.ok ? await combosResponse.json() : {};

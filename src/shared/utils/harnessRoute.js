@@ -65,8 +65,8 @@ export const HARNESS_MODEL_OPTIONS = {
 /**
  * Validate and normalize `settings.harnessModels` — operator-maintained extra
  * model ids per harness prefix. These are merged with `HARNESS_MODEL_OPTIONS`
- * for the mapping table's left-hand dropdown, so an operator whose tool sends an
- * id the built-in list does not know about can add it without a release.
+ * into the mapping table's left-hand completion list, so an operator whose tool
+ * sends an id the built-in list does not know about can add it without a release.
  *
  * Duplicates (within the list and against the built-ins) are dropped rather than
  * rejected, so re-saving a list the UI already merged cannot fail.

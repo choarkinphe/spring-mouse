@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCombos } from "@/lib/localDb";
-import { getActiveComboModels } from "open-sse/services/combo.js";
+import { getActiveComboModels, getComboModelIds } from "open-sse/services/combo.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -30,6 +30,17 @@ function scheduleGapReason(activeModels) {
   return null;
 }
 
+/** Read a boolean search param, accepting `1`/`true`. */
+function readFlag(request, name) {
+  if (!request?.url) return false;
+  try {
+    const value = new URL(request.url).searchParams.get(name);
+    return value === "1" || value === "true";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Return LLM combos for the dashboard pickers.
  *
@@ -45,20 +56,22 @@ function scheduleGapReason(activeModels) {
  * Structurally-unusable combos are filtered in both modes. Access tags are not
  * applied either way: this is an instance-wide setting rather than a
  * request-specific model list.
+ *
+ * `?includeMembers=1`: additionally attach `models` — the combo's configured
+ * member ids, schedule-ignored. A mapping target may be a bare `provider/model`
+ * as well as a combo name, and the harness picker offers the members of the
+ * enabled routing strategies so an operator can point a tool straight at a
+ * model without having to invent a one-member combo first. The list is the
+ * combo's vocabulary, not a permission boundary; the router still re-checks the
+ * schedule and access tags at request time. Omitted by default so the legacy
+ * response shape is unchanged.
  */
 export async function GET(request) {
   try {
     const combos = await getCombos();
     const now = new Date();
-    const includeUnavailable = (() => {
-      if (!request?.url) return false;
-      try {
-        const value = new URL(request.url).searchParams.get("includeUnavailable");
-        return value === "1" || value === "true";
-      } catch {
-        return false;
-      }
-    })();
+    const includeUnavailable = readFlag(request, "includeUnavailable");
+    const includeMembers = readFlag(request, "includeMembers");
 
     const described = combos
       .filter((combo) => !isStructurallyUnusable(combo))
@@ -71,6 +84,7 @@ export async function GET(request) {
           activeModelCount: Array.isArray(activeModels) ? activeModels.length : 0,
           available: reason === null,
           unavailableReason: reason,
+          ...(includeMembers ? { models: getComboModelIds(combo.models) } : {}),
         };
       });
 

@@ -6,7 +6,8 @@ import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
-import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute";
+import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute";
+import { normalizeHarnessProfiles } from "@/shared/utils/harnessRoute";
 import { getActiveComboModels } from "open-sse/services/combo.js";
 import { canDecryptBackupSecret } from "@/lib/backup/crypto";
 import { getDefaultReplicaUrl } from "@/lib/backup/litestreamConfig";
@@ -261,6 +262,26 @@ export async function PATCH(request) {
       }
     }
 
+
+    if (Object.prototype.hasOwnProperty.call(body, "harnessProfiles")) {
+      try {
+        const profiles = normalizeHarnessProfiles(body.harnessProfiles);
+        // A mapping whose target is a combo must reference a combo that exists
+        // and is currently usable, so a saved profile cannot silently dead-end.
+        for (const [prefix, profile] of Object.entries(profiles)) {
+          for (const mapping of profile.mappings) {
+            if (mapping.target.includes("/")) continue;
+            const combo = await getComboByName(mapping.target);
+            const activeModels = combo?.models ? getActiveComboModels(combo.models, new Date()) : null;
+            const comboError = getComboTargetError(combo, activeModels, `${prefix} harness mapping`);
+            if (comboError) throw new Error(comboError);
+          }
+        }
+        body.harnessProfiles = profiles;
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
 
     if (Object.prototype.hasOwnProperty.call(body, "modelAccessTags")) {
       const source = body.modelAccessTags && typeof body.modelAccessTags === "object" && !Array.isArray(body.modelAccessTags)

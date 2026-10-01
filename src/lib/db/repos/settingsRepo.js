@@ -28,6 +28,11 @@ const DEFAULT_SETTINGS = {
   // Optional target for bare Claude Desktop Messages model names. Empty keeps
   // the historical Anthropic/OAuth inference path unchanged.
   claudeMessagesRoute: "",
+  // Per-tool model mappings keyed by harness prefix (claude-desktop,
+  // claude-code, codex). A tool points its base URL at /{prefix}/v1/... and
+  // the server rewrites its model ids. Empty falls back to the legacy
+  // claudeMessagesRoute for Claude Desktop.
+  harnessProfiles: {},
   apiKeyAccessTags: {},
   usageDashboardScopeTags: [],
   modelAccessTags: {},

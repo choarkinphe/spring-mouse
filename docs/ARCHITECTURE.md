@@ -219,22 +219,51 @@ sequenceDiagram
 4. 在原候选模型都无法满足能力时，从配置的能力兜底池补充候选；
 5. 按策略的回退、轮询或融合方式执行。
 
-对于 Claude Desktop 的 Messages 请求，Dashboard 在「渠道管理」提供可选的 Claude Desktop 默认组合设置。选择器只展示启用、类型为 LLM、至少有一个当前可执行成员的组合；组合中的目标可以来自 GPT、DeepSeek 或其他兼容通道。例如：
+### 6.2.2 Harness 支持（按路径前缀的模型映射）
+
+外部工具（Claude Desktop、Claude Code、Codex）各自使用专属的 URL 前缀接入，配置在 Dashboard 的「Harness 支持」页：
 
 ```text
-claude-sonnet-4-5 -> desktop-models
+https://<域名>/claude-desktop/v1/messages   -> Claude Desktop
+https://<域名>/claude-code/v1/messages      -> Claude Code
+https://<域名>/codex/v1/responses           -> Codex
 ```
 
-映射不会修改客户端原始请求；协议识别仍依据 Messages endpoint，执行模型则进入正常的凭据、能力、调度、熔断、并发和账号回退流程。它只匹配 `/v1/messages` 或 `/api/v1/messages` 中的裸 `claude-*` 模型名。显式 provider/model、已有别名或组合以及 Chat Completions endpoint 保持原有优先级。设置为空时保持历史的 Anthropic/OAuth 推断与回退行为。请求遥测同时保留 `originalModel`（客户端模型）和 `executedModel`（实际目标），以便区分调用方协议与实际费用/通道。
+每个前缀对应一条 `settings.harnessProfiles[<prefix>]`，包含启用开关和一组模型映射（`match` → `target`）：
 
-历史版本保存的 `provider/model` 直接目标（例如 `openai/gpt-4o` 或 `deepseek/deepseek-chat`）仍然兼容，但新的配置应在「渠道管理」中直接选择组合；如果已保存的组合被删除、禁用或暂时没有可执行成员，网关会拒绝该默认路由，而不会悄悄改走 Anthropic 或其他模型。
+```json
+{
+  "claude-desktop": {
+    "enabled": true,
+    "label": "Claude Desktop",
+    "mappings": [
+      { "match": "claude-opus-*", "target": "cx/gpt-5.6-sol" },
+      { "match": "claude-*",      "target": "deepseek-flash" }
+    ]
+  }
+}
+```
+
+**识别方式是路径前缀，不是 User-Agent。** Next.js rewrite **不修改 `request.url`**，handler 看到的仍是客户端原始路径（可用 `usageHistory.endpoint` 直接验证），因此前缀是稳定、确定的工具标识；UA 是自报字符串，会随工具版本变化。前缀的 rewrite 定义在 `next.config.mjs`（构建期静态，新增前缀需改配置并重启），并且必须锚定 `/v1` 段——写成 `/{harness}/:path*` 会把 `/claude-code/v1/messages` 拼成 `/api/v1/v1/messages` 而 404。新前缀还需登记到 `src/dashboardGuard.js` 的 `PUBLIC_PREFIXES`，否则会走 dashboard 鉴权而不是 LLM 的 API Key 校验。
+
+映射匹配规则：`match` 支持**单个**前缀或后缀 `*` 通配（如 `claude-opus-*`、`*-preview`）；精确匹配优先于通配，通配之间取字面量最长者，因此 `claude-opus-*` 胜过 `claude-*`。`target` 必须是 `provider/model` 或组合名。
+
+**优先级**：harness 映射 > `claudeMessagesRoute`（legacy）> 组合名 > 别名 > 前缀推断。与既有规则一致，客户端显式给出的 `provider/model` 或组合名**不**被覆盖——映射只作用于「按原名无法直接路由」的裸模型名。未命中映射时保持原有解析路径不变。
+
+映射会写入遥测：`routing.routeKind` 记为 `harness`，`originalModel` 保留客户端模型名，`executedModel` 为实际目标，从而在「最近的请求」里能区分「原始」与「实际」。
+
+#### 兼容与迁移
+
+旧的 `settings.claudeMessagesRoute`（原位于「渠道管理」）保留兼容：当 `harnessProfiles` 为空时，读取侧会把它合成为一条 `claude-desktop` profile（`match: "claude-*"`，`target` 取原值），因此升级后 Claude Desktop 行为不变。原「渠道管理」中的配置卡片已移除，入口统一收敛到「Harness 支持」页。
+
+`/codex` 前缀原先只有一条 `{ source: "/codex/:path*", destination: "/api/v1/responses" }`，把所有子路径折叠到 responses 路由（该路由无 GET），导致 `GET /codex/v1/models` 返回 405。现新增 `/codex/v1/:path*` 规则并排在其前，模型发现可用；旧规则保留以兼容直接打 `/codex/responses` 的客户端。
 
 ### 6.2.1 Claude Desktop 模型发现（`GET /v1/models`）
 
 Claude Desktop 的第三方网关在配置后会调用 `GET /v1/models` 发现可用模型。Spring Mouse 的 `src/app/api/v1/models/route.js` 按请求协议返回两种响应：
 
 - 无 `anthropic-version` 头（OpenAI 兼容客户端）：返回 `{ "object": "list", "data": [...] }`，与历史行为一致；其中**被选为默认路由的那个组合条目**会额外合并发现字段（见下），其余条目保持不变。
-- 带 `anthropic-version` 头时：返回 Anthropic Models 列表信封 `{ data, has_more, first_id, last_id }`，其中仅包含**一个**条目——由 `settings.claudeMessagesRoute` 指定的默认组合（例如 `deepseek-flash`），其 `id` 即组合名；不满足条件时 `data` 为空数组。
+- 带 `anthropic-version` 头时：返回 Anthropic Models 列表信封 `{ data, has_more, first_id, last_id }`，其中仅包含**一个**条目——由 Claude Desktop harness profile 的映射目标（见 §6.2.2；未配置 `harnessProfiles` 时回落到 legacy `settings.claudeMessagesRoute`）指定的组合，其 `id` 即组合名；不满足条件时 `data` 为空数组。映射目标为 `provider/model` 时没有可发布的组合，返回空 `data`。
 
 之所以要区分，是因为 Claude Desktop 的自动发现只会展示「可识别为 Claude」的模型 id；组合名（如 `deepseek-flash`）不是 Claude id，若不带标记就会被 Desktop 过滤掉、导致模型选择器为空。因此该条目会附带：
 
@@ -394,6 +423,7 @@ Dashboard 是 Next.js 页面，主要模块包括：
 - 概览与用量总览；
 - 通道管理；
 - 路由策略；
+- Harness 支持（外部工具的接入地址与模型映射，见 §6.2.2）；
 - Endpoint / API Key；
 - 媒体服务；
 - 配额；

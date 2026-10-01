@@ -1,5 +1,5 @@
 const cleanModel = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
-const ROUTE_KINDS = new Set(["direct", "alias", "combo"]);
+const ROUTE_KINDS = new Set(["direct", "alias", "combo", "harness"]);
 
 /**
  * Normalize the request-level model routing metadata shared by usage and

@@ -35,7 +35,8 @@ import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
 import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
-import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
+import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute.js";
+import { resolveHarnessTarget } from "@/shared/utils/harnessRoute.js";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -191,28 +192,52 @@ export async function handleChat(request, clientRawRequest = null) {
     let defaultRouteKind = null;
     let defaultRouteError = null;
 
-    if (isClaudeMessagesRouteRequest(request.url, modelStr)) {
-      // Existing aliases and combo names retain their explicit meaning. A disabled
-      // or empty combo must not be silently replaced by the global default route.
+    // Which harness (if any) does this URL belong to? A harness is identified
+    // by its dedicated URL prefix (/claude-code/v1/..., /codex/v1/...), which
+    // the rewrite preserves, so one API key can serve every tool.
+    const harness = resolveHarnessTarget(request.url, modelStr, settings);
+    const isClaudeMessagesRoute = isClaudeMessagesRouteRequest(request.url, modelStr);
+
+    if (harness || isClaudeMessagesRoute) {
+      // Existing aliases and combo names retain their explicit meaning: a
+      // provider/model value or a combo name is the caller's stated intent and
+      // must not be silently replaced by a mapping or the global default route.
       const originalCombo = await getComboByName(modelStr);
       const originalInfo = originalCombo ? null : await getModelInfo(modelStr);
       const hasExplicitRoute = Boolean(originalCombo)
         || originalInfo?.routeKind === "alias"
         || originalInfo?.routeKind === "combo";
 
-      if (!hasExplicitRoute && settings.claudeMessagesRoute) {
-        const target = settings.claudeMessagesRoute;
-        if (!target.includes("/")) {
-          const targetCombo = await getComboByName(target);
-          const activeModels = targetCombo?.models ? (await getComboModelEntries(target, accessTags)) : null;
-          defaultRouteError = getClaudeMessagesComboError(targetCombo, activeModels);
+      if (!hasExplicitRoute) {
+        if (harness) {
+          // A harness mapping is the operator's explicit per-tool intent, so it
+          // takes precedence over the legacy global Claude Messages route.
+          const target = harness.target;
+          if (!target.includes("/")) {
+            const targetCombo = await getComboByName(target);
+            const activeModels = targetCombo?.models ? (await getComboModelEntries(target, accessTags)) : null;
+            defaultRouteError = getComboTargetError(targetCombo, activeModels, `${harness.prefix} harness`);
+          }
           if (!defaultRouteError) {
             routedModelStr = target;
-            defaultRouteKind = "combo";
+            // The harness prefix is already visible in the recorded endpoint,
+            // so it needs no extra telemetry field.
+            defaultRouteKind = "harness";
           }
-        } else {
-          routedModelStr = target;
-          defaultRouteKind = "alias";
+        } else if (settings.claudeMessagesRoute) {
+          const target = settings.claudeMessagesRoute;
+          if (!target.includes("/")) {
+            const targetCombo = await getComboByName(target);
+            const activeModels = targetCombo?.models ? (await getComboModelEntries(target, accessTags)) : null;
+            defaultRouteError = getClaudeMessagesComboError(targetCombo, activeModels);
+            if (!defaultRouteError) {
+              routedModelStr = target;
+              defaultRouteKind = "combo";
+            }
+          } else {
+            routedModelStr = target;
+            defaultRouteKind = "alias";
+          }
         }
       }
     }

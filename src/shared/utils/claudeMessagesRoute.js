@@ -28,17 +28,26 @@ export function normalizeClaudeMessagesRoute(value) {
   return route;
 }
 
-export function getClaudeMessagesComboError(combo, activeModels = null) {
-  if (!combo) return "claudeMessagesRoute target combo does not exist";
-  if (combo.isActive === false) return "claudeMessagesRoute target combo is disabled";
+/**
+ * Validate a combo used as a routing target. Shared by the legacy Claude
+ * Messages route and per-harness mappings; `label` names the setting in the
+ * error so the message points at what the operator actually configured.
+ */
+export function getComboTargetError(combo, activeModels = null, label = "claudeMessagesRoute") {
+  if (!combo) return `${label} target combo does not exist`;
+  if (combo.isActive === false) return `${label} target combo is disabled`;
   if (combo.kind && combo.kind !== "llm") {
-    return "claudeMessagesRoute target must be an LLM combo";
+    return `${label} target must be an LLM combo`;
   }
   if (!Array.isArray(combo.models) || combo.models.length === 0) {
-    return "claudeMessagesRoute target combo has no models";
+    return `${label} target combo has no models`;
   }
   if (Array.isArray(activeModels) && activeModels.length === 0) {
-    return "claudeMessagesRoute target combo has no currently available models";
+    return `${label} target combo has no currently available models`;
   }
   return null;
+}
+
+export function getClaudeMessagesComboError(combo, activeModels = null) {
+  return getComboTargetError(combo, activeModels, "claudeMessagesRoute");
 }

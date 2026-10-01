@@ -10,6 +10,7 @@ const PAGE_META = [
   { match: (path) => path === "/dashboard/providers", index: "02", title: "渠道管理", description: "集中管理每个渠道配置、认证连接与可用配额。", module: "CHANNELS" },
   { match: (path) => path === "/dashboard/mouses", index: "02", title: "Mouse 节点", description: "注册和管理可选的远程渠道执行节点。", module: "MOUSE NODES" },
   { match: (path) => path.startsWith("/dashboard/combos"), index: "03", title: "路由策略", description: "配置模型组合的调用策略，以及输入能力不足时的自动兜底。", module: "ROUTING" },
+  { match: (path) => path.startsWith("/dashboard/harnesses"), index: "06", title: "Harness 支持", description: "为外部工具配置专属接入地址与模型映射。", module: "HARNESS" },
   { match: (path) => path.startsWith("/dashboard/media-providers"), index: "04", title: "媒体服务", description: "为图像、语音、视频与嵌入能力配置模型服务。", module: "MEDIA STACK" },
   { match: (path) => path.startsWith("/dashboard/usage"), index: "05", title: "使用情况", description: "查看请求流量、令牌消耗和运行分布。", module: "OBSERVABILITY" },
   { match: (path) => path.startsWith("/dashboard/translator"), index: "08", title: "翻译器", description: "检查不同协议格式之间的请求转换过程。", module: "TRANSLATION" },
@@ -37,7 +38,7 @@ export default function DashboardPageFrame({ children }) {
   // Routing strategy follows the same master-detail frame (combo rail + detail).
   // The node list is a status-grouped board rather than a plain table, so it
   // needs the wide canvas too — same 108rem frame as the routing page.
-  const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname?.startsWith("/dashboard/combos") || pathname?.startsWith("/dashboard/mouses") || pathname === "/dashboard/providers" || pathname === "/dashboard/endpoint";
+  const isWideWorkspace = pathname?.startsWith("/dashboard/usage") || pathname?.startsWith("/dashboard/media-providers") || pathname?.startsWith("/dashboard/combos") || pathname?.startsWith("/dashboard/harnesses") || pathname?.startsWith("/dashboard/mouses") || pathname === "/dashboard/providers" || pathname === "/dashboard/endpoint";
 
   return (
     <div className={`mx-auto w-full ${isFullHeight ? "h-full min-h-0 max-w-none pb-0" : isWideWorkspace ? "max-w-[108rem] pb-8" : "max-w-6xl pb-8"}`}>

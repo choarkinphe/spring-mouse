@@ -104,6 +104,25 @@ const nextConfig = {
         source: "/open/v1/:path*",
         destination: "/api/open/v1/:path*"
       },
+      // Harness prefixes. Each external tool points its base URL at
+      // /{harness}, so the same API key serves every tool and the server
+      // decides the model mapping. The /v1 segment is anchored in the source
+      // and the subpath passes through unchanged: a bare :path* would resolve
+      // /claude-code/v1/messages to /api/v1/v1/messages (404).
+      {
+        source: "/claude-desktop/v1/:path*",
+        destination: "/api/v1/:path*"
+      },
+      {
+        source: "/claude-code/v1/:path*",
+        destination: "/api/v1/:path*"
+      },
+      // Also routes GET /codex/v1/models for discovery; the bare /codex/:path*
+      // rule below still collapses /codex/responses onto the responses route.
+      {
+        source: "/codex/v1/:path*",
+        destination: "/api/v1/:path*"
+      },
       {
         source: "/v1/v1/:path*",
         destination: "/api/v1/:path*"

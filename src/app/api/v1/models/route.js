@@ -24,6 +24,7 @@ import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/sh
 import { getActiveComboModels } from "open-sse/services/combo.js";
 import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
 import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKTOP_FALLBACK_CREATED_AT } from "@/shared/utils/claudeDesktopDiscovery.js";
+import { resolveHarnessProfiles } from "@/shared/utils/harnessRoute.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -599,12 +600,23 @@ export async function OPTIONS() {
   });
 }
 
+/**
+ * The combo to publish to Desktop's model picker. Prefers the Claude Desktop
+ * harness mapping and falls back to the legacy `claudeMessagesRoute`, which
+ * `resolveHarnessProfiles` already folds into that profile. A provider/model
+ * mapping has no combo to publish.
+ */
+function resolveClaudeDesktopDiscoveryTarget(settings) {
+  const profile = resolveHarnessProfiles(settings)["claude-desktop"];
+  if (!profile || profile.enabled === false) return "";
+  const target = profile.mappings.find((mapping) => !mapping.target.includes("/"))?.target || "";
+  return target;
+}
+
 /** Desktop requires a family marker to discover opaque combo IDs. */
 export async function buildClaudeDesktopModelEntry(settings, accessTags) {
-  const route = typeof settings?.claudeMessagesRoute === "string"
-    ? settings.claudeMessagesRoute.trim()
-    : "";
-  if (!route || route.includes("/")) return null;
+  const route = resolveClaudeDesktopDiscoveryTarget(settings);
+  if (!route) return null;
 
   const combo = await getComboByName(route);
   if (!combo) return null;

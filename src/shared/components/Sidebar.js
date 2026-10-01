@@ -18,6 +18,7 @@ const channelItems = [
 
 const operationItems = [
   { href: "/dashboard/combos", label: "路由策略", icon: "layers" },
+  { href: "/dashboard/harnesses", label: "Harness 支持", icon: "extension" },
   { href: "/dashboard/usage", label: "使用看板", icon: "bar_chart" },
 ];
 

@@ -42,7 +42,18 @@ const PUBLIC_API_PATHS = [
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex"];
+// The harness prefixes (see next.config.mjs rewrites) are per-tool aliases for
+// the same LLM API, so they take the same API-key path instead of the
+// dashboard-auth / IP-policy path.
+const PUBLIC_PREFIXES = [
+  "/v1",
+  "/v1beta",
+  "/api/v1",
+  "/api/v1beta",
+  "/codex",
+  "/claude-desktop",
+  "/claude-code",
+];
 const OPEN_PLATFORM_PREFIXES = ["/open/v1", "/api/open/v1"];
 
 // Always require JWT token regardless of requireLogin setting

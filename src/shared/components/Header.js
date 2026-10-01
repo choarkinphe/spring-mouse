@@ -130,6 +130,13 @@ const getPageInfo = (pathname) => {
       icon: "security",
       breadcrumbs: [],
     };
+  if (pathname.includes("/harnesses"))
+    return {
+      title: "Harness 支持",
+      description: "为外部工具配置专属接入地址与模型映射",
+      icon: "extension",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/open-platform"))
     return {
       title: "开放平台",

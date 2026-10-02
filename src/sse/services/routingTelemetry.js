@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 
 // The producer is deliberately optional. Routing must remain load-bearing only
 // for the client response; telemetry can be absent during an older deploy or a
@@ -13,6 +14,7 @@ const VALID_REASONS = new Set([
   "accounts_exhausted", "transport_error", "upstream_http_error", "internal_error", "client_abort",
   "model_fallback", "account_fallback", "response_unobserved", "stream_error", "output_error",
   "terminal", "upstream_error", "incomplete", "parse_error", "response_error", "unknown",
+  "first_output_timeout", "sse_scan_limit",
 ]);
 
 let producer = null;
@@ -133,7 +135,13 @@ export function attemptTerminalFromResult(result, { fallbackReason = null } = {}
   if (upstreamStatus === 499) {
     return { outcome: "cancelled", terminalReason: "client_abort", upstreamStatus, fallbackReason };
   }
-  if (result?.upstreamError?.origin === "sse_overload") {
+  if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT) {
+    return { outcome: "failed", terminalReason: "first_output_timeout", upstreamStatus, fallbackReason };
+  }
+  if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT) {
+    return { outcome: "failed", terminalReason: "sse_scan_limit", upstreamStatus, fallbackReason };
+  }
+  if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.OVERLOAD) {
     return { outcome: "failed", terminalReason: "model_overloaded", upstreamStatus, fallbackReason };
   }
   if (result?.upstreamError?.layer === "network") {

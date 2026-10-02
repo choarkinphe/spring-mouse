@@ -157,6 +157,12 @@ describe("redaction", () => {
     expect(lastEnvelope().record.terminalReason).toBe("transport_error");
   });
 
+  it.each(["first_output_timeout", "sse_scan_limit"])("preserves scan-bound reason %s", async (terminalReason) => {
+    enqueueRoutingRequest(ROUTING_ACTION_COMPLETE, { routingRequestId: "req-scan", terminalReason });
+    await flush();
+    expect(lastEnvelope().record.terminalReason).toBe(terminalReason);
+  });
+
   it("keeps only allowlisted metadata keys", async () => {
     enqueueRoutingRequest(ROUTING_ACTION_UPSERT, {
       routingRequestId: "req-4",

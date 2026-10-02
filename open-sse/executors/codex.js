@@ -1,4 +1,5 @@
 import { BaseExecutor } from "./base.js";
+import { SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.js";
 import { PROVIDERS } from "../config/providers.js";
 import {
@@ -434,9 +435,8 @@ function codexSseErrorResponse(status, message, origin = null, upstreamError = n
     retryAfterMs: null,
     receivedAt: new Date().toISOString(),
   };
-  // `layer: "provider"` is stated explicitly: the condition originated upstream,
-  // spring-mouse only translated the transport (SSE event → HTTP status).
-  response.__smUpstreamError = { ...evidence, origin, layer: "provider" };
+  // An actual SSE error is upstream evidence; a scan bound is gateway policy.
+  response.__smUpstreamError = { ...evidence, origin, layer: evidence.layer || "provider" };
   return response;
 }
 
@@ -590,11 +590,9 @@ export class CodexExecutor extends BaseExecutor {
       const peek = await this._peekSseTransientError(result.response, deadline, args.log);
       donePeek();
       if (!peek.matched) {
-        // The scan stopped because the caller's deadline ran out without resolving
-        // (no output, no error). That is the budget being spent, not a healthy turn:
-        // handing the stream over would forward whatever comes next — including an
-        // overload frame — to the client, which is the escape this whole path exists
-        // to prevent. Report it as exhausted instead.
+        // No output or error was observed before a time/byte scan bound fired.
+        // Do not forward the unresolved stream or claim a confirmed overload:
+        // report the gateway-enforced bound and let model routing handle fallback.
         if (peek.stoppedOnDeadline) {
           const bound = peek.stopReason === "scan-ceiling"
             ? `SSE scan ceiling (${Math.round(CODEX_SSE_SCAN_MAX_MS / 1000)}s)`
@@ -607,7 +605,9 @@ export class CodexExecutor extends BaseExecutor {
             ? `CODEX | SSE scan hit the ${Math.round(CODEX_SSE_PEEK_BYTES / 1024)}KB ceiling before any output — giving up rather than forwarding an unresolved stream`
             : `CODEX | SSE scan stopped on the ${bound} with no output — giving up rather than forwarding an unresolved stream`);
           result.response = codexSseErrorResponse(
-            HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || "Upstream overloaded", "sse_overload", peek.upstreamError);
+            HTTP_STATUS.SERVICE_UNAVAILABLE, peek.upstreamError.message,
+            peek.stoppedOnCeiling ? SSE_ERROR_ORIGINS.SCAN_LIMIT : SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT,
+            peek.upstreamError);
           return result;
         }
         // Recovery: the retries outlasted the saturation window. Worth a line of its
@@ -641,7 +641,7 @@ export class CodexExecutor extends BaseExecutor {
       if (exhausted) {
         args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — retries exhausted (${attempt} retr${attempt === 1 ? "y" : "ies"}, ${fmtDuration(budgetMs)} budget)`);
         result.response = codexSseErrorResponse(
-          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, SSE_ERROR_ORIGINS.OVERLOAD, peek.upstreamError);
         return result;
       }
       const nextAttempt = attempt + 1;
@@ -679,7 +679,7 @@ export class CodexExecutor extends BaseExecutor {
         const roomMs = Math.max(0, deadline - (Date.now() + waitMs));
         args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — ${fmtDuration(roomMs)} left after a ${fmtDuration(waitMs)} backoff, below the ${fmtDuration(minAttemptMs)} an attempt needs — not starting retry ${nextAttempt}, handing the request to the next candidate`);
         result.response = codexSseErrorResponse(
-          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, "sse_overload", peek.upstreamError);
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, SSE_ERROR_ORIGINS.OVERLOAD, peek.upstreamError);
         return result;
       }
       attempt = nextAttempt;
@@ -980,10 +980,14 @@ export class CodexExecutor extends BaseExecutor {
         replacementBody: null,
         upstreamError: {
           source: "sse",
+          layer: "gateway",
           status: response.status,
           message: stoppedOnCeiling
-            ? "Upstream overloaded (metadata preamble exceeded the scan ceiling)"
-            : `Upstream overloaded (SSE scan stopped on ${stopReason === "scan-ceiling" ? "the total scan ceiling" : stopReason === "request" ? "the request deadline" : stopReason === "preamble" ? "the preamble phase bound" : "the scan bound"} with no output)`,
+            ? "SSE scan limit reached before first output (metadata preamble exceeded the byte ceiling; no upstream overload error observed)"
+            : `Timed out waiting for first upstream output (SSE scan stopped on ${stopReason === "scan-ceiling" ? "the total scan ceiling" : stopReason === "request" ? "the request deadline" : stopReason === "preamble" ? "the preamble phase bound" : "the scan bound"}; no upstream overload error observed)`,
+          stopReason,
+          elapsedMs: Math.max(0, Date.now() - scanStart),
+          bufferedBytes,
           body: text.slice(0, 4000),
           retryAfterMs: null,
           receivedAt: new Date().toISOString(),

@@ -118,7 +118,13 @@ describe("codex: metadata-only stream that then hangs is unresolved, not healthy
       // Bounded by the 300ms preamble bound, and reported as unresolved.
       expect(elapsed).toBeLessThan(5000);
       expect(result.response.status).toBe(503);
-      expect(result.response.__smUpstreamError?.origin).toBe("sse_overload");
+      expect(result.response.__smUpstreamError).toMatchObject({
+        origin: "sse_first_output_timeout", layer: "gateway", status: 200,
+        stopReason: "preamble",
+      });
+      const message = (await result.response.json()).error.message;
+      expect(message).toContain("Timed out waiting for first upstream output");
+      expect(message).not.toContain("Upstream overloaded");
     });
   }, 20000);
 

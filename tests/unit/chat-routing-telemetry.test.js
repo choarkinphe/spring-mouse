@@ -650,6 +650,35 @@ describe("chat routing telemetry lifecycle", () => {
     expect(requestCompletes()[0].record.terminalReason).toBe("no_account");
   });
 
+  it.each([
+    ["sse_first_output_timeout", "first_output_timeout", "gateway"],
+    ["sse_scan_limit", "sse_scan_limit", "gateway"],
+    ["sse_overload", "model_overloaded", "provider"],
+  ])("keeps %s distinct without changing account fan-out", async (origin, reason, layer) => {
+    mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
+    mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: true, modelLevel: origin === "sse_overload", transport: false });
+    mocks.handleChatCore.mockResolvedValue({
+      ...failResult(503, "scan stopped"),
+      upstreamError: { origin, layer, source: "sse", status: 200 },
+    });
+
+    const res = await handleChat(request());
+    await flush();
+
+    expect(res.status).toBe(503);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+    expect(mocks.recordProviderModelFailure).toHaveBeenCalledWith("probe", "probe/model-x", {}, { modelLevel: true });
+    expect(attemptCompletes()[0].record).toMatchObject({ terminalReason: reason, fallbackReason: "model_fallback" });
+    expect(requestCompletes()[0].record.terminalReason).toBe(reason);
+    const logger = await import("../../src/sse/utils/logger.js");
+    const lines = logger.warn.mock.calls.map((args) => args.join(" ")).join("\n");
+    expect(lines).not.toContain("outlasted the retry budget");
+    if (layer === "gateway") {
+      expect(lines).toContain("no upstream overload error observed");
+      expect(lines).not.toContain("upstream SSE overload confirmed");
+    }
+  });
+
   it("emits only bounded enum reasons and no sensitive request fields", async () => {
     mocks.getProviderCredentials.mockResolvedValue(connection("acc1"));
     // A terminal upstream failure (no account rotation) so the loop ends after one

@@ -21,6 +21,7 @@ import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getCombo
 import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel } from "open-sse/services/autoRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS } from "open-sse/config/runtimeConfig.js";
+import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -727,6 +728,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const { shouldFallback, modelLevel, transport } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
+      const scanBound = result.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
+        || result.upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT;
+      const scanReason = result.upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT
+        ? "sse_scan_limit" : "first_output_timeout";
       // Model-level failures (upstream busy) are accounted separately: they must
       // not trip the long provider outage breaker, which is reserved for an
       // upstream that is actually broken rather than merely saturated.
@@ -752,7 +757,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       //   throttled    → model busy / our transport died → short, model-scoped throttle
       //   upstream 5xx → the upstream itself answered with a server error → long breaker
       //   anything else (4xx) → account-scoped → no breaker at all, just rotate
-      const throttled = modelLevel || transport;
+      const throttled = scanBound || modelLevel || transport;
       const upstreamOutage = !throttled && Number(result.status) >= 500;
       if (throttled || upstreamOutage) {
         const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel: throttled });
@@ -765,12 +770,19 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           // Routing telemetry (attempt.complete) records the same event into a
           // DIFFERENT table and is not a substitute: dropping these left the failure
           // invisible in the usage views while the request still 503'd.
-          log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
-          saveOutcome(transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
-          attempt.complete({ outcome: "failed", terminalReason: transport ? "transport_error" : modelLevel ? "model_overloaded" : "breaker_open", upstreamStatus: result.status, fallbackReason: "account_fallback" });
+          log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${scanBound ? "SSE scan-bound throttle" : transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
+          saveOutcome(scanBound ? `blocked:${scanReason}` : transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
+          attempt.complete({ outcome: "failed", terminalReason: scanBound ? scanReason : transport ? "transport_error" : modelLevel ? "model_overloaded" : "breaker_open", upstreamStatus: result.status, fallbackReason: scanBound ? "model_fallback" : "account_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Provider model is temporarily unavailable", retryAt, human);
         }
+      }
+
+      if (scanBound) {
+        log.warn("TIMEOUT", `${provider}/${model} | ${scanReason} · no upstream overload error observed · not rotating accounts, returning to model routing`);
+        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+        attempt.complete({ outcome: "failed", terminalReason: scanReason, upstreamStatus: result.status, fallbackReason: "model_fallback" });
+        return result.response;
       }
 
       // A model-level SSE overload means the upstream MODEL is saturated, not this
@@ -781,8 +793,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       // already spent that budget on this model, so hand the failure straight back
       // and let the combo try the next model: that is the only rotation which can
       // actually change the outcome. Account-level failures still rotate as before.
-      if (result.upstreamError?.origin === "sse_overload") {
-        log.warn("THROTTLE", `${provider}/${model} | SSE overload outlasted the retry budget · not rotating accounts (same upstream model)`);
+      if (result.upstreamError?.origin === SSE_ERROR_ORIGINS.OVERLOAD) {
+        log.warn("THROTTLE", `${provider}/${model} | upstream SSE overload confirmed · executor stopped retrying · not rotating accounts (same upstream model)`);
         saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
         attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
         return result.response;

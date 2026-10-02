@@ -289,6 +289,30 @@ describe("multi-account fan-out", () => {
     expect(res.status).toBe(503);
   });
 
+  it.each(["sse_first_output_timeout", "sse_scan_limit"])("records %s without locking accounts or opening the outage breaker", async (origin) => {
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+    await seedAccounts(3);
+    mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+      mocks.attempts.push(credentials.connectionId);
+      return {
+        success: false, status: 503, error: "Timed out waiting for first upstream output",
+        upstreamError: { source: "sse", status: 200, layer: "gateway", origin,
+          message: "Timed out waiting for first upstream output", body: "event: response.created", receivedAt: new Date().toISOString() },
+        response: new Response("scan stopped", { status: 503 }),
+      };
+    });
+
+    expect((await handleChat(request())).status).toBe(503);
+    expect(mocks.attempts).toHaveLength(1);
+    expect((await getProviderModelBreaker("probe", "model-x")).open).toBe(false);
+    const account = await connectionsRepo.getProviderConnectionById(mocks.attempts[0]);
+    expect(account.lastUpstreamLayer).toBe("gateway");
+    expect(account.lastUpstreamStatus).toBe(200);
+    expect(account.lastUpstreamRaw).toBe("event: response.created");
+    expect(account.testStatus).not.toBe("degraded");
+    expect(Object.keys(account).some((key) => key.startsWith("modelLock_"))).toBe(false);
+  });
+
   it("still opens the breaker for a genuine upstream outage (5xx)", async () => {
     // A real upstream server error is channel-level, not account-level: the long
     // breaker is the intended protection and must survive this fix.

@@ -158,7 +158,9 @@ describe("Codex overload retry budget", () => {
       // Bounded by the 300ms budget, not the 60s preamble bound.
       expect(elapsed).toBeLessThan(5000);
       expect(result.response.status).toBe(503);
-      expect(result.response.__smUpstreamError?.origin).toBe("sse_overload");
+      expect(result.response.__smUpstreamError).toMatchObject({
+        origin: "sse_first_output_timeout", layer: "gateway", status: 200, stopReason: "request",
+      });
     }, 15000);
 
     it("a healthy stream is still released, not treated as unresolved", async () => {

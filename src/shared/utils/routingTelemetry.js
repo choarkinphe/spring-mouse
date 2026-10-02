@@ -48,6 +48,8 @@ export const ROUTING_TERMINAL_REASONS = Object.freeze([
   "queue_timeout",
   "breaker_open",
   "model_overloaded",
+  "first_output_timeout",
+  "sse_scan_limit",
   "account_locked",
   "no_account",
   "accounts_exhausted",

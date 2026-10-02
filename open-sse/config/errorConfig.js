@@ -13,6 +13,13 @@ export const ERROR_TYPES = {
   504: { type: "server_error", code: "gateway_timeout" }
 };
 
+// Explicit upstream rejection and gateway-enforced SSE scan bounds are distinct.
+export const SSE_ERROR_ORIGINS = Object.freeze({
+  OVERLOAD: "sse_overload",
+  FIRST_OUTPUT_TIMEOUT: "sse_first_output_timeout",
+  SCAN_LIMIT: "sse_scan_limit",
+});
+
 // Default error messages per status code (client-facing)
 export const DEFAULT_ERROR_MESSAGES = {
   400: "Bad request",

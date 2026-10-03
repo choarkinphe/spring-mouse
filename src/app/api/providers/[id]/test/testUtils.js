@@ -531,6 +531,14 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key or Azure configuration" };
       }
+      case "qianwen":
+      case "qianwen-token-plan": {
+        const res = await fetchWithConnectionProxy(PROVIDERS[connection.provider].validateUrl, {
+          headers: { Authorization: `Bearer ${connection.apiKey}` },
+          signal: AbortSignal.timeout(8000),
+        }, effectiveProxy);
+        return { valid: res.ok, error: res.ok ? null : `Qianwen key/endpoint probe failed (${res.status}); check API vs Token Plan key`, refreshed: false };
+      }
       case "openai": {
         const res = await fetchWithConnectionProxy("https://api.openai.com/v1/models", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };

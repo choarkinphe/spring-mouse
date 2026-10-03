@@ -101,6 +101,8 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "alicode",
   "alicode-intl",
   "alims-intl",
+  "qianwen",
+  "qianwen-token-plan",
   "volcengine-ark",
   "byteplus",
   "deepseek",

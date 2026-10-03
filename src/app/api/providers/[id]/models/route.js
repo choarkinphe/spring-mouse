@@ -11,6 +11,7 @@ import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
+import { QIANWEN_ENDPOINTS } from "open-sse/config/qianwen.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -206,6 +207,8 @@ const PROVIDER_MODELS_CONFIG = {
         }));
     }
   },
+  qianwen: createOpenAIModelsConfig(QIANWEN_ENDPOINTS.qianwen.models),
+  "qianwen-token-plan": createOpenAIModelsConfig(QIANWEN_ENDPOINTS["qianwen-token-plan"].models),
   openai: createOpenAIModelsConfig("https://api.openai.com/v1/models"),
   openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
   anthropic: {

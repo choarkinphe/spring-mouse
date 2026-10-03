@@ -126,6 +126,8 @@ export const MODELS_DEV_PROVIDER_KEYS = {
   // `kimi-code-plan-global` / `kimi-code-plan-cn`. Map to `moonshotai` so the
   // entry resolves instead of silently returning an empty catalog.
   kimi: "moonshotai",
+  qianwen: "alibaba-cn",
+  "qianwen-token-plan": "alibaba-token-plan-cn",
   // Alibaba DashScope (CN + intl coding / general endpoints)
   alicode: "alibaba-coding-plan-cn",
   "alicode-intl": "alibaba-coding-plan",

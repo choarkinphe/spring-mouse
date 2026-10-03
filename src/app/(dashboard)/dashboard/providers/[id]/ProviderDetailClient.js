@@ -988,6 +988,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           disabledModelIds={disabledModelIds}
           connections={connections}
           getCaps={getCaps}
+          getPricing={getPricing}
           modelAccessTags={modelAccessTags}
           onEditAccessTags={openModelTagEditor}
           onEditCapabilities={openModelCapabilitiesEditor}

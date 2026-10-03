@@ -9,6 +9,8 @@
  * Canonical model pricing — provider-agnostic.
  * Cover all known models; deduplicated across providers.
  */
+import { QIANWEN_REFERENCE_PRICING } from "../config/qianwen.js";
+
 export const MODEL_PRICING = {
   // === Anthropic / Claude ===
   "claude-opus-4-6":              { input: 5.00,  output: 25.00, cached: 0.50,  reasoning: 25.00,  cache_creation: 6.25  },
@@ -141,6 +143,8 @@ export const MODEL_PRICING = {
  * Keyed by provider alias (cc, cx, gc, gh, ...) or provider id (openai, anthropic, ...).
  */
 export const PROVIDER_PRICING = {
+  qianwen: QIANWEN_REFERENCE_PRICING,
+  "qianwen-token-plan": QIANWEN_REFERENCE_PRICING,
   // GitHub Copilot (gh) — explicit override, matches canonical gpt-5.3-codex rate
   gh: {
     "gpt-5.3-codex": { input: 1.75, output: 14.00, cached: 0.175, reasoning: 14.00, cache_creation: 1.75 },

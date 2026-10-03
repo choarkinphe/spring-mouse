@@ -90,6 +90,18 @@ describe("getCapabilitiesForModel", () => {
     });
   });
 
+  it.each(["qwen3.8-flash", "Qwen/Qwen3.8-Flash", "qwen3.8-flash-2026-08-26"])("recognizes %s as vision-capable on custom channels", (model) => {
+    expect(getCapabilitiesForModel("openai-compatible-responses-custom", model)).toMatchObject({
+      vision: true, reasoning: true, thinkingFormat: "qwen",
+    });
+  });
+
+  it("keeps Qwen coder models text-only and respects explicit channel overrides", () => {
+    expect(getCapabilitiesForModel("custom", "qwen3-coder-flash").vision).toBe(false);
+    replaceModelCapabilityOverrides([{ provider: "custom", model: "qwen3.8-flash", capabilities: { vision: false } }]);
+    expect(getCapabilitiesForModel("custom", "qwen3.8-flash").vision).toBe(false);
+  });
+
   it("merges synchronized metadata over static family defaults", () => {
     replaceModelCapabilityOverrides([{
       provider: "glm-cn",

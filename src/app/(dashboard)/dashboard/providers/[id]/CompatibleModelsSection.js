@@ -6,6 +6,7 @@ import { SelectionCheckbox, Toggle } from "@/shared/components";
 import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
 import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import ModelPricingBadge from "./ModelPricingBadge";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
@@ -17,7 +18,7 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, selectable = false, selected = false, onToggleSelect }) {
+function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -65,7 +66,10 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
 
       <div className="min-w-0 px-3 py-2.5">
         <div className="flex min-w-0 items-center justify-between gap-2">
-          <span className="min-w-0 truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{sourceLabel || role.label}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{sourceLabel || role.label}</span>
+            <ModelPricingBadge pricing={pricing} loaded={pricingLoaded} />
+          </div>
           <span className="shrink-0" title={isEnabled ? "停用模型" : "启用模型"}>
             <Toggle
               size="sm"
@@ -154,7 +158,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect }) {
   const [openModelMenuId, setOpenModelMenuId] = useState(null);
 
   const allModels = getProviderCustomModelRows({
@@ -203,6 +207,8 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
                 fullModel={`${providerDisplayAlias}/${id}`}
                 caps={caps}
                 sourceLabel={sourceLabel}
+                pricing={getPricing?.(`${providerId || providerStorageAlias}/${id}`)}
+                pricingLoaded={typeof getPricing === "function"}
                 copied={copied}
                 onCopy={onCopy}
                 onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
@@ -261,6 +267,7 @@ CompatibleModelsSection.propTypes = {
     isActive: PropTypes.bool,
   })).isRequired,
   getCaps: PropTypes.func.isRequired,
+  getPricing: PropTypes.func,
   modelAccessTags: PropTypes.object.isRequired,
   onEditAccessTags: PropTypes.func.isRequired,
   onEditCapabilities: PropTypes.func,
@@ -277,6 +284,8 @@ CompatibleModelsSection.propTypes = {
 
 CompatibleModelCard.propTypes = {
   sourceLabel: PropTypes.string,
+  pricing: PropTypes.shape({ input: PropTypes.number, output: PropTypes.number }),
+  pricingLoaded: PropTypes.bool,
   onEditCapabilities: PropTypes.func,
   onToggleCapability: PropTypes.func,
   busyCapabilityKey: PropTypes.string,

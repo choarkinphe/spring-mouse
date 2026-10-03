@@ -107,6 +107,8 @@ export const captureThinking = extractThinking;
 
 // Resolve thinking format: provider override > capability > derive(targetFormat).
 function resolveFormat(targetFormat, model, provider) {
+  const transportFmt = provider ? PROVIDERS[provider]?.thinkingFormats?.[targetFormat] : null;
+  if (transportFmt) return transportFmt;
   const providerFmt = provider ? PROVIDERS[provider]?.thinkingFormat : null;
   if (providerFmt) return providerFmt;
   const caps = getCapabilitiesForModel(provider, model);
@@ -270,6 +272,18 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       // Z.ai ignores thinking.disabled → must use enable_thinking:false to turn off.
       if (none && canDisable) { body.enable_thinking = false; delete body.thinking; break; }
       body.thinking = { type: "enabled" };
+      break;
+    }
+    case "qwen-responses": {
+      // Responses supports reasoning.effort, not thinking_budget. Preserve the
+      // requested level instead of falling back to the upstream's default depth.
+      if (none && canDisable) { body.reasoning = { effort: "none" }; break; }
+      const level = toLevel(eff);
+      if (level && level !== "auto") {
+        body.reasoning = { effort: normalizeOpenAILevel(level, supportedLevels) };
+      } else {
+        body.enable_thinking = true;
+      }
       break;
     }
     case "qwen": {

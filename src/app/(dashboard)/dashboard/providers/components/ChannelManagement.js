@@ -320,9 +320,9 @@ const CHANNEL_DATA_SCOPE_ITEMS = [
   },
 ];
 
-function ChannelDataScopeNotice() {
+function ChannelDataScopeNotice({ isOpen }) {
   return (
-    <section className="overflow-hidden rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.035]" aria-labelledby="channel-data-scope-title">
+    <section id="channel-data-scope" hidden={!isOpen} className="overflow-hidden rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.035]" aria-labelledby="channel-data-scope-title">
       <div className="flex items-start gap-3 border-b border-[#38bdf8]/10 px-4 py-3">
         <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/[0.10] text-[#7dd3fc]">
           <span className="material-symbols-outlined text-[17px]! leading-none">info</span>
@@ -1805,6 +1805,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
   const [resetConfirmConnection, setResetConfirmConnection] = useState(null);
   const [resetErrors, setResetErrors] = useState({});
   const [loading, setLoading] = useState(true);
+  const [dataScopeOpen, setDataScopeOpen] = useState(false);
   const [reorderingProviderId, setReorderingProviderId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   // Payload for the "created successfully" screen; null when it is not shown.
@@ -2387,10 +2388,25 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
             <Badge variant="primary" size="md" icon="hub">{loading ? "—" : `${channelGroups.length} 个渠道`}</Badge>
             <Badge variant={activeConnectionCount > 0 ? "success" : "default"} size="md" icon="link">{loading ? "读取连接状态" : `${activeConnectionCount} 条启用连接`}</Badge>
             <Badge variant="default" size="md" icon="database">{loading ? "—" : `${connections.length} 个账号配置`}</Badge>
+            <Button
+              type="button"
+              variant="ghost"
+              icon="help"
+              iconOnly
+              aria-label={dataScopeOpen ? "收起数据口径说明" : "展开数据口径说明"}
+              title={dataScopeOpen ? "收起数据口径说明" : "展开数据口径说明"}
+              aria-expanded={dataScopeOpen}
+              aria-controls="channel-data-scope"
+              onClick={() => setDataScopeOpen((open) => !open)}
+              className={cn(
+                "shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60",
+                dataScopeOpen && "bg-brand-500/10 text-brand-600 dark:text-brand-300",
+              )}
+            />
           </div>
         )}
       />
-      <ChannelDataScopeNotice />
+      <ChannelDataScopeNotice isOpen={dataScopeOpen} />
 
       {loading ? (
         <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:gap-6">

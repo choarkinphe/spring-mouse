@@ -5,6 +5,7 @@ const ICON_ALIASES = {
   "perplexity-agent": "perplexity",
   "gitlab-duo": "gitlab",
   "vercel-ai-gateway": "vercel",
+  "qianwen-token-plan": "qianwen",
 };
 
 // Runtime only — first 404 remembers id for the whole session

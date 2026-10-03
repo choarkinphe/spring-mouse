@@ -90,6 +90,14 @@ export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEO
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
+// Observation-only Codex SSE diagnostics. Bounds do not affect scan/retry policy.
+export const CODEX_SCAN_DIAGNOSTICS = Object.freeze({
+  progressMs: 30_000,
+  maxFrameChars: 512 * 1024,
+  maxEventTypes: 24,
+  maxEventNameChars: 96,
+});
+
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 

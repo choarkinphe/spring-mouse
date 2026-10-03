@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { BaseExecutor } from "./base.js";
+import { createCodexScanDiagnostics } from "../utils/codexScanDiagnostics.js";
 import { SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.js";
 import { PROVIDERS } from "../config/providers.js";
@@ -12,6 +14,7 @@ import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import {
   HTTP_STATUS,
+  CODEX_SCAN_DIAGNOSTICS,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
   hasRoomForRetry,
@@ -587,7 +590,11 @@ export class CodexExecutor extends BaseExecutor {
       const result = await super.execute(args);
       doneFetch();
       const donePeek = diagStage(`peekSseTransientError (attempt ${attempt + 1})`);
-      const peek = await this._peekSseTransientError(result.response, deadline, args.log);
+      const peek = await this._peekSseTransientError(result.response, deadline, args.log, {
+        scanId: randomUUID(), attempt: attempt + 1,
+        model: /^[a-z0-9][a-z0-9._/-]{0,95}$/i.test(args.model || "") ? args.model : null,
+        connectionId: /^[a-f0-9-]{36}$/i.test(args.credentials?.connectionId || "") ? args.credentials.connectionId : null,
+      });
       donePeek();
       if (!peek.matched) {
         // No output or error was observed before a time/byte scan bound fired.
@@ -706,7 +713,7 @@ export class CodexExecutor extends BaseExecutor {
   // log line sits immediately before its `break`, so a throw would be swallowed by
   // the catch below and the scan would fall through to hand the client the very
   // unresolved stream the ceiling exists to stop.
-  async _peekSseTransientError(response, requestDeadline = Infinity, log = null) {
+  async _peekSseTransientError(response, requestDeadline = Infinity, log = null, diagnosticContext = {}) {
     if (!response || !response.ok || !response.body) return { matched: null, message: null, accountFallback: false, replacementBody: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -734,6 +741,23 @@ export class CodexExecutor extends BaseExecutor {
     // inner phase does can extend it. It is the authoritative bound: the preamble
     // deadline below is clamped by it, and every read wait is raced against it.
     const scanStart = Date.now();
+    const diagnostics = createCodexScanDiagnostics(scanStart);
+    const scanId = diagnosticContext.scanId || randomUUID();
+    let releaseReason = "unknown";
+    let stopReason = null;
+    let firstOutputType = null;
+    const emitDiagnostics = (phase) => {
+      const snapshot = diagnostics.snapshot();
+      try {
+        log?.errorLine?.("", "🔬", `CODEX-SCAN | ${JSON.stringify({
+          scanId, ...diagnosticContext, phase, releaseReason: stopReason || releaseReason,
+          outputDetected: outputStarted, firstOutputType, upstreamStatus: response.status, ...snapshot,
+        })}`);
+      } catch { /* diagnostics must never affect routing */ }
+      return { scanId, ...snapshot };
+    };
+    const diagnosticTimer = setTimeout(() => emitDiagnostics("progress"), CODEX_SCAN_DIAGNOSTICS.progressMs);
+    diagnosticTimer.unref?.();
     const scanDeadline = scanStart + CODEX_SSE_SCAN_MAX_MS;
     // Phase bound on the PREAMBLE (before any output). Without it a stalled upstream
     // that sends `response.created` and then hangs would hold the request open until
@@ -773,7 +797,6 @@ export class CodexExecutor extends BaseExecutor {
     // the 503 body name the real cause instead of assuming the budget ran out — the
     // three time bounds are now min'd together, so "which one fired" is not
     // recoverable from the deadline value alone.
-    let stopReason = null;
     // Hitting the BYTE ceiling before any output is the same escape class as the
     // original 256KB bug: the metadata preamble (response.created + in_progress each
     // echo the full tools schema) can be hundreds of KB, so if it ever exceeds the
@@ -889,10 +912,12 @@ export class CodexExecutor extends BaseExecutor {
         }
         pendingRead = null;
         const { done, value } = result;
-        if (done) break;
+        if (done) { releaseReason = "eof"; break; }
         chunks.push(value);
         bufferedBytes += value.byteLength;
-        text += decoder.decode(value, { stream: true });
+        const decoded = decoder.decode(value, { stream: true });
+        try { diagnostics.observe(decoded, value.byteLength); } catch { /* observation only */ }
+        text += decoded;
         // Match against error-frame payloads only (see errorFramePayloads): a normal
         // output delta that quotes an error string must not trigger a fallback.
         const errorText = errorFramePayloads(text).join("\n").toLowerCase();
@@ -903,7 +928,7 @@ export class CodexExecutor extends BaseExecutor {
           if (retryHit) { matched = retryHit; break; }
         }
         const lowerText = text.toLowerCase();
-        if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) break;
+        if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) { releaseReason = "terminal"; break; }
         // Post-output phase: content-aware release. Once the turn has produced a
         // substantial amount of text it is plainly healthy, so stop buffering; a short
         // burst of deltas followed by a rejection stays under the threshold and keeps
@@ -918,13 +943,17 @@ export class CodexExecutor extends BaseExecutor {
             || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
           continue;
         }
-        if (CODEX_SSE_USER_OUTPUT_PATTERNS.some(p => lowerText.includes(p))) {
+        const outputPattern = CODEX_SSE_USER_OUTPUT_PATTERNS.find(p => lowerText.includes(p));
+        if (outputPattern) {
+          firstOutputType = outputPattern.startsWith("event: ") ? outputPattern.slice(7) : outputPattern.slice(8, -1);
           // Output has started. Do not stop here: keep scanning so a same-turn
           // capacity/overload rejection still triggers fallback. The scan ends on the
           // first of: a terminal frame, enough output to prove the turn is healthy,
           // the byte cap, or the hard time ceiling — so a healthy stream is released
           // almost immediately while a short burst before a rejection is caught.
           outputStarted = true;
+          diagnostics.outputDetected();
+          releaseReason = "output-grace";
           if (!graceEnabled) break;
           graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
           graceBytesAt = text.length;
@@ -938,8 +967,13 @@ export class CodexExecutor extends BaseExecutor {
         // content, and stopping early is exactly the bug this guards against.
       }
     } catch (e) {
+      releaseReason = "read-error";
       dbg("CODEX", `peek read error: ${e.message}`);
+    } finally {
+      clearTimeout(diagnosticTimer);
     }
+    if (matched) releaseReason = "upstream-error";
+    const scanDiagnostics = emitDiagnostics("end");
 
     if (matched) {
       try { await reader.cancel(); } catch { /* noop */ }
@@ -986,6 +1020,7 @@ export class CodexExecutor extends BaseExecutor {
             ? "SSE scan limit reached before first output (metadata preamble exceeded the byte ceiling; no upstream overload error observed)"
             : `Timed out waiting for first upstream output (SSE scan stopped on ${stopReason === "scan-ceiling" ? "the total scan ceiling" : stopReason === "request" ? "the request deadline" : stopReason === "preamble" ? "the preamble phase bound" : "the scan bound"}; no upstream overload error observed)`,
           stopReason,
+          scanDiagnostics,
           elapsedMs: Math.max(0, Date.now() - scanStart),
           bufferedBytes,
           body: text.slice(0, 4000),

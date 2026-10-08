@@ -27,7 +27,12 @@ for (const provider of ["qianwen", "qianwen-token-plan"]) {
   connections.push(result.connection);
   const test = await (await api(`/api/providers/${result.connection.id}/test`, {})).json(); assert.equal(test.valid, true);
   const listed = await (await api(`/api/providers/${result.connection.id}/models`)).json(); assert.ok(listed.models.some((m) => m.id === "qwen3.8-flash"));
-  await api("/api/providers/model-sync", { providerId: provider, supportedModels: listed.models });
+  const synced = await (await api("/api/providers/model-sync", { providerId: provider, supportedModels: listed.models, officialFetched: true })).json();
+  assert.equal(synced.total, new Set(listed.models.map((model) => model.id)).size);
+  assert.equal(synced.catalogCount, 0, "upstream-only sync expanded from public catalog");
+  assert.equal(synced.staticCount, 0, "upstream-only sync expanded from registry seed");
+  const catalog = await (await api("/api/models")).json();
+  assert.deepEqual(catalog.models.filter((model) => model.provider === provider).map((model) => model.model).sort(), listed.models.map((model) => model.id).sort());
 }
 // Verify tag filtering rather than just unrestricted successful routing.
 await api("/api/settings", { modelAccessTags: { "qianwen/qwen3.8-flash": ["release-fixture"] } }, "PATCH");

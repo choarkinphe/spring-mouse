@@ -92,4 +92,15 @@ try {
   docker(["run", "--rm", "--volumes-from", `${app}:ro`, "-v", `${fixtureRoot}:/fixture:ro`, "--entrypoint", "node", image, "/fixture/tests/fixtures/release-smoke/read-db.mjs"]);
   const report = { image, revision, buildInfo: info, fingerprintComplete, realUpstreamVerified: false, approvalsComplete: false, passed: "isolated-smoke-only" };
   console.log(JSON.stringify(report));
+} catch (error) {
+  // Report stage failures before removing owned containers. Keep only exception
+  // names/stacks and fixture lifecycle lines, never full upstream/request logs.
+  for (const container of owned) {
+    const result = spawnSync("docker", ["logs", "--tail", "200", container], { encoding: "utf8" });
+    const lines = `${result.stdout || ""}\n${result.stderr || ""}`.split("\n");
+    const safe = lines.filter((line) => /^\s*at\s|^(?:TypeError|ReferenceError|Error|AssertionError)|^\[Supervisor\]|^Release fake upstream/.test(line))
+      .map((line) => line.replace(/(?:Bearer\s+|sk-)[^\s"']+/gi, "[REDACTED]"));
+    if (safe.length) console.error(JSON.stringify({ container, errors: safe.slice(-30) }));
+  }
+  throw error;
 } finally { cleanup(); }

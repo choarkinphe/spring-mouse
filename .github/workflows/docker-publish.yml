@@ -68,7 +68,9 @@ jobs:
           unit/codex-overload-retry-budget.test.js
           unit/qianwen-provider.test.js
           unit/release-build-info.test.js
+          unit/api-key-busy-retry.test.js
           unit/release-promotion.test.js
+          unit/release-persistence-wal.test.js
           unit/outbound-cancellation-matrix.test.js
           unit/proxy-fetch-abort.test.js
           unit/client-disconnect-abort.test.js

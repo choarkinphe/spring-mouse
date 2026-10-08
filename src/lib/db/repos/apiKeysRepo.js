@@ -144,26 +144,43 @@ export async function updateApiKey(id, data) {
   const db = await getAdapter();
   let result = null;
   let previousKey = null;
-  db.transaction(() => {
-    const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
-    if (!row) return;
-    previousKey = row.key;
-    const merged = { ...rowToKey(row), ...data };
-    const quotaMode = normalizeQuotaMode(merged.quotaMode);
-    // `off` replaces the legacy standalone enable/disable switch: a closed key
-    // must not authenticate, while either usable mode reactivates it.
-    const isActive = data.quotaMode !== undefined ? quotaMode !== "off" : merged.isActive;
-    // Clearing an override sends null/""/0 from the editor; all of them must
-    // store NULL so the key falls back to the instance default again.
-    const rpmLimit = positiveIntOrNull(merged.rpmLimit);
-    const rpmQueueMax = nonNegativeIntOrNull(merged.rpmQueueMax);
-    const queueTimeoutMs = positiveIntOrNull(merged.queueTimeoutMs);
-    db.run(
-      `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, rpmLimit = ?, rpmQueueMax = ?, queueTimeoutMs = ?, lastUsedAt = ? WHERE id = ?`,
-      [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, rpmLimit, rpmQueueMax, queueTimeoutMs, merged.lastUsedAt || null, id]
-    );
-    result = { ...merged, quotaMode, isActive, rpmLimit, rpmQueueMax, queueTimeoutMs };
-  });
+  // A WAL reader can lose its snapshot when the usage writer commits before
+  // this transaction upgrades to a write lock. Restart the whole transaction,
+  // not only UPDATE, so retries always merge against the latest record.
+  for (let attempt = 0; ; attempt++) {
+    let candidate = null;
+    let candidateKey = null;
+    try {
+      db.transaction(() => {
+        const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+        if (!row) return;
+        candidateKey = row.key;
+        const merged = { ...rowToKey(row), ...data };
+        const quotaMode = normalizeQuotaMode(merged.quotaMode);
+        // `off` replaces the legacy standalone enable/disable switch: a closed key
+        // must not authenticate, while either usable mode reactivates it.
+        const isActive = data.quotaMode !== undefined ? quotaMode !== "off" : merged.isActive;
+        // Clearing an override sends null/""/0 from the editor; all of them must
+        // store NULL so the key falls back to the instance default again.
+        const rpmLimit = positiveIntOrNull(merged.rpmLimit);
+        const rpmQueueMax = nonNegativeIntOrNull(merged.rpmQueueMax);
+        const queueTimeoutMs = positiveIntOrNull(merged.queueTimeoutMs);
+        db.run(
+          `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, rpmLimit = ?, rpmQueueMax = ?, queueTimeoutMs = ?, lastUsedAt = ? WHERE id = ?`,
+          [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, rpmLimit, rpmQueueMax, queueTimeoutMs, merged.lastUsedAt || null, id]
+        );
+        candidate = { ...merged, quotaMode, isActive, rpmLimit, rpmQueueMax, queueTimeoutMs };
+      });
+      result = candidate;
+      previousKey = candidateKey;
+      break;
+    } catch (error) {
+      const busy = error?.code === "SQLITE_BUSY" || Number(error?.errcode) % 256 === 5
+        || /database is locked|SQLITE_BUSY/i.test(String(error?.message || ""));
+      if (!busy || attempt >= 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
   if (result?.key) {
     invalidateQuotaCache(result.key);
     await cacheApiKey(result.key, result);

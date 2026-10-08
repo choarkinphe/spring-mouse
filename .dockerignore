@@ -8,7 +8,9 @@
 
 # Dependencies and build output
 node_modules
+**/node_modules
 .next
+.next-*
 out
 build
 dist

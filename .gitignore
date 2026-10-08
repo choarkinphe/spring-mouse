@@ -67,7 +67,10 @@ PUBLIC.md
 Thanks.md
 PUBLIC.en.md
 PR/*
-package-lock.json
+**/package-lock.json
+!package-lock.json
+!tests/package-lock.json
+!docs/RELEASE-0.4.213-GATES.md
 
 
 #Ignore vscode AI rules

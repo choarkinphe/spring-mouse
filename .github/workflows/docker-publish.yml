@@ -21,12 +21,12 @@ jobs:
       - name: Set up Node.js for release checks
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
       - name: Install application and test dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm --prefix tests install --ignore-scripts --no-audit --no-fund
+          npm --prefix tests ci --ignore-scripts --no-audit --no-fund
       - name: Run critical request-path regression tests
         working-directory: tests
         # The tunnel suite builds an isolated database in beforeAll, which
@@ -64,7 +64,16 @@ jobs:
           unit/chat-routing-telemetry.test.js
           unit/streaming-attempt-settlement.test.js
           unit/chatcore-stream-settle-hooks.test.js
+          unit/compaction-diagnostics.test.js
           unit/codex-overload-retry-budget.test.js
+          unit/qianwen-provider.test.js
+          unit/release-build-info.test.js
+          unit/release-promotion.test.js
+          unit/outbound-cancellation-matrix.test.js
+          unit/proxy-fetch-abort.test.js
+          unit/client-disconnect-abort.test.js
+          unit/abortable-deadline.test.js
+          unit/quota-auto-ping.test.js
           unit/backup-litestream.test.js
           unit/backup-supervisor.test.js
           unit/backup-restore.test.js
@@ -112,9 +121,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=candidate-${{ github.sha }}
             type=sha,prefix=sha-
 
       - name: Build and push platform image by digest
@@ -133,6 +140,20 @@ jobs:
             NPM_REGISTRY=https://registry.npmmirror.com
           cache-from: type=gha,scope=spring-mouse-${{ github.ref_name }}-${{ matrix.cache-slug }}
           cache-to: type=gha,mode=max,scope=spring-mouse-${{ github.ref_name }}-${{ matrix.cache-slug }}
+
+      - name: Set up Node.js for same-image smoke
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install isolated smoke harness dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify built production image over real HTTP/TLS
+        env:
+          CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "${REGISTRY_IMAGE}@${CANDIDATE_DIGEST}"
+          node scripts/release-container-smoke.mjs "${REGISTRY_IMAGE}@${CANDIDATE_DIGEST}"
 
       - name: Export digest
         run: |
@@ -171,9 +192,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=candidate-${{ github.sha }}
             type=sha,prefix=sha-
 
       - name: Create and push manifest list

@@ -31,27 +31,18 @@ ARG TARGETARCH
 # registry can still override this with --build-arg NPM_REGISTRY=... .
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-# Copy package files - prefer package-lock.json for reproducible builds
-COPY package.json package-lock.json* ./
-# Use npm ci if package-lock.json exists, otherwise fallback to npm install
+# A missing lockfile is a build failure, never an implicit dependency upgrade.
+COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,id=spring-mouse-npm-${TARGETARCH} \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 20000 && \
     npm config set fetch-retry-maxtimeout 120000 && \
     npm config set fetch-timeout 300000 && \
-    if [ -f package-lock.json ]; then \
-      if [ "${NPM_REGISTRY%/}" != "https://registry.npmjs.org" ]; then \
-        sed -i "s#https://registry.npmjs.org/#${NPM_REGISTRY%/}/#g" package-lock.json; \
-      fi; \
-      timeout 20m npm ci --foreground-scripts --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
-    else \
-      echo "Warning: package-lock.json not found, using npm install instead"; \
-      timeout 20m npm install --foreground-scripts --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}; \
-    fi
+    timeout 20m npm ci --foreground-scripts --prefer-offline --no-audit --no-fund --registry=${NPM_REGISTRY}
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN npm run build && APP_BUILD_VERSION=${APP_BUILD_VERSION} node scripts/write-build-info.mjs /app
 
 FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
@@ -104,9 +95,12 @@ COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 COPY --from=builder /app/node_modules/redis ./node_modules/redis
 COPY --from=builder /app/node_modules/@redis ./node_modules/@redis
 COPY --from=builder /app/node_modules/cluster-key-slot ./node_modules/cluster-key-slot
+# proxyFetch dynamically imports ProxyAgent; standalone tracing may bundle only
+# the web chunk, leaving raw runtime consumers without the dispatcher package.
+COPY --from=builder /app/node_modules/undici ./node_modules/undici
 
-# Build provenance consumed by the Jenkins deploy script (docker exec cat).
-RUN printf '{"revision":"%s"}\n' "${APP_BUILD_VERSION}" > /app/build-info.json
+# Preserve the dependency fingerprint from the same builder/lockfile.
+COPY --from=builder /app/build-info.json ./build-info.json
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \

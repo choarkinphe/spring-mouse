@@ -107,6 +107,39 @@ beforeEach(() => {
 });
 
 describe("chatCore streaming attempt fallback settlement", () => {
+  it("logs only marked compaction requests without changing executor failure results", async () => {
+    const options = optionsWith(null);
+    options.clientRawRequest.headers["x-cc-compaction-request"] = "manual";
+    const result = await handleChatCore(options);
+    expect(result.status).toBe(502);
+    const records = options.log.errorLine.mock.calls.filter((args) => args[2].startsWith("COMPACTION-DIAG | ")).map((args) => JSON.parse(args[2].split("COMPACTION-DIAG | ")[1]));
+    expect(records.map((r) => r.phase)).toEqual(["dispatch", "end"]);
+    expect(records[1].outcome).toBe("executor_error");
+    expect(records[0].client.messageCount).toBe(1);
+    expect(JSON.stringify(records)).not.toContain("sk-test");
+    expect(JSON.stringify(records)).not.toContain('"hi"');
+  });
+
+  it("records safe upstream rejection codes without altering the 400 result", async () => {
+    const { parseUpstreamError } = await import("../../open-sse/utils/error.js");
+    const raw = JSON.stringify({ code: 11133, msg: "private error", extError: { code: "model_param_invalid", StatusCode: 400 } });
+    parseUpstreamError.mockResolvedValueOnce({ statusCode: 400, message: raw, upstreamError: { source: "http", body: raw } });
+    executeMock.mockResolvedValueOnce({ response: new Response(raw, { status: 400 }), url: "https://upstream.invalid/chat/completions" });
+    const options = optionsWith(null);
+    options.clientRawRequest.headers["x-claude-code-compaction"] = "manual";
+    const result = await handleChatCore(options);
+    expect(result.status).toBe(400);
+    const records = options.log.errorLine.mock.calls.filter((args) => args[2].startsWith("COMPACTION-DIAG | ")).map((args) => JSON.parse(args[2].split("COMPACTION-DIAG | ")[1]));
+    expect(records.map((r) => r.phase)).toEqual(["dispatch", "headers", "end"]);
+    expect(records[2]).toMatchObject({ status: 400, outcome: "upstream_rejected", upstreamError: { code: 11133, nestedCode: "model_param_invalid" } });
+    expect(JSON.stringify(records)).not.toContain("private error");
+  });
+
+  it("does not log compaction diagnostics for an ordinary request", async () => {
+    const options = optionsWith(null);
+    await handleChatCore(options);
+    expect(options.log.errorLine.mock.calls.some((args) => args[2].startsWith("COMPACTION-DIAG | "))).toBe(false);
+  });
   it("installs a disconnect hook that settles the attempt as cancelled", async () => {
     const { attempt, observer } = wired();
     await handleChatCore(optionsWith(observer));

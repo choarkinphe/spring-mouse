@@ -31,6 +31,7 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
+import { createCompactionDiagnostics } from "../utils/compactionDiagnostics.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -131,6 +132,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
   const targetFormat = modelTargetFormat || useTransport?.format || getTargetFormat(provider, credentials);
   if (useTransport && credentials) credentials.runtimeTransport = useTransport;
+  const compactionDiag = createCompactionDiagnostics({
+    headers: clientRawRequest?.headers, body, endpoint: clientRawRequest?.endpoint,
+    requestId, trafficRequestId, connectionId, provider, model, sourceFormat, targetFormat, log, reqTag,
+  });
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
@@ -393,6 +398,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
 
   const executor = getExecutor(provider);
+  compactionDiag?.emit("dispatch", { body: translatedBody });
   trackPendingRequest(model, provider, connectionId, true, false, apiKey, requestId);
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
 
@@ -407,6 +413,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   };
   const streamController = createStreamController({
     onDisconnect: (reason) => {
+      compactionDiag?.emit("end", { outcome: "client_abort" });
       // A streaming attempt is settled by the stream pipeline, not by chat.js. If
       // the client goes away before the stream terminates, that settle never
       // happens and the attempt row would sit at outcome=unknown forever. Settle
@@ -419,6 +426,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       if (onDisconnect) onDisconnect(reason);
     },
     onError: (error) => {
+      compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "stream_error" });
       try {
         if (error?.name === "AbortError") routingObserver?.settleCancelled?.({ terminalReason: "client_abort" });
         else routingObserver?.settleFailed?.({ terminalReason: "stream_error" });
@@ -427,7 +435,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       finishRequest();
     },
-    onComplete: finishRequest,
+    onComplete: () => {
+      compactionDiag?.emit("end", { outcome: "response_complete" });
+      finishRequest();
+    },
     log, provider, model, reqTag,
     clientSignal,
   });
@@ -483,7 +494,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     finalBody = result.transformedBody;
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
+    compactionDiag?.emit("headers", { body: finalBody || translatedBody, status: providerResponse.status });
   } catch (error) {
+    compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "executor_error", error: { type: error?.name } });
     trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY);
@@ -568,6 +581,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // upstream body and the true origin, instead of being indistinguishable from
     // a real upstream HTTP error status.
     const upstreamError = providerResponse.__smUpstreamError || parsed.upstreamError;
+    compactionDiag?.emit("end", { status: statusCode, outcome: "upstream_rejected", error: upstreamError?.body || message, body: finalBody || translatedBody });
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveFailedUsage("upstream", statusCode);
     if (!internalRequest) saveRequestDetail(buildRequestDetail({
@@ -606,19 +620,28 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, trackDone, appendLog, streamController });
-    if (result) { streamController.handleComplete(); return result; }
+    if (result) {
+      compactionDiag?.emit("end", { status: result.status || result.response?.status, outcome: result.success ? "json_response_ready" : "response_failed", error: result.upstreamError?.body });
+      streamController.handleComplete(); return result;
+    }
   }
 
   // True non-streaming response
   if (!stream) {
     const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, streamController });
+    compactionDiag?.emit("end", { status: result.status || result.response?.status, outcome: result.success ? "json_response_ready" : "response_failed", error: result.upstreamError?.body });
     streamController.handleComplete();
     return result;
   }
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId });
+  const compactionStreamStatus = providerResponse.status;
+  const onCompactionStreamComplete = compactionDiag ? (...args) => {
+    compactionDiag.emit("end", { status: compactionStreamStatus, outcome: "stream_usage_complete" });
+    return onStreamComplete(...args);
+  } : onStreamComplete;
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete: onCompactionStreamComplete, streamDetailId });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

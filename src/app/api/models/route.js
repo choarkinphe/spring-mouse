@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { getCustomModels, getModelAliases, setModelAlias } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
-import { getProviderAlias } from "@/shared/constants/providers";
+import { getProviderAlias, usesUpstreamModelList } from "@/shared/constants/providers";
+import { isListedCustomModel } from "@/shared/utils/providerCustomModels";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 import { getPricingForModels } from "@/lib/db/repos/pricingRepo.js";
@@ -14,7 +15,7 @@ export async function GET(request) {
   try {
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
-    const customModels = await getCustomModels();
+    const customModels = (await getCustomModels()).filter(isListedCustomModel);
 
     const customByRoute = new Map();
     for (const model of customModels || []) {
@@ -25,6 +26,7 @@ export async function GET(request) {
 
     const models = AI_MODELS
       .filter((m) => {
+        if (usesUpstreamModelList(m.provider)) return false;
         const alias = getProviderAlias(m.provider) || m.provider;
         const list = disabled[alias] || disabled[m.provider] || [];
         return !list.includes(m.model);

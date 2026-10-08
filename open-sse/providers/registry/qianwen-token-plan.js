@@ -23,6 +23,7 @@ export default {
     thinkingFormats: { openai: "qwen", "openai-responses": "qwen-responses", claude: "claude-budget" },
   },
   transports: qianwenTransports("qianwen-token-plan"),
+  modelListSource: "upstream",
   modelCatalog: { type: "models-dev", provider: "alibaba-token-plan-cn" },
   models: QIANWEN_TOKEN_PLAN_MODELS,
   passthroughModels: true,

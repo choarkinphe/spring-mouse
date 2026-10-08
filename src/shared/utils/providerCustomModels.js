@@ -1,5 +1,11 @@
-import { getProviderAlias } from "@/shared/constants/providers";
+import { getProviderAlias, usesUpstreamModelList } from "@/shared/constants/providers";
 import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
+
+// Old union-sync rows are not evidence that this account can use the model.
+export function isListedCustomModel(model) {
+  if (!usesUpstreamModelList(model?.providerId || model?.providerAlias)) return true;
+  return !["catalog", "models-dev", "static"].includes(model?.source);
+}
 
 function modelType(model) {
   return model?.kind || model?.type || "llm";
@@ -48,7 +54,7 @@ export function getProviderCustomModelRows({
   const rows = [];
 
   for (const model of customModels) {
-    if (!model?.id || !(model.providerAlias === providerAlias || providerAliases.includes(model.providerAlias))) continue;
+    if (!model?.id || !isListedCustomModel(model) || !(model.providerAlias === providerAlias || providerAliases.includes(model.providerAlias))) continue;
     const rowType = modelType(model);
     if (type && rowType !== type) continue;
     if (builtInIds.has(model.id)) continue;

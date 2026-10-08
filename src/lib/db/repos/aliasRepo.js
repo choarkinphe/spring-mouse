@@ -47,13 +47,24 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
   return added;
 }
 
-export async function syncCustomModels(models) {
+export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
   const db = await getAdapter();
   let added = 0;
   let updated = 0;
   let unchanged = 0;
+  let removed = 0;
+  const syncedSources = new Set(["official", "catalog", "models-dev", "static"]);
 
   db.transaction(() => {
+    if (replaceSyncedFor) {
+      const incoming = new Set((models || []).map((model) => customKey(model.providerAlias, model.id, model.type || "llm")));
+      for (const row of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) {
+        const existing = parseJson(row.value);
+        if (existing?.providerAlias !== replaceSyncedFor || !syncedSources.has(existing.source) || incoming.has(row.key)) continue;
+        db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [row.key]);
+        removed += 1;
+      }
+    }
     for (const model of models || []) {
       const type = model.type || "llm";
       const k = customKey(model.providerAlias, model.id, type);
@@ -62,8 +73,17 @@ export async function syncCustomModels(models) {
         type,
         name: model.name || model.id,
       };
-      const serialized = stringifyJson(value);
       const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
+      if (replaceSyncedFor && row) {
+        const existing = parseJson(row.value);
+        // A manual row remains manual even when the endpoint also lists its id.
+        // Otherwise a later sync could delete a model the user explicitly added.
+        if (existing && !syncedSources.has(existing.source)) {
+          unchanged += 1;
+          continue;
+        }
+      }
+      const serialized = stringifyJson(value);
       if (!row) {
         db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, serialized]);
         added += 1;
@@ -76,9 +96,9 @@ export async function syncCustomModels(models) {
     }
   });
   db.flush?.();
-  if (added > 0 || updated > 0) await deleteHotJson("kv:customModels").catch(() => {});
+  if (added > 0 || updated > 0 || removed > 0) await deleteHotJson("kv:customModels").catch(() => {});
 
-  return { added, updated, unchanged };
+  return { added, updated, unchanged, ...(replaceSyncedFor ? { removed } : {}) };
 }
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {

@@ -3,6 +3,7 @@ import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/co
 import {
   AI_PROVIDERS,
   getProviderAlias,
+  usesUpstreamModelList,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
@@ -25,6 +26,7 @@ import { getActiveComboModels } from "open-sse/services/combo.js";
 import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
 import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKTOP_FALLBACK_CREATED_AT } from "@/shared/utils/claudeDesktopDiscovery.js";
 import { resolveHarnessProfiles } from "@/shared/utils/harnessRoute.js";
+import { isListedCustomModel } from "@/shared/utils/providerCustomModels";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -273,7 +275,7 @@ export async function buildModelsList(kindFilter, options = {}) {
 
   let customModels = [];
   try {
-    customModels = await getCustomModels();
+    customModels = (await getCustomModels()).filter(isListedCustomModel);
   } catch (e) {
     console.log("Could not fetch custom models");
   }
@@ -352,7 +354,7 @@ export async function buildModelsList(kindFilter, options = {}) {
     );
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
-      if (!providerMatchesKinds(providerId, kindFilter)) continue;
+      if (!providerMatchesKinds(providerId, kindFilter) || usesUpstreamModelList(providerId)) continue;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
@@ -390,7 +392,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         || getProviderAlias(providerId)
         || staticAlias
       ).trim();
-      const providerModels = PROVIDER_MODELS[staticAlias] || [];
+      const providerModels = usesUpstreamModelList(providerId) ? [] : PROVIDER_MODELS[staticAlias] || [];
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;

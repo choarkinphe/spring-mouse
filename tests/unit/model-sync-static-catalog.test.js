@@ -36,6 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   try { global._dbAdapter?.instance?.close?.(); } catch {}
   delete global._dbAdapter;
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -91,6 +92,50 @@ describe("provider model sync", () => {
     expect(row).toBeTruthy();
     expect(row.source).toBe("official");
     expect(row.name).toBe("DeepSeek V4 Pro");
+  });
+
+  it.each(["qianwen", "qianwen-token-plan"])("replaces only synchronized rows with upstream ids for %s", async (providerId) => {
+    const { POST } = await import("@/app/api/providers/model-sync/route.js");
+    const { getCustomModels, addCustomModel, syncCustomModels } = await import("@/lib/db/repos/aliasRepo.js");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      [providerId === "qianwen" ? "alibaba-cn" : "alibaba-token-plan-cn"]: { models: {
+        live: { id: "live", name: "Live catalog metadata", modalities: { input: ["text", "image"], output: ["text"] } },
+        "catalog-only": { id: "catalog-only", name: "Not in upstream" },
+      } },
+    }), { headers: { "Content-Type": "application/json" } }));
+    await addCustomModel({ providerAlias: providerId, id: "manual" });
+    await syncCustomModels([
+      { providerAlias: providerId, id: "old-official", source: "official" },
+      { providerAlias: providerId, id: "old-catalog", source: "catalog" },
+      { providerAlias: providerId, id: "old-static", source: "static" },
+      { providerAlias: "openai", id: "other-provider", source: "official" },
+    ]);
+    const res = await post(POST, { providerId, officialFetched: true, supportedModels: [{ id: "live" }, { id: "manual" }] });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toMatchObject({ total: 2, officialCount: 2, catalogCount: 0, staticCount: 0, removed: 3 });
+    const rows = (await getCustomModels()).filter(m => m.providerAlias === providerId);
+    expect(rows.map(m => m.id).sort()).toEqual(["live", "manual"]);
+    expect(rows.find(m => m.id === "live").capabilities.vision).toBe(true);
+    expect(rows.find(m => m.id === "manual").source).toBeUndefined();
+    expect((await getCustomModels()).some(m => m.id === "other-provider")).toBe(true);
+    // An explicit successful empty list clears old synced ids, never manual ids.
+    const empty = await post(POST, { providerId, officialFetched: true, supportedModels: [] });
+    expect(empty.status).toBe(200);
+    expect((await empty.json()).removed).toBe(1);
+    expect((await getCustomModels()).filter(m => m.providerAlias === providerId).map(m => m.id)).toEqual(["manual"]);
+  });
+
+  it("leaves stored Qianwen models untouched when upstream listing failed", async () => {
+    const { POST } = await import("@/app/api/providers/model-sync/route.js");
+    const { syncCustomModels, getCustomModels } = await import("@/lib/db/repos/aliasRepo.js");
+    await syncCustomModels([{ providerAlias: "qianwen", id: "old-live", source: "official" }]);
+    const response = await post(POST, { providerId: "qianwen", supportedModels: [] });
+    expect(response.status).toBe(502);
+    expect((await getCustomModels()).map(m => m.id)).toEqual(["old-live"]);
+    const malformed = await post(POST, { providerId: "qianwen", officialFetched: true, supportedModels: [{}] });
+    expect(malformed.status).toBe(502);
+    expect((await getCustomModels()).map(m => m.id)).toEqual(["old-live"]);
   });
 
   it("rejects a channel with no live, catalog or static source", async () => {

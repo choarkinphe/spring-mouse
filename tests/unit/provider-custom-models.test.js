@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels.js";
 
 describe("provider custom model rows", () => {
+  it.each(["qianwen", "qianwen-token-plan"])("hides old catalog/static rows but preserves official/manual rows for %s", (providerAlias) => {
+    const customModels = [
+      { providerAlias, id: "live", source: "official" },
+      { providerAlias, id: "catalog-only", source: "catalog" },
+      { providerAlias, id: "static-only", source: "static" },
+      { providerAlias, id: "manual" },
+    ];
+    expect(getProviderCustomModelRows({ providerAlias, customModels }).map(m => m.id)).toEqual(["live", "manual"]);
+    expect(getProviderCustomModelRows({ providerAlias: "openai", customModels: [{ providerAlias: "openai", id: "static", source: "static" }] })).toHaveLength(1);
+  });
   it("keeps identical model IDs separate per provider", () => {
     const customModels = [
       { providerAlias: "ollama", id: "minimax-m2.5", type: "llm", name: "MiniMax M2.5" },

@@ -152,5 +152,12 @@ describe("Qianwen API and Token Plan", () => {
     expect(data.models).toHaveLength(1);
     expect(fetchMock.mock.calls[0][0]).toBe(QIANWEN_ENDPOINTS[provider].models);
     expect(JSON.stringify(data)).not.toContain("test-only");
+    fetchMock.mockResolvedValue(new Response('{"error":"unexpected envelope"}', { status: 200 }));
+    const malformed = await GET(new Request("http://localhost/api/providers/conn/models"), { params: Promise.resolve({ id: "conn" }) });
+    expect(malformed.status).toBe(502);
+    fetchMock.mockResolvedValue(new Response('{"data":[]}', { status: 200 }));
+    const empty = await GET(new Request("http://localhost/api/providers/conn/models"), { params: Promise.resolve({ id: "conn" }) });
+    expect(empty.status).toBe(200);
+    expect((await empty.json()).models).toEqual([]);
   });
 });

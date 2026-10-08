@@ -7,7 +7,7 @@ import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { AccessTagsEditor, Button, Drawer, CardSkeleton, ConfirmModal, ModelCapabilitiesModal } from "@/shared/components";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, AI_PROVIDERS } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, usesUpstreamModelList, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -100,7 +100,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       }
     : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId]);
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
-  const staticModels = getModelsByProviderId(providerId);
+  const upstreamOnly = usesUpstreamModelList(providerId);
+  const staticModels = upstreamOnly ? [] : getModelsByProviderId(providerId);
   const models = providerId === "cursor" && liveModels.length > 0
     ? liveModels
     : staticModels;
@@ -695,17 +696,17 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     setSyncingModels(true);
     setModelSyncStatus(null);
     try {
-      // The provider's own /models endpoint is the freshest source but is often
-      // partial (or entirely unavailable for the current account). Never abort on
-      // it — send what we got and let the backend merge the shared capability
-      // catalog so the channel still ends up with the full supported set.
+      // Upstream-only channels must not replace an account's catalog with a
+      // platform-wide seed when listing fails. Other channels keep union sync.
       let officialModels = [];
       let officialWarning = "";
+      let officialFetched = false;
       try {
         const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
         const officialData = await officialRes.json().catch(() => ({}));
-        if (officialRes.ok) {
-          officialModels = officialData.models || [];
+        if (officialRes.ok && Array.isArray(officialData.models)) {
+          officialFetched = true;
+          officialModels = officialData.models;
         } else {
           officialWarning = officialData.error || `HTTP ${officialRes.status}`;
         }
@@ -713,10 +714,15 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         officialWarning = error.message;
       }
 
+      if (upstreamOnly && !officialFetched) {
+        setModelSyncStatus({ type: "error", text: `上游模型列表获取失败（${officialWarning || "无有效模型列表"}），现有模型未更改` });
+        return;
+      }
+
       const res = await fetch("/api/providers/model-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, supportedModels: officialModels }),
+        body: JSON.stringify({ providerId, supportedModels: officialModels, officialFetched }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -734,6 +740,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       setModelSyncStatus({
         type: "success",
         text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")} (${detail}), ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`
+          + (data.removed ? ` · 清理 ${data.removed} 个旧同步模型` : "")
           + (officialWarning ? ` · 官方接口不可用（${officialWarning}），已用能力目录补齐` : ""),
       });
     } catch (error) {

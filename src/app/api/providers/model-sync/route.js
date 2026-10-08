@@ -55,6 +55,16 @@ export async function POST(request) {
     }
 
     const provider = REGISTRY.find((entry) => entry.id === providerId);
+    const upstreamOnly = provider?.modelListSource === "upstream";
+    if (upstreamOnly && (!Array.isArray(body.supportedModels) || body.officialFetched !== true)) {
+      return NextResponse.json({ error: "A successful upstream model listing is required" }, { status: 502 });
+    }
+    if (upstreamOnly && supportedModels.some((model) => {
+      const id = typeof model === "string" ? model : model?.id || model?.name;
+      return typeof id !== "string" || !id.trim();
+    })) {
+      return NextResponse.json({ error: "Upstream returned an invalid model list" }, { status: 502 });
+    }
     const catalog = resolveCatalog(provider, providerId);
     // Compatible channels (openai-compatible-* / anthropic-compatible-*) are
     // provider nodes, not registry entries — they are always syncable.
@@ -113,14 +123,13 @@ export async function POST(request) {
     // ── 3. Union: official ∪ catalog ∪ registry-static ─────────────────────
     // Previously the catalog only *enriched* ids present in the live list, so
     // anything the account's /models endpoint omitted was silently dropped.
-    const { models: mergedModels, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels });
+    const { models: mergedModels, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels: upstreamOnly ? [] : catalogModels });
 
-    // Registry-declared models fill the gap only when neither the live endpoint
-    // nor the external catalog produced anything — they are the least fresh
-    // source, and a stale static id must not shadow a live one.
+    // Union-based channels retain their static entries. Upstream-only channels
+    // may enrich returned ids, but must never infer account access from a seed.
     const known = new Set(mergedModels.map((model) => model.id));
     let staticOnlyCount = 0;
-    for (const model of staticModels) {
+    for (const model of upstreamOnly ? [] : staticModels) {
       if (!model?.id || known.has(model.id)) continue;
       known.add(model.id);
       mergedModels.push({ ...model, source: SYNC_SOURCE_STATIC });
@@ -128,7 +137,7 @@ export async function POST(request) {
     }
     const models = mergedModels;
 
-    if (models.length === 0) {
+    if (models.length === 0 && !upstreamOnly) {
       return NextResponse.json(
         { error: catalogWarning || "The model catalog returned no supported models" },
         { status: 502 },
@@ -141,7 +150,7 @@ export async function POST(request) {
       providerAlias,
       providerId: provider?.id || providerId,
       syncedAt: new Date().toISOString(),
-    })));
+    })), upstreamOnly ? { replaceSyncedFor: providerAlias } : {});
     await refreshModelCapabilityOverrides({ force: true });
 
     return NextResponse.json({

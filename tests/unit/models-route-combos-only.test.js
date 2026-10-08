@@ -39,6 +39,23 @@ describe("public models list", () => {
     expect(allowedModels.some((model) => model.id === "restricted-route")).toBe(true);
   });
 
+  it("keeps the internal Qianwen catalog limited to upstream and manual rows", async () => {
+    const { createProviderConnection, syncCustomModels, addCustomModel } = await import("@/lib/localDb");
+    await createProviderConnection({ provider: "qianwen", authType: "apikey", apiKey: "test-only" });
+    await syncCustomModels([
+      { providerAlias: "qianwen", id: "live", source: "official" },
+      { providerAlias: "qianwen", id: "catalog-only", source: "catalog" },
+      { providerAlias: "qianwen", id: "static-only", source: "static" },
+    ]);
+    await addCustomModel({ providerAlias: "qianwen", id: "manual" });
+    const models = await buildModelsList(["llm"], { skipDynamicFetch: true, includeProviderModels: true });
+    expect(models.filter(m => m.owned_by === "qianwen").map(m => m.id).sort()).toEqual(["qianwen/live", "qianwen/manual"]);
+    const { GET } = await import("@/app/api/models/route.js");
+    const response = await GET(new Request("http://localhost/api/models"));
+    const data = await response.json();
+    expect(data.models.filter(m => m.provider === "qianwen").map(m => m.model).sort()).toEqual(["live", "manual"]);
+  });
+
   it("exposes a combo's declared context and input capabilities", async () => {
     await createCombo({
       name: "media-route",

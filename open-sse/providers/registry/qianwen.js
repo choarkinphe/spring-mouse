@@ -23,6 +23,7 @@ export default {
     thinkingFormats: { openai: "qwen", "openai-responses": "qwen-responses", claude: "claude-budget" },
   },
   transports: qianwenTransports("qianwen"),
+  modelListSource: "upstream",
   modelCatalog: { type: "models-dev", provider: "alibaba-cn" },
   models: QIANWEN_MODELS,
   passthroughModels: true,

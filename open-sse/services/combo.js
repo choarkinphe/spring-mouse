@@ -4,7 +4,7 @@
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
-import { getCapabilitiesForModel } from "../providers/capabilities.js";
+import { getCapabilitiesForModel, getMeasuredCapabilitiesForConnection } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
 import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/utils/schedule.js";
@@ -184,6 +184,13 @@ export function detectRequiredCapabilities(body) {
   const contents = body.contents || body.request?.contents;                      // gemini / antigravity
   for (const c of trailingUserItems(contents)) scanContent(c.parts);
 
+  // Merely offering optional tools need not force tool support. A forced call
+  // or structured tool history does require it for the conversation to survive.
+  if (body.tool_choice === "required" || body.tool_choice?.type === "function"
+    || body.tool_choice?.type === "tool" || body.tool_choice?.type === "any"
+    || (body.messages || []).some((message) => message?.role === "tool" || message?.tool_calls?.length
+      || message?.content?.some?.((block) => block?.type === "tool_use" || block?.type === "tool_result"))) required.add("tools");
+
   // search: temporarily disabled in auto-switch (feature not wired yet).
 
   return required;
@@ -316,8 +323,16 @@ export function getComboModelsForRequest(models, requiredCapabilities, capabilit
   const required = DECLARABLE_INPUT_CAPABILITIES
     .map(([capability]) => capability)
     .filter((capability) => requiredCapabilities?.has(capability) && normalized[capability]);
-  if (required.length === 0) return models;
-  return (models || []).filter((model) => modelSupportsCapabilities(model, required));
+  const measuredHard = ["pdf", "videoInput", "tools"].filter((key) => requiredCapabilities?.has(key));
+  if (required.length === 0 && measuredHard.length === 0) return models;
+  return (models || []).filter((model) => {
+    if (!modelSupportsCapabilities(model, required)) return false;
+    if (measuredHard.length === 0) return true;
+    const id = comboModelIdentifier(model);
+    const slash = id.indexOf("/");
+    const caps = getMeasuredCapabilitiesForConnection(slash > 0 ? id.slice(0, slash) : "", slash > 0 ? id.slice(slash + 1) : id, null);
+    return measuredHard.every((key) => caps[key] !== false);
+  });
 }
 
 function comboModelEntry(entry) {

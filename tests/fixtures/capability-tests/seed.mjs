@@ -1,0 +1,12 @@
+import path from "node:path";
+if (!process.env.DATA_DIR || !path.basename(path.dirname(process.env.DATA_DIR)).startsWith("sm-capability.")) throw new Error("Seed requires isolated sm-capability.* DATA_DIR");
+const { createProviderNode, createProviderConnection, addCustomModel, syncCustomModels, updateSettings, createCombo } = await import("../../../src/lib/db/index.js");
+const provider = "openai-compatible-chat-capability-fixture";
+const baseUrl = `http://127.0.0.1:${process.env.MOCK_PORT || 9027}`;
+await createProviderNode({ id: provider, type: "openai-compatible", name: "能力实验渠道", prefix: "能力实验", apiType: "chat", baseUrl });
+for (const [name, apiKey, priority] of [["文本账号", "sk-text-only", 1], ["多模态账号", "sk-vision", 2]]) await createProviderConnection({ provider, authType: "apikey", name, apiKey, priority, providerSpecificData: { baseUrl, prefix: "能力实验", apiType: "chat" } });
+await syncCustomModels([{ providerAlias: provider, providerId: provider, id: "probe-model", type: "llm", source: "official", capabilities: { vision: false, tools: true, contextWindow: 200000 } }]);
+await addCustomModel({ providerAlias: provider, id: "slow-model", type: "llm" });
+await createCombo({ name: "capability-fixture", kind: "llm", models: ["能力实验/probe-model"], capabilities: { vision: true } });
+await updateSettings({ requireLogin: false, requireApiKey: false, rtkEnabled: false, headroomEnabled: false, pxpipeEnabled: false });
+console.log(`Seeded isolated capability fixture: ${provider}`);

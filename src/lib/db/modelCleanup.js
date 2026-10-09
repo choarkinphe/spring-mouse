@@ -2,6 +2,7 @@ import { getAdapter } from "./driver.js";
 import { parseJson } from "./helpers/jsonCol.js";
 import { deleteHotJson } from "@/lib/redis/hotCache.js";
 import { resolveProviderAliases } from "@/shared/utils/providerCustomModels";
+import { deleteModelCapabilityTests } from "./repos/modelCapabilityTestsRepo.js";
 
 // Model rows are keyed by a channel's alias, but nothing cascaded them when the
 // channel was deleted: removing a provider connection or node left its
@@ -95,6 +96,7 @@ export async function purgeChannelModelRows(aliases) {
  * called from the delete routes.
  */
 export async function purgeChannelModelRowsByProviderId(providerId, connection = {}) {
+  await deleteModelCapabilityTests({ providerId });
   return purgeChannelModelRows(aliasSetForChannel(providerId, connection));
 }
 

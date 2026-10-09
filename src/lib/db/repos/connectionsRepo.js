@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { deleteModelCapabilityTests } from "./modelCapabilityTestsRepo.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -232,6 +233,7 @@ export async function updateProviderConnection(id, data) {
 }
 
 export async function deleteProviderConnection(id) {
+  await deleteModelCapabilityTests({ connectionId: id });
   const db = await getAdapter();
   let ok = false;
   let provider = null;
@@ -247,6 +249,7 @@ export async function deleteProviderConnection(id) {
 }
 
 export async function deleteProviderConnectionsByProvider(providerId) {
+  await deleteModelCapabilityTests({ providerId });
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
   db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);

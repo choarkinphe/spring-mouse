@@ -18,6 +18,7 @@ import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAs
 import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
 import { getProviderModelBreaker, getModelOverloadThrottle } from "./providerBreaker.js";
 import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
+import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabilities.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
 // every request wait behind a SQLite read and a lastUsedAt write. Assignment
@@ -113,6 +114,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Inject a virtual connection for no-auth free providers. Model tags still
     // apply even though there is no account record to authorize.
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (options.strictConnectionId && options.strictConnectionId !== "noauth") return { pinnedUnavailable: true, error: "指定公共连接无效" };
+      const measured = getMeasuredCapabilitiesForConnection(providerId, model, "noauth");
+      if (options.requiredCapabilities?.size && [...options.requiredCapabilities].some((key) => measured[key] === false)) return { capabilityUnavailable: true, error: "公共连接不支持当前请求所需能力" };
       if (requestAccessTags !== null && model) {
         const settings = await getSettings();
         const requiredModelTags = getModelAccessTags(
@@ -181,6 +185,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const isOffSchedule = (connection) => !isScheduleActive(connection.schedule, scheduleNow, { onInvalid: true });
 
     const availableConnections = connections.filter(c => {
+      if (options.strictConnectionId && c.id !== options.strictConnectionId) return false;
+      if (model && options.requiredCapabilities?.size) {
+        const caps = getMeasuredCapabilitiesForConnection(providerId, model, c.id);
+        if ([...options.requiredCapabilities].some((key) => caps[key] === false)) return false;
+      }
       if (excludeSet.has(c.id)) return false;
       // A binding on a provider whose executor bypasses BaseExecutor.execute()
       // is inert: it would never be dispatched to the node, so treating it as
@@ -217,6 +226,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     );
 
     if (availableConnections.length === 0) {
+      if (options.strictConnectionId) return { pinnedUnavailable: true, error: "指定账号当前不可用，不会回退到其他账号" };
+      if (model && options.requiredCapabilities?.size && connections.every((c) => {
+        const caps = getMeasuredCapabilitiesForConnection(providerId, model, c.id);
+        return [...options.requiredCapabilities].some((key) => caps[key] === false);
+      })) return { capabilityUnavailable: true, error: "没有账号支持当前请求所需的模型能力" };
       // Find earliest lock expiry across all connections for retry timing
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
@@ -287,6 +301,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           };
         }
       }
+    }
+
+    // Prefer verified-capable accounts over untested ones without removing the
+    // latter from fallback. Existing account priority remains stable within tiers.
+    if (model && options.requiredCapabilities?.size) {
+      const score = (connection) => {
+        const caps = getMeasuredCapabilitiesForConnection(providerId, model, connection.id);
+        return [...options.requiredCapabilities].filter((key) => caps[key] === true).length;
+      };
+      availableConnections.sort((a, b) => score(b) - score(a));
     }
 
     // Account allocation belongs to the current provider/channel. A provider

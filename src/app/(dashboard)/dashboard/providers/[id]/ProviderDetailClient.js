@@ -22,6 +22,7 @@ import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
 import EditCompatibleNodeIconModal from "./EditCompatibleNodeIconModal";
 import AddModelDrawer from "./AddModelDrawer";
+import ModelCapabilityTestDrawer from "./ModelCapabilityTestDrawer";
 
 // Chinese labels for thinking levels ("auto" = no suffix appended when copying model names).
 const THINKING_LEVEL_LABELS = {
@@ -61,6 +62,17 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [capabilitiesModel, setCapabilitiesModel] = useState(null);
+  const [capabilityTestModel, setCapabilityTestModel] = useState(null);
+  const [capabilityProfiles, setCapabilityProfiles] = useState([]);
+  const fetchCapabilityProfiles = useCallback(async () => {
+    const res = await fetch(`/api/models/capability-tests?${new URLSearchParams({ providerId })}`, { cache: "no-store" });
+    if (res.ok) setCapabilityProfiles((await res.json()).profiles || []);
+  }, [providerId]);
+  useEffect(() => { Promise.resolve().then(fetchCapabilityProfiles).catch(() => {}); }, [fetchCapabilityProfiles]);
+  const handleCapabilityChanged = () => {
+    fetchCapabilityProfiles().catch(() => {});
+    window.dispatchEvent(new CustomEvent("customModelChanged"));
+  };
   const [savingCapabilities, setSavingCapabilities] = useState(false);
   const [togglingCapability, setTogglingCapability] = useState(null);
   const [thinkingMode, setThinkingMode] = useState("auto");
@@ -573,8 +585,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const capabilityOverrides = useMemo(() => {
     const map = {};
     for (const m of customModels || []) {
-      if (!m?.id || !m?.capabilities || m.origin !== "capability-override") continue;
-      map[`${m.providerAlias}|${m.id}|${m.type || "llm"}`] = m.capabilities;
+      if (!m?.id || (!m.manualCapabilities && m.origin !== "capability-override")) continue;
+      map[`${m.providerAlias}|${m.id}|${m.type || "llm"}`] = m.manualCapabilities || m.capabilities || {};
     }
     return map;
   }, [customModels]);
@@ -1005,6 +1017,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           modelTestResults={modelTestResults}
           testingModelIds={testingModelIds}
           onTestModel={handleTestModel}
+          onTestCapabilities={(id) => setCapabilityTestModel({ id })}
+          capabilityProfiles={capabilityProfiles}
           selectable={batchMode}
           selectedModelIds={selectedModelIds}
           onToggleSelect={toggleModelSelection}
@@ -1019,8 +1033,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         {/* Custom models first */}
         {customModelRows.map((model) => {
-          const rowCaps = { ...(getCaps(`${providerStorageAlias}/${model.id}`) || {}), ...(model.capabilities || {}) };
-          const rowOverrideCaps = model.capabilities || capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
+          const rowCaps = getCaps(`${providerStorageAlias}/${model.id}`) || model.capabilities || {};
+          const rowOverrideCaps = model.manualCapabilities || capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
           const rowBusyPrefix = `${providerStorageAlias}|${model.id}|`;
           const rowBusyCapabilityKey = togglingCapability?.startsWith(rowBusyPrefix)
             ? togglingCapability.slice(rowBusyPrefix.length)
@@ -1043,6 +1057,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               }}
               testStatus={modelTestResults[model.id]}
               onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
+              onTestCapabilities={() => setCapabilityTestModel({ id: model.id })}
+              capabilityProfiles={capabilityProfiles.filter((profile) => profile.modelId === model.id)}
               isTesting={testingModelIds.has(model.id)}
               isCustom
               isFree={false}
@@ -1100,6 +1116,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               onDeleteAlias={() => handleDeleteAlias(existingAlias)}
               testStatus={modelTestResults[model.id]}
               onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
+              onTestCapabilities={() => setCapabilityTestModel({ id: model.id })}
+              capabilityProfiles={capabilityProfiles.filter((profile) => profile.modelId === model.id)}
               isTesting={testingModelIds.has(model.id)}
               isFree={model.isFree}
               onDisable={() => handleDisableModel(model.id)}
@@ -1622,6 +1640,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           onClose={() => setShowAddCustomModel(false)}
         />
       )}
+
+      {capabilityTestModel && <ModelCapabilityTestDrawer key={capabilityTestModel.id} model={capabilityTestModel} providerId={providerId} onClose={() => setCapabilityTestModel(null)} onChanged={handleCapabilityChanged} />}
 
       {/* Mounted per model so the draft state seeds exactly once (see the modal). */}
       {capabilitiesModel && (

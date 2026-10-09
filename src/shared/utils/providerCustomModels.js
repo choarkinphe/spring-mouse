@@ -72,6 +72,7 @@ export function getProviderCustomModelRows({
       // created by hand keep their original shape.
       ...(model.source ? { modelSource: model.source } : {}),
       ...(model.providerId ? { providerId: model.providerId } : {}),
+      ...(model.manualCapabilities ? { manualCapabilities: model.manualCapabilities } : {}),
       ...(model.capabilities && Object.keys(model.capabilities).length > 0
         ? { capabilities: model.capabilities }
         : {}),

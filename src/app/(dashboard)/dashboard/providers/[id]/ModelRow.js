@@ -6,10 +6,11 @@ import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
 import { SelectionCheckbox } from "@/shared/components";
 import ModelPricingBadge from "./ModelPricingBadge";
+import CapabilityEvidenceBadge from "./CapabilityEvidenceBadge";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect }) {
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const borderColor = testStatus === "ok"
@@ -105,10 +106,12 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
             );
           })}
         </div>
+        <CapabilityEvidenceBadge profiles={capabilityProfiles} onClick={onTestCapabilities} />
       </div>
 
       {menuOpen && (
         <div role="menu" className="absolute right-2 top-10 z-20 min-w-36 rounded-lg border border-border-subtle bg-surface p-1 shadow-[var(--shadow-elev)]">
+          {onTestCapabilities && <button type="button" role="menuitem" onClick={() => runMenuAction(onTestCapabilities)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main hover:bg-sidebar"><span className="material-symbols-outlined text-[16px]">fact_check</span>能力测试</button>}
           {onTest && (
             <button
               type="button"
@@ -120,7 +123,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
               <span className="material-symbols-outlined text-[16px]" style={isTesting ? { animation: "spin 1s linear infinite" } : undefined}>
                 {isTesting ? "progress_activity" : "science"}
               </span>
-              {isTesting ? "Testing..." : "Test"}
+              {isTesting ? "Testing..." : "连通性测试"}
             </button>
           )}
           <button

@@ -68,6 +68,26 @@ export const DEFAULT_CAPABILITIES = {
 };
 
 const MODEL_CAPABILITY_OVERRIDES = new Map();
+const CONNECTION_CAPABILITY_OVERRIDES = new Map();
+const MEASURED_CHANNEL_CAPABILITIES = new Map();
+const MANUAL_CAPABILITIES = new Map();
+
+export function replaceMeasuredCapabilityOverrides({ connections = [], channels = [], manual = [] } = {}) {
+  CONNECTION_CAPABILITY_OVERRIDES.clear();
+  MEASURED_CHANNEL_CAPABILITIES.clear();
+  MANUAL_CAPABILITIES.clear();
+  for (const entry of connections) CONNECTION_CAPABILITY_OVERRIDES.set(JSON.stringify([entry.provider, entry.model, entry.connectionId]), entry.capabilities);
+  for (const entry of channels) MEASURED_CHANNEL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), entry.capabilities);
+  for (const entry of manual) MANUAL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), entry.capabilities);
+}
+
+export function getMeasuredCapabilitiesForConnection(provider, model, connectionId) {
+  const measured = getProviderKeys(provider).map((key) => connectionId
+    ? CONNECTION_CAPABILITY_OVERRIDES.get(JSON.stringify([key, model, connectionId]))
+    : MEASURED_CHANNEL_CAPABILITIES.get(overrideKey(key, model))).find(Boolean) || {};
+  const manual = getProviderKeys(provider).map((key) => MANUAL_CAPABILITIES.get(overrideKey(key, model))).find(Boolean) || {};
+  return { ...measured, ...manual };
+}
 
 function overrideKey(provider, model) {
   return `${provider || ""}/${model || ""}`;
@@ -362,7 +382,7 @@ export const PATTERN_CAPABILITIES = [
  * @param {string} model
  * @returns {object} full capabilities object
  */
-export function getCapabilitiesForModel(provider, model) {
+export function getCapabilitiesForModel(provider, model, { connectionId = null, declaredOnly = false } = {}) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
@@ -402,6 +422,9 @@ export function getCapabilitiesForModel(provider, model) {
       || MODEL_CAPABILITY_OVERRIDES.get(overrideKey(providerKey, baseModel)))
     .find(Boolean);
 
-  // 4. Floor, then static catalog, then synchronized provider metadata.
-  return { ...DEFAULT_CAPABILITIES, ...(resolved || {}), ...(dynamic || {}) };
+  const measured = connectionId
+    ? getMeasuredCapabilitiesForConnection(provider, model, connectionId)
+    : getProviderKeys(provider).map((key) => MEASURED_CHANNEL_CAPABILITIES.get(overrideKey(key, model))).find(Boolean);
+  const manual = getProviderKeys(provider).map((key) => MANUAL_CAPABILITIES.get(overrideKey(key, model))).find(Boolean);
+  return { ...DEFAULT_CAPABILITIES, ...(resolved || {}), ...(dynamic || {}), ...(declaredOnly ? {} : measured || {}), ...(manual || {}) };
 }

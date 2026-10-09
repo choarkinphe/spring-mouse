@@ -7,6 +7,7 @@ import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
 import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import ModelPricingBadge from "./ModelPricingBadge";
+import CapabilityEvidenceBadge from "./CapabilityEvidenceBadge";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
@@ -18,7 +19,7 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect }) {
+function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -109,10 +110,12 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
             );
           })}
         </div>
+        <CapabilityEvidenceBadge profiles={capabilityProfiles} onClick={onTestCapabilities} />
       </div>
 
       {menuOpen && (
         <div role="menu" className="absolute right-2 top-10 z-20 min-w-36 rounded-lg border border-border-subtle bg-surface p-1 shadow-[var(--shadow-elev)]">
+          {onTestCapabilities && <button type="button" role="menuitem" onClick={() => { onCloseMenu(); onTestCapabilities(); }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main hover:bg-sidebar"><span className="material-symbols-outlined text-[16px]">fact_check</span>能力测试</button>}
           {onTest && (
             <button
               type="button"
@@ -122,7 +125,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
               className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-main transition-colors hover:bg-sidebar disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-[16px]" style={isTesting ? { animation: "spin 1s linear infinite" } : undefined}>{isTesting ? "progress_activity" : "science"}</span>
-              {isTesting ? "测试中..." : "测试模型"}
+              {isTesting ? "测试中..." : "连通性测试"}
             </button>
           )}
           <button
@@ -158,7 +161,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const [openModelMenuId, setOpenModelMenuId] = useState(null);
 
   const allModels = getProviderCustomModelRows({
@@ -197,9 +200,9 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               : null;
             // Locally stored capabilities win; the shared resolver fills the rest
             // so a partially-known model still shows every applicable badge.
-            const caps = { ...(getCaps(capsKey) || {}), ...(capabilities || {}) };
+            const caps = getCaps(capsKey) || capabilities || {};
             const sourceLabel = describeModelSource(modelSource);
-            const overrideCaps = capabilities || capabilityOverrides[`${providerStorageAlias}|${id}|llm`] || {};
+            const overrideCaps = capabilityOverrides[`${providerStorageAlias}|${id}|llm`] || {};
             return (
               <CompatibleModelCard
                 key={`${source}-${providerStorageAlias}/${id}`}
@@ -213,6 +216,8 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
                 onCopy={onCopy}
                 onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
                 onTest={connections.length > 0 && onTestModel ? () => onTestModel(id) : undefined}
+                onTestCapabilities={() => onTestCapabilities?.(id)}
+                capabilityProfiles={capabilityProfiles?.filter((profile) => profile.modelId === id)}
                 testStatus={modelTestResults[id]}
                 isTesting={Boolean(testingModelIds?.has(id))}
                 selectable={selectable}

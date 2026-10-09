@@ -60,6 +60,7 @@ const nextConfig = {
   // standalone build would ship a route that cannot find its own payload.
   outputFileTracingIncludes: {
     "/api/mouses/agent": ["./mouse/agent.mjs"],
+    "/api/models/capability-tests": ["./src/lib/modelCapabilities/fixtures/*"],
   },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]

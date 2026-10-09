@@ -2,6 +2,8 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
 import { deleteHotJson } from "@/lib/redis/hotCache.js";
+import { deleteModelCapabilityTests } from "./modelCapabilityTestsRepo.js";
+import { resolveProviderId } from "@/shared/constants/providers.js";
 
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
@@ -68,12 +70,14 @@ export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
     for (const model of models || []) {
       const type = model.type || "llm";
       const k = customKey(model.providerAlias, model.id, type);
+      const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
+      const previous = parseJson(row?.value, {});
       const value = {
         ...model,
         type,
         name: model.name || model.id,
+        ...(previous?.manualCapabilities ? { manualCapabilities: previous.manualCapabilities, declaredCapabilities: model.capabilities || {} } : {}),
       };
-      const row = db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
       if (replaceSyncedFor && row) {
         const existing = parseJson(row.value);
         // A manual row remains manual even when the endpoint also lists its id.
@@ -103,6 +107,8 @@ export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
 
 export async function deleteCustomModel({ providerAlias, id, type = "llm" }) {
   const db = await getAdapter();
+  const existing = parseJson(db.get(`SELECT value FROM kv WHERE scope = 'customModels' AND key = ?`, [customKey(providerAlias, id, type)])?.value, {});
+  await deleteModelCapabilityTests({ providerId: existing.providerId || resolveProviderId(providerAlias), modelId: id });
   db.run(`DELETE FROM kv WHERE scope = 'customModels' AND key = ?`, [customKey(providerAlias, id, type)]);
   db.flush?.();
   await deleteHotJson("kv:customModels").catch(() => {});
@@ -148,6 +154,7 @@ export async function upsertModelCapabilities({ providerAlias, providerId, id, t
         name: id,
         origin: CAPABILITY_OVERRIDE_ORIGIN,
         capabilities: clean,
+        manualCapabilities: clean,
       });
       db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
       changed = true;
@@ -164,7 +171,8 @@ export async function upsertModelCapabilities({ providerAlias, providerId, id, t
       return;
     }
 
-    const next = { ...existing };
+    const next = { ...existing, manualCapabilities: clean };
+    if (existing.source && !existing.declaredCapabilities) next.declaredCapabilities = existing.capabilities || {};
     if (hasCapabilities) next.capabilities = clean;
     else delete next.capabilities;
     if (providerId && !next.providerId) next.providerId = providerId;

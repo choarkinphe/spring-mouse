@@ -9,20 +9,15 @@ import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 import { getPricingForModels } from "@/lib/db/repos/pricingRepo.js";
 import { toCompactPricing } from "@/shared/utils/pricingSync";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
+import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
 // GET /api/models - Get models with aliases
 export async function GET(request) {
   try {
+    await refreshModelCapabilityOverrides();
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
     const customModels = (await getCustomModels()).filter(isListedCustomModel);
-
-    const customByRoute = new Map();
-    for (const model of customModels || []) {
-      if (!model?.providerAlias || !model?.id || (model.type && model.type !== "llm")) continue;
-      customByRoute.set(`${model.providerAlias}/${model.id}`, model);
-      if (model.providerId) customByRoute.set(`${model.providerId}/${model.id}`, model);
-    }
 
     const models = AI_MODELS
       .filter((m) => {
@@ -35,8 +30,7 @@ export async function GET(request) {
         const fullModel = `${m.provider}/${m.model}`;
         const providerAlias = getProviderAlias(m.provider) || m.provider;
         const routedModel = `${providerAlias}/${m.model}`;
-        const synced = customByRoute.get(routedModel) || customByRoute.get(fullModel);
-        const c = { ...getCapabilitiesForModel(m.provider, m.model), ...(synced?.capabilities || {}) };
+        const c = getCapabilitiesForModel(m.provider, m.model);
         return {
           ...m,
           fullModel,
@@ -54,7 +48,7 @@ export async function GET(request) {
       const routedModel = `${custom.providerAlias}/${custom.id}`;
       if (seen.has(routedModel)) continue;
       const providerId = custom.providerId || custom.providerAlias;
-      const c = { ...getCapabilitiesForModel(providerId, custom.id), ...(custom.capabilities || {}) };
+      const c = getCapabilitiesForModel(providerId, custom.id);
       models.push({
         provider: providerId,
         model: custom.id,

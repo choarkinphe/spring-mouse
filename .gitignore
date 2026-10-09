@@ -18,6 +18,8 @@
 /.next-cli-build/
 # Preview-server build output (Claude Code Browser pane)
 /.next-preview/
+/.next-capability-preview/
+/.next-capability-build/
 /out/
 cli/.build-home/
 product

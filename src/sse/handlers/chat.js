@@ -549,6 +549,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     try {
       credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
         accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: clientSignal || request?.signal, requestId,
+        requiredCapabilities: detectRequiredCapabilities(body),
       });
     } catch (error) {
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
@@ -567,6 +568,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       );
     }
 
+    if (credentials?.capabilityUnavailable) return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, credentials.error);
     if (credentials?.aborted) return errorResponse(499, "Request aborted");
 
     // All accounts unavailable

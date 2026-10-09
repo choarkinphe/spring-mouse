@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+const base = `http://127.0.0.1:${process.env.SMOKE_PORT || 8027}`;
+const providerId = "openai-compatible-chat-capability-fixture";
+const read = async (path) => {
+  const res = await fetch(`${base}${path}`);
+  assert.equal(res.status, 200);
+  return res.json();
+};
+const url = `/api/models/capability-tests?providerId=${providerId}&modelId=probe-model`;
+const accounts = (await read(url)).connections;
+const run = async (connectionId, body = {}) => {
+  const res = await fetch(`${base}/api/models/capability-tests`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId, modelId: "probe-model", connectionId, ...body }) });
+  assert.equal(res.status, 200);
+  const events = (await res.text()).trim().split("\n").map(JSON.parse);
+  assert.equal(events[0].type, "started");
+  assert.equal(events.at(-1).type, "complete");
+  return events.at(-1).report;
+};
+const text = accounts.find((item) => item.name === "文本账号");
+const vision = accounts.find((item) => item.name === "多模态账号");
+const textReport = await run(text.id);
+assert.equal(textReport.results.vision.status, "unsupported");
+assert.equal(textReport.results.pdf.status, "supported");
+const visionReport = await run(vision.id);
+assert.equal(visionReport.results.vision.status, "supported");
+assert.ok(visionReport.results.contextWindow.context.verifiedRetrievalTokens > 0);
+assert.equal(visionReport.results.contextWindow.context.explicitLimit, undefined);
+const data = await read(url);
+assert.equal(data.profiles.find((p) => p.connectionId === text.id).effective.vision, false);
+assert.equal(data.profiles.find((p) => p.connectionId === vision.id).effective.vision, true);
+const deep = await run(vision.id, { mode: "deep" });
+assert.equal(deep.results.contextWindow.context.explicitLimit, 12000);
+const after = await read(url);
+assert.equal(after.profiles.find((p) => p.connectionId === vision.id).effective.contextWindow, 12000);
+assert.ok(after.profiles.find((p) => p.connectionId === vision.id).currentEvidence.contextWindow.context.verifiedRetrievalTokens > 0);
+console.log("Capability fixture verified: scoped image support, PDF/tools/context retrieval, explicit context limit, persistent evidence.");

@@ -60,7 +60,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, internalRequest = false }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Reuse the caller's id so the request line, the usage row and the routing
@@ -113,7 +113,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }).catch(() => {});
 
   // Check for bypass patterns (warmup, skip, cc naming)
-  const bypassResponse = handleBypassRequest(body, model, userAgent, ccFilterNaming);
+  const bypassResponse = capabilityProbe ? null : handleBypassRequest(body, model, userAgent, ccFilterNaming);
   if (bypassResponse) return bypassResponse;
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
@@ -197,8 +197,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {
-    const caps = getCapabilitiesForModel(provider, model);
-    if (stripUnsupportedModalities(body, sourceFormat, caps)) {
+    const caps = getCapabilitiesForModel(provider, model, { connectionId });
+    if (!capabilityProbe && stripUnsupportedModalities(body, sourceFormat, caps)) {
       log?.debug?.("MODALITY", `stripped unsupported media for ${provider}/${model}`);
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
@@ -291,7 +291,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   // Per-request opt-out: client can bypass all token savers via header
-  const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
+  const tokenSaverEnabled = !capabilityProbe && clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
   // RTK: compress tool_result content
   const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
@@ -325,7 +325,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   // PXPIPE: image bulky context (Claude-format bodies only)
-  if (pxpipeEnabled) {
+  if (pxpipeEnabled && !capabilityProbe) {
     parallelOps.push(
       compressWithPxpipe(translatedBody, {
         enabled: true, format: finalFormat, model: upstreamModel,
@@ -486,6 +486,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }, 30000);
   execDiagTimer.unref?.();
   try {
+    if (capabilityProbe) onProbeDispatch?.({ body: translatedBody, format: finalFormat });
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline });
     clearTimeout(execDiagTimer);
     providerResponse = result.response;
@@ -496,6 +497,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
     compactionDiag?.emit("headers", { body: finalBody || translatedBody, status: providerResponse.status });
   } catch (error) {
+    clearTimeout(execDiagTimer);
     compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "executor_error", error: { type: error?.name } });
     trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });

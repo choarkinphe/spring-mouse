@@ -44,7 +44,7 @@ export function createCapabilityDraft(caps = {}) {
 export function capabilitiesFromDraft(draft = {}) {
   const out = {};
   for (const key of CAPABILITY_BOOLEAN_KEYS) {
-    if (draft[key] === true) out[key] = true;
+    if (typeof draft[key] === "boolean") out[key] = draft[key];
   }
   const contextWindow = Number.parseInt(draft.contextWindow, 10);
   if (Number.isFinite(contextWindow) && contextWindow > 0) out.contextWindow = contextWindow;

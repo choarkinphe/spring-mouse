@@ -87,7 +87,7 @@ export default function ModelCapabilitiesModal({ isOpen, modelId, fullModel, cap
         </section>
 
         <p className="text-xs leading-relaxed text-text-muted">
-          已开启 {activeCount} 项能力。留空或全部关闭表示不覆盖，运行时将继续使用内置识别结果。
+          已开启 {activeCount} 项能力。保存时开启与关闭都会成为手动配置，优先于实测结果；“恢复默认”移除手动覆盖，重新使用实测或声明能力。
         </p>
 
         <div className="flex gap-2 pt-1">

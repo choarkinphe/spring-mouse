@@ -6,6 +6,7 @@ import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 import { dispatchMouseTask } from "../../src/lib/mouse/tunnel.js";
+import { createRequestSizeDiagnostics } from "../utils/requestSizeDiagnostics.js";
 
 function abortError(reason) {
   if (reason?.name === "AbortError") return reason;
@@ -132,7 +133,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null }) {
     const mouse = credentials.mouseExecution;
     if (!mouse?.mouseId) {
       throw new Error("Selected Mouse is not ready for task execution");
@@ -149,17 +150,28 @@ export class BaseExecutor {
     log?.debug?.("MOUSE", `${this.provider.toUpperCase()} | task=${taskId} | mouse=${mouse.mouseId}`);
     // The node dialled Spring, so there is no endpoint to post to: the task goes
     // down the node's tunnel and comes back as a replayed upstream response.
-    const upstream = await dispatchMouseTask(mouse.mouseId, {
-      taskId,
-      signal,
-      request: {
-        method: "POST",
-        url: targetUrl,
-        headers,
-        body: JSON.stringify(transformedBody),
-        proxyOptions,
-      },
-    });
+    const bodyStr = JSON.stringify(transformedBody);
+    const sizeDiag = createRequestSizeDiagnostics({ provider: this.provider, model,
+      connectionId: credentials.connectionId, requestId, transport: "mouse",
+      serialized: bodyStr, body: transformedBody, log });
+    let upstream;
+    try {
+      upstream = await dispatchMouseTask(mouse.mouseId, {
+        taskId,
+        signal,
+        request: {
+          method: "POST",
+          url: targetUrl,
+          headers,
+          body: bodyStr,
+          proxyOptions,
+        },
+      });
+      sizeDiag?.response(upstream.status);
+    } catch (error) {
+      sizeDiag?.error(error);
+      throw error;
+    }
 
     return {
       response: new Response(upstream.body, { status: upstream.status, headers: upstream.headers }),
@@ -169,9 +181,9 @@ export class BaseExecutor {
     };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null }) {
     if (credentials?.mouseExecution) {
-      return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions });
+      return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions, requestId });
     }
 
     const fallbackCount = this.getFallbackCount();
@@ -224,8 +236,12 @@ export class BaseExecutor {
       const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
+      let sizeDiag = null;
       try {
         const bodyStr = JSON.stringify(transformedBody);
+        sizeDiag = createRequestSizeDiagnostics({ provider: this.provider, model,
+          connectionId: credentials?.connectionId, requestId, urlIndex,
+          retry: retryAttemptsByUrl[urlIndex], serialized: bodyStr, body: transformedBody, log });
         const fetchT0 = Date.now();
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
         const response = await proxyAwareFetch(url, {
@@ -235,6 +251,7 @@ export class BaseExecutor {
           signal: mergedSignal
         }, proxyOptions);
         clearTimeout(connectTimer);
+        sizeDiag?.response(response.status);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
         dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
@@ -249,6 +266,7 @@ export class BaseExecutor {
 
         return { response, url, headers, transformedBody };
       } catch (error) {
+        sizeDiag?.error(error);
         clearTimeout(connectTimer);
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";

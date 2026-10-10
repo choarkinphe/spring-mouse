@@ -487,7 +487,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   execDiagTimer.unref?.();
   try {
     if (capabilityProbe) onProbeDispatch?.({ body: translatedBody, format: finalFormat });
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, requestId });
     clearTimeout(execDiagTimer);
     providerResponse = result.response;
     providerUrl = result.url;
@@ -549,7 +549,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, requestId });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;

@@ -75,6 +75,7 @@ jobs:
           unit/api-key-busy-retry.test.js
           unit/release-promotion.test.js
           unit/release-persistence-wal.test.js
+          unit/release-smoke-summary.test.js
           unit/routing-events.test.js
           unit/routing-redis-client.test.js
           unit/routing-writer.test.js

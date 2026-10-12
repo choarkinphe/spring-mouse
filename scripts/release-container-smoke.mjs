@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { certificates } from "../tests/fixtures/release-smoke/upstream.mjs";
+import { summarizeSmokeFailure, smokeFailureAnnotation } from "../tests/fixtures/release-smoke/failure-summary.mjs";
 
 // Runs only a pre-existing immutable candidate. No builds, registry pushes,
 // production credentials, production volumes, or unrelated container cleanup.
@@ -22,9 +23,13 @@ let networkCreated = false;
 const owned = [];
 const dataVolume = `${name}-data`;
 let volumeCreated = false;
+let stage = "setup";
 const docker = (args, { quiet = false } = {}) => {
   const result = spawnSync("docker", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error(`docker ${args[0]} failed (exit=${result.status}, signal=${result.signal || "none"}): ${result.stderr?.slice(-1000)}`);
+  if (result.status !== 0) {
+    console.error(smokeFailureAnnotation(summarizeSmokeFailure(stage, result.stdout, result.stderr)));
+    throw new Error(`docker ${args[0]} failed (exit=${result.status}, signal=${result.signal || "none"}): ${result.stderr?.slice(-1000)}`);
+  }
   if (!quiet && result.stdout) process.stdout.write(result.stdout);
   return result.stdout.trim();
 };
@@ -81,14 +86,18 @@ try {
     await sleep(1000);
   }
   if (!ready) throw new Error("candidate readiness timeout");
+  stage = "http-smoke";
   docker(["exec", app, "node", "-e", "const {spawnSync}=require('child_process');const r=spawnSync(process.execPath,['/fixture/tests/fixtures/release-smoke/verify.mjs'],{env:{...process.env,SMOKE_URL:'http://127.0.0.1:8008',SMOKE_CONTROL_URL:'http://upstream:8081',SMOKE_PASSWORD:process.env.INITIAL_PASSWORD},stdio:'inherit'});process.exit(r.status??1)"]);
   // Execute low-level cancellation tests inside the SAME runtime image, resolving
   // the engine/packages against /app, with source-only glue explicitly supplied
   // as a supplemental test fixture (the compiled HTTP smoke above uses none).
+  stage = "cancellation";
   docker(["exec", "-e", "SMOKE_CERT_DIR=/smoke-certs", app, "node", "--import", "/fixture/tests/fixtures/release-smoke/container-register.mjs", "/fixture/tests/fixtures/release-smoke/cancellation.mjs"]);
+  stage = "routing-dedupe";
   docker(["exec", app, "node", "--import", "/fixture/tests/fixtures/release-smoke/container-register.mjs", "/fixture/tests/fixtures/release-smoke/routing-dedupe.mjs"]);
   // Stop only the owned app so SQLite is checkpointed before the read-only
   // persistence assertion; do not snapshot a live production main DB file.
+  stage = "persistence";
   docker(["stop", "--time", "30", app], { quiet: true });
   docker(["run", "--rm", "--volumes-from", `${app}:ro`, "-v", `${fixtureRoot}:/fixture:ro`, "--entrypoint", "node", image, "/fixture/tests/fixtures/release-smoke/read-db.mjs"]);
   const report = { image, revision, buildInfo: info, fingerprintComplete, realUpstreamVerified: false, approvalsComplete: false, passed: "isolated-smoke-only" };

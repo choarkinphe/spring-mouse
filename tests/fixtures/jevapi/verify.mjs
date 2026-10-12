@@ -38,4 +38,25 @@ for (const model of ["jev-latest", "jevapi/jev-latest"]) {
 assert.equal((await call("/v1/systemone", null)).status, 400);
 assert.equal((await call("/v1/systemone", { model: "jev-latest", state: "hello", questions, stream: true })).status, 400);
 assert.equal((await call("/v1/chat/completions", { model: "jevapi/jev-latest", messages: [{ role: "user", content: "hello" }] })).status, 400);
-console.log("JevAPI fixture verified: model listing, key validation, saved account test, native primitives, bare/qualified names, chat rejection");
+const allowed = (await call("/api/keys", { name: "fixture-allowed" })).data;
+const denied = (await call("/api/keys", { name: "fixture-denied" })).data;
+assert.ok(allowed.key && denied.key);
+const patch = async (body) => {
+  const response = await fetch(`${base}/api/settings`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal(response.status, 200);
+};
+await patch({ systemoneAccessTags: ["jev-users", "admin"], apiKeyAccessTags: { [allowed.id]: ["jev-users"], [denied.id]: ["other"] } });
+const nativeRequest = { model: "jev-latest", state: "hello", questions };
+const invoke = async (key, model = "jev-latest") => fetch(`${base}/v1/systemone`, {
+  method: "POST", headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+  body: JSON.stringify({ ...nativeRequest, model, accessTags: ["jev-users"] }),
+});
+for (const model of ["jev-latest", "jevapi/jev-latest"]) {
+  assert.equal((await invoke(allowed.key, model)).status, 200);
+  assert.equal((await invoke(denied.key, model)).status, 403);
+}
+assert.equal((await invoke()).status, 401);
+assert.equal((await invoke("invalid-fixture-key")).status, 401);
+await patch({ systemoneAccessTags: [] });
+assert.equal((await invoke(denied.key)).status, 200);
+console.log("JevAPI fixture verified: native requests, model sync, key validation, interface-tag allow/deny, missing/invalid key rejection, policy removal");

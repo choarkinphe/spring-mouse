@@ -244,6 +244,13 @@ export async function PATCH(request) {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "systemoneAccessTags")) {
+      if (!Array.isArray(body.systemoneAccessTags) || body.systemoneAccessTags.some((tag) => typeof tag !== "string" || !tag.trim())) {
+        return NextResponse.json({ error: "systemoneAccessTags must be an array of non-empty strings" }, { status: 400 });
+      }
+      body.systemoneAccessTags = normalizeAccessTags(body.systemoneAccessTags);
+    }
+
     if (Object.prototype.hasOwnProperty.call(body, "usageDashboardScopeTags")) {
       body.usageDashboardScopeTags = normalizeAccessTags(body.usageDashboardScopeTags);
     }

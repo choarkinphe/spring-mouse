@@ -12,6 +12,7 @@ import { EmbeddingExampleCard } from "../[kind]/[id]/components/EmbeddingExample
 import { GenericExampleCard } from "../[kind]/[id]/components/GenericExampleCard";
 import { SttExampleCard } from "../[kind]/[id]/components/SttExampleCard";
 import { TtsExampleCard } from "../[kind]/[id]/components/TtsExampleCard";
+import SystemoneAccessCard from "./SystemoneAccessCard";
 
 export default function MediaProviderDetailPanel({ kind, providerId, onClose }) {
   const router = useRouter();
@@ -138,6 +139,8 @@ export default function MediaProviderDetailPanel({ kind, providerId, onClose }) 
           )}
         </div>
       )}
+
+      {kind === "systemone" && <SystemoneAccessCard />}
 
       {!isCustom && provider.noAuth ? (
         <Card>

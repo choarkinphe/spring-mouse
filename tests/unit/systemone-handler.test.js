@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviderCredentials: vi.fn(), markAccountUnavailable: vi.fn(), clearAccountError: vi.fn(),
   extractApiKey: vi.fn(), authorizeApiKey: vi.fn(), resolveApiKeyAccessTags: vi.fn(),
-  getModelInfo: vi.fn(), saveRequestUsage: vi.fn(), handleSystemoneCore: vi.fn(),
+  getModelInfo: vi.fn(), saveRequestUsage: vi.fn(), handleSystemoneCore: vi.fn(), getSettings: vi.fn(),
 }));
 vi.mock("../../src/sse/services/auth.js", () => mocks);
 vi.mock("../../src/sse/services/model.js", () => ({ getModelInfo: mocks.getModelInfo }));
-vi.mock("@/lib/db/index.js", () => ({ getSettings: async () => ({ requireApiKey: true }) }));
+vi.mock("@/lib/db/index.js", () => ({ getSettings: mocks.getSettings }));
 vi.mock("@/lib/usageDb.js", () => ({ saveRequestUsage: mocks.saveRequestUsage }));
 vi.mock("../../open-sse/handlers/systemoneCore.js", async (importOriginal) => ({ ...await importOriginal(), handleSystemoneCore: mocks.handleSystemoneCore }));
 import { handleSystemone } from "../../src/sse/handlers/systemone.js";
@@ -15,6 +15,7 @@ const request = (value = body) => new Request("http://localhost/v1/systemone", {
 const failure = (status, extra = {}) => ({ success: false, status, error: "fixture error", response: Response.json({ detail: "fixture error" }, { status }), ...extra });
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.getSettings.mockResolvedValue({ requireApiKey: true });
   mocks.getProviderCredentials.mockResolvedValue({ apiKey: "provider-secret", connectionId: "a" });
   mocks.extractApiKey.mockReturnValue("client-key");
   mocks.authorizeApiKey.mockResolvedValue(null);
@@ -44,7 +45,38 @@ describe("System One gateway authorization and accounting", () => {
     expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
     expect(mocks.handleSystemoneCore).not.toHaveBeenCalled();
   });
-  it("enforces account access tags", async () => {
+  it.each([[], ["other-team"]])("rejects a valid key without an allowed interface tag %#", async (tags) => {
+    mocks.getSettings.mockResolvedValue({ requireApiKey: false, systemoneAccessTags: ["jev-users"] });
+    mocks.resolveApiKeyAccessTags.mockResolvedValue(tags);
+    expect((await handleSystemone(request())).status).toBe(403);
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(mocks.handleSystemoneCore).not.toHaveBeenCalled();
+    expect(mocks.saveRequestUsage).not.toHaveBeenCalled();
+  });
+  it("allows any matching tag after normalization", async () => {
+    mocks.getSettings.mockResolvedValue({ systemoneAccessTags: ["team-b", " TEAM-A "] });
+    expect((await handleSystemone(request())).status).toBe(200);
+    expect(mocks.handleSystemoneCore).toHaveBeenCalledOnce();
+  });
+  it("requires authentication even in local mode when interface tags are set", async () => {
+    mocks.getSettings.mockResolvedValue({ requireApiKey: false, systemoneAccessTags: ["team-a"] });
+    mocks.extractApiKey.mockReturnValue(null);
+    mocks.authorizeApiKey.mockImplementation(async (_key, options) => options.requireApiKey ? Response.json({ error: "Missing API key" }, { status: 401 }) : null);
+    expect((await handleSystemone(request())).status).toBe(401);
+    expect(mocks.authorizeApiKey).toHaveBeenCalledWith(null, expect.objectContaining({ requireApiKey: true }));
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+  });
+  it("preserves unconfigured interface behavior", async () => {
+    mocks.getSettings.mockResolvedValue({ requireApiKey: false, systemoneAccessTags: [] });
+    mocks.resolveApiKeyAccessTags.mockResolvedValue([]);
+    expect((await handleSystemone(request())).status).toBe(200);
+  });
+  it.each(["jev-latest", "jevapi/jev-latest", "custom-alias"])("cannot bypass interface tags with model spelling %s", async (model) => {
+    mocks.getSettings.mockResolvedValue({ systemoneAccessTags: ["jev-users"] });
+    expect((await handleSystemone(request({ ...body, model, accessTags: ["jev-users"] }))).status).toBe(403);
+    expect(mocks.handleSystemoneCore).not.toHaveBeenCalled();
+  });
+  it("enforces model access tags after interface access passes", async () => {
     mocks.getProviderCredentials.mockResolvedValue({ accessDenied: true });
     expect((await handleSystemone(request())).status).toBe(403);
     expect(mocks.handleSystemoneCore).not.toHaveBeenCalled();

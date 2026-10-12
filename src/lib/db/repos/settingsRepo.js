@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS = {
   apiKeyAccessTags: {},
   usageDashboardScopeTags: [],
   modelAccessTags: {},
+  systemoneAccessTags: [],
   quotaVisibility: {},
   dashboardQuotaOrder: [],
   dashboardQuotaHidden: [],

@@ -3,6 +3,7 @@ import { getSettings } from "@/lib/db/index.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
+import { canAccessWithTags, normalizeAccessTags } from "@/shared/utils/accessTags";
 import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { handleSystemoneCore, validateSystemoneRequest } from "open-sse/handlers/systemoneCore.js";
@@ -27,10 +28,11 @@ export async function handleSystemone(request) {
   if (invalid) return errorResponse(HTTP_STATUS.BAD_REQUEST, invalid);
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
+  const requiredTags = normalizeAccessTags(settings.systemoneAccessTags);
   const modelStr = typeof body?.model === "string" && body.model.startsWith("jev-")
     ? `${JEVAPI_CONFIG.provider}/${body.model}` : body?.model;
   const authFailure = await authorizeApiKey(apiKey, {
-    requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model: modelStr,
+    requireApiKey: settings.requireApiKey === true || requiredTags.length > 0, meter: true, signal: request.signal, model: modelStr,
   });
   if (authFailure) return authFailure;
 
@@ -39,6 +41,9 @@ export async function handleSystemone(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Use a ${JEVAPI_CONFIG.provider}/ model with /v1/systemone`);
   }
   const accessTags = await resolveApiKeyAccessTags(apiKey);
+  if (!canAccessWithTags(accessTags, requiredTags)) {
+    return errorResponse(HTTP_STATUS.FORBIDDEN, "This API key is not permitted to call /v1/systemone");
+  }
   const excludeConnectionIds = new Set();
   let lastResult;
   let connectionId;

@@ -4,6 +4,7 @@ import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
+import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -503,6 +504,18 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
 
   try {
     switch (connection.provider) {
+      case "jevapi": {
+        // Native System One service — probe GET /v1/models with the Bearer key.
+        // Only 2xx confirms the credential; 429/5xx are inconclusive, not valid.
+        const res = await fetchWithConnectionProxy(JEVAPI_CONFIG.modelsUrl, {
+          headers: { [JEVAPI_CONFIG.authHeader]: `Bearer ${connection.apiKey}` },
+          signal: AbortSignal.timeout(8000),
+        }, effectiveProxy);
+        const error = res.ok
+          ? null
+          : (res.status === 401 || res.status === 403 ? "Invalid API key" : `API returned ${res.status}`);
+        return { valid: res.ok, error };
+      }
       case "cloudflare-ai": {
         const psd = connection.providerSpecificData || {};
         const accountId = psd.accountId;

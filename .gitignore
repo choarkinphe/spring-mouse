@@ -19,6 +19,7 @@
 # Preview-server build output (Claude Code Browser pane)
 /.next-preview/
 /.next-capability-preview/
+/.next-jevapi-preview/
 /.next-capability-build/
 /out/
 cli/.build-home/
@@ -58,6 +59,7 @@ source/*
 .cursor/*
 docs/*
 !docs/ARCHITECTURE.md
+!docs/JEVAPI.md
 !docs/PERFORMANCE-2026-09-08-memory-latency.md
 !docs/PERFORMANCE-MULTIWINDOW.md
 test/*

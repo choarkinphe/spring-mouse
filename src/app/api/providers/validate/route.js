@@ -5,6 +5,7 @@ import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
@@ -253,6 +254,21 @@ export async function POST(request) {
       }
 
       switch (provider) {
+        case "jevapi": {
+          // Native System One service — validate the key against GET /v1/models
+          // (Bearer). No chat probe: this provider is not a chat target.
+          const res = await fetch(JEVAPI_CONFIG.modelsUrl, {
+            headers: { [JEVAPI_CONFIG.authHeader]: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          // Only 2xx confirms the credential; a 429/5xx is inconclusive, not valid.
+          isValid = res.ok;
+          if (!isValid) error = res.status === 401 || res.status === 403
+            ? "Invalid API key"
+            : `Validation failed (HTTP ${res.status})`;
+          break;
+        }
+
         case "openai":
           const openaiRes = await fetch("https://api.openai.com/v1/models", {
             headers: { "Authorization": `Bearer ${apiKey}` },

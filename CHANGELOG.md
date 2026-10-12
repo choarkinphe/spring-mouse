@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### JevAPI / TypeSafe System One
+
+- 新增 JevAPI API Key 通道、上游模型同步和密钥验证。
+- 新增 `/v1/systemone` 原生结构化决策接口，支持 Noul、Choice、Score、网关鉴权、账号切换及 Token 用量记录；不将 Jev 作为聊天模型。
+- 增加原生协议单元测试和使用隔离数据、模拟上游的 Preview 验证入口。
+
 ## v0.4.5 — 2026-08-26
 
 ### 📈 网络流量统计

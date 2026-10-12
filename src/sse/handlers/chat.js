@@ -38,6 +38,7 @@ import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute.js";
 import { resolveHarnessTarget, resolveLegacyClaudeMessagesRoute } from "@/shared/utils/harnessRoute.js";
+import { isNonChatServiceProvider } from "@/shared/constants/providers";
 
 function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
@@ -346,6 +347,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const effectiveRouted = typeof routed === "boolean" ? routed : modelInfo.routed;
   let provider = modelInfo.provider;
   const model = modelInfo.model;
+  // Hard guard: a native non-chat service (e.g. JevAPI's /v1/systemone) must never
+  // receive a chat request. Reject before account/transport resolution, otherwise
+  // it would fall through to the OpenAI default transport.
+  if (modelInfo.provider && isNonChatServiceProvider(modelInfo.provider)) {
+    log.warn("CHAT", `${modelStr} | provider "${modelInfo.provider}" is a non-chat service — use its native endpoint`);
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Model "${modelStr}" is not a chat model`);
+  }
   const implicitClaudeFallback = typeof modelStr === "string"
     && !modelStr.includes("/")
     && /^claude-/i.test(modelStr)

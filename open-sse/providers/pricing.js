@@ -10,6 +10,7 @@
  * Cover all known models; deduplicated across providers.
  */
 import { QIANWEN_REFERENCE_PRICING } from "../config/qianwen.js";
+import { JEVAPI_CONFIG, JEVAPI_STATIC_MODELS } from "../config/jevapi.js";
 
 export const MODEL_PRICING = {
   // === Anthropic / Claude ===
@@ -145,6 +146,8 @@ export const MODEL_PRICING = {
 export const PROVIDER_PRICING = {
   qianwen: QIANWEN_REFERENCE_PRICING,
   "qianwen-token-plan": QIANWEN_REFERENCE_PRICING,
+  // JevAPI / TypeSafe System One — flat input rate; output not billed separately.
+  jevapi: Object.fromEntries(JEVAPI_STATIC_MODELS.map((id) => [id, { ...JEVAPI_CONFIG.pricing }])),
   // GitHub Copilot (gh) — explicit override, matches canonical gpt-5.3-codex rate
   gh: {
     "gpt-5.3-codex": { input: 1.75, output: 14.00, cached: 0.175, reasoning: 14.00, cache_creation: 1.75 },

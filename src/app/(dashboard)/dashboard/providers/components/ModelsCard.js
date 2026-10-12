@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Drawer } from "@/shared/components";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
-import { getProviderAlias } from "@/shared/constants/providers";
+import { getProviderAlias, isNonChatServiceProvider, supportsLiveModelSync, usesUpstreamModelList } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // ── ModelRow ───────────────────────────────────────────────────
@@ -119,6 +119,12 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
   const providerAlias = providerAliasOverride || getProviderAlias(providerId);
   const effectiveType = kindFilter || "llm";
+  // Native (non-chat) providers: their models can't be pinged through the chat
+  // endpoint, and their live list is synced (not just the static seed).
+  const nonChat = isNonChatServiceProvider(providerId);
+  const canSync = nonChat && supportsLiveModelSync(providerId);
+  const [syncingModels, setSyncingModels] = useState(false);
+  const [modelSyncStatus, setModelSyncStatus] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -179,6 +185,49 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     } catch (e) { console.log("delete custom model error:", e); }
   };
 
+  // Pull this provider's live model list into the local catalog. Mirrors the
+  // chat-side sync flow: fetch the connection's /models, then POST to model-sync.
+  const handleSyncModels = async () => {
+    if (syncingModels) return;
+    setSyncingModels(true);
+    setModelSyncStatus(null);
+    try {
+      const connRes = await fetch("/api/providers", { cache: "no-store" });
+      const connData = await connRes.json().catch(() => ({}));
+      if (!connRes.ok) throw new Error(connData.error || "读取连接失败");
+      const activeConnection = (connData.connections || []).find(
+        (c) => c.provider === providerId && c.isActive !== false,
+      );
+      if (!activeConnection) {
+        setModelSyncStatus({ type: "error", text: "请先添加并启用一个连接" });
+        return;
+      }
+      const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
+      const officialData = await officialRes.json().catch(() => ({}));
+      if (!officialRes.ok || !Array.isArray(officialData.models)) {
+        throw new Error(officialData.error || "读取上游模型失败");
+      }
+
+      const res = await fetch("/api/providers/model-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId, supportedModels: officialData.models, officialFetched: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setModelSyncStatus({ type: "error", text: data.error || "同步模型失败" });
+        return;
+      }
+      await fetchData();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      setModelSyncStatus({ type: "success", text: `已同步 ${data.total} 个模型` });
+    } catch (error) {
+      setModelSyncStatus({ type: "error", text: `同步模型失败: ${error.message}` });
+    } finally {
+      setSyncingModels(false);
+    }
+  };
+
   const handleTestModel = async (modelId) => {
     if (testingModelId) return;
     setTestingModelId(modelId);
@@ -198,7 +247,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   };
 
   // Built-in models — filter by kindFilter if provided
-  const allBuiltIn = getModelsByProviderId(providerId);
+  const allBuiltIn = usesUpstreamModelList(providerId) ? [] : getModelsByProviderId(providerId);
   const builtInModels = kindFilter
     ? allBuiltIn.filter((m) => {
         if (m.kinds) return m.kinds.includes(kindFilter);
@@ -219,8 +268,24 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     <>
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Models{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
+          <h2 className="text-lg font-semibold">{nonChat ? "模型" : "Models"}{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
+          {canSync && (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="sync"
+              disabled={syncingModels}
+              onClick={handleSyncModels}
+            >
+              {syncingModels ? "同步中…" : "同步模型"}
+            </Button>
+          )}
         </div>
+        {modelSyncStatus && (
+          <p className={`text-xs mb-3 break-words ${modelSyncStatus.type === "error" ? "text-red-500" : "text-green-600"}`}>
+            {modelSyncStatus.text}
+          </p>
+        )}
         {testError && <p className="text-xs text-red-500 mb-3 break-words">{testError}</p>}
 
         <div className="flex flex-wrap gap-3">
@@ -238,7 +303,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
                 onSetAlias={(alias) => handleSetAlias(model.id, alias)}
                 onDeleteAlias={() => handleDeleteAlias(existingAlias)}
                 testStatus={modelTestResults[model.id]}
-                onTest={() => handleTestModel(model.id)}
+                onTest={nonChat ? undefined : () => handleTestModel(model.id)}
                 isTesting={testingModelId === model.id}
                 isFree={model.isFree}
               />
@@ -255,7 +320,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
               onSetAlias={() => {}}
               onDeleteAlias={() => handleDeleteCustomModel(model.id)}
               testStatus={modelTestResults[model.id]}
-              onTest={() => handleTestModel(model.id)}
+              onTest={nonChat ? undefined : () => handleTestModel(model.id)}
               isTesting={testingModelId === model.id}
               isCustom
             />
@@ -266,7 +331,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-black/15 dark:border-white/15 text-xs text-text-muted hover:text-primary hover:border-primary/40 transition-colors"
           >
             <span className="material-symbols-outlined text-sm">add</span>
-            Add Model
+            {nonChat ? "添加模型" : "Add Model"}
           </button>
         </div>
       </Card>

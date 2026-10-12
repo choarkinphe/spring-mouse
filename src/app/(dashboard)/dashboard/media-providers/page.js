@@ -49,6 +49,16 @@ const MEDIA_GROUPS = [
       { id: "web", kinds: ["webSearch", "webFetch"], label: "网页抓取与搜索", description: "网页搜索、抓取与内容获取", icon: "travel_explore" },
     ],
   },
+  {
+    id: "decision",
+    label: "决策能力",
+    description: "对状态与文本做结构化判定，返回类型化答案。",
+    icon: "rule",
+    accent: "text-sky-500 bg-sky-500/10 border-sky-500/20",
+    items: [
+      { id: "systemone", label: "结构化决策", description: "按类型化问题评估状态并返回结构化答案", icon: "rule" },
+    ],
+  },
 ];
 
 function getItemKinds(item) {

@@ -125,6 +125,8 @@ import p121 from "./alitp-intl.js";
 import p122 from "./qianwen-token-plan.js";
 import p123 from "./qianwen.js";
 
+import p124 from "./jevapi.js";
+
 export default [
   p0,
   p1,
@@ -248,4 +250,5 @@ export default [
   p121,
   p122,
   p123,
+  p124,
 ];

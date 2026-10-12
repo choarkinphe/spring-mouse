@@ -12,6 +12,7 @@ import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { QIANWEN_ENDPOINTS } from "open-sse/config/qianwen.js";
+import { JEVAPI_CONFIG, parseJevapiModels } from "open-sse/config/jevapi.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -267,6 +268,16 @@ const PROVIDER_MODELS_CONFIG = {
   ollama: createOpenAIModelsConfig("https://ollama.com/api/tags"),
   // ollama-local: url resolved dynamically below via providerSpecificData.baseUrl
   nanobanana: createOpenAIModelsConfig("https://api.nanobananaapi.ai/v1/models"),
+  // JevAPI / TypeSafe System One — native {models:[{name,description,release_date}]};
+  // parsed to type "systemone" so a synced model is never treated as chat.
+  jevapi: {
+    url: JEVAPI_CONFIG.modelsUrl,
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    parseResponse: (data) => parseJevapiModels(data),
+  },
   chutes: createOpenAIModelsConfig("https://llm.chutes.ai/v1/models"),
   nvidia: createOpenAIModelsConfig("https://integrate.api.nvidia.com/v1/models"),
   assemblyai: createOpenAIModelsConfig("https://api.assemblyai.com/v1/models"),

@@ -5,7 +5,7 @@ import { RISK_NOTICE } from "@/shared/constants/providersDisplay";
 const MEDIA_ENTRY_KEYS = [
   "serviceKinds", "ttsConfig", "sttConfig", "embeddingConfig",
   "imageConfig", "imageToTextConfig", "videoConfig", "musicConfig",
-  "searchViaChat", "searchConfig", "fetchConfig",
+  "searchViaChat", "searchConfig", "fetchConfig", "systemoneConfig",
   "modelsFetcher", "mediaPriority", "hiddenKinds",
   "modelCatalog",
 ];
@@ -79,6 +79,8 @@ export const MEDIA_PROVIDER_KINDS = [
   { id: "stt",         label: "Speech To Text", icon: "mic",               endpoint: { method: "POST", path: "/v1/audio/transcriptions" } },
   { id: "webSearch",   label: "Web Search",     icon: "travel_explore",    endpoint: { method: "POST", path: "/v1/search" } },
   { id: "webFetch",    label: "Web Fetch",      icon: "language",          endpoint: { method: "POST", path: "/v1/web/fetch" } },
+  // Native structured-decision service (JevAPI / TypeSafe System One) — not chat.
+  { id: "systemone",   label: "Decisions",      icon: "rule",              endpoint: { method: "POST", path: "/v1/systemone" } },
   { id: "video",       label: "Video",          icon: "movie",             endpoint: { method: "POST", path: "/v1/videos/generations" } },
   { id: "music",       label: "Music",          icon: "music_note",        endpoint: { method: "POST", path: "/v1/audio/music" } },
 ];
@@ -133,6 +135,8 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "nvidia",
   "assemblyai",
   "vercel-ai-gateway",
+  // Native systemone listing (GET /v1/models) — models synced as type "systemone".
+  "jevapi",
 ]);
 
 export function isOpenAICompatibleProvider(providerId) {
@@ -213,6 +217,16 @@ export function getProvidersByKind(kind) {
       return true;
     })
     .sort((a, b) => (a.priority ?? a.mediaPriority ?? 999) - (b.priority ?? b.mediaPriority ?? 999));
+}
+
+// Native (non-chat) service providers that must never receive a chat request.
+// Narrow on purpose: several existing providers declare non-llm serviceKinds but
+// still expose a chat transport (e.g. nanobanana), so a blanket "no llm kind"
+// guard would break them. Extend this set only for providers with no chat path.
+export const NON_CHAT_SERVICE_PROVIDERS = new Set(["jevapi"]);
+
+export function isNonChatServiceProvider(providerId) {
+  return NON_CHAT_SERVICE_PROVIDERS.has(providerId);
 }
 
 // Derive từ registry features flags

@@ -108,5 +108,19 @@ assert.ok(proxyAfter > proxyBefore, "proxy path fell back to direct; CONNECT was
 await api("/api/combos", { name: "release-fixture-fallback", models: ["qianwen/qwen3.8-flash", "qianwen-token-plan/qwen3.8-flash"], kind: "llm" });
 const fallback = await fetch(base + "/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "release-fixture-fallback", stream: false, messages: [{ role: "user", content: "smoke-stage-fallback" }] }), signal: AbortSignal.timeout(30000) });
 assert.equal(fallback.status, 200); await fallback.text();
+// Successful HTTP responses must not hide producer-side telemetry loss.
+let routingHealth;
+for (let i = 0; i < 120; i++) {
+  routingHealth = (await (await api("/api/usage/routing-outcomes?processLocal=true&bestEffort=true")).json()).health;
+  if (routingHealth && routingHealth.queued === 0 && routingHealth.inFlight === 0) break;
+  await sleep(100);
+}
+assert.ok(routingHealth, "process-local routing health missing");
+console.log(JSON.stringify({ check: "routing-delivery", health: routingHealth }));
+assert.equal(routingHealth.failed, 0, "routing events exhausted delivery retries");
+assert.equal(routingHealth.droppedQueueFull, 0, "routing queue overflow");
+assert.equal(routingHealth.droppedInvalid, 0, "invalid routing events");
+assert.equal(routingHealth.droppedBytes || 0, 0, "routing payload byte limit exceeded");
+assert.equal(routingHealth.sent, routingHealth.enqueued, "routing events were not fully delivered");
 // Credentials never enter the report. Fixture traffic records retain only labels.
 console.log(JSON.stringify({ ok: true, version: await (await api("/api/version")).json(), matrix, cancellation, connectionIds: connections.map((c) => c.id), realUpstreamVerified: false }));

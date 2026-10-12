@@ -79,6 +79,19 @@ function positive(value, fallback) {
 
 const DEFAULT_QUEUE_LIMIT = positive(process.env.SPRING_MOUSE_ROUTING_QUEUE_LIMIT, 1000);
 const DEFAULT_IN_FLIGHT_LIMIT = positive(process.env.SPRING_MOUSE_ROUTING_INFLIGHT_LIMIT, 8);
+const MAX_PENDING_BYTES = 4 * 1024 * 1024;
+const DELIVERY_TTL_MS = 10000;
+const RETRY_DELAY_MS = 1000;
+const MAX_DELIVERY_ATTEMPTS = 5;
+
+// The token outlives the retry window. A lost EVAL reply must not duplicate XADD.
+export const ROUTING_APPEND_SCRIPT = `
+local previous = redis.call('GET', KEYS[2])
+if previous then return previous end
+local id = redis.call('XADD', KEYS[1], '*', 'event', ARGV[1])
+redis.call('SET', KEYS[2], id, 'PX', 60000)
+return id
+`;
 
 // One bounded, process-local queue per Node process. globalThis keeps the state
 // shared across HMR/module reloads so counters and the queue cannot silently
@@ -100,7 +113,14 @@ const state = globalThis.__smRoutingEvents ||= {
   lastErrorAt: 0,
 };
 
-let draining = false;
+state.pendingBytes ??= 0;
+state.retried ??= 0;
+state.droppedExpired ??= 0;
+state.droppedBytes ??= 0;
+state.draining ??= false;
+state.retryTimer ??= null;
+state.retryAt ??= 0;
+state.generation ??= 0;
 
 function queueLimit() {
   return state.queueLimit > 0 ? state.queueLimit : DEFAULT_QUEUE_LIMIT;
@@ -133,51 +153,65 @@ function sanitizeRecord(entity, input) {
 }
 
 function scheduleDrain() {
-  if (draining) return;
-  draining = true;
-  // Fire-and-forget: the caller must never await delivery.
-  void drain();
-}
-
-async function drain() {
+  if (state.draining || state.retryTimer || !state.queue.length) return;
+  if (state.retryAt > Date.now()) {
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null;
+      scheduleDrain();
+    }, state.retryAt - Date.now());
+    state.retryTimer.unref?.();
+    return;
+  }
+  state.draining = true;
   try {
     while (state.queue.length && state.inFlight < inFlightLimit()) {
-      const envelope = state.queue.shift();
+      const entry = state.queue.shift();
+      if (Date.now() >= entry.expiresAt) {
+        state.pendingBytes -= entry.bytes;
+        state.failed++;
+        state.droppedExpired++;
+        continue;
+      }
       state.inFlight++;
       if (state.inFlight > state.maxInFlight) state.maxInFlight = state.inFlight;
-      void deliver(envelope);
+      void deliver(entry, state.generation);
     }
-  } catch {
-    state.errors++;
   } finally {
-    draining = false;
-    // A slot may have freed (or an error thrown) between the loop check and
-    // here. Re-arm only when there is genuinely room, so a full in-flight set
-    // cannot spin.
-    if (state.queue.length && state.inFlight < inFlightLimit()) scheduleDrain();
+    state.draining = false;
   }
 }
 
-async function deliver(envelope) {
+async function deliver(entry, deliveryGeneration) {
+  let delivered = false;
+  let retained = false;
+  entry.attempts++;
   try {
-    const result = await routingRedis((client) =>
-      client.xAdd(ROUTING_STREAM_KEY, "*", { event: JSON.stringify(envelope) }),
-    );
-    if (result === null || result === undefined) {
-      // routingRedis returns null when Redis is unconfigured/unavailable or the
-      // bounded operation timed out. Count it; never retry a mutation here.
-      state.failed++;
-    } else {
+    const result = await routingRedis((client) => client.eval(ROUTING_APPEND_SCRIPT, {
+      keys: [ROUTING_STREAM_KEY, `${ROUTING_STREAM_KEY}:delivery:${entry.id}`],
+      arguments: [entry.payload],
+    }));
+    delivered = result !== null && result !== undefined;
+  } catch {
+    if (deliveryGeneration === state.generation) {
+      state.errors++;
+      state.lastErrorAt = Date.now();
+    }
+  } finally {
+    if (deliveryGeneration !== state.generation) return;
+    if (delivered) {
       state.sent++;
       state.lastSentAt = Date.now();
+    } else if (entry.attempts < MAX_DELIVERY_ATTEMPTS && Date.now() + RETRY_DELAY_MS < entry.expiresAt && state.queue.length < queueLimit()) {
+      state.queue.push(entry);
+      retained = true;
+      state.retried++;
+      state.retryAt = Date.now() + RETRY_DELAY_MS;
+    } else {
+      state.failed++;
+      if (Date.now() + RETRY_DELAY_MS >= entry.expiresAt) state.droppedExpired++;
+      else if (state.queue.length >= queueLimit()) state.droppedQueueFull++;
     }
-  } catch {
-    // routingRedis already fails open; this is belt-and-braces. The error text
-    // is intentionally not recorded or logged.
-    state.failed++;
-    state.errors++;
-    state.lastErrorAt = Date.now();
-  } finally {
+    if (!retained) state.pendingBytes -= entry.bytes;
     if (state.inFlight > 0) state.inFlight--;
     scheduleDrain();
   }
@@ -214,12 +248,14 @@ export function enqueueRoutingEvent(entity, action, record) {
       return false;
     }
 
-    state.queue.push({
-      version: ROUTING_EVENT_VERSION,
-      entity,
-      action,
-      record: sanitized,
-    });
+    const payload = JSON.stringify({ version: ROUTING_EVENT_VERSION, entity, action, record: sanitized });
+    const bytes = Buffer.byteLength(payload);
+    if (state.pendingBytes + bytes > MAX_PENDING_BYTES) {
+      state.droppedBytes++;
+      return false;
+    }
+    state.queue.push({ id: randomUUID(), payload, bytes, attempts: 0, expiresAt: Date.now() + DELIVERY_TTL_MS });
+    state.pendingBytes += bytes;
     state.enqueued++;
     if (state.queue.length > state.maxQueued) state.maxQueued = state.queue.length;
 
@@ -366,6 +402,11 @@ export function getRoutingTelemetryHealth() {
     enqueued: state.enqueued,
     sent: state.sent,
     failed: state.failed,
+    retried: state.retried,
+    pendingBytes: state.pendingBytes,
+    maxPendingBytes: MAX_PENDING_BYTES,
+    droppedExpired: state.droppedExpired,
+    droppedBytes: state.droppedBytes,
     droppedQueueFull: state.droppedQueueFull,
     droppedInvalid: state.droppedInvalid,
     errors: state.errors,
@@ -386,6 +427,14 @@ export const __test = Object.freeze({
     if (inFlight !== undefined) state.inFlightLimit = inFlight;
   },
   reset() {
+    state.generation++;
+    clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    state.retryAt = 0;
+    state.pendingBytes = 0;
+    state.retried = 0;
+    state.droppedExpired = 0;
+    state.droppedBytes = 0;
     state.queue.length = 0;
     state.inFlight = 0;
     state.queueLimit = DEFAULT_QUEUE_LIMIT;
@@ -400,6 +449,6 @@ export const __test = Object.freeze({
     state.maxInFlight = 0;
     state.lastSentAt = 0;
     state.lastErrorAt = 0;
-    draining = false;
+    state.draining = false;
   },
 });

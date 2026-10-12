@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  xAdd: vi.fn(),
+  eval: vi.fn(),
   routingRedis: vi.fn(),
   getRoutingRedisStatus: vi.fn(() => ({ connected: true, timeoutMs: 200, timeouts: 0, errors: 0 })),
 }));
@@ -37,16 +37,16 @@ import {
 import { normalizeRoutingEvent } from "@/shared/utils/routingTelemetry.js";
 
 // Default routingRedis double: run the operation against a stub client so the
-// producer's xAdd envelope is observable. A real xAdd resolves to a message id;
+// producer's eval envelope is observable. A real eval resolves to a message id;
 // returning one keeps the success path (sent counter) honest.
-function deliverViaXAdd() {
-  mocks.xAdd.mockReturnValue("1-0");
-  mocks.routingRedis.mockImplementation((operation) => operation({ xAdd: mocks.xAdd }));
+function deliverViaEval() {
+  mocks.eval.mockReturnValue("1-0");
+  mocks.routingRedis.mockImplementation((operation) => operation({ eval: mocks.eval }));
 }
 
 function lastEnvelope() {
-  const call = mocks.xAdd.mock.calls.at(-1);
-  return call ? JSON.parse(call[2].event) : null;
+  const call = mocks.eval.mock.calls.at(-1);
+  return call ? JSON.parse(call[1].arguments[0]) : null;
 }
 
 // Let the fire-and-forget drain microtask/queue settle.
@@ -55,15 +55,17 @@ async function flush() {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   __test.reset();
-  mocks.xAdd.mockReset();
+  mocks.eval.mockReset();
   mocks.routingRedis.mockReset();
   mocks.getRoutingRedisStatus.mockReset().mockReturnValue({ connected: true, timeoutMs: 200, timeouts: 0, errors: 0 });
-  deliverViaXAdd();
+  deliverViaEval();
 });
 
 afterEach(() => {
   __test.reset();
+  vi.useRealTimers();
 });
 
 describe("envelope + stream delivery", () => {
@@ -77,8 +79,8 @@ describe("envelope + stream delivery", () => {
     await flush();
 
     expect(mocks.routingRedis).toHaveBeenCalled();
-    const call = mocks.xAdd.mock.calls.at(-1);
-    expect(call[0]).toBe(ROUTING_STREAM_KEY);
+    const call = mocks.eval.mock.calls.at(-1);
+    expect(call[1].keys[0]).toBe(ROUTING_STREAM_KEY);
 
     const envelope = lastEnvelope();
     expect(envelope.version).toBe(ROUTING_EVENT_VERSION);
@@ -108,7 +110,7 @@ describe("envelope + stream delivery", () => {
     expect(enqueueRoutingRequest(ROUTING_ACTION_UPSERT, { originalModel: "x" })).toBe(false);
     expect(enqueueRoutingRequest(ROUTING_ACTION_UPSERT, { routingRequestId: "" })).toBe(false);
     await flush();
-    expect(mocks.xAdd).not.toHaveBeenCalled();
+    expect(mocks.eval).not.toHaveBeenCalled();
     expect(getRoutingTelemetryHealth().droppedInvalid).toBe(2);
   });
 });
@@ -216,11 +218,12 @@ describe("bounded queue + in-flight", () => {
     expect(mocks.routingRedis.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("counts unavailable Redis as a failure without throwing", async () => {
+  it("retains an unavailable delivery without throwing", async () => {
     mocks.routingRedis.mockResolvedValue(null);
     expect(() => enqueueRoutingRequest(ROUTING_ACTION_UPSERT, { routingRequestId: "fail-1" })).not.toThrow();
     await flush();
-    expect(getRoutingTelemetryHealth().failed).toBe(1);
+    expect(getRoutingTelemetryHealth().retried).toBe(1);
+    expect(getRoutingTelemetryHealth().failed).toBe(0);
     expect(getRoutingTelemetryHealth().sent).toBe(0);
   });
 
@@ -229,8 +232,91 @@ describe("bounded queue + in-flight", () => {
     expect(() => enqueueRoutingRequest(ROUTING_ACTION_UPSERT, { routingRequestId: "rej-1" })).not.toThrow();
     await flush();
     const health = getRoutingTelemetryHealth();
-    expect(health.failed).toBe(1);
+    expect(health.failed).toBe(0);
+    expect(health.retried).toBe(1);
     expect(health.errors).toBe(1);
+  });
+});
+
+describe("bounded retry", () => {
+  it("recovers an initial timeout with the same dedupe key and payload", async () => {
+    mocks.routingRedis.mockImplementationOnce(async (operation) => { await operation({ eval: mocks.eval }); return null; });
+    enqueueRoutingRequest("complete", { routingRequestId: "retry-1", outcome: "valid_terminal" });
+    await flush();
+    const first = mocks.eval.mock.calls[0][1];
+    expect(getRoutingTelemetryHealth()).toMatchObject({ queued: 1, retried: 1, failed: 0 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.eval.mock.calls[1][1]).toEqual(first);
+    expect(getRoutingTelemetryHealth()).toMatchObject({ queued: 0, sent: 1, failed: 0, pendingBytes: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("holds new events during backoff instead of draining them into an unavailable client", async () => {
+    mocks.routingRedis.mockResolvedValueOnce(null);
+    enqueueRoutingRequest("upsert", { routingRequestId: "cold-1" });
+    await flush();
+    for (let i = 0; i < 100; i++) enqueueRoutingRequest("complete", { routingRequestId: `burst-${i}` });
+    await flush();
+    expect(mocks.routingRedis).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(getRoutingTelemetryHealth()).toMatchObject({ sent: 101, failed: 0, pendingBytes: 0 });
+  });
+
+  it("shares one retry timer and backoff across module instances", async () => {
+    mocks.routingRedis.mockResolvedValueOnce(null);
+    enqueueRoutingRequest("upsert", { routingRequestId: "module-a" });
+    await flush();
+    vi.resetModules();
+    const reloaded = await import("@/lib/redis/routingEvents.js");
+    reloaded.enqueueRoutingRequest("upsert", { routingRequestId: "module-b" });
+    await flush();
+    expect(mocks.routingRedis).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reloaded.getRoutingTelemetryHealth()).toMatchObject({ sent: 2, queued: 0, pendingBytes: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops retrying an extended outage and releases memory", async () => {
+    mocks.routingRedis.mockResolvedValue(null);
+    enqueueRoutingRequest("upsert", { routingRequestId: "outage" });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(mocks.routingRedis).toHaveBeenCalledTimes(5);
+    expect(getRoutingTelemetryHealth()).toMatchObject({ failed: 1, retried: 4, queued: 0, inFlight: 0, pendingBytes: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("expires old queued events without sending after a delayed wakeup", async () => {
+    mocks.routingRedis.mockResolvedValueOnce(null);
+    enqueueRoutingRequest("upsert", { routingRequestId: "expired" });
+    await flush();
+    vi.setSystemTime(Date.now() + 11000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.routingRedis).toHaveBeenCalledTimes(1);
+    expect(getRoutingTelemetryHealth()).toMatchObject({ failed: 1, droppedExpired: 1, pendingBytes: 0 });
+  });
+
+  it("bounds retry requeue when new arrivals filled the queue", async () => {
+    let release;
+    mocks.routingRedis.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    __test.setLimits({ queueLimit: 1, inFlightLimit: 1 });
+    enqueueRoutingRequest("upsert", { routingRequestId: "inflight" });
+    enqueueRoutingRequest("upsert", { routingRequestId: "queued" });
+    release(null);
+    await flush();
+    expect(getRoutingTelemetryHealth()).toMatchObject({ failed: 1, droppedQueueFull: 1, sent: 1, pendingBytes: 0 });
+  });
+
+  it("caps retained payload bytes including in-flight entries", async () => {
+    mocks.routingRedis.mockImplementation(() => new Promise(() => {}));
+    __test.setLimits({ queueLimit: 100000, inFlightLimit: 1 });
+    for (let i = 0; i < 15000; i++) enqueueRoutingRequest("upsert", { routingRequestId: `bytes-${i}`, originalModel: "m".repeat(256) });
+    const health = getRoutingTelemetryHealth();
+    expect(health.pendingBytes).toBeLessThanOrEqual(health.maxPendingBytes);
+    expect(health.droppedBytes).toBeGreaterThan(0);
   });
 });
 
@@ -301,7 +387,7 @@ describe("createRoutingTelemetryContext", () => {
     const telemetry = createRoutingTelemetryContext({ routingRequestId: "ctx-3" });
     expect(telemetry.completeAttempt({ outcome: "failed" })).toBe(false);
     await flush();
-    expect(mocks.xAdd).not.toHaveBeenCalled();
+    expect(mocks.eval).not.toHaveBeenCalled();
   });
 
   it("mints a request id when none is supplied", () => {
@@ -337,9 +423,9 @@ describe("writer compatibility (envelope round-trip)", () => {
     telemetry.completeRequest({ outcome: "valid_terminal", attemptCount: 1 });
     await flush();
 
-    expect(mocks.xAdd.mock.calls.length).toBe(4);
-    for (const call of mocks.xAdd.mock.calls) {
-      const envelope = JSON.parse(call[2].event);
+    expect(mocks.eval.mock.calls.length).toBe(4);
+    for (const call of mocks.eval.mock.calls) {
+      const envelope = JSON.parse(call[1].arguments[0]);
       const accepted = writerWouldAccept(envelope);
       expect(accepted).not.toBeNull();
       expect(accepted.record.routingRequestId).toBe("rt-1");

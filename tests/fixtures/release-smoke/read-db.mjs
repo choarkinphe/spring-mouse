@@ -29,8 +29,18 @@ export function readPersistence(directory) {
   }
 }
 
+export function reportPersistence(result) {
+  const minimum = { usageRows: 12, completedAttempts: 12, selectedAccounts: 2 };
+  const failures = Object.entries(minimum)
+    .filter(([key, value]) => result[key] < value)
+    .map(([key, value]) => ({ metric: key, actual: result[key], minimum: value }));
+  console.log(JSON.stringify(result));
+  // Only aggregate counts enter stderr; the Docker wrapper retains this on failure.
+  if (failures.length) console.error(JSON.stringify({ check: "smoke-persistence", counts: result, failures }));
+  return failures.length === 0;
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const result = readPersistence("/app/data/db");
-  console.log(JSON.stringify(result));
-  if (result.usageRows < 12 || result.completedAttempts < 12 || result.selectedAccounts < 2) process.exit(1);
+  if (!reportPersistence(result)) process.exit(1);
 }

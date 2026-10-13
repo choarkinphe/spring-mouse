@@ -46,6 +46,23 @@ function isFreshCache(entry) {
   return cachedAt > 0 && Date.now() - cachedAt < QUOTA_CACHE_MAX_AGE_MS;
 }
 
+// Counted quotas (CodeBuddy credits) say more as a remaining amount than as a
+// bare percentage: this card already shows a remaining-ratio bar, and "0 积分"
+// answers "how much is left" directly without stealing width from the channel
+// and quota names (the row is only ~358px wide, and "1,000 / 1,000 积分" needs
+// 115px of it). Only quotas that carry a unit switch; percentage-only
+// providers keep the % form.
+function formatRemainingQuota(quota) {
+  const used = Number(quota?.used);
+  const total = Number(quota?.total);
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
+
+  const unit = typeof quota?.unit === "string" ? quota.unit.trim() : "";
+  if (!unit) return null;
+
+  return `${Math.max(0, total - used).toLocaleString()} ${unit}`;
+}
+
 function toQuotaSnapshot(connection, quotas) {
   if (!Array.isArray(quotas) || quotas.length === 0) return null;
 
@@ -76,7 +93,7 @@ function toQuotaSnapshot(connection, quotas) {
       icon: getProviderIconSrc(connection.provider),
       quotaName: measured.quota.name || "额度",
       kind: "percentage",
-      value: `${measured.remaining}%`,
+      value: formatRemainingQuota(measured.quota) ?? `${measured.remaining}%`,
       progress: measured.remaining,
     };
   }

@@ -488,16 +488,21 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "codebuddy-cn":
-        // CodeBuddy CN mixes recurring refill packs ("Monthly"/"Weekly"/...)
-        // with one-shot bonus packs ("Bonus Pack N"). Forward `recurring`
-        // so the UI can show "Expires in" for bonus packs (whose resetAt is
-        // a hard expiry, not a refresh) instead of "Reset in".
+      case "codebuddy-intl":
+        // CodeBuddy mixes recurring refill packs ("Monthly"/"Weekly"/...) with
+        // one-shot bonus packs ("Bonus Pack N"). Forward `recurring` so the UI
+        // can show "Expires in" for bonus packs (whose resetAt is a hard
+        // expiry, not a refresh) instead of "Reset in".
+        // Both gateways (copilot.tencent.com / codebuddy.ai) meter in credits
+        // rather than request counts, so carry the unit through for the UI to
+        // render "1,000 / 1,000 积分" instead of a bare percentage.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: "积分",
               resetAt: quota.resetAt || null,
               recurring: quota.recurring !== false,
             });

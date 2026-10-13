@@ -227,6 +227,20 @@ function getResetCreditCount(resetCredits) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+// Counted quotas (CodeBuddy credits, request budgets) read better as
+// "1,000 / 1,000 积分" than as a bare percentage — the percentage is already
+// carried by the progress bar below. Quotas that only expose a remaining
+// percentage (kimi / ollama / grok) have no usable used/total pair, so those
+// keep the % form.
+function getQuotaAmountLabel(quota) {
+  const used = Number(quota?.used);
+  const total = Number(quota?.total);
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
+
+  const unit = typeof quota?.unit === "string" ? quota.unit.trim() : "";
+  return `${used.toLocaleString()} / ${total.toLocaleString()}${unit ? ` ${unit}` : ""}`;
+}
+
 function ChannelQuota({ quotas, loading }) {
   if (loading) {
     return <div className="h-10 w-full max-w-[32rem] animate-pulse rounded-lg bg-white/[0.045]" />;
@@ -240,14 +254,18 @@ function ChannelQuota({ quotas, loading }) {
     <div className="w-full max-w-[38rem]">
       <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#647688]">
         <span>上游配额快照</span>
-        <Tooltip text="配额来自账号对应的提供商接口；百分比表示剩余量，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
+        <Tooltip text="配额来自账号对应的提供商接口；数字为已用 / 总量，进度条长度为剩余占比，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
           <span className="material-symbols-outlined text-[13px]! leading-none" aria-label="配额口径说明">info</span>
         </Tooltip>
       </div>
-      <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+      {/* Single column: a counted quota now carries name + "used / total unit"
+          + reset countdown, which no longer fits two columns without truncating
+          the quota name down to a couple of characters. */}
+      <div className="grid w-full grid-cols-1 gap-2">
         {quotas.slice(0, 4).map((quota) => {
           const remaining = getRemainingPercentage(quota);
           const balance = formatQuotaBalance(quota);
+          const amount = getQuotaAmountLabel(quota);
           const reset = formatResetTime(quota.resetAt);
           return (
             <div key={quota.modelKey || quota.name} className="min-w-0">
@@ -258,7 +276,7 @@ function ChannelQuota({ quotas, loading }) {
                 ) : (
                   <>
                     {balance && <span className="shrink-0 font-mono text-[#e4edf5]">{balance}</span>}
-                    <span className="shrink-0 font-mono text-[#e4edf5]">{remaining}%</span>
+                    <span className="shrink-0 font-mono text-[#e4edf5]">{amount ?? `${remaining}%`}</span>
                   </>
                 )}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
@@ -281,7 +299,7 @@ const CHANNEL_DATA_SCOPE_ITEMS = [
   {
     icon: "account_balance_wallet",
     title: "配额与重置",
-    text: "来自账号对应的提供商接口快照；百分比表示剩余量，重置时间以提供商返回值为准。",
+    text: "来自账号对应的提供商接口快照；数字为已用 / 总量，进度条为剩余占比，重置时间以提供商返回值为准。",
   },
   {
     icon: "schedule",

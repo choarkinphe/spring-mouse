@@ -15,6 +15,7 @@ import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import {
   HTTP_STATUS,
   CODEX_SCAN_DIAGNOSTICS,
+  CODEX_SSE_OUTPUT_DELTA_TYPES,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
   hasRoomForRetry,
@@ -34,24 +35,20 @@ const CODEX_SSE_RETRY_PATTERNS = [
   "an error occurred while processing your request",
 ];
 const CODEX_SSE_ACCOUNT_FALLBACK_PATTERNS = ["selected model is at capacity", "model_at_capacity"];
+// Reasoning deltas are real upstream content, and on the xhigh thinking models
+// they are the ONLY thing the stream carries for the first tens of seconds. Without
+// these patterns the scan stayed in its "preamble" phase the whole time the model
+// was thinking, so every slow request waited out the full preamble bound before the
+// client saw anything. Production ttft histogram showed the artefact: a spike of 84
+// requests at 61-63s against 35 at 50s, i.e. a wall at the 60s bound rather than the
+// natural decay (10s:522 → 20s:239 → 30s:113 → 40s:63 → 50s:35). Counting reasoning
+// as output lets the content-aware grace window release the stream as soon as
+// thinking begins, which is what it already does for text.
+// Custom tool input deltas also carry real output; the translator already handles
+// them alongside function arguments. Keep recognition and diagnostic labels aligned.
 const CODEX_SSE_USER_OUTPUT_PATTERNS = [
-  "event: response.output_text.delta",
-  "event: response.function_call_arguments.delta",
-  // Reasoning deltas are real upstream content, and on the xhigh thinking models
-  // they are the ONLY thing the stream carries for the first tens of seconds. Without
-  // these patterns the scan stayed in its "preamble" phase the whole time the model
-  // was thinking, so every slow request waited out the full preamble bound before the
-  // client saw anything. Production ttft histogram showed the artefact: a spike of 84
-  // requests at 61-63s against 35 at 50s, i.e. a wall at the 60s bound rather than the
-  // natural decay (10s:522 → 20s:239 → 30s:113 → 40s:63 → 50s:35). Counting reasoning
-  // as output lets the content-aware grace window release the stream as soon as
-  // thinking begins, which is what it already does for text.
-  "event: response.reasoning_summary_text.delta",
-  "event: response.reasoning_text.delta",
-  '"type":"response.output_text.delta"',
-  '"type":"response.function_call_arguments.delta"',
-  '"type":"response.reasoning_summary_text.delta"',
-  '"type":"response.reasoning_text.delta"',
+  ...CODEX_SSE_OUTPUT_DELTA_TYPES.map(type => `event: ${type}`),
+  ...CODEX_SSE_OUTPUT_DELTA_TYPES.map(type => `"type":"${type}"`),
 ];
 // Frames that only announce the turn and echo the request back — Codex's
 // `response.created` replays the whole `tools` schema, so a single such frame can

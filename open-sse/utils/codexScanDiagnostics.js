@@ -1,4 +1,4 @@
-import { CODEX_SCAN_DIAGNOSTICS } from "../config/runtimeConfig.js";
+import { CODEX_SCAN_DIAGNOSTICS, CODEX_SSE_OUTPUT_DELTA_TYPES } from "../config/runtimeConfig.js";
 
 // Only protocol labels are logged. Unknown upstream names are bucketed rather
 // than copied: even an event/type field can contain user content or credentials.
@@ -6,18 +6,15 @@ const EVENTS = new Set([
   "response.created", "response.in_progress", "response.queued",
   "response.output_item.added", "response.output_item.done",
   "response.content_part.added", "response.content_part.done",
-  "response.output_text.delta", "response.output_text.done",
-  "response.function_call_arguments.delta", "response.function_call_arguments.done",
-  "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done",
-  "response.reasoning_text.delta", "response.reasoning_text.done",
+  ...CODEX_SSE_OUTPUT_DELTA_TYPES,
+  "response.output_text.done", "response.function_call_arguments.done",
+  "response.custom_tool_call_input.done",
+  "response.reasoning_summary_text.done", "response.reasoning_text.done",
   "response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
   "response.refusal.delta", "response.refusal.done",
   "response.completed", "response.done", "response.failed", "response.incomplete", "error",
 ]);
-const RECOGNIZED_OUTPUT = new Set([
-  "response.output_text.delta", "response.function_call_arguments.delta",
-  "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
-]);
+const RECOGNIZED_OUTPUT = new Set(CODEX_SSE_OUTPUT_DELTA_TYPES);
 
 export function createCodexScanDiagnostics(startedAt = Date.now()) {
   let line = "";

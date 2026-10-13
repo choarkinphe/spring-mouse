@@ -15,14 +15,16 @@
 | `eventHeaderCounts` | 实际 event 头计数，可与 JSON type 对照 |
 | `chunks` / `bytes` / `frames` | 已读 chunk、字节、完整 SSE 帧数量 |
 | `lastChunkAfterMs` / `lastChunkAgeMs` | 最后收包距扫描开始的时间，以及快照时多久没收包 |
-| `firstOutputType` / `firstOutputAfterMs` | 原有检测器首次判定输出的类型及时间 |
+| `firstOutputType` / `firstOutputAfterMs` | 首输出检测器首次判定输出的类型及时间 |
 | `firstCandidateType` / `firstCandidateAfterMs` | 独立观察器首次看到输出候选的类型及时间 |
-| `candidateWithoutDetection` | 有内容候选，但旧检测器尚未判定输出；是疑似漏识别线索，不是自动修改规则的依据 |
+| `candidateWithoutDetection` | 有内容候选，但首输出检测器尚未判定输出；是疑似漏识别线索，不是自动修改规则的依据 |
 | `malformedFrames` / `oversizedFrames` | JSON 无法解析、超过诊断保留上限的帧数 |
 | `pendingFrameChars` | 尚未完整结束的 SSE 帧长度 |
 | `releaseReason` | preamble / request / scan-ceiling / bytes / eof / terminal / output-grace / read-error / upstream-error |
 
 候选检测只看顶层 delta、text、arguments、refusal，以及明确的 done-item / content-part 输出字段。不检查 `response.created` 回显的 instructions 或 tools。
+
+首输出检测器与诊断共用 `CODEX_SSE_OUTPUT_DELTA_TYPES` 白名单，覆盖文本、普通工具参数、自定义工具输入和两种 reasoning delta。`response.custom_tool_call_input.delta` 进入现有输出后 grace 扫描，复用字符串 delta 字符计数；`response.custom_tool_call_input.done` 只补充诊断标签，不作为新增首输出触发条件。时间/字节/字符阈值、过载检测和流回放规则不变。
 
 已知事件名使用固定协议白名单；未知名称统一记为 `other`，避免上游把敏感文本放进事件标签而被原样记录。诊断帧最多保留 512 Ki 字符，超限只计数并恢复到下一帧；大帧、未知事件或缺少完整帧时，不能仅凭 `candidateWithoutDetection: false` 排除漏识别。
 

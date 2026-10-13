@@ -90,6 +90,15 @@ export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEO
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
+// Shared by the Codex first-output detector and its diagnostic observer.
+export const CODEX_SSE_OUTPUT_DELTA_TYPES = Object.freeze([
+  "response.output_text.delta",
+  "response.function_call_arguments.delta",
+  "response.custom_tool_call_input.delta",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_text.delta",
+]);
+
 // Observation-only Codex SSE diagnostics. Bounds do not affect scan/retry policy.
 export const CODEX_SCAN_DIAGNOSTICS = Object.freeze({
   progressMs: 30_000,

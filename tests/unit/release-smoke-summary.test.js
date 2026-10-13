@@ -4,8 +4,19 @@ import { summarizeSmokeFailure, smokeFailureAnnotation } from "../fixtures/relea
 describe("public smoke failure annotations", () => {
   it("extracts login status and fixture line without raw stderr", () => {
     const result = summarizeSmokeFailure("http-smoke", "", "AssertionError [ERR_ASSERTION]: /api/auth/login: HTTP 500\n at api (file:///fixture/tests/fixtures/release-smoke/verify.mjs:14:10)\nsecret=unsafe");
-    expect(result).toEqual({ stage: "http-smoke", http: { endpoint: "auth-login", status: 500 }, location: { file: "verify.mjs", line: 14 } });
+    expect(result).toEqual({ stage: "http-smoke", http: { endpoint: "/api/auth/login", status: 500, category: "unknown" }, location: { file: "verify.mjs", line: 14 } });
     expect(smokeFailureAnnotation(result)).not.toContain("unsafe");
+  });
+  it("names any failed dashboard API path from the fixture event, without its payload", () => {
+    const result = summarizeSmokeFailure("http-smoke", JSON.stringify({ event: "smoke.http.failure", endpoint: "/api/providers/model-sync", status: 500, body: "unsafe" }), "");
+    expect(result.http).toEqual({ endpoint: "/api/providers/model-sync", status: 500 });
+    expect(smokeFailureAnnotation(result)).toContain("model-sync");
+    expect(smokeFailureAnnotation(result)).not.toContain("unsafe");
+  });
+  it("does not publish endpoint strings that are not plain dashboard paths", () => {
+    const result = summarizeSmokeFailure("http-smoke", JSON.stringify({ event: "smoke.http.failure", endpoint: "secret\n::error::injected", status: 500 }), "");
+    expect(result.http.endpoint).toBe("unknown");
+    expect(smokeFailureAnnotation(result)).not.toContain("injected");
   });
   it("preserves safe delivery and persistence counters", () => {
     const result = summarizeSmokeFailure("persistence", JSON.stringify({ check: "routing-delivery", health: { enqueued: 104, sent: 20, failed: 84, secret: "unsafe" } }), JSON.stringify({ check: "smoke-persistence", counts: { usageRows: 27, attempts: 8, completedAttempts: 2, selectedAccounts: 2 } }));

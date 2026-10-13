@@ -11,6 +11,12 @@ const api = async (pathname, body, method = body ? "POST" : "GET") => {
     method, headers: { "content-type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20000),
   });
+  if (!response.ok) {
+    // Sanitized locator for the public annotation: which dashboard API failed
+    // and with which status. Never the response body or request payload.
+    console.error(JSON.stringify({ event: "smoke.http.failure", endpoint: pathname, status: response.status }));
+    await response.text().catch(() => {});
+  }
   assert.ok(response.ok, `${pathname}: HTTP ${response.status}`);
   return response;
 };

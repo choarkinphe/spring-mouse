@@ -1,5 +1,8 @@
 const STAGES = new Set(["setup", "http-smoke", "cancellation", "routing-dedupe", "persistence"]);
 const number = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+// Endpoint labels are allowlisted paths, never response text: a failed dashboard
+// API is named by its path only, so no payload fragment can reach an annotation.
+const endpoint = (value) => typeof value === "string" && /^\/api\/[A-Za-z0-9@/_-]{0,80}$/.test(value) ? value : "unknown";
 
 export function summarizeSmokeFailure(stage, stdout = "", stderr = "") {
   const summary = { stage: STAGES.has(stage) ? stage : "unknown" };
@@ -12,16 +15,18 @@ export function summarizeSmokeFailure(stage, stdout = "", stderr = "") {
     if (data?.check === "routing-delivery") {
       summary.delivery = Object.fromEntries(["enqueued", "sent", "failed", "retried", "droppedQueueFull", "droppedInvalid", "droppedBytes"].map((key) => [key, number(data.health?.[key])]));
     }
-    if (data?.event === "smoke.http.failure") {
+    if (data?.event === "smoke.http.failure" && (data.endpoint !== undefined || data.status !== undefined || data.category !== undefined)) {
       summary.http = {
-        endpoint: ["auth-login", "other"].includes(data.endpoint) ? data.endpoint : "unknown",
+        endpoint: endpoint(data.endpoint),
         status: number(data.status),
-        category: ["sqlite-busy", "sqlite-locked", "sqlite-error", "filesystem", "network", "request-json", "cookie-context", "crypto", "type-error"].includes(data.category) ? data.category : "unknown",
+        ...(data.category !== undefined
+          ? { category: ["sqlite-busy", "sqlite-locked", "sqlite-error", "filesystem", "network", "request-json", "cookie-context", "crypto", "type-error"].includes(data.category) ? data.category : "unknown" }
+          : {}),
       };
     }
   }
-  const status = stderr.match(/AssertionError[^\n]*: \/api\/auth\/login: HTTP (\d{3})/);
-  if (status && !summary.http) summary.http = { endpoint: "auth-login", status: Number(status[1]) };
+  const status = stderr.match(/AssertionError[^\n]*: (\/api\/[A-Za-z0-9@/_-]{0,80}): HTTP (\d{3})/);
+  if (status && !summary.http) summary.http = { endpoint: endpoint(status[1]), status: Number(status[2]), category: "unknown" };
   const location = stderr.match(/at .*?\/release-smoke\/(verify|cancellation|read-db|routing-dedupe)\.mjs:(\d+):(\d+)/);
   if (location) summary.location = { file: `${location[1]}.mjs`, line: Number(location[2]) };
   return summary;

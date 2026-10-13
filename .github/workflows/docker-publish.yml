@@ -206,6 +206,11 @@ jobs:
           tags: |
             type=raw,value=candidate-${{ github.sha }}
             type=sha,prefix=sha-
+            # `latest` tracks the default branch, so every release build moves
+            # it. AGENTS.md already documented this alias but no tag rule ever
+            # produced it, so `latest` went stale and silently downgraded a
+            # deployment to a pre-2026-10-08 image.
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Create and push manifest list
         working-directory: ${{ runner.temp }}/digests

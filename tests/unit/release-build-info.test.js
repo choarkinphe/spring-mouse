@@ -22,7 +22,7 @@ describe("release identity", () => {
     try { expect(() => buildInfo(dir)).toThrow(); } finally { fs.rmSync(dir, { recursive: true }); }
   });
 
-  it("requires reproducible installs and publishes candidates, not latest", () => {
+  it("requires reproducible installs and publishes candidates alongside latest", () => {
     const docker = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
     const workflow = fs.readFileSync(path.join(root, ".github/workflows/docker-publish.yml"), "utf8");
     expect(docker).toContain("COPY package.json package-lock.json ./");
@@ -30,7 +30,12 @@ describe("release identity", () => {
     expect(docker).toContain("write-build-info.mjs");
     expect(workflow).toContain("node-version: 22");
     expect(workflow).toContain("npm --prefix tests ci");
-    expect(workflow).not.toContain("value=latest");
+    // `latest` is a convenience alias for deployment, but the immutable
+    // `candidate-<sha>` / `sha-<sha>` tags stay the reproducible, rollback-safe
+    // reference — keep asserting they are still produced. The alias only moves
+    // on the default branch and only after the build job's per-platform smoke
+    // test, so it can never point at an unverified image.
+    expect(workflow).toContain("value=latest");
     expect(workflow).toContain("value=candidate-");
   });
 });

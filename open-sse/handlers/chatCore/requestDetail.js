@@ -87,7 +87,14 @@ export function buildRequestDetail(base, overrides = {}) {
     mouse: base.mouse || undefined,
     requestId: base.requestId || undefined,
     timestamp: new Date().toISOString(),
-    latency: base.latency || { ttft: 0, total: 0 },
+    latency: {
+      ...(base.latency || { ttft: 0, total: 0 }),
+      scope: routing.timing?.scope || "attempt",
+      ...(routing.timing ? {
+        preDispatchMs: routing.timing.preDispatchMs,
+        queueWaitMs: routing.timing.queueWaitMs,
+      } : {}),
+    },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
     request: base.request,
     providerRequest: base.providerRequest || null,

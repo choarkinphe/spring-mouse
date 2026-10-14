@@ -83,6 +83,12 @@ jobs:
           unit/release-smoke-summary.test.js
           unit/routing-events.test.js
           unit/routing-redis-client.test.js
+          unit/connection-slots.test.js
+          unit/route-lease.test.js
+          unit/queue-retry-after.test.js
+          unit/queue-timeout-response.test.js
+          unit/admission-handoff-cancellation.test.js
+          unit/capability-account-selection.test.js
           unit/routing-writer.test.js
           unit/outbound-cancellation-matrix.test.js
           unit/proxy-fetch-abort.test.js
@@ -94,6 +100,12 @@ jobs:
           unit/backup-restore.test.js
           unit/backup-stage-restore.test.js
           unit/backup-litestream-lifecycle.test.js
+
+      - name: Verify admission against isolated Redis
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y redis-server
+          SM_REDIS_INTEGRATION=1 npm exec --prefix tests vitest run -- --config tests/vitest.config.js tests/integration/connection-leases.test.js
 
   build:
     needs: test

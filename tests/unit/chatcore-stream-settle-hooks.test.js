@@ -107,6 +107,18 @@ beforeEach(() => {
 });
 
 describe("chatCore streaming attempt fallback settlement", () => {
+  it("includes admission waiting in request-scoped latency and records its breakdown", async () => {
+    const { buildRequestDetail } = await import("../../open-sse/handlers/chatCore/requestDetail.js");
+    const options = optionsWith(null);
+    options.ingressStartedAt = Date.now() - 1200;
+    options.admission = {queueWaitMs: 1000, weight: 2};
+    await handleChatCore(options);
+    const detail = buildRequestDetail.mock.calls.at(-1)[0];
+    expect(detail.latency.total).toBeGreaterThanOrEqual(1200);
+    expect(detail.routing.timing).toMatchObject({scope:"request",queueWaitMs:1000,weight:2});
+    expect(detail.routing.timing.preDispatchMs).toBeGreaterThanOrEqual(1200);
+  });
+
   it("logs only marked compaction requests without changing executor failure results", async () => {
     const options = optionsWith(null);
     options.clientRawRequest.headers["x-cc-compaction-request"] = "manual";

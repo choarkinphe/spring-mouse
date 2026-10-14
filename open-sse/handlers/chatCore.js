@@ -60,15 +60,24 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
-  const requestStartTime = Date.now();
+  const coreStartedAt = Date.now();
+  const requestStartTime = Number.isFinite(ingressStartedAt) && ingressStartedAt > 0 ? Math.min(ingressStartedAt, coreStartedAt) : coreStartedAt;
   // Reuse the caller's id so the request line, the usage row and the routing
   // WARN lines emitted upstream all share one identifier. Callers that do not
   // supply one (open-sse consumers, tests) keep the previous behaviour.
   const requestId = incomingRequestId || randomUUID();
   const originalModel = clientRawRequest?.body?.model || body?.model || null;
   const routing = createModelRouting({ originalModel, provider, model, routeKind: modelInfo.routeKind, routed: modelInfo.routed });
+  if (Number.isFinite(ingressStartedAt) && ingressStartedAt > 0) {
+    routing.timing = {
+      scope: "request",
+      preDispatchMs: coreStartedAt - requestStartTime,
+      queueWaitMs: admission?.queueWaitMs ?? null,
+      weight: admission?.weight ?? null,
+    };
+  }
   const trafficRequestId = clientRawRequest?.headers?.["x-sm-traffic-request-id"] || clientRawRequest?.headers?.["X-Sm-Traffic-Request-Id"] || null;
   const startedAt = new Date(requestStartTime).toISOString();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -487,6 +496,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   execDiagTimer.unref?.();
   try {
     if (capabilityProbe) onProbeDispatch?.({ body: translatedBody, format: finalFormat });
+    if (routing.timing) routing.timing.preDispatchMs = Date.now() - requestStartTime;
     const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, requestId });
     clearTimeout(execDiagTimer);
     providerResponse = result.response;

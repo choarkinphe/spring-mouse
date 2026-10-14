@@ -88,6 +88,13 @@ describe("queue timeout response contract", () => {
     mocks.getModelInfo.mockResolvedValue({ provider: "deepseek", model: "deepseek-v4-flash" });
   });
 
+  it("returns a deadline failure separately from capacity rejection", async () => {
+    mocks.getProviderCredentials.mockRejectedValue(new RoutingQueueTimeoutError("deepseek", 50, null, "deadline_exceeded"));
+    const response = await handleChat(makeRequest());
+    expect(response.status).toBe(504);
+    expect(mocks.saveRequestUsage.mock.calls[0][0].status).toBe("blocked:deadline_exceeded");
+  });
+
   it("advertises the real backoff window instead of a hardcoded 1s", async () => {
     mocks.getProviderCredentials.mockRejectedValue(new RoutingQueueTimeoutError("deepseek", 60_000));
 
@@ -141,9 +148,9 @@ describe("queue timeout response contract", () => {
 
     expect(mocks.saveRequestUsage).toHaveBeenCalledTimes(1);
     const entry = mocks.saveRequestUsage.mock.calls[0][0];
-    // "rejected" sits outside the ["success","ok"] set usageRepo counts towards
+    // Blocked outcomes sit outside the ["success","ok"] set usageRepo counts towards
     // API-key quota, so audit rows can never silently consume quota.
-    expect(entry.status).toBe("rejected");
+    expect(entry.status).toBe("blocked:queue_timeout");
     expect(entry.provider).toBe("deepseek");
     expect(entry.model).toBe("deepseek-v4-flash");
     expect(entry.endpoint).toBe("/v1/chat/completions");
@@ -158,6 +165,6 @@ describe("queue timeout response contract", () => {
 
     expect(response.status).toBe(404);
     expect(mocks.saveRequestUsage).toHaveBeenCalledTimes(1);
-    expect(mocks.saveRequestUsage.mock.calls[0][0].status).toBe("rejected");
+    expect(mocks.saveRequestUsage.mock.calls[0][0].status).toBe("blocked:no_account");
   });
 });

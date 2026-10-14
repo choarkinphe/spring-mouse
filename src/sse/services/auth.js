@@ -15,7 +15,7 @@ import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/sh
 import { isScheduleActive, describeSchedule } from "@/shared/utils/schedule.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
-import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot } from "@/lib/redis/connectionSlots.js";
+import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot, RoutingQueueTimeoutError } from "@/lib/redis/connectionSlots.js";
 import { getProviderModelBreaker, getModelOverloadThrottle } from "./providerBreaker.js";
 import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabilities.js";
@@ -97,6 +97,7 @@ export async function authorizeModelAccess(provider, model, accessTags) {
 export async function getProviderCredentials(provider, excludeConnectionIds = null, model = null, options = {}) {
   const routingStarted = performance.now();
   const routingStartedAt = Date.now();
+  if (Number.isFinite(options.deadlineMs) && options.deadlineMs <= Date.now()) throw new RoutingQueueTimeoutError(provider, 0, null, "deadline_exceeded");
   // Normalize to Set for consistent handling
   const excludeSet = excludeConnectionIds instanceof Set
     ? excludeConnectionIds
@@ -184,7 +185,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const scheduleNow = new Date();
     const isOffSchedule = (connection) => !isScheduleActive(connection.schedule, scheduleNow, { onInvalid: true });
 
-    const availableConnections = connections.filter(c => {
+    const isEligible = (c) => {
+      if (c.isActive === false) return false;
       if (options.strictConnectionId && c.id !== options.strictConnectionId) return false;
       if (model && options.requiredCapabilities?.size) {
         const caps = getMeasuredCapabilitiesForConnection(providerId, model, c.id);
@@ -198,9 +200,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (isModelLockActive(c, model)) return false;
       // The account's own enable window. An account that never configured one is
       // always on, so this stays a no-op until someone opts in.
-      if (isOffSchedule(c)) return false;
+      if (!isScheduleActive(c.schedule, new Date(), { onInvalid: true })) return false;
       return true;
-    });
+    };
+    let availableConnections = connections.filter(isEligible);
 
     // Why an account was skipped used to be debug-only, which made routing
     // decisions invisible at the production default LOG_LEVEL=WARN: operators
@@ -285,8 +288,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         if (waitMs > 0 && waitMs <= budgetMs) {
           log.routeLine("⏳", "🕒", `${reqPrefix}${provider}/${model} | upstream model busy · queued ${waitMs}ms, retrying after back-off`);
           try {
+            const remaining = (options.deadlineMs ?? Infinity) - Date.now();
+            if (remaining <= waitMs) {
+              if (remaining > 0) await waitForOverload(remaining, options.signal);
+              throw new RoutingQueueTimeoutError(provider, Date.now() - routingStartedAt, null, "deadline_exceeded");
+            }
             await waitForOverload(waitMs, options.signal);
-          } catch {
+          } catch (error) {
+            if (error?.code === "ROUTING_QUEUE_TIMEOUT") throw error;
             return { aborted: true };
           }
         } else {
@@ -408,6 +417,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         : providerOverride;
       const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
       const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
+      const refreshEligible = async () => {
+        const [fresh, mouses] = await Promise.all([
+          getProviderConnections({ provider: providerId, isActive: true }), getMouses(),
+        ]);
+        onlineMouseIds.clear();
+        for (const mouse of mouses) {
+          if (mouse.isOnline && !mouse.disabledAt && isTunnelConnected(mouse.id)) onlineMouseIds.add(mouse.id);
+        }
+        availableConnections = fresh.filter(isEligible);
+        // Keep the original preference when it remains eligible.
+        const preferred = availableConnections.findIndex(c => c.id === connection.id);
+        if (preferred > 0) availableConnections = [...availableConnections.slice(preferred), ...availableConnections.slice(0, preferred)];
+        return availableConnections.map(c => ({ id: c.id, limit: getConnectionConcurrencyLimit(c, accountStrategy) }));
+      };
       lease = await reserveConnectionSlot(candidates.map((candidate) => ({
         id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
       })), {
@@ -421,61 +444,71 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         maxQueueSize: providerOverride.maxQueueSize
           ?? PROVIDERS[providerId]?.transport?.maxQueueSize,
         signal: options.signal,
+        deadlineMs: options.deadlineMs,
+        refreshCandidates: refreshEligible,
+        validateCandidate: async (id) => {
+          const fresh = await getProviderConnectionById(id);
+          if (!fresh || !isEligible(fresh)) return false;
+          if (await authorizeModelAccess(provider, model, requestAccessTags)) return false;
+          const index = availableConnections.findIndex(c => c.id === id);
+          if (index >= 0) availableConnections[index] = fresh;
+          return index >= 0;
+        },
       });
       connection = availableConnections.find((candidate) => candidate.id === lease.connectionId);
     }
-    const usesMouse = Boolean(connection.mouseId) && supportsMouseExecution(connection.provider);
-    const mouseExecution = usesMouse ? await getMouseExecutionDetails(connection.mouseId) : null;
-    if (usesMouse && !mouseExecution) {
-      await lease?.release();
-      return null;
-    }
-    let resolvedProxy;
     try {
-      resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+      const usesMouse = Boolean(connection.mouseId) && supportsMouseExecution(connection.provider);
+      const mouseExecution = usesMouse ? await getMouseExecutionDetails(connection.mouseId) : null;
+      if (usesMouse && !mouseExecution) {
+        await lease?.release();
+        return null;
+      }
+      const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+
+      recordRoutingDuration(performance.now() - routingStarted);
+      return {
+        authType: connection.authType,
+        apiKey: connection.apiKey,
+        accessToken: connection.accessToken,
+        refreshToken: connection.refreshToken,
+        idToken: connection.idToken,
+        expiresAt: connection.expiresAt,
+        expiresIn: connection.expiresIn,
+        lastRefreshAt: connection.lastRefreshAt,
+        // Carried through so shouldRefreshCredentials can see the cooldown written
+        // by a previous permanent failure. This object is a field allow-list, so an
+        // unlisted field is invisible to the refresh decision even though it is in
+        // the stored row — the suppression silently never engaged (verified live).
+        lastRefreshFailureAt: connection.lastRefreshFailureAt,
+        lastRefreshFailureCode: connection.lastRefreshFailureCode,
+        projectId: connection.projectId,
+        connectionName: connection.displayName || connection.name || connection.email || connection.id,
+        copilotToken: connection.providerSpecificData?.copilotToken,
+        mouseExecution,
+        providerSpecificData: {
+          ...(connection.providerSpecificData || {}),
+          connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,
+          connectionProxyUrl: resolvedProxy.connectionProxyUrl,
+          connectionNoProxy: resolvedProxy.connectionNoProxy,
+        },
+        connectionId: connection.id,
+        // Used by clearAccountError to avoid an older in-flight success clearing
+        // a lock written by a newer failure.
+        _routingStartedAt: routingStartedAt,
+        // Include current status for optimization check
+        testStatus: connection.testStatus,
+        lastError: connection.lastError,
+        // Pass full connection for clearAccountError to read modelLock_* keys
+        _connection: connection,
+        providerStrategy: providerOverride,
+        releaseRouteSlot: lease?.release || null,
+        admission: lease ? { queueWaitMs: lease.queueWaitMs, weight: lease.weight } : null,
+      };
     } catch (error) {
       await lease?.release();
       throw error;
     }
-
-    recordRoutingDuration(performance.now() - routingStarted);
-    return {
-      authType: connection.authType,
-      apiKey: connection.apiKey,
-      accessToken: connection.accessToken,
-      refreshToken: connection.refreshToken,
-      idToken: connection.idToken,
-      expiresAt: connection.expiresAt,
-      expiresIn: connection.expiresIn,
-      lastRefreshAt: connection.lastRefreshAt,
-      // Carried through so shouldRefreshCredentials can see the cooldown written
-      // by a previous permanent failure. This object is a field allow-list, so an
-      // unlisted field is invisible to the refresh decision even though it is in
-      // the stored row — the suppression silently never engaged (verified live).
-      lastRefreshFailureAt: connection.lastRefreshFailureAt,
-      lastRefreshFailureCode: connection.lastRefreshFailureCode,
-      projectId: connection.projectId,
-      connectionName: connection.displayName || connection.name || connection.email || connection.id,
-      copilotToken: connection.providerSpecificData?.copilotToken,
-      mouseExecution,
-      providerSpecificData: {
-        ...(connection.providerSpecificData || {}),
-        connectionProxyEnabled: resolvedProxy.connectionProxyEnabled,
-        connectionProxyUrl: resolvedProxy.connectionProxyUrl,
-        connectionNoProxy: resolvedProxy.connectionNoProxy,
-      },
-      connectionId: connection.id,
-      // Used by clearAccountError to avoid an older in-flight success clearing
-      // a lock written by a newer failure.
-      _routingStartedAt: routingStartedAt,
-      // Include current status for optimization check
-      testStatus: connection.testStatus,
-      lastError: connection.lastError,
-      // Pass full connection for clearAccountError to read modelLock_* keys
-      _connection: connection,
-      providerStrategy: providerOverride,
-      releaseRouteSlot: lease?.release || null,
-    };
 }
 
 /**

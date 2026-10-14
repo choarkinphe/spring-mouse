@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account leases", () => {
-  it("atomically balances 100 requests, renews live leases, removes stale leases and fails open on timeout", async () => {
+  it("enforces weighted caps under load, renews every member, ages waiters, and bounds Redis outages", async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), "sm-lease-redis-"));
     const probe = http.createServer();
     probe.listen(0, "127.0.0.1"); await once(probe, "listening");
@@ -33,17 +33,50 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       admin = createClient({ url: process.env.SPRING_MOUSE_REDIS_URL }); admin.on("error", () => {}); await admin.connect();
       const key = (id) => `spring-mouse:routing:{routing}:slots:v3:${id}`;
       const candidates = Array.from({ length: 8 }, (_, i) => ({ id: `account-${i}`, limit: 8 }));
-      leases.push(...await Promise.all(Array.from({ length: 100 }, () => slots.reserveConnectionSlot(candidates))));
-      expect(slots.getLocalSlotStatus()).toEqual({ active: 100, redis: 100, queued: 0 });
-      const counts = await Promise.all(candidates.map((c) => admin.zCard(key(c.id))));
-      expect(counts.reduce((a, b) => a + b, 0)).toBe(100);
-      expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
-      // A real 4.2s hold exceeds the configured 3s lease; the process heartbeat must extend it.
+      let peak = 0;
+      await Promise.all(Array.from({ length: 100 }, async () => {
+        const lease = await slots.reserveConnectionSlot(candidates, {maxQueueSize:200}); leases.push(lease);
+        peak = Math.max(peak, slots.getLocalSlotStatus().active);
+        await sleep(20);
+        await lease.release();
+      }));
+      expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(64);
+      expect(slots.getLocalSlotStatus()).toEqual({ active: 0, redis: 0, queued: 0 });
+      const weightedProvider = "spring-mouse:routing:{routing}:provider:v1:weighted";
+      const weighted = await slots.reserveConnectionSlot([{id:"weighted",limit:8}], {providerId:"weighted",providerLimit:8,weight:7}); leases.push(weighted);
+      // A hold exceeding the 3s lease must renew all seven members in BOTH sets.
       await sleep(4200);
-      const liveCounts = await Promise.all(candidates.map((c) => admin.zCount(key(c.id), Date.now(), "+inf")));
-      expect(liveCounts.reduce((a, b) => a + b, 0)).toBe(100);
-      await Promise.all(leases.map((l) => l.release()));
-      expect((await Promise.all(candidates.map((c) => admin.zCard(key(c.id))))).every((n) => n === 0)).toBe(true);
+      expect(await admin.zCount(key("weighted"),Date.now(),"+inf")).toBe(7);
+      expect(await admin.zCount(weightedProvider,Date.now(),"+inf")).toBe(7);
+      await expect(slots.reserveConnectionSlot([{id:"weighted",limit:8}], {providerId:"weighted",providerLimit:8,weight:2,queueTimeoutMs:50})).rejects.toMatchObject({reason:"queue_timeout"});
+      await weighted.release();
+      expect(await admin.zCard(weightedProvider)).toBe(0);
+      expect(await admin.zCard(key("weighted"))).toBe(0);
+
+      // Cross-worker queue admission is atomic, independent of the local guard.
+      const q = "spring-mouse:routing:{routing}:queue:v2:atomic";
+      const enrolled = await Promise.all(Array.from({length:30}, (_,i) => admin.eval(slots.ENQUEUE_SCRIPT, {
+        keys:[q],arguments:["3",String(Date.now()+5000),JSON.stringify({id:String(i),at:Date.now(),keys:[]}),"10000"],
+      })));
+      expect(enrolled.filter(n => n === 1)).toHaveLength(3);
+      expect(await admin.zCard(q)).toBe(3); await admin.del(q);
+
+      // An aged heavy waiter reserves overlapping accounts; pinned routes to
+      // disjoint accounts can still proceed. Test ordering at the Lua boundary.
+      const fairQueue = "spring-mouse:routing:{routing}:queue:v2:fair";
+      const older = JSON.stringify({id:"older",at:Date.now()-2000,keys:[key("shared")]});
+      await admin.zAdd(fairQueue,[{score:Date.now()+5000,value:older}]);
+      await expect(slots.reserveConnectionSlot([{id:"shared",limit:8}], {providerId:"fair",providerLimit:16,queueTimeoutMs:60})).rejects.toMatchObject({reason:"queue_timeout"});
+      const disjoint = await slots.reserveConnectionSlot([{id:"disjoint",limit:8}], {providerId:"fair",providerLimit:16}); leases.push(disjoint);
+      expect(disjoint.connectionId).toBe("disjoint"); await disjoint.release();
+      // The oldest request itself can take the free capacity, consuming its ticket.
+      expect(await admin.eval(slots.HARD_RESERVE_SCRIPT, {
+        keys:["spring-mouse:routing:{routing}:provider:v1:fair",fairQueue,key("shared")],
+        arguments:["older-lease","3000","16","7","8",older,"1000"],
+      })).toBe(1);
+      expect(await admin.zCard(key("shared"))).toBe(7);
+      expect(await admin.zCard(fairQueue)).toBe(0);
+      await admin.del([key("shared"),"spring-mouse:routing:{routing}:provider:v1:fair"]);
       const old = await slots.reserveConnectionSlot([{ id: "reused", limit: 1 }]); leases.push(old);
       const [oldToken] = await admin.zRange(key("reused"), 0, -1);
       await old.release();
@@ -89,6 +122,7 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       if (admin?.isOpen) admin.destroy();
       if (redis && redis.exitCode === null) { const exit = once(redis, "exit"); redis.kill("SIGTERM"); await exit; }
       vi.unstubAllEnvs();
+      await fs.rm(temp, {recursive:true,force:true});
     }
   }, 20000);
 });

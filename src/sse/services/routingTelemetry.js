@@ -14,7 +14,7 @@ const VALID_REASONS = new Set([
   "accounts_exhausted", "transport_error", "upstream_http_error", "internal_error", "client_abort",
   "model_fallback", "account_fallback", "response_unobserved", "stream_error", "output_error",
   "terminal", "upstream_error", "incomplete", "parse_error", "response_error", "unknown",
-  "first_output_timeout", "sse_scan_limit",
+  "first_output_timeout", "sse_scan_limit", "queue_full", "deadline_exceeded", "weight_exceeds_capacity",
 ]);
 
 let producer = null;
@@ -193,6 +193,7 @@ export function createRoutingTelemetrySession({ endpoint = null, trafficRequestI
   };
 
   const session = {
+    startedAtMs: Date.parse(state.startedAt),
     routingRequestId,
     get completed() { return state.completed; },
     get attemptCount() { return state.primaryAttempts; },

@@ -506,7 +506,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // reached the client: a 500 on every chat request. The wrapper also makes the
     // observer fail-open, which the raw object is not.
     if (attempt.observer) {
-      attempt.observer = createRoutingObserver({ observer: attempt.observer, requestStartTime }) || attempt.observer;
+      attempt.observer = createRoutingObserver({ observer: attempt.observer, requestStartTime: routing?.startedAtMs ?? requestStartTime }) || attempt.observer;
     }
     return attempt;
   };
@@ -558,16 +558,22 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
         accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: clientSignal || request?.signal, requestId,
         requiredCapabilities: detectRequiredCapabilities(body),
+        deadlineMs: overloadDeadline,
       });
     } catch (error) {
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
       // Report what actually happened: how long this request waited, and how
       // long the caller should back off before trying again.
       const waitedMs = error.queueTimeoutMs ?? error.retryAfterMs;
+      const reason = error.reason || "queue_timeout";
+      if (reason === "deadline_exceeded") {
+        saveOutcome("blocked:deadline_exceeded");
+        return errorResponse(504, "Request waiting budget exhausted before upstream dispatch");
+      }
       const retryAfterMs = error.retryAfterMs;
       const retryAfterHuman = `retry after ${Math.ceil(retryAfterMs / 1000)}s`;
-      log.warn("CONCURRENCY", `${reqPrefix}${provider}/${model} | queue timeout after ${waitedMs}ms (${retryAfterHuman})`);
-      saveOutcome("blocked:queue_timeout");
+      log.warn("CONCURRENCY", `${reqPrefix}${provider}/${model} | ${reason.replaceAll("_", " ")} after ${waitedMs}ms (${retryAfterHuman})`);
+      saveOutcome(`blocked:${reason}`);
       return unavailableResponse(
         HTTP_STATUS.RATE_LIMITED,
         `${provider}/${model} is at the configured concurrency limit`,
@@ -639,7 +645,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
-    if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
+    if (clientSignal?.aborted || request?.signal?.aborted) {
+      await credentials.releaseRouteSlot?.();
+      return errorResponse(499, "Request aborted");
+    }
     const attempt = openAttempt(credentials);
     const result = await withRouteLease(credentials.releaseRouteSlot, clientSignal || request?.signal, async () => {
       // Account selection shown in the unified "▶" line (acc:...)
@@ -658,6 +667,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       // Use shared chatCore
       const chatSettings = await getSettings();
       const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+      if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
+        return {
+          success: false, status: 504, blockedReason: "deadline_exceeded", error: "Request waiting budget exhausted before upstream dispatch",
+          response: errorResponse(504, "Request waiting budget exhausted before upstream dispatch"),
+        };
+      }
       return await handleChatCore({
         body: { ...body, model: `${provider}/${model}` },
         modelInfo: { provider, model, routeKind: effectiveRouteKind, routed: effectiveRouted },
@@ -665,6 +680,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log,
         clientRawRequest,
         requestId,
+        ingressStartedAt: routing?.startedAtMs ?? requestStartTime,
+        admission: credentials.admission,
         routingObserver: attempt.observer,
         // Propagate client disconnects all the way to the upstream executor.
         // Without this, a channel that never responds can retain fetches after
@@ -732,6 +749,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (request?.signal?.aborted || result.status === 499) {
       attempt.complete({ outcome: "cancelled", terminalReason: "client_abort", upstreamStatus: 499 });
       return errorResponse(499, "Request aborted");
+    }
+
+    if (result.blockedReason === "deadline_exceeded") {
+      attempt.complete({ outcome: "failed", terminalReason: "deadline_exceeded" });
+      saveOutcome("blocked:deadline_exceeded");
+      return result.response;
     }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)

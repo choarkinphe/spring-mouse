@@ -382,7 +382,7 @@ export default function RequestDetailsTab() {
                     </td>
                     <td className="p-4 text-sm text-text-muted">
                       <div className="flex flex-col gap-0.5">
-                        <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
+                        <div title={detail.latency?.scope === "request" ? "从请求进入网关开始计算，包含排队与重试" : "历史记录：按单次执行计算，未包含入队前的等待"}>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                       </div>
                     </td>
@@ -457,8 +457,21 @@ export default function RequestDetailsTab() {
                 <span className="text-text-muted">Latency:</span>{" "}
                 <span className="text-text-main font-mono">
                   TTFT {selectedDetail.latency?.ttft || 0}ms / Total {selectedDetail.latency?.total || 0}ms
+                  {selectedDetail.latency?.scope === "request" ? "（含排队与重试）" : "（单次执行）"}
                 </span>
               </div>
+              {selectedDetail.latency?.queueWaitMs != null && (
+                <div>
+                  <span className="text-text-muted">本次入队等待:</span>{" "}
+                  <span className="text-text-main font-mono">{selectedDetail.latency.queueWaitMs}ms</span>
+                </div>
+              )}
+              {selectedDetail.latency?.preDispatchMs != null && (
+                <div>
+                  <span className="text-text-muted">发往上游前累计耗时:</span>{" "}
+                  <span className="text-text-main font-mono">{selectedDetail.latency.preDispatchMs}ms</span>
+                </div>
+              )}
               <div>
                 <span className="text-text-muted">Input Tokens:</span>{" "}
                 <span className="text-text-main font-mono">

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { routingRedis } from "./routingClient.js";
+import { ADMISSION_CONFIG } from "./admissionConfig.js";
 
 const positive = (value, fallback) => Math.max(1, Number.parseInt(value, 10) || fallback);
 const bounded = (value, fallback, max) => Math.min(positive(value, fallback), max);
@@ -19,19 +20,21 @@ const queueRetryAfterMs = (timeoutMs) =>
 // Distinct v3 keys avoid mixing hard-capacity leases with former soft counters.
 const slotKey = (id) => `spring-mouse:routing:{routing}:slots:v3:${id}`;
 const providerKey = (providerId) => `spring-mouse:routing:{routing}:provider:v1:${providerId}`;
-const queueKey = (providerId) => `spring-mouse:routing:{routing}:queue:v1:${providerId}`;
+const queueKey = (providerId) => `spring-mouse:routing:{routing}:queue:v2:${providerId}`;
 // Next route bundles and development reloads must share process accounting.
 const state = globalThis.__smConnectionLeases ||= {
-  active: new Map(), renewalTimer: null, renewing: false, queueSizes: new Map(),
+  active: new Map(), renewalTimer: null, renewing: false, waiters: new Map(),
 };
 const { active } = state;
+const localQueues = state.waiters ||= new Map();
 
 export class RoutingQueueTimeoutError extends Error {
-  constructor(providerId, timeoutMs, retryAfterMs = null) {
-    super(`${providerId} concurrency queue timed out after ${timeoutMs}ms`);
+  constructor(providerId, timeoutMs, retryAfterMs = null, reason = "queue_timeout") {
+    super(`${providerId} admission ${reason} after ${timeoutMs}ms`);
     this.name = "RoutingQueueTimeoutError";
     this.code = "ROUTING_QUEUE_TIMEOUT";
     this.providerId = providerId;
+    this.reason = reason;
     // How long the request actually waited before giving up. Kept separate from
     // the advisory delay so logs report the real figure.
     this.queueTimeoutMs = timeoutMs;
@@ -49,61 +52,74 @@ export function getConnectionConcurrencyLimit(connection, providerStrategy = {})
  * 1,400-message Codex turn cannot consume the same gate capacity as a two-turn
  * request. The caps keep a malformed giant body from creating a huge lease.
  */
-export function estimateRequestWeight(body = {}, maxWeight = 8) {
-  const messages = Array.isArray(body?.messages) ? body.messages.length : 0;
-  const input = Array.isArray(body?.input) ? body.input.length : 0;
-  const tools = Array.isArray(body?.tools) ? body.tools.length : 0;
-  const promptChars = typeof body?.input === "string" ? body.input.length : 0;
-  const pressure = Math.max(messages / 100, input / 100, tools / 20, promptChars / 100_000);
-  return Math.min(maxWeight, Math.max(1, Math.ceil(pressure)));
+export function estimateRequestWeight(body = {}, maxWeight = ADMISSION_CONFIG.maxWeight) {
+  const cap = positive(maxWeight, ADMISSION_CONFIG.maxWeight);
+  const ceiling = cap * ADMISSION_CONFIG.charsPerSlot;
+  let chars = 0, nodes = 0;
+  // Walk without serializing/copying a multi-MB request. Stop once the weight
+  // is saturated; tools count by schema size, not by number of definitions.
+  function visit(value, depth = 0) {
+    if (chars >= ceiling) return;
+    if (++nodes > ADMISSION_CONFIG.maxSizeNodes || depth > ADMISSION_CONFIG.maxSizeDepth) { chars = ceiling; return; }
+    if (typeof value === "string") { chars += value.length; return; }
+    if (!value || typeof value !== "object") return;
+    chars += ADMISSION_CONFIG.structureChars;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      chars += key.length;
+      visit(value[key], depth + 1);
+      if (chars >= ceiling) break;
+    }
+  }
+  for (const key of ["messages", "input", "tools", "system", "instructions"]) visit(body?.[key]);
+  return Math.min(cap, Math.max(1, Math.ceil(chars / ADMISSION_CONFIG.charsPerSlot)));
 }
 
-export const RESERVE_SCRIPT = `
+// Enrollment and queue capacity are one atomic operation across all workers.
+export const ENQUEUE_SCRIPT = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
-local best, bestRatio = 1, math.huge
-for i, key in ipairs(KEYS) do
-  redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-  local count = redis.call('ZCARD', key)
-  local ratio = count / tonumber(ARGV[i + 2])
-  if ratio < bestRatio then best, bestRatio = i, ratio end
-  -- Preserve priority / sticky preference while it has capacity.
-  if ratio < 1 then best = i; break end
-end
--- Soft saturation: still count overflow, choosing the least loaded account.
-redis.call('ZADD', KEYS[best], now + tonumber(ARGV[2]), ARGV[1])
-redis.call('PEXPIRE', KEYS[best], tonumber(ARGV[2]) * 2)
-return best
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if ARGV[5] and ARGV[5] ~= '' then redis.call('ZREM', KEYS[1], ARGV[5]) end
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return -1 end
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+return 1
 `;
 
-/**
- * Atomically admits one weighted request into the provider and one account.
- *
- * ARGV contract — the caller MUST pass exactly this order, and KEYS[1] is the
- * provider while account slot keys start at KEYS[2]:
- *   [1]=lease id  [2]=lease_ms  [3]=provider_limit  [4]=weight
- *   [5..]=per-account limits, aligned with KEYS[2..]
- * A missing lease_ms shifts every later slot and silently rejects all traffic.
- */
+/** KEYS: provider, queue, accounts; ARGV: lease, TTL, provider cap, weight,
+ * account caps, JSON ticket, maximum bypass age. */
 export const HARD_RESERVE_SCRIPT = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
-local provider = KEYS[1]
-local lease = ARGV[1]
-local lease_ms = tonumber(ARGV[2])
-local provider_limit = tonumber(ARGV[3])
-local weight = tonumber(ARGV[4])
+local provider, queue = KEYS[1], KEYS[2]
+local lease, lease_ms = ARGV[1], tonumber(ARGV[2])
+local provider_limit, weight = tonumber(ARGV[3]), tonumber(ARGV[4])
+local ticket = ARGV[#KEYS + 3]
+local bypass_ms = tonumber(ARGV[#KEYS + 4])
+local own = cjson.decode(ticket)
 local expires = now + lease_ms
-
+redis.call('ZREMRANGEBYSCORE', queue, '-inf', now)
+if not redis.call('ZSCORE', queue, ticket) then return -1 end
+-- Short requests can use spare capacity briefly. Once a competing waiter has
+-- aged, reserve its overlapping accounts so a stream of newcomers cannot starve
+-- it. Disjoint account sets (e.g. capability/pinned routes) do not block each other.
+local protected = {}
+for _, raw in ipairs(redis.call('ZRANGE', queue, 0, -1)) do
+  local older = cjson.decode(raw)
+  if older.at < own.at or (older.at == own.at and older.id < own.id) then
+    if now - older.at >= bypass_ms then
+      for _, key in ipairs(older.keys) do protected[key] = true end
+    end
+  end
+end
 redis.call('ZREMRANGEBYSCORE', provider, '-inf', now)
 if tonumber(redis.call('ZCARD', provider)) + weight > provider_limit then return 0 end
-
--- Candidates arrive with the sticky/priority account first. Preserve that
--- ordering instead of choosing globally least-loaded and defeating affinity.
-for i, key in ipairs(KEYS) do
-  if i > 1 then
+for i = 3, #KEYS do
+  local key = KEYS[i]
+  if not protected[key] then
     redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-    if tonumber(redis.call('ZCARD', key)) + weight <= tonumber(ARGV[i + 3]) then
+    if tonumber(redis.call('ZCARD', key)) + weight <= tonumber(ARGV[i + 2]) then
       for n = 0, weight - 1 do
         local member = lease .. '#' .. n
         redis.call('ZADD', provider, expires, member)
@@ -111,7 +127,8 @@ for i, key in ipairs(KEYS) do
       end
       redis.call('PEXPIRE', provider, lease_ms * 2)
       redis.call('PEXPIRE', key, lease_ms * 2)
-      return i - 1
+      redis.call('ZREM', queue, ticket)
+      return i - 2
     end
   end
 end
@@ -158,18 +175,6 @@ function localCounts(providerId) {
   return { provider, accounts };
 }
 
-function localChoice(candidates) {
-  const counts = new Map();
-  for (const lease of active.values()) counts.set(lease.connectionId, (counts.get(lease.connectionId) || 0) + 1);
-  let best = 0, ratio = Infinity;
-  for (let i = 0; i < candidates.length; i++) {
-    const load = (counts.get(candidates[i].id) || 0) / candidates[i].limit;
-    if (load < ratio) { best = i; ratio = load; }
-    if (load < 1) return i;
-  }
-  return best;
-}
-
 function sleepInterruptible(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason || new DOMException("Request aborted", "AbortError"));
@@ -185,148 +190,138 @@ function sleepInterruptible(ms, signal) {
   });
 }
 
-function createQueueTimeout(providerId, timeoutMs) {
-  return new RoutingQueueTimeoutError(providerId, timeoutMs);
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason || new DOMException("Request aborted", "AbortError");
 }
 
-/** Local in-process hard gate used when Redis is unavailable. */
-async function reserveLocalHard(providerId, candidates, options, weight, leaseId) {
-  const providerLimit = options.providerLimit;
-  const timeoutMs = options.queueTimeoutMs;
-  const deadline = Date.now() + timeoutMs;
-  const queueCounter = state.queueSizes;
-  const queued = queueCounter.get(providerId) || 0;
-  if (queued >= options.maxQueueSize) throw createQueueTimeout(providerId, timeoutMs);
-  queueCounter.set(providerId, queued + 1);
-  try {
-    while (Date.now() < deadline) {
-      const counts = localCounts(providerId);
-      const account = candidates.find((candidate) =>
-        (counts.accounts.get(candidate.id) || 0) + weight <= candidate.limit);
-      if (counts.provider + weight <= providerLimit && account) {
-        const chosenIndex = candidates.indexOf(account);
-        const members = Array.from({ length: weight }, (_, n) => `${leaseId}#${n}`);
-        const lease = {
-          id: leaseId, connectionId: account.id, providerId, weight,
-          redis: false, members, renewKeys: [], renewMembers: [],
-        };
-        active.set(leaseId, lease);
-        return { lease, chosenIndex };
-      }
-      const remaining = deadline - Date.now();
-      await sleepInterruptible(Math.min(100, Math.max(1, remaining)), options.signal);
-    }
-    throw createQueueTimeout(providerId, timeoutMs);
-  } finally {
-    const next = (queueCounter.get(providerId) || 1) - 1;
-    if (next <= 0) queueCounter.delete(providerId);
-    else queueCounter.set(providerId, next);
-  }
-}
-
-/**
- * Ordered eligible candidates, one Redis round trip, unique lease.
- *
- * Wait for provider *and* account capacity; requests are weighted and never
- * overflow the configured hard caps. When no channel-wide limit is configured,
- * the sum of account limits is used as the provider ceiling.
- */
+/** One deadline and queue ticket survive account refreshes and Redis fallback. */
 export async function reserveConnectionSlot(candidates, options = {}) {
+  throwIfAborted(options.signal);
   if (!candidates.length) throw new Error("No eligible accounts for reservation");
   const id = randomUUID();
-
-  // Account limits are hard caps even when a channel-wide cap is not
-  // configured. The old legacy path intentionally selected an overflowing
-  // account once every account was full, which produced misleading states such
-  // as 14/8 and 7/4 in the dashboard. Use the same queued hard reservation path
-  // for every caller; an omitted provider limit becomes the sum of account caps.
-  if (!Number.isFinite(options.providerLimit)) {
-    options = {
-      ...options,
-      providerId: options.providerId || candidates[0].providerId || "provider",
-      providerLimit: candidates.reduce((sum, candidate) => sum + positive(candidate.limit, DEFAULT_LIMIT), 0),
-    };
-  }
-
-  const providerId = String(options.providerId || candidates[0].id || "provider");
-  const weight = bounded(options.weight, 1, 8);
-  const providerLimit = positive(options.providerLimit, 1);
-  const timeoutMs = positive(options.queueTimeoutMs, 60_000);
+  const started = Date.now();
+  const providerId = String(options.providerId || candidates[0].providerId || "provider");
+  const weight = bounded(options.weight, 1, ADMISSION_CONFIG.maxWeight);
+  const configuredTimeout = positive(options.queueTimeoutMs, 60_000);
+  const deadline = Math.min(started + configuredTimeout, options.deadlineMs ?? Infinity);
+  const timeout = (reason = "queue_timeout") => new RoutingQueueTimeoutError(
+    providerId, Math.max(0, Date.now() - started), null, reason,
+  );
+  const timeoutReason = () => Number.isFinite(options.deadlineMs) && options.deadlineMs <= Date.now() ? "deadline_exceeded" : "queue_timeout";
+  if (deadline <= started) throw timeout("deadline_exceeded");
   const maxQueueSize = positive(options.maxQueueSize, 50);
   const queue = queueKey(providerId);
-  let redisAvailable = true;
-
-  const queueCount = await routingRedis(async (client) => {
-    await client.zRemRangeByScore(queue, "-inf", Date.now());
-    const size = await client.zCard(queue);
-    if (size >= maxQueueSize) return -1;
-    await client.zAdd(queue, [{ score: Date.now() + timeoutMs, value: id }]);
-    await client.pExpire(queue, timeoutMs * 2);
-    return size;
-  });
-  if (queueCount === -1) throw createQueueTimeout(providerId, timeoutMs);
-  if (queueCount === null || queueCount === undefined) redisAvailable = false;
-
+  const ticket = { id, at: started, keys: candidates.map(c => slotKey(c.id)) };
+  let rawTicket = JSON.stringify(ticket);
+  let redisAvailable = true, nextRefresh = started + ADMISSION_CONFIG.refreshCandidatesMs;
+  let localQueue = localQueues.get(providerId);
+  if (!localQueue) { localQueue = new Map(); localQueues.set(providerId, localQueue); }
+  if (localQueue.size >= maxQueueSize) throw timeout("queue_full");
+  localQueue.set(id, ticket);
+  const enqueue = (previousTicket = "") => routingRedis(client => client.eval(ENQUEUE_SCRIPT, {
+    keys: [queue], arguments: [String(maxQueueSize), String(deadline), rawTicket, String(configuredTimeout * 2), previousTicket],
+  }));
   try {
-    const deadline = Date.now() + timeoutMs;
+    const admitted = await enqueue();
+    throwIfAborted(options.signal);
+    if (admitted === -1) throw timeout("queue_full");
+    redisAvailable = admitted != null;
     while (Date.now() < deadline) {
-      let index = null;
-      if (redisAvailable) {
-        const result = await routingRedis((client) => client.eval(HARD_RESERVE_SCRIPT, {
-          keys: [providerKey(providerId), ...candidates.map((candidate) => slotKey(candidate.id))],
-          arguments: [
-            id, String(LEASE_MS), String(providerLimit), String(weight),
-            ...candidates.map((candidate) => String(candidate.limit)),
-          ],
-        }));
-        if (result === null || result === undefined) redisAvailable = false;
-        else index = Number(result);
+      throwIfAborted(options.signal);
+      if (options.refreshCandidates && Date.now() >= nextRefresh) {
+        candidates = await options.refreshCandidates();
+        throwIfAborted(options.signal);
+        nextRefresh = Date.now() + ADMISSION_CONFIG.refreshCandidatesMs;
+        const previousTicket = rawTicket;
+        ticket.keys = candidates.map(c => slotKey(c.id));
+        rawTicket = JSON.stringify(ticket);
+        if (redisAvailable) {
+          const result = await enqueue(previousTicket);
+          if (result === -1) throw timeout("queue_full");
+          redisAvailable = result != null;
+        }
       }
-
-      if (!redisAvailable) {
-        const local = await reserveLocalHard(providerId, candidates, {
-          ...options, providerLimit, queueTimeoutMs: Math.max(1, deadline - Date.now()), maxQueueSize,
-        }, weight, id);
-        return makeHardLease(local.lease, local.chosenIndex, candidates);
+      const providerLimit = Number.isFinite(options.providerLimit) ? positive(options.providerLimit, 1)
+        : candidates.reduce((sum, c) => sum + positive(c.limit, DEFAULT_LIMIT), 0);
+      // Impossible weights must not hold a fairness reservation for a minute.
+      if (candidates.length && (weight > providerLimit || candidates.every(c => weight > c.limit))) {
+        throw timeout("weight_exceeds_capacity");
+      }
+      let index = null;
+      if (redisAvailable && candidates.length && Date.now() < deadline) {
+        index = await routingRedis(client => client.eval(HARD_RESERVE_SCRIPT, {
+          keys: [providerKey(providerId), queue, ...candidates.map(c => slotKey(c.id))],
+          arguments: [id, String(LEASE_MS), String(providerLimit), String(weight),
+            ...candidates.map(c => String(c.limit)), rawTicket, String(ADMISSION_CONFIG.maxBypassMs)],
+        }));
+        if (index == null) redisAvailable = false;
+        else if (index === -1) break;
+      }
+      if (!redisAvailable && candidates.length) {
+        const counts = localCounts(providerId);
+        const protectedKeys = new Set([...localQueue.values()]
+          .filter(t => (t.at < started || (t.at === started && t.id < id)) && Date.now() - t.at >= ADMISSION_CONFIG.maxBypassMs)
+          .flatMap(t => t.keys));
+        const chosen = candidates.findIndex(c => !protectedKeys.has(slotKey(c.id)) && (counts.accounts.get(c.id) || 0) + weight <= c.limit);
+        index = counts.provider + weight <= providerLimit && chosen >= 0 ? chosen + 1 : 0;
       }
       if (index >= 1 && index <= candidates.length) {
-        const chosenIndex = index - 1;
-        const members = Array.from({ length: weight }, (_, n) => `${id}#${n}`);
-        const lease = {
-          id, connectionId: candidates[chosenIndex].id, providerId, weight,
-          redis: true, members,
-          renewKeys: [providerKey(providerId), slotKey(candidates[chosenIndex].id)],
-          renewMembers: members,
+        const chosen = candidates[index - 1];
+        const lease = { id, connectionId: chosen.id, providerId, weight, redis: redisAvailable,
+          members: Array.from({ length: weight }, (_, n) => `${id}#${n}`),
         };
+        // Each weighted member belongs to BOTH counters. The heartbeat pairs
+        // one member with each key, so expand both arrays in the same order.
+        lease.renewKeys = lease.members.flatMap(() => [providerKey(providerId), slotKey(chosen.id)]);
+        lease.renewMembers = lease.members.flatMap(member => [member, member]);
         active.set(id, lease);
-        armRenewal();
-        return makeHardLease(lease, chosenIndex, candidates);
+        const result = makeHardLease(lease, options.signal, Date.now() - started, weight);
+        try {
+          throwIfAborted(options.signal);
+          if (Date.now() >= deadline) throw timeout(timeoutReason());
+          if (options.validateCandidate && !await options.validateCandidate(chosen.id)) {
+            await result.release();
+            nextRefresh = 0;
+            // Admission consumed the Redis ticket; keep its original priority.
+            if (redisAvailable) {
+              const again = await enqueue();
+              if (again === -1) throw timeout("queue_full");
+              redisAvailable = again != null;
+            }
+            continue;
+          }
+          throwIfAborted(options.signal);
+          if (Date.now() >= deadline) throw timeout(timeoutReason());
+          return result;
+        } catch (error) { await result.release(); throw error; }
       }
-
       const remaining = deadline - Date.now();
-      await sleepInterruptible(Math.min(150, Math.max(1, remaining)), options.signal);
+      if (remaining > 0) await sleepInterruptible(Math.min(ADMISSION_CONFIG.pollMs, remaining), options.signal);
     }
-    throw createQueueTimeout(providerId, timeoutMs);
+    throw timeout(timeoutReason());
   } finally {
-    if (redisAvailable) await routingRedis((client) => client.zRem(queue, id));
+    localQueue.delete(id);
+    if (!localQueue.size) localQueues.delete(providerId);
+    // Even a timed-out Redis operation may have enrolled the ticket.
+    await routingRedis(client => client.zRem(queue, rawTicket));
   }
 }
 
-function makeHardLease(lease, chosenIndex, candidates) {
-  if (lease.connectionId !== candidates[chosenIndex]?.id) throw new Error("Routing slot candidate mismatch");
-  armRenewal();
-  return {
-    connectionId: lease.connectionId,
-    async release() {
-      if (!active.delete(lease.id)) return;
-      if (!active.size) { clearInterval(state.renewalTimer); state.renewalTimer = null; }
-      if (!lease.redis) return;
-      await routingRedis(async (client) => {
-        await client.zRem(providerKey(lease.providerId), lease.members);
-        await client.zRem(slotKey(lease.connectionId), lease.members);
-      });
-    },
+function makeHardLease(lease, signal, queueWaitMs, weight) {
+  const release = async () => {
+    signal?.removeEventListener("abort", onAbort);
+    if (!active.delete(lease.id)) return;
+    if (!active.size) { clearInterval(state.renewalTimer); state.renewalTimer = null; }
+    if (lease.redis) await routingRedis(async client => {
+      await client.zRem(providerKey(lease.providerId), lease.members);
+      await client.zRem(slotKey(lease.connectionId), lease.members);
+    });
   };
+  const onAbort = () => { release().catch(() => {}); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  else armRenewal();
+  return { connectionId: lease.connectionId, queueWaitMs, weight, release };
 }
 
 /**
@@ -346,6 +341,6 @@ export function getLocalSlotStatus() {
   return {
     active: active.size,
     redis: [...active.values()].filter((lease) => lease.redis).length,
-    queued: [...state.queueSizes.values()].reduce((sum, size) => sum + size, 0),
+    queued: [...localQueues.values()].reduce((sum, queue) => sum + queue.size, 0),
   };
 }

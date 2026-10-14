@@ -14,15 +14,15 @@ describe("unique account leases", () => {
   it("chooses and reserves in one command even with many accounts", async () => {
     mocks.eval.mockResolvedValue(2);
     const lease = await slots.reserveConnectionSlot(candidates); leases.push(lease);
-    expect(lease.connectionId).toBe("b"); expect(mocks.eval).toHaveBeenCalledOnce();
-    expect(mocks.eval.mock.calls[0][1].keys).toHaveLength(3);
+    expect(lease.connectionId).toBe("b"); expect(mocks.eval).toHaveBeenCalledTimes(2);
+    expect(mocks.eval.mock.calls[1][1].keys).toHaveLength(4);
     await lease.release(); await lease.release();
     expect(mocks.zRem).toHaveBeenCalled();
     expect(slots.getLocalSlotStatus().active).toBe(0);
   });
   it("uses different release tokens for overlapping requests", async () => {
-    leases = await Promise.all(Array.from({length: 100}, () => slots.reserveConnectionSlot(candidates)));
-    const tokens = mocks.eval.mock.calls.map(([, opts]) => opts.arguments[0]);
+    leases = await Promise.all(Array.from({length: 100}, () => slots.reserveConnectionSlot(candidates, { maxQueueSize: 200 })));
+    const tokens = mocks.eval.mock.calls.filter(([script]) => script === slots.HARD_RESERVE_SCRIPT).map(([, opts]) => opts.arguments[0]);
     expect(new Set(tokens).size).toBe(100);
     expect(slots.getLocalSlotStatus().active).toBe(100);
   });
@@ -97,8 +97,63 @@ describe("hard provider and account gates", () => {
 
   it("estimates long-context requests with a bounded weight", () => {
     expect(slots.estimateRequestWeight({ messages: Array(10) })).toBe(1);
-    expect(slots.estimateRequestWeight({ messages: Array(120) })).toBe(2);
-    expect(slots.estimateRequestWeight({ messages: Array(900) })).toBe(8);
+    expect(slots.estimateRequestWeight({ messages: Array.from({length: 120}, () => ({role: "user", content: "short"})) })).toBe(1);
+    expect(slots.estimateRequestWeight({ input: [{content: "x".repeat(900_000)}] })).toBe(8);
+    expect(slots.estimateRequestWeight({ tools: Array.from({length: 140}, () => ({type: "function", function: {name: "tool", parameters: {type: "object"}}})) })).toBe(1);
+    expect(slots.estimateRequestWeight({ tools: [{description: "x".repeat(220_000)}] })).toBe(3);
     expect(slots.estimateRequestWeight({ input: "x".repeat(120_000) })).toBe(2);
+  });
+});
+
+describe("admission lifecycle", () => {
+  it("does not acquire anything for an already cancelled request", async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(slots.reserveConnectionSlot(candidates, {signal: controller.signal})).rejects.toMatchObject({name: "AbortError"});
+    expect(mocks.eval).not.toHaveBeenCalled();
+    expect(slots.getLocalSlotStatus().active).toBe(0);
+  });
+  it("releases if cancellation races the Redis admission reply", async () => {
+    const controller = new AbortController();
+    mocks.eval.mockImplementation(async (script) => {
+      if (script === slots.HARD_RESERVE_SCRIPT) controller.abort();
+      return 1;
+    });
+    await expect(slots.reserveConnectionSlot(candidates, {signal: controller.signal})).rejects.toMatchObject({name: "AbortError"});
+    expect(slots.getLocalSlotStatus()).toEqual({active: 0, redis: 0, queued: 0});
+    expect(mocks.zRem.mock.calls.some(([key]) => key.includes("slots:v3:a"))).toBe(true);
+  });
+  it("releases immediately on cancellation after returning credentials", async () => {
+    const controller = new AbortController();
+    const lease = await slots.reserveConnectionSlot(candidates, {signal: controller.signal}); leases.push(lease);
+    controller.abort();
+    expect(slots.getLocalSlotStatus().active).toBe(0);
+    await lease.release();
+  });
+  it("uses the remaining request budget instead of restarting a queue window", async () => {
+    mocks.offline = true;
+    const held = await slots.reserveConnectionSlot([{id:"deadline",limit:1}]); leases.push(held);
+    const start = Date.now();
+    await expect(slots.reserveConnectionSlot([{id:"deadline",limit:1}], {
+      deadlineMs: start + 40, queueTimeoutMs: 60_000,
+    })).rejects.toMatchObject({reason:"deadline_exceeded"});
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(slots.getLocalSlotStatus().queued).toBe(0);
+  });
+  it("refreshes stale accounts without dispatching to a now disabled account", async () => {
+    mocks.offline = true;
+    const refreshCandidates = vi.fn(async () => [{id:"fresh",limit:2}]);
+    const validateCandidate = vi.fn(async id => id === "fresh");
+    const lease = await slots.reserveConnectionSlot(candidates, {refreshCandidates,validateCandidate}); leases.push(lease);
+    expect(lease.connectionId).toBe("fresh");
+    expect(slots.getConnectionSlotCounts()).toEqual({fresh:1});
+    expect(refreshCandidates).toHaveBeenCalledOnce();
+  });
+  it("does not retain a lease if post-admission validation throws", async () => {
+    await expect(slots.reserveConnectionSlot(candidates, {validateCandidate: async () => {throw new Error("DB unavailable");}})).rejects.toThrow("DB unavailable");
+    expect(slots.getLocalSlotStatus()).toEqual({active:0,redis:0,queued:0});
+  });
+  it("rejects weights that cannot fit without occupying the queue", async () => {
+    await expect(slots.reserveConnectionSlot(candidates, {weight:8})).rejects.toMatchObject({reason:"weight_exceeds_capacity"});
+    expect(slots.getLocalSlotStatus().queued).toBe(0);
   });
 });

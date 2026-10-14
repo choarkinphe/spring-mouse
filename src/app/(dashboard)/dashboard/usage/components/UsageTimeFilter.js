@@ -3,7 +3,7 @@
 import PropTypes from "prop-types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import UsageScopeManager from "./UsageScopeManager";
-import useSettingsStore from "@/store/settingsStore";
+import useSettingsStore, { selectUsageDashboardScopeTags } from "@/store/settingsStore";
 import { hasAccessTagOverlap, normalizeAccessTags } from "@/shared/utils/accessTags";
 import {
   startOfDay as atStartOfDay,
@@ -165,7 +165,7 @@ export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyCha
   const [customStart, setCustomStart] = useState(value?.startDate ? new Date(value.startDate) : new Date());
   const [customEnd, setCustomEnd] = useState(value?.endDate ? new Date(value.endDate) : new Date());
   const [apiKeys, setApiKeys] = useState([]);
-  const usageDashboardScopeTags = useSettingsStore((state) => state.settings?.usageDashboardScopeTags || []);
+  const usageDashboardScopeTags = useSettingsStore(selectUsageDashboardScopeTags);
   const scopedApiKeys = useMemo(() => {
     const tags = normalizeAccessTags(usageDashboardScopeTags);
     return tags.length === 0 ? apiKeys : apiKeys.filter((apiKey) => hasAccessTagOverlap(apiKey.accessTags, tags));

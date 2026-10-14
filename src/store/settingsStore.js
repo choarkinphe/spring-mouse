@@ -3,6 +3,10 @@
 import { create } from "zustand";
 import { CLIENT_STORE_TTL_MS } from "@/shared/constants/config";
 
+// Keep the snapshot stable while settings load; allocating a fallback array
+// here makes Zustand/React repeatedly update even when the store is unchanged.
+export const selectUsageDashboardScopeTags = (state) => state.settings?.usageDashboardScopeTags;
+
 const useSettingsStore = create((set, get) => ({
   settings: null,
   loading: false,

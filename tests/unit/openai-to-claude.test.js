@@ -193,7 +193,9 @@ describe("openaiToClaudeResponse", () => {
       }]
     };
 
-    const result = openaiToClaudeResponse(chunk, state);
+    openaiToClaudeResponse(chunk, state);
+    // Read's whole-object repair runs at the tool's terminal, after all fragments.
+    const result = openaiToClaudeResponse({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }, state);
     const inputDelta = result.find(event => event.delta?.type === "input_json_delta");
 
     expect(inputDelta).toBeDefined();

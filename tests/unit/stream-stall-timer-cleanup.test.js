@@ -1,12 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { pipeWithDisconnect } from "../../open-sse/utils/streamHandler.js";
+import { createStreamController, pipeWithDisconnect } from "../../open-sse/utils/streamHandler.js";
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("stream stall watchdog cleanup", () => {
+  it("aborts upstream on processing failure and settles once", () => {
+    const onError = vi.fn();
+    const onDisconnect = vi.fn();
+    const client = new AbortController();
+    const control = createStreamController({ clientSignal: client.signal, onError, onDisconnect, log: { errorLine() {} } });
+    const error = new Error("translator failed");
+    control.handleError(error);
+    expect(control.signal.aborted).toBe(true);
+    expect(control.signal.reason).toBe(error);
+    client.abort(); control.handleError(error);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
   it("clears the watchdog after a normally completed stream", async () => {
     vi.useFakeTimers();
     const abort = vi.fn();

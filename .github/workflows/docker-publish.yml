@@ -65,6 +65,13 @@ jobs:
           unit/usage-dashboard-scope.test.js
           unit/chat-routing-telemetry.test.js
           unit/streaming-attempt-settlement.test.js
+          unit/tool-stream-forwarding.test.js
+          unit/openai-to-claude-response-tools.test.js
+          unit/stream-first-token-timing.test.js
+          unit/base-executor-retry.test.js
+          unit/base-executor-socket-release.test.js
+          unit/stream-stall-timer-cleanup.test.js
+          unit/claude-messages-protocol.test.js
           unit/chatcore-stream-settle-hooks.test.js
           unit/compaction-diagnostics.test.js
           unit/codex-overload-retry-budget.test.js

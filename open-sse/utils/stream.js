@@ -110,9 +110,13 @@ export function createSSEStream(options = {}) {
     try { routingObserver.settle(info); } catch { /* telemetry is fail-open */ }
   };
   const observeEvent = (eventName, parsed) => {
-    if (!routingObserver || !parsed) return;
+    if (!parsed) return;
+    if (hasContentForFormat(targetFormat, parsed)) {
+      if (ttftAt === null) ttftAt = Date.now();
+      try { routingObserver?.noteFirstToken(); } catch { /* telemetry is fail-open */ }
+    }
+    if (!routingObserver) return;
     try {
-      if (hasContentForFormat(targetFormat, parsed)) routingObserver.noteFirstToken();
       const classified = classifyStreamEvent(targetFormat, eventName, parsed);
       if (classified) routingObserver.recordTerminal(classified);
     } catch { /* telemetry is fail-open */ }
@@ -154,7 +158,6 @@ export function createSSEStream(options = {}) {
 
   return new TransformStream({
     transform(chunk, controller) {
-      if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
       reqLogger?.appendProviderChunk?.(text);
@@ -579,9 +582,10 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null, targetFormat = FORMATS.OPENAI) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
+    targetFormat,
     provider,
     reqLogger,
     model,

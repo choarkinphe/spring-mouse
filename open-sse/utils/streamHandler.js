@@ -67,6 +67,9 @@ export function createStreamController({ onDisconnect, onError, onComplete, log,
       if (disconnected) return;
       disconnected = true;
       cleanupClientAbortListener();
+      // A transform/consumer error can occur while fetch is still producing.
+      // Release the upstream even when nobody will pull/cancel the body again.
+      abortController.abort(error);
       if (error?.name === "AbortError") {
         logStream("⚡", "ABORTED");
         onError?.(error);

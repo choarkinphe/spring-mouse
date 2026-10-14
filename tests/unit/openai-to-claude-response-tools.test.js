@@ -10,6 +10,26 @@ function getInputJsonDelta(events) {
 }
 
 describe("openaiToClaudeResponse tool argument sanitization", () => {
+  it("streams parallel ordinary tools immediately while retaining Read repair", () => {
+    const state = createState();
+    const send = (tool_calls, finish_reason = null) => openaiToClaudeResponse({ choices: [{ delta: { tool_calls }, finish_reason }] }, state) || [];
+    send([
+      { index: 0, id: "read", function: { name: "proxy_Read" } },
+      { index: 1, id: "write", function: { name: "proxy_Write" } },
+      { index: 2, id: "custom", function: { name: "custom_tool" } },
+    ]);
+    const events = send([
+      { index: 0, function: { arguments: '{"file_path":"a.js","limit":"5000"}' } },
+      { index: 1, function: { arguments: '{"content":"part' } },
+      { index: 2, function: { arguments: '{"q":"x"}' } },
+    ]);
+    expect(events.map(e => [e.index, e.delta.partial_json])).toEqual([[1, '{"content":"part'], [2, '{"q":"x"}']]);
+    expect(state.toolArgBuffers.size).toBe(1);
+    const final = send([{ index: 1, function: { arguments: ' two"}' } }], "tool_calls");
+    expect(final.filter(e => e.delta?.type === "input_json_delta").map(e => [e.index, e.delta.partial_json])).toEqual([[1, ' two"}'], [0, '{"file_path":"a.js","limit":2000}']]);
+    expect(state.toolArgBuffers.size).toBe(0);
+    expect(final.filter(e => e.type === "content_block_stop")).toHaveLength(3);
+  });
   it("drops invalid Read pages and clamps numeric bounds", () => {
     const state = createState();
 

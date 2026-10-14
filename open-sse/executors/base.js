@@ -16,6 +16,14 @@ function abortError(reason) {
   return error;
 }
 
+// Discarded error responses must release their socket before backoff/fallback.
+// Abort also covers bodies locked by a provider retry hook; cancellation must
+// never delay the next attempt if a custom stream has a hanging cancel hook.
+function discardResponse(response, controller) {
+  controller.abort();
+  try { Promise.resolve(response?.body?.cancel()).catch(() => {}); } catch { /* already consumed/locked */ }
+}
+
 /**
  * Wait for a retry delay without retaining the request after its client has
  * disconnected. `setTimeout` alone leaves retries pending until the full
@@ -196,7 +204,7 @@ export class BaseExecutor {
 
     // Schedule retry via retryConfig[statusKey]. Returns true when caller should `urlIndex--; continue`
     // response (optional) lets a subclass hook compute a dynamic delay (e.g. antigravity Retry-After).
-    const tryRetry = async (urlIndex, statusKey, reason, response = null) => {
+    const tryRetry = async (urlIndex, statusKey, reason, response = null, controller = null) => {
       const { attempts, delayMs } = resolveRetryEntry(retryConfig[statusKey]);
       if (attempts <= 0 || retryAttemptsByUrl[urlIndex] >= attempts) return false;
       // Hook: subclass may derive delay from the response (headers/body). null → skip retry, use fallback.
@@ -207,6 +215,7 @@ export class BaseExecutor {
         if (dynamic != null) waitMs = dynamic;
       }
       retryAttemptsByUrl[urlIndex]++;
+      if (response && controller) discardResponse(response, controller);
       log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${waitMs / 1000}s`);
       await waitForRetry(waitMs, signal);
       return true;
@@ -256,11 +265,12 @@ export class BaseExecutor {
         const cl = response.headers?.get?.("content-length") || "?";
         dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
 
-        if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response)) { urlIndex--; continue; }
+        if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response, connectCtrl)) { urlIndex--; continue; }
 
         if (this.shouldRetry(response.status, urlIndex)) {
           log?.debug?.("RETRY", `${response.status} on ${url}, trying fallback ${urlIndex + 1}`);
           lastStatus = response.status;
+          discardResponse(response, connectCtrl);
           continue;
         }
 
@@ -269,6 +279,7 @@ export class BaseExecutor {
         sizeDiag?.error(error);
         clearTimeout(connectTimer);
         lastError = error;
+        if (signal?.aborted) throw abortError(signal.reason);
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError

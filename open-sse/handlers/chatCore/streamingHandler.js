@@ -38,7 +38,7 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
     return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver);
   }
 
-  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver);
+  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, targetFormat);
 }
 
 function estimateInputTokensFromHeaders(headers) {
@@ -138,7 +138,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
  */
 function persistStreamUsage({ provider, model, originalModel, executedModel, routing, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log, recordUsage = true }, usage, ttftAt) {
   const latency = {
-    ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
+    ttft: ttftAt != null ? ttftAt - requestStartTime : null,
     total: Date.now() - requestStartTime
   };
 

@@ -190,13 +190,13 @@ export function openaiToClaudeResponse(chunk, state) {
         stopTextBlock(state, results);
 
         const toolBlockIndex = state.nextBlockIndex++;
-        state.toolCalls.set(idx, { id: tc.id, name: tc.function?.name || "", blockIndex: toolBlockIndex });
 
         // Strip prefix from tool name for response
         let toolName = tc.function?.name || "";
         if (toolName.startsWith(CLAUDE_OAUTH_TOOL_PREFIX)) {
           toolName = toolName.slice(CLAUDE_OAUTH_TOOL_PREFIX.length);
         }
+        state.toolCalls.set(idx, { id: tc.id, name: toolName, blockIndex: toolBlockIndex });
 
         results.push({
           type: "content_block_start",
@@ -213,9 +213,18 @@ export function openaiToClaudeResponse(chunk, state) {
       if (tc.function?.arguments) {
         const toolInfo = state.toolCalls.get(idx);
         if (toolInfo) {
-          // Buffer args instead of streaming — sanitize at finish to fix bad params
-          if (!state.toolArgBuffers) state.toolArgBuffers = new Map();
-          state.toolArgBuffers.set(idx, (state.toolArgBuffers.get(idx) || "") + tc.function.arguments);
+          // Only Read needs whole-object repair. Buffering Write/Bash/custom
+          // arguments starves the client while the upstream generates large tools.
+          if (toolInfo.name === "Read") {
+            if (!state.toolArgBuffers) state.toolArgBuffers = new Map();
+            state.toolArgBuffers.set(idx, (state.toolArgBuffers.get(idx) || "") + tc.function.arguments);
+          } else {
+            results.push({
+              type: "content_block_delta",
+              index: toolInfo.blockIndex,
+              delta: { type: "input_json_delta", partial_json: tc.function.arguments }
+            });
+          }
         }
       }
     }
@@ -231,6 +240,7 @@ export function openaiToClaudeResponse(chunk, state) {
       const buffered = state.toolArgBuffers?.get(idx);
       if (buffered) {
         const sanitized = sanitizeToolArgs(toolInfo.name, buffered);
+        state.toolArgBuffers.delete(idx);
         results.push({
           type: "content_block_delta",
           index: toolInfo.blockIndex,

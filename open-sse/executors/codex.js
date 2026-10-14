@@ -245,6 +245,7 @@ function normalizeCodexTools(body) {
     const name = rawName.trim();
     if (!name) return false;
     const description = typeof tool.description === "string" ? tool.description : (typeof fn?.description === "string" ? fn.description : "");
+    const strict = tool.strict ?? fn?.strict ?? (fn ? false : undefined);
     const parameters = (tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters))
       ? tool.parameters
       : (fn?.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters) ? fn.parameters : { type: "object", properties: {} });
@@ -253,6 +254,7 @@ function normalizeCodexTools(body) {
     tool.name = name.slice(0, 128);
     if (description) tool.description = description;
     tool.parameters = stripCodexUnsupportedPatterns(parameters, patternStats);
+    if (typeof strict === "boolean") tool.strict = strict;
     validNames.add(name);
     return true;
   });

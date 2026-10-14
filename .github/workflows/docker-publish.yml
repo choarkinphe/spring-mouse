@@ -76,6 +76,8 @@ jobs:
           unit/compaction-diagnostics.test.js
           unit/codex-overload-retry-budget.test.js
           unit/codex-custom-tool-output.test.js
+          unit/codex-tool-normalization.test.js
+          unit/responses-tool-strictness.test.js
           unit/codex-scan-diagnostics.test.js
           unit/codebuddy-rate-limit.test.js
           unit/qianwen-provider.test.js

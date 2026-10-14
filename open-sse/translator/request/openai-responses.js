@@ -407,7 +407,9 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
           name: tool.function.name,
           description: String(tool.function.description || ""),
           parameters: normalizeToolParameters(tool.function.parameters),
-          strict: tool.function.strict
+          // Responses attempts strict mode when omitted, unlike Chat/Claude.
+          // Keep optional fields optional (e.g. Agent.isolation = "worktree").
+          strict: tool.function.strict ?? false
         };
       }
       return tool;

@@ -43,6 +43,9 @@ export async function createNodeSqliteAdapter(filePath) {
   process.once("SIGINT", () => { onShutdown(); process.exit(0); });
   process.once("SIGTERM", () => { onShutdown(); process.exit(0); });
 
+  // 0 = outermost transaction (real BEGIN/COMMIT); >0 = nested SAVEPOINT.
+  let txDepth = 0;
+
   return {
     driver: "node:sqlite",
     run(sql, params = []) {
@@ -62,16 +65,24 @@ export async function createNodeSqliteAdapter(filePath) {
     },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
-      // node:sqlite has no transaction wrapper. Use SAVEPOINT for nested support.
-      const sp = `sp_${Math.random().toString(36).slice(2)}`;
-      db.exec(`SAVEPOINT ${sp}`);
+      const nested = txDepth > 0;
+      const name = `sp_${Math.random().toString(36).slice(2)}`;
+      // Outermost: BEGIN IMMEDIATE — a deferred txn that reads first cannot
+      // upgrade after a concurrent commit (SQLITE_BUSY_SNAPSHOT, no busy_timeout).
+      db.exec(nested ? `SAVEPOINT ${name}` : "BEGIN IMMEDIATE");
+      txDepth++;
       try {
         const r = fn();
-        db.exec(`RELEASE ${sp}`);
+        db.exec(nested ? `RELEASE ${name}` : "COMMIT");
         return r;
       } catch (e) {
-        try { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); } catch {}
+        try {
+          if (nested) { db.exec(`ROLLBACK TO ${name}`); db.exec(`RELEASE ${name}`); }
+          else db.exec("ROLLBACK");
+        } catch {}
         throw e;
+      } finally {
+        txDepth--;
       }
     },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },

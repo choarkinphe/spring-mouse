@@ -54,6 +54,7 @@ jobs:
           unit/account-schedule.test.js
           unit/traffic-repo.test.js
           unit/db-migration-chain.test.js
+          unit/db-write-contention.test.js
           unit/usage-rollup.test.js
           unit/usage-aggregation-source.test.js
           unit/usage-stats-snapshot.test.js

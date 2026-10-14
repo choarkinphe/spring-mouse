@@ -49,9 +49,11 @@ export async function createBunSqliteAdapter(filePath) {
     },
     exec(sql) { return db.exec(sql); },
     transaction(fn) {
-      // bun:sqlite has db.transaction() API (similar to better-sqlite3)
-      const tx = db.transaction(fn);
-      return tx();
+      // `.immediate()` (not bun's default deferred BEGIN) so a read-then-write
+      // transaction cannot fail SQLITE_BUSY_SNAPSHOT after a concurrent commit;
+      // immediate honors busy_timeout. bun auto-nests savepoints and returns the
+      // callback's value.
+      return db.transaction(fn).immediate();
     },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {

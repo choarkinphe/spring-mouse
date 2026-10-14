@@ -1,9 +1,23 @@
 import { ANTIGRAVITY_CONFIG, getOAuthClientMetadata } from "../constants/oauth.js";
 
+function validateClientConfig(config) {
+  const missing = [
+    ["clientId", "ANTIGRAVITY_OAUTH_CLIENT_ID"],
+    ["clientSecret", "ANTIGRAVITY_OAUTH_CLIENT_SECRET"],
+  ].filter(([key]) => typeof config[key] !== "string" || !config[key].trim());
+
+  if (missing.length) {
+    throw new Error(
+      `Antigravity OAuth 尚未配置：缺少 ${missing.map(([, name]) => name).join("、")}。请联系管理员配置有效的 OAuth 客户端；Google One 订阅不会自动提供这些应用凭据。`
+    );
+  }
+}
+
 const antigravity = {
   config: ANTIGRAVITY_CONFIG,
   flowType: "authorization_code",
   buildAuthUrl: (config, redirectUri, state) => {
+    validateClientConfig(config);
     const params = new URLSearchParams({
       client_id: config.clientId,
       response_type: "code",
@@ -16,6 +30,7 @@ const antigravity = {
     return `${config.authorizeUrl}?${params.toString()}`;
   },
   exchangeToken: async (config, code, redirectUri) => {
+    validateClientConfig(config);
     const response = await fetch(config.tokenUrl, {
       method: "POST",
       headers: {

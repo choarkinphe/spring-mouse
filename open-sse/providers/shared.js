@@ -81,10 +81,10 @@ export const ANTIGRAVITY_IDE_VERSION = "2.1.1";
 export const ANTIGRAVITY_IDE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_IDE_USER_AGENT = `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} darwin/arm64`;
 
-// Antigravity OAuth client credentials (public CLI client — duplicated in usage.js + src/lib/oauth)
+// Authorization, token exchange, and refresh must use the same deployed client.
 export const ANTIGRAVITY_OAUTH_CLIENT = {
-  clientId: process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || "",
-  clientSecret: process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || ""
+  clientId: process.env.ANTIGRAVITY_OAUTH_CLIENT_ID?.trim() || "",
+  clientSecret: process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET?.trim() || ""
 };
 
 // Gemini (Google) OAuth client credentials (public CLI client — shared by gemini, gemini-cli, src/lib/oauth)

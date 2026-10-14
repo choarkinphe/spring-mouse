@@ -8,7 +8,7 @@ vi.mock("@/lib/localDb", () => ({
   getMouseExecutionDetails: async () => null,
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: async () => ({}) }));
-vi.mock("@/lib/redis/connectionSlots.js", () => ({ reserveConnectionSlot: mocks.reserve, getConnectionConcurrencyLimit: () => 2, estimateRequestWeight: () => 1 }));
+vi.mock("@/lib/redis/connectionSlots.js", () => ({ getRequestWeightLimit: () => 8, reserveConnectionSlot: mocks.reserve, getConnectionConcurrencyLimit: () => 2, estimateRequestWeight: () => 1 }));
 vi.mock("@/sse/services/providerBreaker.js", () => ({ getProviderModelBreaker: async () => ({}), getModelOverloadThrottle: async () => ({}) }));
 const { getProviderCredentials } = await import("@/sse/services/auth.js");
 const account = (id, extra = {}) => ({ id, provider: "openai", apiKey: id, ...extra });

@@ -183,3 +183,18 @@ it("does not dispatch or cool down an account if setup consumes the request budg
     expect(globalThis.__smProviderBreakers?.providers?.size || 0).toBe(0);
   } finally { vi.restoreAllMocks(); }
 });
+
+
+it("keeps two long requests parallel on a 15-slot account when the provider gate is disabled", async () => {
+  await seedAccounts(1);
+  await setProviderStrategy({hardConcurrencyEnabled:false,maxConcurrentStreams:15,providerMaxConcurrentStreams:50,queueTimeoutMs:50});
+  const {getProviderCredentials} = await import("../../src/sse/services/auth.js");
+  const options = {reserveSlot:true,body:{messages:[{role:"user",content:"x".repeat(1_000_000)}]}};
+  const admitted=[];
+  try {
+    admitted.push(await getProviderCredentials("probe",null,"model-x",options));
+    admitted.push(await getProviderCredentials("probe",null,"model-x",options));
+    expect(admitted.map(c => c.admission.weight)).toEqual([7,7]);
+    await expect(getProviderCredentials("probe",null,"model-x",options)).rejects.toMatchObject({reason:"queue_timeout"});
+  } finally { await Promise.all(admitted.map(c => c.releaseRouteSlot())); }
+});

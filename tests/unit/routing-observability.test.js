@@ -35,7 +35,7 @@ vi.mock("@/lib/localDb", () => ({
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: mocks.proxy }));
 vi.mock("@/lib/redis/connectionSlots.js", () => ({
-  reserveConnectionSlot: mocks.reserve,
+  getRequestWeightLimit: () => 8, reserveConnectionSlot: mocks.reserve,
   getConnectionConcurrencyLimit: () => 16,
   getLocalSlotStatus: () => ({ active: 0, redis: 0, queued: 0 }),
   estimateRequestWeight: () => 1,

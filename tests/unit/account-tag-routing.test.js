@@ -22,7 +22,7 @@ vi.mock("@/lib/localDb", () => ({
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: mocks.proxy }));
 vi.mock("@/lib/redis/connectionSlots.js", () => ({
-  reserveConnectionSlot: mocks.reserve, getConnectionConcurrencyLimit: () => 16, getLocalSlotStatus: () => ({ active: 0, redis: 0 }),
+  getRequestWeightLimit: () => 8, estimateRequestWeight: () => 1, reserveConnectionSlot: mocks.reserve, getConnectionConcurrencyLimit: () => 16, getLocalSlotStatus: () => ({ active: 0, redis: 0 }),
 }));
 vi.mock("@/lib/apiKeyQuota.js", () => ({ checkApiKeyQuota: vi.fn() }));
 vi.mock("@/sse/utils/logger.js", () => ({
@@ -122,7 +122,7 @@ it("reserves once with only eligible accounts and returns the lifecycle release"
   mocks.getProviderConnections.mockResolvedValue([connection("first"), connection("second"), connection("third")]);
   mocks.reserve.mockResolvedValue({ connectionId: "third", release: mocks.release });
   const credentials = await getProviderCredentials("openai", new Set(["first"]), "gpt-5", { reserveSlot: true });
-  expect(mocks.reserve).toHaveBeenLastCalledWith([{ id: "second", limit: 16 }, { id: "third", limit: 16 }], {});
+  expect(mocks.reserve).toHaveBeenLastCalledWith([{ id: "second", limit: 16 }, { id: "third", limit: 16 }], expect.objectContaining({providerId:"openai",weight:1,validateCandidate:expect.any(Function)}));
   expect(credentials.connectionId).toBe("third"); expect(credentials.releaseRouteSlot).toBe(mocks.release);
 });
 it("releases a reservation when proxy resolution throws", async () => {

@@ -53,6 +53,18 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       expect(await admin.zCard(weightedProvider)).toBe(0);
       expect(await admin.zCard(key("weighted"))).toBe(0);
 
+      // Production regression: two weight-8 requests cannot share a 15-slot
+      // account. Cap estimated weights at 7, preserving parallel progress.
+      const oddCandidates = [{id:"odd-capacity",limit:15}];
+      const estimated = slots.estimateRequestWeight({input:"x".repeat(1_000_000)}, slots.getRequestWeightLimit(oddCandidates,50));
+      expect(estimated).toBe(7);
+      const oddOptions = {providerId:"odd",providerLimit:50,weight:estimated,queueTimeoutMs:50};
+      const parallel = await Promise.all([slots.reserveConnectionSlot(oddCandidates,oddOptions),slots.reserveConnectionSlot(oddCandidates,oddOptions)]);
+      leases.push(...parallel);
+      expect(await admin.zCard(key("odd-capacity"))).toBe(14);
+      await expect(slots.reserveConnectionSlot(oddCandidates,oddOptions)).rejects.toMatchObject({reason:"queue_timeout"});
+      await Promise.all(parallel.map(l => l.release()));
+
       // Cross-worker queue admission is atomic, independent of the local guard.
       const q = "spring-mouse:routing:{routing}:queue:v2:atomic";
       const enrolled = await Promise.all(Array.from({length:30}, (_,i) => admin.eval(slots.ENQUEUE_SCRIPT, {
@@ -77,6 +89,15 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       expect(await admin.zCard(key("shared"))).toBe(7);
       expect(await admin.zCard(fairQueue)).toBe(0);
       await admin.del([key("shared"),"spring-mouse:routing:{routing}:provider:v1:fair"]);
+      // A worker that enrolls and dies must not leave a fairness blocker for
+      // the full 60-second request budget. Only live pollers extend waiter TTL.
+      const orphanQueue = "spring-mouse:routing:{routing}:queue:v2:orphan";
+      const orphan = JSON.stringify({id:"dead-worker",at:Date.now()-2000,keys:[key("orphan-account")]});
+      await admin.eval(slots.ENQUEUE_SCRIPT,{keys:[orphanQueue],arguments:["50",String(Date.now()+60000),orphan,"120000","","150"]});
+      expect(Number(await admin.zScore(orphanQueue,orphan))-Date.now()).toBeLessThanOrEqual(150);
+      const recovered = await slots.reserveConnectionSlot([{id:"orphan-account",limit:8}], {providerId:"orphan",providerLimit:8,queueTimeoutMs:1500}); leases.push(recovered);
+      expect(recovered.connectionId).toBe("orphan-account");
+      expect(await admin.zCard(orphanQueue)).toBe(0); await recovered.release();
       const old = await slots.reserveConnectionSlot([{ id: "reused", limit: 1 }]); leases.push(old);
       const [oldToken] = await admin.zRange(key("reused"), 0, -1);
       await old.release();

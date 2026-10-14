@@ -90,6 +90,9 @@ jobs:
           unit/admission-handoff-cancellation.test.js
           unit/request-conversation-latency.test.js
           unit/capability-account-selection.test.js
+          unit/account-tag-routing.test.js
+          unit/routing-observability.test.js
+          unit/multi-account-fanout.test.js
           unit/routing-writer.test.js
           unit/outbound-cancellation-matrix.test.js
           unit/proxy-fetch-abort.test.js

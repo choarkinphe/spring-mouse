@@ -15,7 +15,7 @@ import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/sh
 import { isScheduleActive, describeSchedule } from "@/shared/utils/schedule.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
 import { getStickyAssignment, claimStickyAssignment } from "@/lib/redis/stickyAssignments.js";
-import { estimateRequestWeight, getConnectionConcurrencyLimit, reserveConnectionSlot, RoutingQueueTimeoutError } from "@/lib/redis/connectionSlots.js";
+import { estimateRequestWeight, getRequestWeightLimit, getConnectionConcurrencyLimit, reserveConnectionSlot, RoutingQueueTimeoutError } from "@/lib/redis/connectionSlots.js";
 import { getProviderModelBreaker, getModelOverloadThrottle } from "./providerBreaker.js";
 import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabilities.js";
@@ -417,6 +417,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         : providerOverride;
       const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
       const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
+      const slotCandidates = candidates.map(candidate => ({
+        id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
+      }));
+      const providerLimit = providerConfiguredLimit != null && Number.isFinite(Number(providerConfiguredLimit))
+        && Number(providerConfiguredLimit) > 0 ? Number(providerConfiguredLimit) : undefined;
       const refreshEligible = async () => {
         const [fresh, mouses] = await Promise.all([
           getProviderConnections({ provider: providerId, isActive: true }), getMouses(),
@@ -431,14 +436,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         if (preferred > 0) availableConnections = [...availableConnections.slice(preferred), ...availableConnections.slice(0, preferred)];
         return availableConnections.map(c => ({ id: c.id, limit: getConnectionConcurrencyLimit(c, accountStrategy) }));
       };
-      lease = await reserveConnectionSlot(candidates.map((candidate) => ({
-        id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
-      })), {
+      lease = await reserveConnectionSlot(slotCandidates, {
         providerId,
-        ...(Number.isFinite(Number(providerConfiguredLimit))
-          ? { providerLimit: Number(providerConfiguredLimit) }
-          : {}),
-        weight: options.requestWeight ?? estimateRequestWeight(options.body),
+        ...(providerLimit !== undefined ? { providerLimit } : {}),
+        weight: options.requestWeight ?? estimateRequestWeight(options.body, getRequestWeightLimit(slotCandidates, providerLimit)),
         queueTimeoutMs: providerOverride.queueTimeoutMs
           ?? PROVIDERS[providerId]?.transport?.queueTimeoutMs,
         maxQueueSize: providerOverride.maxQueueSize

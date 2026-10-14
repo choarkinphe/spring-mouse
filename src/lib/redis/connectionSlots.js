@@ -47,6 +47,17 @@ export function getConnectionConcurrencyLimit(connection, providerStrategy = {})
     positive(providerStrategy?.maxConcurrentStreams, DEFAULT_LIMIT));
 }
 
+/** Heuristic weights must not collapse a multi-request account into a serial
+ * queue. E.g. a cap of 15 needs weights <=7 to admit two large requests. Explicit
+ * reservation weights remain strict; this ceiling applies to estimation only. */
+export function getRequestWeightLimit(candidates, providerLimit) {
+  const largestAccount = Math.max(1, ...candidates.map(c => positive(c.limit, DEFAULT_LIMIT)));
+  const capacity = Number.isFinite(providerLimit) && providerLimit > 0
+    ? Math.min(largestAccount, providerLimit) : largestAccount;
+  return Math.max(1, Math.min(ADMISSION_CONFIG.maxWeight,
+    Math.floor(capacity / ADMISSION_CONFIG.minParallelRequests)));
+}
+
 /**
  * Approximate expensive long-context requests with a small integer weight so a
  * 1,400-message Codex turn cannot consume the same gate capacity as a two-turn
@@ -82,13 +93,14 @@ local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 if ARGV[5] and ARGV[5] ~= '' then redis.call('ZREM', KEYS[1], ARGV[5]) end
 if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return -1 end
-redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+local expires = math.min(tonumber(ARGV[2]), now + tonumber(ARGV[6] or ARGV[4]))
+redis.call('ZADD', KEYS[1], expires, ARGV[3])
 redis.call('PEXPIRE', KEYS[1], ARGV[4])
 return 1
 `;
 
 /** KEYS: provider, queue, accounts; ARGV: lease, TTL, provider cap, weight,
- * account caps, JSON ticket, maximum bypass age. */
+ * account caps, JSON ticket, maximum bypass age, waiter TTL, deadline. */
 export const HARD_RESERVE_SCRIPT = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
@@ -101,6 +113,10 @@ local own = cjson.decode(ticket)
 local expires = now + lease_ms
 redis.call('ZREMRANGEBYSCORE', queue, '-inf', now)
 if not redis.call('ZSCORE', queue, ticket) then return -1 end
+-- A dead/disconnected worker cannot reserve idle capacity for a full minute.
+local waiter_ttl = tonumber(ARGV[#KEYS + 5] or '3000')
+local deadline = tonumber(ARGV[#KEYS + 6] or tostring(now + waiter_ttl))
+redis.call('ZADD', queue, math.min(deadline, now + waiter_ttl), ticket)
 -- Short requests can use spare capacity briefly. Once a competing waiter has
 -- aged, reserve its overlapping accounts so a stream of newcomers cannot starve
 -- it. Disjoint account sets (e.g. capability/pinned routes) do not block each other.
@@ -211,7 +227,7 @@ export async function reserveConnectionSlot(candidates, options = {}) {
   if (deadline <= started) throw timeout("deadline_exceeded");
   const maxQueueSize = positive(options.maxQueueSize, 50);
   const queue = queueKey(providerId);
-  const ticket = { id, at: started, keys: candidates.map(c => slotKey(c.id)) };
+  const ticket = { id, at: started, keys: candidates.filter(c => c.limit >= weight).map(c => slotKey(c.id)) };
   let rawTicket = JSON.stringify(ticket);
   let redisAvailable = true, nextRefresh = started + ADMISSION_CONFIG.refreshCandidatesMs;
   let localQueue = localQueues.get(providerId);
@@ -219,7 +235,7 @@ export async function reserveConnectionSlot(candidates, options = {}) {
   if (localQueue.size >= maxQueueSize) throw timeout("queue_full");
   localQueue.set(id, ticket);
   const enqueue = (previousTicket = "") => routingRedis(client => client.eval(ENQUEUE_SCRIPT, {
-    keys: [queue], arguments: [String(maxQueueSize), String(deadline), rawTicket, String(configuredTimeout * 2), previousTicket],
+    keys: [queue], arguments: [String(maxQueueSize), String(deadline), rawTicket, String(configuredTimeout * 2), previousTicket, String(ADMISSION_CONFIG.waiterLeaseMs)],
   }));
   try {
     const admitted = await enqueue();
@@ -233,7 +249,7 @@ export async function reserveConnectionSlot(candidates, options = {}) {
         throwIfAborted(options.signal);
         nextRefresh = Date.now() + ADMISSION_CONFIG.refreshCandidatesMs;
         const previousTicket = rawTicket;
-        ticket.keys = candidates.map(c => slotKey(c.id));
+        ticket.keys = candidates.filter(c => c.limit >= weight).map(c => slotKey(c.id));
         rawTicket = JSON.stringify(ticket);
         if (redisAvailable) {
           const result = await enqueue(previousTicket);
@@ -252,10 +268,18 @@ export async function reserveConnectionSlot(candidates, options = {}) {
         index = await routingRedis(client => client.eval(HARD_RESERVE_SCRIPT, {
           keys: [providerKey(providerId), queue, ...candidates.map(c => slotKey(c.id))],
           arguments: [id, String(LEASE_MS), String(providerLimit), String(weight),
-            ...candidates.map(c => String(c.limit)), rawTicket, String(ADMISSION_CONFIG.maxBypassMs)],
+            ...candidates.map(c => String(c.limit)), rawTicket, String(ADMISSION_CONFIG.maxBypassMs), String(ADMISSION_CONFIG.waiterLeaseMs), String(deadline)],
         }));
         if (index == null) redisAvailable = false;
-        else if (index === -1) break;
+        else if (index === -1) {
+          // A slow event loop can outlive its waiter heartbeat. Rejoin with the
+          // same age and deadline; this is not a new waiting budget.
+          if (Date.now() >= deadline) break;
+          const again = await enqueue();
+          if (again === -1) throw timeout("queue_full");
+          redisAvailable = again != null;
+          continue;
+        }
       }
       if (!redisAvailable && candidates.length) {
         const counts = localCounts(providerId);

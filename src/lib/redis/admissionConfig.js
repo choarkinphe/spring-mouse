@@ -1,5 +1,6 @@
 export const ADMISSION_CONFIG = Object.freeze({
   maxWeight: 8,
+  minParallelRequests: 2,
   charsPerSlot: 100_000,
   maxSizeNodes: 50_000,
   maxSizeDepth: 64,
@@ -7,4 +8,5 @@ export const ADMISSION_CONFIG = Object.freeze({
   pollMs: 150,
   refreshCandidatesMs: 1_000,
   maxBypassMs: 1_000,
+  waiterLeaseMs: 3_000,
 });

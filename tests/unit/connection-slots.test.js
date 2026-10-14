@@ -157,3 +157,12 @@ describe("admission lifecycle", () => {
     expect(slots.getLocalSlotStatus().queued).toBe(0);
   });
 });
+
+
+it("fits estimated weights to odd, small and provider-wide capacities", () => {
+  expect(slots.getRequestWeightLimit([{limit:15}],50)).toBe(7);
+  expect(slots.getRequestWeightLimit([{limit:30}],80)).toBe(8);
+  expect(slots.getRequestWeightLimit([{limit:1}],50)).toBe(1);
+  expect(slots.getRequestWeightLimit([{limit:30}],3)).toBe(1);
+  expect(slots.getRequestWeightLimit([{limit:1},{limit:15}],50)).toBe(7);
+});

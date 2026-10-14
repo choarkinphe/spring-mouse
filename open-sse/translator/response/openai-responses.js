@@ -400,6 +400,54 @@ function flushEvents(state) {
   return events;
 }
 
+function resolveResponseToolCall(state, data) {
+  state.responseToolCalls ||= new Map();
+  const keys = [
+    data.item?.id || data.item_id,
+    data.item?.call_id,
+    data.output_index != null ? `output:${data.output_index}` : null,
+  ].filter(Boolean);
+  let tool = keys.map(key => state.responseToolCalls.get(key)).find(Boolean);
+  if (!tool && keys.length === 0) tool = state.currentResponseToolCall;
+  if (!tool) {
+    tool = { index: state.toolCallIndex++, arguments: "", started: false };
+  }
+  for (const key of keys) state.responseToolCalls.set(key, tool);
+  state.currentResponseToolCall = tool;
+  return tool;
+}
+
+function responseToolDelta(state, data, { complete = false, delta = false } = {}) {
+  const tool = resolveResponseToolCall(state, data);
+  const item = data.item;
+  const call = { index: tool.index };
+  if (!tool.started && item) {
+    tool.started = true;
+    tool.id = item.call_id || fallbackToolCallId();
+    state.currentToolCallId = tool.id;
+    call.id = tool.id;
+    call.type = OPENAI_BLOCK.FUNCTION;
+    call.function = { name: item.name || "", arguments: "" };
+  }
+  const value = delta ? data.delta : (item?.arguments ?? item?.input ?? data.arguments ?? data.input);
+  let suffix = "";
+  if (typeof value === "string") {
+    if (delta && !tool.complete) suffix = value;
+    // Completion snapshots repeat streamed arguments; only append an unseen suffix.
+    else if (!delta && value.startsWith(tool.arguments)) suffix = value.slice(tool.arguments.length);
+  }
+  if (complete) tool.complete = true;
+  if (suffix) {
+    tool.arguments += suffix;
+    call.function = { ...call.function, arguments: suffix };
+  }
+  if (!call.function) return null;
+  return buildChunk(
+    { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+    { tool_calls: [call] }
+  );
+}
+
 // currentToolCallId is intentionally sticky for the current turn so flush/completion
   // can still finalize as tool_calls even if the tool call was emitted before stream end.
 function computeFinishReason(state) {
@@ -466,37 +514,23 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Function call started (standard function_call or custom_tool_call)
   if (eventType === "response.output_item.added" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
-    const item = data.item;
-    state.currentToolCallId = item.call_id || fallbackToolCallId();
-
-    return buildChunk(
-      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
-      {
-        tool_calls: [{
-          index: state.toolCallIndex,
-          id: state.currentToolCallId,
-          type: OPENAI_BLOCK.FUNCTION,
-          function: { name: item.name || "", arguments: "" }
-        }]
-      }
-    );
+    return responseToolDelta(state, data);
   }
 
   // Function call arguments delta (standard or custom_tool_call variant)
   if (eventType === "response.function_call_arguments.delta" || eventType === "response.custom_tool_call_input.delta") {
-    const argsDelta = data.delta || "";
-    if (!argsDelta) return null;
+    return responseToolDelta(state, data, { delta: true });
+  }
 
-    return buildChunk(
-      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
-      { tool_calls: [{ index: state.toolCallIndex, function: { arguments: argsDelta } }] }
-    );
+  if (eventType === "response.function_call_arguments.done" || eventType === "response.custom_tool_call_input.done") {
+    return responseToolDelta(state, data, { complete: true });
   }
 
   // Function call done (standard or custom_tool_call variant)
   if (eventType === "response.output_item.done" && (data.item?.type === RESPONSES_ITEM.FUNCTION_CALL || data.item?.type === "custom_tool_call")) {
-    state.toolCallIndex++;
-    return null;
+    const result = responseToolDelta(state, data, { complete: true });
+    state.currentResponseToolCall = null;
+    return result;
   }
 
   // Response completed

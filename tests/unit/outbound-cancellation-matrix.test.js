@@ -28,6 +28,7 @@ describe("real outbound cancellation matrix", () => {
       expect(record.concurrentCancelled).toBe(20);
       expect(record.healthyAfterCancel).toBe(true);
       expect(record.outcomes).toHaveLength(12);
+      expect(record.bypassResponseChecks).toEqual(["json", "error-text", "stream-abort", "body-cancel"]);
       expect(record.after.active).toBe(0);
     } finally { fs.rmSync(dir, { recursive: true }); }
   }, 60000);

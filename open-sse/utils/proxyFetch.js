@@ -350,18 +350,18 @@ export async function createBypassRequest(parsedUrl, realIP, options = {}) {
         res.once("end", release);
         res.once("close", release);
         res.once("error", release);
+        // Share one Fetch body for streaming/text/JSON consumers. The raw Node
+        // IncomingMessage has no text() method, and consuming it separately
+        // would race Readable.toWeb() for response bytes.
+        const responseBody = new Response(Readable.toWeb(res));
         resolve({
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
           statusText: res.statusMessage,
           headers: new Map(Object.entries(res.headers)),
-          body: Readable.toWeb(res),
-          text: async () => {
-            const chunks = [];
-            for await (const chunk of res) chunks.push(chunk);
-            return Buffer.concat(chunks).toString();
-          },
-          json: async () => JSON.parse(await response.text()),
+          body: responseBody.body,
+          text: () => responseBody.text(),
+          json: () => responseBody.json(),
         });
       });
 

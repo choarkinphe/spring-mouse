@@ -17,10 +17,47 @@ const waitFor = async (check, message) => {
   assert.fail(message);
 };
 const outcomes = [];
+const bypassResponseChecks = [];
 const socketHandles = () => process._getActiveHandles().filter((h) => h.constructor?.name === "Socket" && h.remoteAddress).length;
 try {
   await healthy(); await sleep(100);
   const baseline = { ...fixture.metrics(), handles: socketHandles(), rss: process.memoryUsage().rss };
+  const bypassUrl = (path) => {
+    const url = new URL(fixture.url + path);
+    url.hostname = "localhost";
+    return url;
+  };
+  {
+    const response = await createBypassRequest(bypassUrl("/models"), "127.0.0.1", { signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).data[0].id, "qwen3.8-flash");
+    await assert.rejects(() => response.text(), TypeError, "body must have one shared consumer");
+    bypassResponseChecks.push("json");
+  }
+  {
+    const response = await createBypassRequest(bypassUrl("/stage-retry"), "127.0.0.1", { signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 503);
+    assert.equal(response.ok, false);
+    assert.equal(await response.text(), '{"error":{"message":"fixture retry"}}');
+    bypassResponseChecks.push("error-text");
+  }
+  {
+    const signal = new AbortController();
+    const response = await createBypassRequest(bypassUrl("/stage-midstream"), "127.0.0.1", { signal: signal.signal });
+    const reader = response.body.getReader();
+    assert.ok((await reader.read()).value.byteLength > 0);
+    const next = reader.read();
+    signal.abort();
+    await assert.rejects(next, { name: "AbortError" });
+    await waitFor(() => fixture.metrics().active === 0, "bypass retained aborted response");
+    bypassResponseChecks.push("stream-abort");
+  }
+  {
+    const response = await createBypassRequest(bypassUrl("/stage-body"), "127.0.0.1", { signal: AbortSignal.timeout(5000) });
+    await response.body.cancel();
+    await waitFor(() => fixture.metrics().active === 0, "bypass retained cancelled body");
+    bypassResponseChecks.push("body-cancel");
+  }
   for (const proxy of [false, true]) {
     for (const stage of ["headers", "first-chunk", "midstream", "body"]) {
       const signal = new AbortController();
@@ -98,6 +135,6 @@ try {
   // actual handles/RSS, never equate pool Map length with OS resources.
   assert.ok(after.handles <= baseline.handles + 12, `socket handles grew: ${baseline.handles} -> ${after.handles}`);
   assert.ok(after.rss <= baseline.rss + 64 * 1024 * 1024, "RSS exceeded bounded test allowance");
-  console.log(JSON.stringify({ outcomes, concurrentCancelled: signals.length, baseline, after, recovery, healthyAfterCancel: true }));
+  console.log(JSON.stringify({ outcomes, bypassResponseChecks, concurrentCancelled: signals.length, baseline, after, recovery, healthyAfterCancel: true }));
 } finally { await fixture.close(); }
 process.exit(0);

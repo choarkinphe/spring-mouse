@@ -7,7 +7,7 @@ const NO_STORE_HEADERS = { "Cache-Control": "no-store, max-age=0" };
 /**
  * GET /api/usage/request-details/conversation?requestId=...
  *
- * Returns ONLY the bounded conversation digest for one request — "what did the
+ * Returns the bounded conversation digest and numeric latency for one request — "what did the
  * user send this turn" — so the board's detail table can expand a row without
  * shipping the full request/response payloads the list endpoint redacts.
  *
@@ -35,7 +35,14 @@ export async function GET(request) {
       || summarizeChatRequest(detail.request)
       || null;
 
+    const latency = detail.latency && Object.fromEntries(
+      ["ttft", "total", "preDispatchMs", "queueWaitMs", "weight"]
+        .filter(key => Number.isFinite(detail.latency[key]) && detail.latency[key] >= 0)
+        .map(key => [key, detail.latency[key]]),
+    );
+    if (latency) latency.scope = detail.latency.scope === "request" ? "request" : "attempt";
     return NextResponse.json({
+      latency: latency || null,
       conversation,
       notice: conversation ? null : "该请求未记录可展示的对话内容（非对话类请求，或报文已清理）。",
     }, { headers: NO_STORE_HEADERS });

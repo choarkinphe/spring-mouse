@@ -93,6 +93,7 @@ export function buildRequestDetail(base, overrides = {}) {
       ...(routing.timing ? {
         preDispatchMs: routing.timing.preDispatchMs,
         queueWaitMs: routing.timing.queueWaitMs,
+        weight: routing.timing.weight,
       } : {}),
     },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },

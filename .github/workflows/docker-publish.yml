@@ -88,6 +88,7 @@ jobs:
           unit/queue-retry-after.test.js
           unit/queue-timeout-response.test.js
           unit/admission-handoff-cancellation.test.js
+          unit/request-conversation-latency.test.js
           unit/capability-account-selection.test.js
           unit/routing-writer.test.js
           unit/outbound-cancellation-matrix.test.js

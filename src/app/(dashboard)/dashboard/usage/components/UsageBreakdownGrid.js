@@ -215,6 +215,25 @@ const ROLE_STYLES = {
 };
 
 /** The bounded conversation digest for one request, rendered inline. */
+function LatencySummary({ latency }) {
+  if (!latency) return null;
+  const metrics = [
+    ["首字", latency.ttft], ["总耗时", latency.total],
+    ["本次入队等待", latency.queueWaitMs], ["发往上游前累计", latency.preDispatchMs],
+  ].filter(([, value]) => Number.isFinite(value));
+  if (!metrics.length) return null;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-surface px-3 py-2 text-xs">
+      {metrics.map(([label, value]) => (
+        <span key={label} className="text-text-muted">{label} <strong className="font-mono font-medium text-text-main">{Math.round(value)} ms</strong></span>
+      ))}
+      <span className="text-[10px] text-text-muted">{latency.scope === "request" ? "首字和总耗时包含排队与重试" : "历史记录：按单次执行计时"}</span>
+    </div>
+  );
+}
+
+LatencySummary.propTypes = { latency: PropTypes.object };
+
 function ConversationPanel({ state }) {
   if (state.status === "loading") {
     return <p className="px-1 py-4 text-xs text-text-muted"><span className="material-symbols-outlined mr-1.5 animate-spin align-[-4px] text-[16px]">progress_activity</span>正在读取对话内容…</p>;
@@ -224,7 +243,7 @@ function ConversationPanel({ state }) {
   }
   const summary = state.data;
   if (!summary?.messages?.length) {
-    return <p className="px-1 py-4 text-xs text-text-muted">{state.notice || "该请求未记录可展示的对话内容。"}</p>;
+    return <><LatencySummary latency={state.latency} /><p className="px-1 py-4 text-xs text-text-muted">{state.notice || "该请求未记录可展示的对话内容。"}</p></>;
   }
   const knobs = [
     summary.model ? `模型 ${summary.model}` : null,
@@ -235,6 +254,7 @@ function ConversationPanel({ state }) {
   ].filter(Boolean);
   return (
     <div className="rounded-lg border border-primary/20 bg-primary/[0.03] p-3">
+      <LatencySummary latency={state.latency} />
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="material-symbols-outlined text-[16px] text-primary">forum</span>
         <span className="text-xs font-semibold text-text-main">本轮对话内容</span>
@@ -284,7 +304,7 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
     setRowState(row.id, { status: "loading" });
     fetch(`/api/usage/request-details/conversation?requestId=${encodeURIComponent(row.requestId)}`, { cache: "no-store" })
       .then((response) => response.json())
-      .then((payload) => setRowState(row.id, { status: "done", data: payload.conversation, notice: payload.notice }))
+      .then((payload) => setRowState(row.id, { status: "done", data: payload.conversation, latency: payload.latency, notice: payload.notice }))
       .catch(() => setRowState(row.id, { status: "error", error: "对话内容加载失败" }));
   };
   return (

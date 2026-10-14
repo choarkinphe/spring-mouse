@@ -48,6 +48,13 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
+// CodeBuddy 14003 explicitly advises waiting about one minute.
+export const CODEBUDDY_RATE_LIMIT = Object.freeze({
+  quotaCode: 6004,
+  throttleCode: 14003,
+  retryAfterMs: 60 * 1000,
+});
+
 // Cooldown durations (ms)
 const COOLDOWN = {
   long: 2 * 60 * 1000,

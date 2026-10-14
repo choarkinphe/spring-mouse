@@ -1,4 +1,4 @@
-import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, MAX_RATE_LIMIT_COOLDOWN_MS } from "../config/errorConfig.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -111,13 +111,22 @@ export async function parseUpstreamError(response, executor = null) {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
+        const upstreamError = buildUpstreamError(response, bodyText, msg, "http", {
+          status: parsed.status || response.status,
+        });
+        // Provider JSON may carry a retry hint when the HTTP header is absent.
+        // Never shorten an explicit Retry-After header using a body hint.
+        if (Number.isFinite(parsed.retryAfterMs) && parsed.retryAfterMs > 0) {
+          upstreamError.retryAfterMs = Math.min(
+            Math.max(upstreamError.retryAfterMs || 0, parsed.retryAfterMs),
+            MAX_RATE_LIMIT_COOLDOWN_MS,
+          );
+        }
         return {
           statusCode: parsed.status || response.status,
           message: msg,
           resetsAtMs: parsed.resetsAtMs,
-          upstreamError: buildUpstreamError(response, bodyText, msg, "http", {
-            status: parsed.status || response.status,
-          }),
+          upstreamError,
         };
       }
     } catch { /* fall through to default parsing */ }

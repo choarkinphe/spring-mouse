@@ -96,6 +96,11 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 // Keep time for another channel before committing a guarded stream. Once an
 // output delta is received this deadline is removed; it is not a stream TTL.
 export const FIRST_OUTPUT_FALLBACK_RESERVE_MS = envMs("FIRST_OUTPUT_FALLBACK_RESERVE_MS", 30 * 1000);
+export function reserveFirstOutputDeadline(deadline, hasFallback, now = Date.now()) {
+  if (!hasFallback || !Number.isFinite(deadline) || deadline <= now) return deadline;
+  const remaining = deadline - now;
+  return now + Math.max(remaining / 2, remaining - FIRST_OUTPUT_FALLBACK_RESERVE_MS);
+}
 export const OPENAI_STREAM_PREAMBLE_MAX_BYTES = 512 * 1024;
 
 // Shared by the Codex first-output detector and its diagnostic observer.

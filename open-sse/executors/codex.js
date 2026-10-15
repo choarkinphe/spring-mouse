@@ -14,13 +14,16 @@ import { getModelUpstreamId } from "../config/providerModels.js";
 import { getThinkingLevels } from "../providers/thinkingLevels.js";
 import {
   HTTP_STATUS,
+  FETCH_CONNECT_TIMEOUT_MS,
   CODEX_SCAN_DIAGNOSTICS,
   CODEX_SSE_OUTPUT_DELTA_TYPES,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
+  reserveFirstOutputDeadline,
   hasRoomForRetry,
 } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
+import { buildUpstreamError } from "../utils/error.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 import { normalizeCodexHostedHistory } from "../utils/codexHostedHistory.js";
@@ -597,7 +600,7 @@ export class CodexExecutor extends BaseExecutor {
     // deadline `minRetries` is dropped to 0 as well, so a late model fails fast and
     // hands control to the combo instead of extending the request again.
     const sharedDeadline = Number.isFinite(args.overloadDeadline) ? args.overloadDeadline : Infinity;
-    const deadline = Math.min(Date.now() + budgetMs, sharedDeadline);
+    const deadline = Math.min(Date.now() + budgetMs, reserveFirstOutputDeadline(sharedDeadline, args.hasFallback));
     const effectiveMinRetries = Date.now() >= sharedDeadline ? 0 : minRetries;
     let attempt = 0;
     // Announce the budget once, before the first retry, so an overload is legible
@@ -610,10 +613,27 @@ export class CodexExecutor extends BaseExecutor {
       // overshoot: the preamble scan alone may read for up to PREAMBLE_MS, and on a
       // p99 attempt (79s measured) a 90s budget could stop at ~150s+ — past the
       // ~165s clients were measured to tolerate. Passing the deadline lets the scan
-      // give up and hand the stream to the client instead of holding it open.
+      // stop before output and leave time for the next configured candidate.
       const doneFetch = diagStage(`upstream fetch (attempt ${attempt + 1})`);
-      const result = await super.execute(args);
-      doneFetch();
+      const fetchStarted = Date.now();
+      let result;
+      try {
+        result = await super.execute({ ...args, overloadDeadline: deadline });
+      } catch (error) {
+        if (error.name !== "TimeoutError" || args.signal?.aborted) throw error;
+        const message = "Timed out waiting for upstream response headers";
+        const origin = Date.now() - fetchStarted >= (this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS)
+          ? SSE_ERROR_ORIGINS.HEADER_TIMEOUT : SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT;
+        return {
+          response: codexSseErrorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, message, origin,
+            buildUpstreamError(null, "", message, "dispatch", { layer: "gateway" })),
+          url: this.buildUrl(args.model, args.stream, 0, args.credentials), transformedBody: args.body,
+          timing: { executorTotalMs: Date.now() - execT0, upstreamHeadersMs: Date.now() - fetchStarted,
+            firstOutputWaitMs: 0, upstreamAttempts: attempt + 1 },
+        };
+      } finally {
+        doneFetch();
+      }
       const donePeek = diagStage(`peekSseTransientError (attempt ${attempt + 1})`);
       const peek = await this._peekSseTransientError(result.response, deadline, args.log, {
         scanId: randomUUID(), attempt: attempt + 1,
@@ -681,6 +701,14 @@ export class CodexExecutor extends BaseExecutor {
         args.log?.warn?.("RETRY", `CODEX | SSE account fallback "${peek.message}"`);
         result.response = codexSseErrorResponse(
           HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || CODEX_MODEL_CAPACITY_MESSAGE, "model_at_capacity", peek.upstreamError);
+        return result;
+      }
+      // Match the HTTP retry policy: an available route owns recovery. Sleeping
+      // here would spend its budget and upload the same long prompt again.
+      if (args.hasFallback) {
+        args.log?.warn?.("RETRY", `CODEX | SSE overloaded "${peek.matched}" — handing off to the next configured route without retrying`);
+        result.response = codexSseErrorResponse(
+          HTTP_STATUS.SERVICE_UNAVAILABLE, peek.message || peek.matched, SSE_ERROR_ORIGINS.OVERLOAD, peek.upstreamError);
         return result;
       }
       // Keep retrying while the budget lasts, but always allow `minRetries` — a

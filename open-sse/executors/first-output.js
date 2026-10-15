@@ -1,5 +1,5 @@
 import { DefaultExecutor } from "./default.js";
-import { FIRST_OUTPUT_FALLBACK_RESERVE_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS, FETCH_CONNECT_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
+import { reserveFirstOutputDeadline, STREAM_FIRST_CHUNK_TIMEOUT_MS, FETCH_CONNECT_TIMEOUT_MS, HTTP_STATUS } from "../config/runtimeConfig.js";
 import { SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
 import { buildUpstreamError, errorResponse } from "../utils/error.js";
 import { guardOpenAIFirstOutput } from "../utils/openaiFirstOutput.js";
@@ -11,9 +11,8 @@ export class FirstOutputExecutor extends DefaultExecutor {
     const now = Date.now();
     const remaining = Number.isFinite(args.overloadDeadline)
       ? Math.max(0, args.overloadDeadline - now) : STREAM_FIRST_CHUNK_TIMEOUT_MS;
-    const budget = args.hasFallback
-      ? Math.max(remaining / 2, remaining - FIRST_OUTPUT_FALLBACK_RESERVE_MS) : remaining;
-    const deadlineMs = now + Math.min(budget, STREAM_FIRST_CHUNK_TIMEOUT_MS);
+    const deadlineMs = Math.min(
+      reserveFirstOutputDeadline(now + remaining, args.hasFallback, now), now + STREAM_FIRST_CHUNK_TIMEOUT_MS);
     const controller = new AbortController();
     const signal = args.signal ? AbortSignal.any([args.signal, controller.signal]) : controller.signal;
     let result;

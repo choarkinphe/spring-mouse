@@ -319,6 +319,10 @@ export async function reserveConnectionSlot(candidates, options = {}) {
           return result;
         } catch (error) { await result.release(); throw error; }
       }
+      // A combo with remaining alternatives only tries currently available
+      // capacity. Keep the same atomic limits/fairness and release its ticket
+      // before the caller moves to another provider.
+      if (options.waitForCapacity === false) throw timeout("capacity_exhausted");
       const remaining = deadline - Date.now();
       if (remaining > 0) await sleepInterruptible(Math.min(ADMISSION_CONFIG.pollMs, remaining), options.signal);
     }

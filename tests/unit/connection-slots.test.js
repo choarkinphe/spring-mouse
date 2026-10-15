@@ -54,6 +54,24 @@ describe("unique account leases", () => {
 });
 
 describe("hard provider and account gates", () => {
+  it("tries Redis capacity once and removes the waiter when fallback is available", async () => {
+    mocks.eval.mockResolvedValueOnce(1).mockResolvedValue(0);
+    const start = Date.now();
+    await expect(slots.reserveConnectionSlot(candidates, {
+      waitForCapacity: false, queueTimeoutMs: 60000,
+    })).rejects.toMatchObject({ reason: "capacity_exhausted" });
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(mocks.eval).toHaveBeenCalledTimes(2);
+    expect(mocks.zRem).toHaveBeenCalledTimes(1);
+    expect(slots.getLocalSlotStatus()).toEqual({ active: 0, redis: 0, queued: 0 });
+  });
+  it("uses another account in the same channel before falling back", async () => {
+    mocks.offline = true;
+    for (let i = 0; i < 3; i++) leases.push(await slots.reserveConnectionSlot(candidates, {
+      providerId: "fallback-account", providerLimit: 4, waitForCapacity: false,
+    }));
+    expect(leases.map(l => l.connectionId)).toEqual(["a", "a", "b"]);
+  });
   it("queues once either cap is exhausted and admits after release", async () => {
     mocks.offline = true;
     const first = await slots.reserveConnectionSlot(candidates, {

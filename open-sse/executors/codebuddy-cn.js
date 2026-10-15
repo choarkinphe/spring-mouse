@@ -1,4 +1,5 @@
 import { DefaultExecutor } from "./default.js";
+import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
 
 /**
  * CodeBuddyExecutor — talks to https://copilot.tencent.com/v2/chat/completions
@@ -12,6 +13,10 @@ import { DefaultExecutor } from "./default.js";
 export class CodeBuddyExecutor extends DefaultExecutor {
   constructor() {
     super("codebuddy-cn");
+  }
+
+  parseError(response, bodyText) {
+    return applyCodeBuddyRateLimit(super.parseError(response, bodyText), response, bodyText);
   }
 
   transformRequest(model, body, stream, credentials) {

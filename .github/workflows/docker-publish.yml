@@ -96,6 +96,7 @@ jobs:
           unit/routing-events.test.js
           unit/routing-redis-client.test.js
           unit/connection-slots.test.js
+          unit/combo-admission-fallback.test.js
           unit/route-lease.test.js
           unit/queue-retry-after.test.js
           unit/queue-timeout-response.test.js

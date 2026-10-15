@@ -65,7 +65,7 @@ function withOriginalModelContext(clientRawRequest, originalModel) {
     : { ...clientRawRequest, body: { ...rawBody, model: originalModel } };
 }
 
-async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest = null, autoRoutingDepth = 0, routing = null }) {
+async function applyAutoRouting({ body, entries, comboConfig, comboName, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest = null, autoRoutingDepth = 0, routing = null, comboPath = [] }) {
   const config = normalizeAutoRoutingConfig(comboConfig?.autoRouting);
   const classifierConfig = autoRoutingDepth >= 2 || config.classifierModel === comboName
     ? { ...config, classifierModel: "" }
@@ -84,7 +84,7 @@ async function applyAutoRouting({ body, entries, comboConfig, comboName, require
       apiKey,
       accessTags,
       Math.min(overloadDeadline || Infinity, Date.now() + classifierConfig.classifierTimeoutMs),
-      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1, routing, role: "classifier", routeKind: "combo", routed: true },
+      { internalRequest: true, clientSignal: classifierSignal, autoRoutingDepth: autoRoutingDepth + 1, routing, role: "classifier", routeKind: "combo", routed: true, comboPath: [...comboPath, comboName] },
     ),
   });
   const routed = reorderByAutoLevel(entries, classification.level, config.levelOrder);
@@ -276,7 +276,7 @@ export async function handleChat(request, clientRawRequest = null) {
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       routing.hint({ strategy: comboStrategy, comboName: routedModelStr });
       const routedEntries = comboStrategy === "auto"
-        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: routedModelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, routing })
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: routedModelStr, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest, routing })
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
@@ -296,6 +296,7 @@ export async function handleChat(request, clientRawRequest = null) {
               role: isPanel ? "panel" : "judge",
               routeKind: comboRouteKind,
               routed: true,
+              comboPath: [routedModelStr],
             });
           },
           log,
@@ -309,11 +310,13 @@ export async function handleChat(request, clientRawRequest = null) {
         response = await handleComboChat({
           body,
           models: routedModels,
-          handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: comboRouteKind, routed: true }),
+          handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, routing, role: "primary", routeKind: comboRouteKind, routed: true }),
           log,
           comboName: routedModelStr,
           comboStrategy,
           comboStickyLimit,
+          deadlineMs: overloadDeadline,
+          signal: request?.signal,
         });
       }
     } else {
@@ -341,7 +344,15 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined } = {}) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false } = {}) {
+  if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
+  if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
+    return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
+  }
+  if (comboPath.includes(modelStr)) {
+    log.warn("COMBO", `Skipping cyclic route: ${[...comboPath, modelStr].join(" → ")}`);
+    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `Cyclic combo route skipped: ${modelStr}`);
+  }
   const modelInfo = await getModelInfo(modelStr);
   const effectiveRouteKind = routeKind || modelInfo.routeKind;
   const effectiveRouted = typeof routed === "boolean" ? routed : modelInfo.routed;
@@ -437,7 +448,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboConfig = comboStrategies[modelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       const routedEntries = comboStrategy === "auto"
-        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, overloadDeadline, log, clientRawRequest, autoRoutingDepth, routing })
+        ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest, autoRoutingDepth, routing, comboPath })
         : resolved.models;
       const routedModels = routedEntries.map((entry) => typeof entry === "string" ? entry : entry.model);
 
@@ -464,6 +475,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               role: isPanel ? "panel" : "judge",
               routeKind: nestedRouteKind,
               routed: true,
+              internalRequest, clientSignal, autoRoutingDepth, hasFallback,
+              comboPath: [...comboPath, modelStr],
             });
           },
           log,
@@ -478,11 +491,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { routing, role: "primary", routeKind: nestedRouteKind, routed: true }),
+        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true }),
         log,
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
+        comboPath,
+        hasFallback,
+        deadlineMs: overloadDeadline,
+        signal: clientSignal || request?.signal,
       });
     }
 
@@ -511,14 +528,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     return attempt;
   };
   const routingSettings = await getSettings();
-  let overloadMaxRetries = resolveOverloadMaxRetries(
+  let overloadMaxRetries = hasFallback ? 0 : resolveOverloadMaxRetries(
     (routingSettings.providerStrategies || {})[provider],
   );
 
   const switchToImplicitClaudeFallback = () => {
     if (!implicitClaudeFallback || provider !== initialProvider) return false;
     provider = "claude";
-    overloadMaxRetries = resolveOverloadMaxRetries(
+    overloadMaxRetries = hasFallback ? 0 : resolveOverloadMaxRetries(
       (routingSettings.providerStrategies || {})[provider],
     );
     excludeConnectionIds.clear();
@@ -559,8 +576,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: clientSignal || request?.signal, requestId,
         requiredCapabilities: detectRequiredCapabilities(body),
         deadlineMs: overloadDeadline,
+        waitForCapacity: !hasFallback,
       });
     } catch (error) {
+      if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
       // Report what actually happened: how long this request waited, and how
       // long the caller should back off before trying again.

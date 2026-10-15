@@ -49,6 +49,15 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       expect(await admin.zCount(key("weighted"),Date.now(),"+inf")).toBe(7);
       expect(await admin.zCount(weightedProvider,Date.now(),"+inf")).toBe(7);
       await expect(slots.reserveConnectionSlot([{id:"weighted",limit:8}], {providerId:"weighted",providerLimit:8,weight:2,queueTimeoutMs:50})).rejects.toMatchObject({reason:"queue_timeout"});
+      // Combo admission must preserve the same Redis caps, but never wait for
+      // a saturated channel while another candidate could serve the request.
+      const fallbackStart = Date.now();
+      await expect(slots.reserveConnectionSlot([{id:"weighted",limit:8}], {
+        providerId:"weighted", providerLimit:8, weight:2, queueTimeoutMs:60000, waitForCapacity:false,
+      })).rejects.toMatchObject({reason:"capacity_exhausted"});
+      expect(Date.now() - fallbackStart).toBeLessThan(1500);
+      expect(slots.getLocalSlotStatus().queued).toBe(0);
+      expect(await admin.zCard(weightedProvider)).toBe(7);
       await weighted.release();
       expect(await admin.zCard(weightedProvider)).toBe(0);
       expect(await admin.zCard(key("weighted"))).toBe(0);

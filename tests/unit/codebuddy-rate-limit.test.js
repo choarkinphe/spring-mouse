@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodeBuddyIntlExecutor } from "../../open-sse/executors/codebuddy-intl.js";
+import { CodeBuddyExecutor } from "../../open-sse/executors/codebuddy-cn.js";
 import { parseUpstreamError } from "../../open-sse/utils/error.js";
 import { isModelLockActive } from "../../open-sse/services/accountFallback.js";
 
@@ -12,7 +13,8 @@ vi.mock("@/shared/constants/providers.js", () => ({ FREE_PROVIDERS: {}, resolveP
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 const { markAccountUnavailable } = await import("../../src/sse/services/auth.js");
 
-const executor = new CodeBuddyIntlExecutor();
+let executor;
+let provider;
 const quota = (time) => ({ code: 6004, msg: `usage exceeds frequency limit, but don't worry, your usage will reset at ${time}, alternatively, you can switch to the other models to continue using it.` });
 const throttle = { code: 14003, msg: "too many requests", displayTips: { en: "Wait about a minute before retrying, or switch to a less busy model." } };
 const parse = (body, status = 429, headers = {}) => parseUpstreamError(new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers }), executor);
@@ -31,10 +33,11 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 async function lock(parsed) {
-  return markAccountUnavailable("cb", parsed.statusCode, parsed.message, "codebuddy-intl", "deepseek-v4.1-flash", parsed.resetsAtMs, parsed.upstreamError);
+  return markAccountUnavailable("cb", parsed.statusCode, parsed.message, provider, "deepseek-v4.1-flash", parsed.resetsAtMs, parsed.upstreamError);
 }
 
-describe("CodeBuddy production rate-limit responses", () => {
+describe.each([["codebuddy-intl", CodeBuddyIntlExecutor], ["codebuddy-cn", CodeBuddyExecutor]])("%s production rate-limit responses", (providerId, Executor) => {
+  beforeEach(() => { provider = providerId; executor = new Executor(); });
   it("locks to the explicit UTC+8 quota reset, without disabling the account", async () => {
     const parsed = await parse(quota("2026-10-14 16:00:01 UTC+8"));
     expect(parsed.resetsAtMs).toBe(Date.parse("2026-10-14T08:00:01Z"));

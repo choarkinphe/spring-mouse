@@ -3,7 +3,8 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
-import { unavailableResponse } from "../utils/error.js";
+import { errorResponse, unavailableResponse } from "../utils/error.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { getCapabilitiesForModel, getMeasuredCapabilitiesForConnection } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
@@ -484,7 +485,12 @@ export function getComboModelsFromData(modelStr, combosData, now = new Date(), s
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, comboPath = [], hasFallback = false, deadlineMs = null, signal = null }) {
+  if (comboName && comboPath.includes(comboName)) {
+    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `Cyclic combo route skipped: ${comboName}`);
+  }
+  // Keep ancestry local to this branch: a sibling may legitimately reuse a combo.
+  const nextPath = comboName ? [...comboPath, comboName] : comboPath;
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -505,11 +511,18 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let lastStatus = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
+    if (signal?.aborted) return errorResponse(499, "Request aborted");
+    if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+      return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
+    }
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const result = await handleSingleModel(body, modelStr, {
+        comboPath: nextPath,
+        hasFallback: hasFallback || i < rotatedModels.length - 1,
+      });
       
       // Success (2xx) - return response
       if (result.ok) {
@@ -539,21 +552,15 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       }
 
       // Check if should fallback to next model
-      const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText);
+      const { shouldFallback } = checkFallbackError(result.status, errorText);
 
       if (!shouldFallback) {
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
         return result;
       }
 
-      // For transient errors (503/502/504), wait for cooldown before falling through
-      // so a briefly-overloaded provider gets a chance to recover rather than being
-      // skipped immediately (fixes: combo falls through on transient 503)
-      if (cooldownMs && cooldownMs > 0 && cooldownMs <= 5000 &&
-          (result.status === 503 || result.status === 502 || result.status === 504)) {
-        log.info("COMBO", `Model ${modelStr} transient ${result.status}, waiting ${cooldownMs}ms before next`);
-        await new Promise(r => setTimeout(r, cooldownMs));
-      }
+      // Account/model cooldown belongs to the failed upstream. An independent
+      // fallback should not spend its request budget waiting for that cooldown.
 
       // Fallback to next model
       lastError = errorText || String(result.status);

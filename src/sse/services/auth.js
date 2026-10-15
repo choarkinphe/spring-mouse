@@ -285,7 +285,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           ? Number(providerOverride.overloadWaitMs)
           : DEFAULT_OVERLOAD_WAIT_MS;
         const retryAt = new Date(Date.now() + waitMs).toISOString();
-        if (waitMs > 0 && waitMs <= budgetMs) {
+        if (options.waitForCapacity !== false && waitMs > 0 && waitMs <= budgetMs) {
           log.routeLine("⏳", "🕒", `${reqPrefix}${provider}/${model} | upstream model busy · queued ${waitMs}ms, retrying after back-off`);
           try {
             const remaining = (options.deadlineMs ?? Infinity) - Date.now();
@@ -299,7 +299,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             return { aborted: true };
           }
         } else {
-          log.warn("THROTTLE", `${reqPrefix}${provider}/${model} | upstream model busy, back-off ${formatRetryAfter(retryAt)} exceeds the ${budgetMs}ms queue budget`);
+          log.warn("THROTTLE", `${reqPrefix}${provider}/${model} | upstream model busy (${formatRetryAfter(retryAt)}) · ${options.waitForCapacity === false ? "trying fallback" : `exceeds the ${budgetMs}ms queue budget`}`);
           return {
             allRateLimited: true,
             retryAfter: retryAt,
@@ -446,6 +446,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           ?? PROVIDERS[providerId]?.transport?.maxQueueSize,
         signal: options.signal,
         deadlineMs: options.deadlineMs,
+        waitForCapacity: options.waitForCapacity,
         refreshCandidates: refreshEligible,
         validateCandidate: async (id) => {
           const fresh = await getProviderConnectionById(id);

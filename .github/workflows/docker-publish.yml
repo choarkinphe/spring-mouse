@@ -57,6 +57,11 @@ jobs:
           unit/db-write-contention.test.js
           unit/usage-rollup.test.js
           unit/usage-aggregation-source.test.js
+          unit/usage-stats-cache-refresh.test.js
+          unit/usage-stats-singleflight.test.js
+          unit/usage-active-days.test.js
+          unit/usage-aggregate-equivalence.test.js
+          unit/usage-aggregate-totals.test.js
           unit/usage-stats-snapshot.test.js
           unit/request-detail-summary.test.js
           unit/request-details-retention.test.js

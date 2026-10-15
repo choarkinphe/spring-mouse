@@ -20,7 +20,7 @@
 
 // ─── small helpers (self-contained copies; see file header for why) ──────────
 
-import { startOfDay, localDateKey as localDateKeyTz } from "./timezone.mjs";
+import { startOfDay, instantOfMidnight, localDateKey as localDateKeyTz } from "./timezone.mjs";
 
 export function parseJson(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -249,6 +249,7 @@ function finalizePersonSessionMetrics(byUser, personEvents) {
       .filter((event) => Number.isFinite(event.startedAt))
       .sort((a, b) => a.startedAt - b.startedAt);
     const activeDays = new Set();
+    let nextDayStart = -Infinity;
     let sessionCount = 0;
     let sessionDurationMs = 0;
     let sessionStart = null;
@@ -261,7 +262,14 @@ function finalizePersonSessionMetrics(byUser, personEvents) {
     };
 
     for (const event of ordered) {
-      activeDays.add(getLocalDateKey(new Date(event.startedAt).toISOString()));
+      // Events are sorted: one timezone conversion per active day is enough.
+      // Resolve the next calendar midnight, not +24h (DST days can differ).
+      if (event.startedAt >= nextDayStart) {
+        const day = getLocalDateKey(new Date(event.startedAt));
+        activeDays.add(day);
+        const [year, month, date] = day.split("-").map(Number);
+        nextDayStart = instantOfMidnight(year, month, date + 1).getTime();
+      }
       const eventEnd = Math.max(event.startedAt, event.completedAt || event.startedAt);
 
       if (sessionStart === null) {

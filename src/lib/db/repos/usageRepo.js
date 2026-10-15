@@ -1147,7 +1147,7 @@ async function calculateUsageStats(period = "all", range = {}) {
 /**
  * Share dashboard aggregations between the REST loader and its SSE stream.
  * Fresh entries are returned immediately. When a completed request invalidates
- * an entry, retain its last value for at most two seconds and refresh in the
+ * an entry, retain its last value within the stale window and refresh in the
  * background; the follow-up SSE event carries the exact new aggregate.
  */
 export async function getUsageStats(period = "all", range = {}) {
@@ -1161,11 +1161,18 @@ async function getCachedUsageStats(period = "all", range = {}) {
   const now = Date.now();
   const cached = usageStatsCache.get(key);
 
+  // A slow initial scan is still the one calculation for this key. TTLs apply
+  // to completed snapshots, never to work in flight (including after a write).
+  if (cached?.computing) return cached.promise;
+
   if (cached && !cached.stale && now - cached.createdAt < STATS_CACHE_TTL_MS) {
     return cached.promise;
   }
 
   const canServeStale = cached && now - cached.createdAt < STATS_STALE_TTL_MS;
+  // Once the old snapshot expires, wait for its existing refresh. Starting a
+  // second scan here pins both workers on the same query under load.
+  if (cached?.refreshPromise && !canServeStale) return cached.refreshPromise;
   if (canServeStale) {
     // Rate-limit the background recompute so a busy gateway cannot pin the
     // worker: at most one re-aggregation per STATS_MIN_REFRESH_INTERVAL_MS.
@@ -1195,22 +1202,34 @@ async function getCachedUsageStats(period = "all", range = {}) {
           scheduleStatsEvent("update", 0);
           return stats;
         })
-        .catch(() => {
+        .catch((error) => {
           const current = usageStatsCache.get(key);
           if (current?.refreshPromise === refreshPromise) current.refreshPromise = null;
+          throw error;
         });
       cached.refreshPromise = refreshPromise;
+      // Stale readers do not await the background refresh; expired readers do
+      // and must see its failure rather than an undefined/empty stats object.
+      void refreshPromise.catch(() => {});
     }
     return cached.promise;
   }
 
   const promise = calculateUsageStats(period, range)
+    .then((stats) => {
+      const current = usageStatsCache.get(key);
+      if (current?.promise === promise) {
+        current.computing = false;
+        current.createdAt = Date.now();
+      }
+      return stats;
+    })
     .catch((error) => {
       const current = usageStatsCache.get(key);
       if (current?.promise === promise) usageStatsCache.delete(key);
       throw error;
     });
-  usageStatsCache.set(key, { createdAt: now, promise, stale: false, refreshPromise: null });
+  usageStatsCache.set(key, { createdAt: now, promise, computing: true, stale: false, refreshPromise: null });
   trimUsageStatsCache();
   return promise;
 }

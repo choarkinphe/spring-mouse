@@ -62,6 +62,7 @@ vi.mock("@/lib/pxpipe/loader.js", () => ({ getTransform: vi.fn(async () => null)
 vi.mock("@/lib/pxpipe/events.js", () => ({ appendPxpipeEvent: vi.fn() }));
 
 const { handleChat } = await import("../../src/sse/handlers/chat.js");
+const { getProviderCredentials, markAccountUnavailable, clearAccountError } = await import("../../src/sse/services/auth.js");
 const connectionsRepo = await import("../../src/lib/db/repos/connectionsRepo.js");
 
 const { updateSettings } = await import("../../src/lib/db/repos/settingsRepo.js");
@@ -111,6 +112,66 @@ afterEach(async () => {
 });
 
 describe("real combo routing and account admission", () => {
+  const headerTimeout = (id, model = "flash") => markAccountUnavailable(id, 503, "Header timeout", "codebuddy-intl", model, null,
+    { origin: "upstream_header_timeout", source: "dispatch", layer: "gateway" });
+  it("backs off repeated silent recovery rounds without amplifying one concurrent failure wave", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const id = accounts["codebuddy-intl"].id;
+    for (const expected of [60000, 120000, 240000, 300000, 300000]) {
+      expect((await headerTimeout(id)).cooldownMs).toBe(expected);
+      const before = await connectionsRepo.getProviderConnectionById(id);
+      await Promise.all(Array.from({ length: 5 }, () => headerTimeout(id)));
+      const after = await connectionsRepo.getProviderConnectionById(id);
+      expect(after.modelLock_flash).toBe(before.modelLock_flash);
+      expect(after.headerTimeouts.flash.failures).toBe(before.headerTimeouts.flash.failures);
+      expect(after.modelLock_other).toBeUndefined();
+      expect(after.isActive).toBe(true);
+      now += expected + 1;
+    }
+    // An unrelated model success must not erase the retry history.
+    const current = await connectionsRepo.getProviderConnectionById(id);
+    await clearAccountError(id, { _routingStartedAt: now, _connection: current }, "other");
+    expect((await connectionsRepo.getProviderConnectionById(id)).headerTimeouts.flash.failures).toBe(4);
+    now += 30 * 60 * 1000;
+    expect((await headerTimeout(id)).cooldownMs).toBe(60000);
+  });
+  it("admits one weighted recovery request, routes concurrent traffic to a sibling, then restores capacity on success", async () => {
+    await updateSettings({ providerStrategies: { "codebuddy-intl": {
+      maxConcurrentStreams: 6, providerMaxConcurrentStreams: 20, fallbackStrategy: "request-round-robin",
+    } } });
+    const id = accounts["codebuddy-intl"].id;
+    const sibling = await connectionsRepo.createProviderConnection({ provider: "codebuddy-intl", authType: "apikey", apiKey: "healthy", isActive: true });
+    await headerTimeout(id);
+    const failed = await connectionsRepo.getProviderConnectionById(id);
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(failed.modelLock_flash) + 1);
+    const options = { reserveSlot: true, requestWeight: 2, preferredConnectionId: id, waitForCapacity: false };
+    const results = await Promise.all(Array.from({ length: 3 }, () => getProviderCredentials("codebuddy-intl", null, "flash", options)));
+    held.push(...results.map(c => ({ release: c.releaseRouteSlot })));
+    expect(results.filter(c => c.connectionId === id)).toHaveLength(1);
+    expect(results.filter(c => c.connectionId === sibling.id)).toHaveLength(2);
+    const probe = results.find(c => c.connectionId === id);
+    await clearAccountError(id, probe, "flash");
+    expect((await connectionsRepo.getProviderConnectionById(id)).headerTimeouts.flash).toBeUndefined();
+    const restored = await getProviderCredentials("codebuddy-intl", null, "flash", options);
+    held.push({ release: restored.releaseRouteSlot });
+    expect(restored.connectionId).toBe(id);
+    expect((await headerTimeout(id)).cooldownMs).toBe(60000);
+  });
+  it("does not let an older success in the same millisecond clear a newer failure or its recovery state", async () => {
+    const id = accounts["codebuddy-intl"].id;
+    const old = await connectionsRepo.getProviderConnectionById(id);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    await headerTimeout(id);
+    // healthRevision is needed when clock timestamps tie.
+    await connectionsRepo.updateProviderConnection(id, { lastErrorAt: new Date(now).toISOString() });
+    await clearAccountError(id, { _routingStartedAt: now, _connection: old }, "flash");
+    const after = await connectionsRepo.getProviderConnectionById(id);
+    expect(after.modelLock_flash).toBeTruthy();
+    expect(after.headerTimeouts.flash.failures).toBe(1);
+    expect(after.testStatus).toBe("degraded");
+  });
   it("prefers international when it has capacity", async () => {
     expect(await (await handleChat(request())).json()).toEqual({ provider: "codebuddy-intl" });
     expect(mocks.handleChatCore.mock.calls[0][0].hasFallback).toBe(true);

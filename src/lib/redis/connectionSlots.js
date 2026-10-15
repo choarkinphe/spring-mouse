@@ -100,7 +100,8 @@ return 1
 `;
 
 /** KEYS: provider, queue, accounts; ARGV: lease, TTL, provider cap, weight,
- * account caps, JSON ticket, maximum bypass age, waiter TTL, deadline. */
+ * account caps, JSON ticket, maximum bypass age, waiter TTL, deadline,
+ * optional JSON recovery flags (one in-flight request per recovering account). */
 export const HARD_RESERVE_SCRIPT = `
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
@@ -111,6 +112,7 @@ local ticket = ARGV[#KEYS + 3]
 local bypass_ms = tonumber(ARGV[#KEYS + 4])
 local own = cjson.decode(ticket)
 local expires = now + lease_ms
+local recovery = cjson.decode(ARGV[#KEYS + 7] or '[]')
 redis.call('ZREMRANGEBYSCORE', queue, '-inf', now)
 if not redis.call('ZSCORE', queue, ticket) then return -1 end
 -- A dead/disconnected worker cannot reserve idle capacity for a full minute.
@@ -135,7 +137,8 @@ for i = 3, #KEYS do
   local key = KEYS[i]
   if not protected[key] then
     redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-    if tonumber(redis.call('ZCARD', key)) + weight <= tonumber(ARGV[i + 2]) then
+    local used = tonumber(redis.call('ZCARD', key))
+    if (not recovery[i - 2] or used == 0) and used + weight <= tonumber(ARGV[i + 2]) then
       for n = 0, weight - 1 do
         local member = lease .. '#' .. n
         redis.call('ZADD', provider, expires, member)
@@ -268,7 +271,8 @@ export async function reserveConnectionSlot(candidates, options = {}) {
         index = await routingRedis(client => client.eval(HARD_RESERVE_SCRIPT, {
           keys: [providerKey(providerId), queue, ...candidates.map(c => slotKey(c.id))],
           arguments: [id, String(LEASE_MS), String(providerLimit), String(weight),
-            ...candidates.map(c => String(c.limit)), rawTicket, String(ADMISSION_CONFIG.maxBypassMs), String(ADMISSION_CONFIG.waiterLeaseMs), String(deadline)],
+            ...candidates.map(c => String(c.limit)), rawTicket, String(ADMISSION_CONFIG.maxBypassMs), String(ADMISSION_CONFIG.waiterLeaseMs), String(deadline),
+            JSON.stringify(candidates.map(c => c.requireIdle === true))],
         }));
         if (index == null) redisAvailable = false;
         else if (index === -1) {
@@ -286,7 +290,8 @@ export async function reserveConnectionSlot(candidates, options = {}) {
         const protectedKeys = new Set([...localQueue.values()]
           .filter(t => (t.at < started || (t.at === started && t.id < id)) && Date.now() - t.at >= ADMISSION_CONFIG.maxBypassMs)
           .flatMap(t => t.keys));
-        const chosen = candidates.findIndex(c => !protectedKeys.has(slotKey(c.id)) && (counts.accounts.get(c.id) || 0) + weight <= c.limit);
+        const chosen = candidates.findIndex(c => !protectedKeys.has(slotKey(c.id))
+          && (!c.requireIdle || !counts.accounts.get(c.id)) && (counts.accounts.get(c.id) || 0) + weight <= c.limit);
         index = counts.provider + weight <= providerLimit && chosen >= 0 ? chosen + 1 : 0;
       }
       if (index >= 1 && index <= candidates.length) {

@@ -62,6 +62,31 @@ describe.skipIf(process.env.SM_REDIS_INTEGRATION !== "1")("real Redis account le
       expect(await admin.zCard(weightedProvider)).toBe(0);
       expect(await admin.zCard(key("weighted"))).toBe(0);
 
+      // Model recovery must be single-flight even when the account's normal
+      // limit and request weights allow several concurrent requests.
+      const recoveryCandidates = [{id:"recovery",limit:30,requireIdle:true}];
+      const recoveryOptions = {providerId:"recovery",providerLimit:30,weight:2,waitForCapacity:false};
+      const recoveryResults = await Promise.allSettled(Array.from({length:12}, () => slots.reserveConnectionSlot(recoveryCandidates,recoveryOptions)));
+      const probes = recoveryResults.filter(r => r.status === "fulfilled").map(r => r.value);
+      leases.push(...probes);
+      expect(probes).toHaveLength(1);
+      expect(await admin.zCard(key("recovery"))).toBe(2);
+      expect(recoveryResults.filter(r => r.status === "rejected").every(r => r.reason.reason === "capacity_exhausted")).toBe(true);
+      // A second worker with an independent queue ticket also cannot reserve.
+      const recoveryQueue = "spring-mouse:routing:{routing}:queue:v2:recovery";
+      const otherTicket = JSON.stringify({id:"other-worker",at:Date.now(),keys:[key("recovery")]});
+      await admin.zAdd(recoveryQueue,[{score:Date.now()+5000,value:otherTicket}]);
+      expect(await admin.eval(slots.HARD_RESERVE_SCRIPT, {
+        keys:["spring-mouse:routing:{routing}:provider:v1:recovery",recoveryQueue,key("recovery")],
+        arguments:["other-lease","3000","30","7","30",otherTicket,"1000","3000",String(Date.now()+5000),"[true]"],
+      })).toBe(0);
+      await admin.zRem(recoveryQueue,otherTicket);
+      await probes[0].release();
+      const recoveryProbe = await slots.reserveConnectionSlot(recoveryCandidates,{...recoveryOptions,weight:7});
+      leases.push(recoveryProbe);
+      expect(await admin.zCard(key("recovery"))).toBe(7);
+      await recoveryProbe.release();
+
       // Production regression: two weight-8 requests cannot share a 15-slot
       // account. Cap estimated weights at 7, preserving parallel progress.
       const oddCandidates = [{id:"odd-capacity",limit:15}];

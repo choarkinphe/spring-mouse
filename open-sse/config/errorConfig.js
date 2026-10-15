@@ -24,6 +24,8 @@ export const SSE_ERROR_ORIGINS = Object.freeze({
 // A CodeBuddy account can stop answering while sibling accounts remain healthy.
 // This is a short model-scoped retry suppression, not a permanent auth failure.
 export const ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS = 60 * 1000;
+export const ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS = 5 * 60 * 1000;
+export const ACCOUNT_HEADER_TIMEOUT_RESET_MS = 30 * 60 * 1000;
 
 // Default error messages per status code (client-facing)
 export const DEFAULT_ERROR_MESSAGES = {

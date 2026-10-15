@@ -2,7 +2,7 @@ import { recordRoutingDuration } from "@/lib/system/concurrency.js";
 import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_RESET_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
 import { errorResponse, normalizeErrorStatus } from "open-sse/utils/error.js";
@@ -27,6 +27,16 @@ import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabil
 const providerUserAssignments = new Map();
 const providerLocalCursors = new Map();
 const MAX_USER_ASSIGNMENTS_PER_PROVIDER = 1000;
+
+// Retain model-specific history after the cooldown expires: recovery should
+// admit one real request before exposing the account to full concurrency again.
+function headerTimeoutState(connection, model, now = Date.now()) {
+  const key = model || "__all";
+  const states = connection?.headerTimeouts;
+  const state = states && Object.hasOwn(states, key) ? states[key] : null;
+  return state?.failures > 0 && now - state.lastFailureAt < ACCOUNT_HEADER_TIMEOUT_RESET_MS
+    ? state : null;
+}
 
 // How long a request may sit in the model-overload queue before it gives up and
 // reports "upstream busy". Waiting a few seconds is strictly better than the old
@@ -417,9 +427,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         : providerOverride;
       const preferredIndex = availableConnections.findIndex((candidate) => candidate.id === connection.id);
       const candidates = [...availableConnections.slice(preferredIndex), ...availableConnections.slice(0, preferredIndex)];
-      const slotCandidates = candidates.map(candidate => ({
+      const toSlotCandidate = candidate => ({
         id: candidate.id, limit: getConnectionConcurrencyLimit(candidate, accountStrategy),
-      }));
+        ...(headerTimeoutState(candidate, model) ? { requireIdle: true } : {}),
+      });
+      const slotCandidates = candidates.map(toSlotCandidate);
       const providerLimit = providerConfiguredLimit != null && Number.isFinite(Number(providerConfiguredLimit))
         && Number(providerConfiguredLimit) > 0 ? Number(providerConfiguredLimit) : undefined;
       const refreshEligible = async () => {
@@ -434,7 +446,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // Keep the original preference when it remains eligible.
         const preferred = availableConnections.findIndex(c => c.id === connection.id);
         if (preferred > 0) availableConnections = [...availableConnections.slice(preferred), ...availableConnections.slice(0, preferred)];
-        return availableConnections.map(c => ({ id: c.id, limit: getConnectionConcurrencyLimit(c, accountStrategy) }));
+        return availableConnections.map(toSlotCandidate);
       };
       lease = await reserveConnectionSlot(slotCandidates, {
         providerId,
@@ -536,9 +548,22 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
     let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
+    let headerTimeoutUpdate;
     if (accountScoped) {
       shouldFallback = true;
-      cooldownMs = ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS;
+      const now = Date.now();
+      const previous = headerTimeoutState(conn, model, now);
+      // Overlapping requests from one failed wave count as one recovery round,
+      // not N consecutive retries. Only a failure after cooldown escalates it.
+      const stillCooling = previous?.retryAt > now;
+      const failures = Math.min((previous?.failures || 0) + (stillCooling ? 0 : 1),
+        1 + Math.ceil(Math.log2(ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS / ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS)));
+      cooldownMs = stillCooling ? previous.retryAt - now : Math.min(
+        ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS * 2 ** (failures - 1),
+      );
+      headerTimeoutUpdate = { ...conn?.headerTimeouts,
+        [model || "__all"]: { failures, lastFailureAt: now, retryAt: now + cooldownMs },
+      };
     } else if (scanBound) {
       // Keep the existing bounded fallback policy without blaming the account.
       // A local scan limit is not proof that the upstream model is overloaded.
@@ -634,6 +659,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
         testStatusUntil: new Date(Date.now() + cooldownMs).toISOString(),
         backoffLevel: newBackoffLevel ?? backoffLevel,
         healthRevision: (conn?.healthRevision || 0) + 1,
+        ...(headerTimeoutUpdate ? { headerTimeouts: headerTimeoutUpdate } : {}),
         ...evidence,
       },
     };
@@ -683,11 +709,14 @@ export async function clearAccountError(connectionId, currentConnection, model =
   const clearFailure = (conn) => {
     const now = Date.now();
     const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
-    const newerFailureInFlight = requestStartedAt > 0 && latestFailureAt > requestStartedAt;
+    const newerFailureInFlight = (requestStartedAt > 0 && latestFailureAt > requestStartedAt)
+      || (currentConnection._connection && (conn.healthRevision || 0) > (currentConnection._connection.healthRevision || 0));
+    const recoveryKey = model || "__all";
+    const clearRecovery = !newerFailureInFlight && Boolean(conn.headerTimeouts?.[recoveryKey]);
     const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
     // `lastUpstream*` is a retained evidence snapshot, not live state — it must
     // not keep this function awake, or every success would rewrite the row.
-    if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return { value: null };
+    if (!clearRecovery && !conn.testStatus && !conn.lastError && allLockKeys.length === 0) return { value: null };
 
     const keysToClear = allLockKeys.filter(k => {
       if (newerFailureInFlight) return conn[k] && new Date(conn[k]).getTime() <= now;
@@ -698,10 +727,14 @@ export async function clearAccountError(connectionId, currentConnection, model =
     // success on this account ends them even when the row carries no modelLock
     // key left to expire. Requiring a lock key here left rows that only ever
     // recorded a gateway failure (no lock was written) stuck on 「过载」forever.
-    if (keysToClear.length === 0 && !["limited", "degraded", "unavailable"].includes(conn.testStatus) && !conn.lastError) return { value: null };
+    if (!clearRecovery && keysToClear.length === 0 && !["limited", "degraded", "unavailable"].includes(conn.testStatus) && !conn.lastError) return { value: null };
 
     const remainingActiveLocks = allLockKeys.filter(k => !keysToClear.includes(k) && conn[k] && new Date(conn[k]).getTime() > now);
     const clearObj = Object.fromEntries(keysToClear.map(k => [k, null]));
+    if (clearRecovery) {
+      clearObj.headerTimeouts = { ...conn.headerTimeouts };
+      delete clearObj.headerTimeouts[recoveryKey];
+    }
     if (remainingActiveLocks.length === 0) {
       Object.assign(clearObj, {
         testStatus: "active",

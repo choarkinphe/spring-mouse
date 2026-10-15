@@ -54,6 +54,19 @@ describe("unique account leases", () => {
 });
 
 describe("hard provider and account gates", () => {
+  it("allows only one weighted recovery request during Redis outage and releases it on cancellation", async () => {
+    mocks.offline = true;
+    const recovering = [{ id: "recovering", limit: 8, requireIdle: true }];
+    const controller = new AbortController();
+    const first = await slots.reserveConnectionSlot(recovering, { weight: 2, signal: controller.signal });
+    leases.push(first);
+    await expect(slots.reserveConnectionSlot(recovering, { weight: 1, waitForCapacity: false }))
+      .rejects.toMatchObject({ reason: "capacity_exhausted" });
+    controller.abort();
+    const second = await slots.reserveConnectionSlot(recovering, { weight: 7, waitForCapacity: false });
+    leases.push(second);
+    expect(second.weight).toBe(7);
+  });
   it("tries Redis capacity once and removes the waiter when fallback is available", async () => {
     mocks.eval.mockResolvedValueOnce(1).mockResolvedValue(0);
     const start = Date.now();

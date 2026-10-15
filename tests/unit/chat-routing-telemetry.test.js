@@ -555,6 +555,19 @@ describe("chat routing telemetry lifecycle", () => {
     expect(requestCompletes()[0].record.outcome).toBe("failed");
     expect(requestCompletes()[0].record.attemptCount).toBe(3);
   });
+  it("retains the header timeout reason while a healthy sibling completes", async () => {
+    const accounts = [connection("silent"), connection("healthy")];
+    mocks.getProviderCredentials.mockImplementation(async () => accounts.shift() || null);
+    mocks.markAccountUnavailable.mockResolvedValue({ shouldFallback: true, accountScoped: true });
+    mocks.handleChatCore.mockResolvedValueOnce({ ...failResult(503, "header timeout"),
+      upstreamError: { origin: "upstream_header_timeout", source: "dispatch", layer: "gateway" },
+    }).mockResolvedValueOnce(okResult());
+    expect((await handleChat(request())).status).toBe(200);
+    await flush();
+    expect(attemptCompletes()[0].record).toMatchObject({terminalReason: "header_timeout", fallbackReason: "account_fallback"});
+    expect(requestCompletes()[0].record.outcome).toBe("valid_terminal");
+    expect(mocks.recordProviderModelFailure).not.toHaveBeenCalled();
+  });
 
   it("records the combo strategy on the request and role primary on the model attempt", async () => {
     mocks.getComboModelEntries.mockResolvedValue(["a/one", "b/two"]);

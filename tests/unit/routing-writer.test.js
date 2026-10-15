@@ -113,6 +113,13 @@ afterEach(() => {
 });
 
 describe("routing-writer", () => {
+  it("preserves a header timeout through event validation and database persistence", () => {
+    const db = openDb();
+    writeRoutingEvent(makeRoutingDbAdapter(db), {kind: "attempt", record: attemptRecord({outcome: "failed", terminalReason: "header_timeout", fallbackReason: "account_fallback"})});
+    expect(db.prepare("SELECT outcome,terminalReason,fallbackReason FROM routingAttempts").get()).toMatchObject({
+      outcome: "failed", terminalReason: "header_timeout", fallbackReason: "account_fallback",
+    });
+  });
   it("commits one duplicate delivery idempotently and ACKs only after commit", async () => {
     const db = openDb();
     const event = envelope("request", requestRecord());

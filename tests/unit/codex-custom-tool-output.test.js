@@ -22,6 +22,34 @@ function openStream(text) {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Codex custom tool first output", () => {
+  it.each(["response.output_text.delta", type])("releases a sufficient first %s chunk without waiting for another chunk", async (event) => {
+    vi.useFakeTimers();
+    const output = frame(event, { delta: "x".repeat(200) });
+    const { response, controller, cancel } = openStream(output);
+    const log = { errorLine: vi.fn() };
+    const pending = new CodexExecutor()._peekSseTransientError(response, Infinity, log);
+    await vi.advanceTimersByTimeAsync(1);
+    const releasedBeforeTail = log.errorLine.mock.calls.length > 0;
+    const tail = frame("response.completed");
+    controller.enqueue(encoder.encode(tail));
+    controller.close();
+    const result = await pending;
+    expect(releasedBeforeTail).toBe(true);
+    expect(result.matched).toBeNull();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(await new Response(result.replacementBody).text()).toBe(output + tail);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("checks same-chunk errors before releasing a sufficient first output", async () => {
+    const output = frame(type, { delta: "x".repeat(200) });
+    const { response, cancel } = openStream(output + overload);
+    const result = await new CodexExecutor()._peekSseTransientError(response);
+    expect(result.matched).toBe("server_is_overloaded");
+    expect(result.replacementBody).toBeNull();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["event", "data-only"])("releases %s custom input after the normal output grace, not the preamble timeout", async (format) => {
     vi.useFakeTimers();
     const preamble = frame("response.created", { response: { instructions: "private instructions" } });

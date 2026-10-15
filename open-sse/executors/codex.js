@@ -1012,6 +1012,9 @@ export class CodexExecutor extends BaseExecutor {
           const counted = countOutputText(text, countedUpTo);
           outputChars += counted.count;
           countedUpTo = counted.cursor;
+          // The first output chunk can already satisfy the release threshold.
+          // Do not wait for another read (or the grace timer) to notice it.
+          if (outputChars >= CODEX_SSE_OUTPUT_GRACE_CHARS) break;
         }
         // Otherwise we are still in the metadata preamble (response.created /
         // in_progress echo the request's tools schema, ~177KB each). Keep reading

@@ -1,4 +1,12 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, MAX_RATE_LIMIT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
+
+// SSE failures can arrive over HTTP 200. That transport status must never
+// become the HTTP status of a JSON error, including legacy persisted cooldowns.
+export function normalizeErrorStatus(statusCode, fallback = HTTP_STATUS.BAD_GATEWAY) {
+  const status = Number(statusCode);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : fallback;
+}
 
 /**
  * Build OpenAI-compatible error response body
@@ -28,6 +36,7 @@ export function buildErrorBody(statusCode, message) {
  * @returns {Response} HTTP Response object
  */
 export function errorResponse(statusCode, message) {
+  statusCode = normalizeErrorStatus(statusCode);
   return new Response(JSON.stringify(buildErrorBody(statusCode, message)), {
     status: statusCode,
     headers: {
@@ -142,6 +151,7 @@ export async function parseUpstreamError(response, executor = null) {
  * @returns {{ success: false, status: number, error: string, response: Response, resetsAtMs?: number }}
  */
 export function createErrorResult(statusCode, message, resetsAtMs, upstreamError = null) {
+  statusCode = normalizeErrorStatus(statusCode);
   return {
     success: false,
     status: statusCode,
@@ -161,10 +171,11 @@ export function createErrorResult(statusCode, message, resetsAtMs, upstreamError
  * @returns {Response}
  */
 export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman) {
+  statusCode = normalizeErrorStatus(statusCode, HTTP_STATUS.SERVICE_UNAVAILABLE);
   const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
   const msg = `${message} (${retryAfterHuman})`;
   return new Response(
-    JSON.stringify({ error: { message: msg } }),
+    JSON.stringify(buildErrorBody(statusCode, msg)),
     {
       status: statusCode,
       headers: {

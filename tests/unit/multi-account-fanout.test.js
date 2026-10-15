@@ -145,6 +145,48 @@ beforeEach(async () => {
 });
 
 describe("multi-account fan-out", () => {
+  it.each([429, 502])("keeps an SSE failure's effective %s status through subsequent cooldown requests", async (status) => {
+    const [account] = await seedAccounts(1);
+    mocks.handleChatCore.mockResolvedValue({
+      success: false, status, error: "upstream rejected request",
+      upstreamError: { ...UPSTREAM(200, "upstream rejected request"), source: "sse" },
+      response: new Response("upstream error", { status }),
+    });
+    expect((await handleChat(request())).status).toBe(status);
+    // The transport's 200 is evidence, never the client's failure status.
+    const stored = await connectionsRepo.getProviderConnectionById(account.id);
+    expect(stored.lastUpstreamStatus).toBe(200);
+    expect(stored.errorCode).toBe(status);
+    for (const stream of [true, false]) {
+      const res = await handleChat(new Request("https://router.test/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "probe/model-x", max_tokens: 10, stream, messages: [{ role: "user", content: "hi" }] }),
+      }));
+      expect(res.status).toBe(status);
+      expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect((await res.json()).error.message).toContain("upstream rejected request");
+    }
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a legacy HTTP 200 errorCode as a successful Messages response", async () => {
+    const [account] = await seedAccounts(1);
+    await connectionsRepo.updateProviderConnection(account.id, {
+      errorCode: 200, lastError: "old SSE failure",
+      "modelLock_model-x": new Date(Date.now() + 60_000).toISOString(),
+    });
+    for (const stream of [true, false]) {
+      const res = await handleChat(new Request("https://router.test/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "probe/model-x", max_tokens: 10, stream, messages: [{ role: "user", content: "hi" }] }),
+      }));
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Retry-After")).toBeTruthy();
+      expect((await res.json()).error.message).toContain("old SSE failure");
+    }
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
   it("tries every account when an account-level error hits each one", async () => {
     for (const n of [2, 3, 4, 5, 6]) {
       await seedAccounts(n);

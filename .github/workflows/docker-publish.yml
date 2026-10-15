@@ -99,6 +99,7 @@ jobs:
           unit/route-lease.test.js
           unit/queue-retry-after.test.js
           unit/queue-timeout-response.test.js
+          unit/error-response-status.test.js
           unit/admission-handoff-cancellation.test.js
           unit/request-conversation-latency.test.js
           unit/capability-account-selection.test.js

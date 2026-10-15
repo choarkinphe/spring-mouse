@@ -42,6 +42,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 const { detectFormat } = await import("../../open-sse/services/provider.js");
 const { detectFormatByEndpoint } = await import("../../open-sse/translator/formats.js");
+const { saveRequestUsage } = await import("@/lib/usageDb.js");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const WEATHER_TOOL = {
@@ -86,7 +87,7 @@ function toolRoundTripBody(overrides = {}) {
 }
 
 /** Run one Claude Messages request through the real handler (network mocked). */
-function runClaudeMessages(provider, model, body) {
+function runClaudeMessages(provider, model, body, options = {}) {
   return handleChatCore({
     body,
     modelInfo: { provider, model },
@@ -111,6 +112,7 @@ function runClaudeMessages(provider, model, body) {
       body,
       headers: { accept: "application/json", "user-agent": "claude-cli/1.0.0" },
     },
+    ...options,
   });
 }
 
@@ -186,7 +188,43 @@ const sentBody = (call = 0) => JSON.parse(fetchMock.mock.calls[call][1].body);
 const sentUrl = (call = 0) => fetchMock.mock.calls[call][0];
 const sentHeaders = (call = 0) => fetchMock.mock.calls[call][1].headers;
 
+describe("Claude non-streaming retry rejects malformed HTTP 200 bodies", () => {
+  it("finishes the Claude conversion when a native adapter returns Chat Completions", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      id: "chatcmpl-native", model: "deepseek-chat",
+      choices: [{ message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+    }), { headers: { "content-type": "application/json" } }));
+    const result = await runClaudeMessages("deepseek", "deepseek-chat", claudeBody());
+    expect(result.success).toBe(true);
+    expect(await result.response.json()).toMatchObject({
+      type: "message", role: "assistant", content: [{ type: "text", text: "hello" }], stop_reason: "end_turn",
+    });
+  });
+
+  it.each([
+    { error: { type: "api_error", message: "upstream unavailable" } },
+    { code: 500, message: "upstream unavailable" },
+    {}, null, [], "not a Message",
+  ].map((payload) => [payload]))("does not return a successful Message or clear account health for %j", async (payload) => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 200, headers: { "content-type": "application/json", "retry-after": "30" },
+    }));
+    const onRequestSuccess = vi.fn();
+    const routingObserver = { emitHeaders: vi.fn(), recordTerminal: vi.fn(), settle: vi.fn() };
+    const result = await runClaudeMessages("deepseek", "deepseek-chat", claudeBody(), { onRequestSuccess, routingObserver });
+    expect(result.success).toBe(false);
+    expect(result.response.status).toBe(502);
+    expect((await result.response.json()).error.message).toBeTruthy();
+    expect(result.upstreamError).toMatchObject({ source: "http", status: 200, retryAfterMs: 30000 });
+    expect(routingObserver.recordTerminal).toHaveBeenCalledWith({ outcome: "failed", terminalReason: "upstream_error" });
+    expect(saveRequestUsage).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error:502" }));
+    await Promise.resolve();
+    expect(onRequestSuccess).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
+  vi.clearAllMocks();
   fetchMock.mockReset();
 });
 

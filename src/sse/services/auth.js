@@ -5,7 +5,7 @@ import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLock
 import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
-import { errorResponse } from "open-sse/utils/error.js";
+import { errorResponse, normalizeErrorStatus } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport.js";
@@ -516,7 +516,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * Mark account+model as unavailable — locks modelLock_${model} in DB.
  * All errors (429, 401, 5xx, etc.) lock per model, not per account.
  * @param {string} connectionId
- * @param {number} status - HTTP status code from upstream
+ * @param {number} status - Effective failure status (may differ from the SSE transport status)
  * @param {string} errorText
  * @param {string|null} provider
  * @param {string|null} model - The specific model that triggered the error
@@ -594,7 +594,8 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
       lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
       lastError: String(upstreamError.message || reason).slice(0, 2000),
-      errorCode: upstreamError.status ?? status,
+      // Cooldown responses use errorCode; retain HTTP 200 only as raw evidence.
+      errorCode: normalizeErrorStatus(status),
       lastErrorAt: upstreamError.receivedAt || new Date().toISOString(),
     } : {
       gatewayError: reason,

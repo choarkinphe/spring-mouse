@@ -3,14 +3,14 @@ import { needsTranslation } from "../../translator/index.js";
 import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { ollamaBodyToOpenAI } from "../../translator/response/ollama-to-openai.js";
 import { filterUsageForFormat } from "../../utils/usageTracking.js";
-import { createErrorResult } from "../../utils/error.js";
+import { buildUpstreamError, createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
-import { classifyJsonBody } from "../../utils/routingOutcome.js";
+import { classifyJsonBody, ROUTING_OUTCOMES, TERMINAL_REASONS } from "../../utils/routingOutcome.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
 function parseToolArguments(value) {
@@ -286,7 +286,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 export async function handleNonStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log, streamController, recordUsage = true, nativePassthrough = false }) {
   const outcomeObserver = routingObserver || (routing && typeof routing.recordTerminal === "function" ? routing : null);
   outcomeObserver?.emitHeaders({ status: providerResponse.status, sourceFormat, targetFormat, streamMode: "json", nativePassthrough });
-  const saveFailure = () => recordUsage ? saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: providerResponse?.status, silent: true }) : undefined;
+  const saveFailure = (status = HTTP_STATUS.BAD_GATEWAY) => recordUsage ? saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true }) : undefined;
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
 
@@ -317,7 +317,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       : err?.name === "TimeoutError" ? HTTP_STATUS.GATEWAY_TIMEOUT
         : HTTP_STATUS.BAD_GATEWAY;
     appendLog({ status: `FAILED ${status}` });
-    saveFailure();
+    saveFailure(status);
     console.error(`[ChatCore] Failed to read response body from ${provider}:`, err.message);
     const message = status === 499 ? "Request aborted"
       : status === HTTP_STATUS.GATEWAY_TIMEOUT ? `Response body timeout from ${provider}`
@@ -328,6 +328,43 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   trackDone();
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
+  const rejectBody = (message) => {
+    const status = HTTP_STATUS.BAD_GATEWAY;
+    outcomeObserver?.recordTerminal({ outcome: ROUTING_OUTCOMES.FAILED, terminalReason: TERMINAL_REASONS.UPSTREAM_ERROR });
+    outcomeObserver?.settle({ upstreamStatus: providerResponse.status });
+    appendLog({ status: `FAILED ${status}` });
+    saveFailure(status);
+    // Keep the transport status and retry hint without storing arbitrary body
+    // content from an unrecognized payload as an account error.
+    const upstreamError = buildUpstreamError(providerResponse, "", message, contentType.includes("text/event-stream") ? "sse" : "http");
+    return createErrorResult(status, message, undefined, upstreamError);
+  };
+  if (!responseBody || typeof responseBody !== "object" || Array.isArray(responseBody)) {
+    return rejectBody(`Invalid JSON response shape from ${provider}`);
+  }
+
+  const classified = classifyJsonBody(responseBody, targetFormat, { lenient: true });
+  if (classified.outcome === ROUTING_OUTCOMES.FAILED) {
+    const message = responseBody.error?.message;
+    return rejectBody(typeof message === "string" && message ? message : `Upstream returned an error body from ${provider}`);
+  }
+
+  // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
+  responseBody = decloakToolNames(responseBody, toolNameMap);
+
+  let translatedResponse = needsTranslation(targetFormat, sourceFormat)
+    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
+    : responseBody;
+  // Some adapters normalize into Chat Completions first, including SSE parsed
+  // above. Complete the bridge before checking the Claude client's contract.
+  if (sourceFormat === FORMATS.CLAUDE && translatedResponse?.choices?.[0]) {
+    translatedResponse = openAICompletionToClaudeMessage(translatedResponse);
+  }
+  const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
+  if (sourceFormat === FORMATS.CLAUDE && !isClaudeMessageResponse) {
+    return rejectBody(`Upstream response cannot be converted to a Claude Message from ${provider}`);
+  }
+  // Health and usage are successful only after the client response is valid.
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -335,22 +372,13 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
         console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
       });
   }
-
-  // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
-  responseBody = decloakToolNames(responseBody, toolNameMap);
-
   const usage = extractUsageFromResponse(responseBody);
-  const classified = classifyJsonBody(responseBody, targetFormat, { lenient: true });
   outcomeObserver?.recordTerminal(classified);
   outcomeObserver?.settle({ usage, upstreamStatus: providerResponse.status });
   appendLog({ tokens: usage, status: "200 OK" });
   if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "success", silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
-  const translatedResponse = needsTranslation(targetFormat, sourceFormat)
-    ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
-    : responseBody;
-  const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   // Responses-format translation produces a `object:"response"` body with no
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
   const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";

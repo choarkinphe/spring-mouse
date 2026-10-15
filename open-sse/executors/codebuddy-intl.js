@@ -1,5 +1,6 @@
 import { DefaultExecutor } from "./default.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
+import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
 
 /**
  * CodeBuddyIntlExecutor — talks to https://www.codebuddy.ai/v2/chat/completions
@@ -19,7 +20,7 @@ export class CodeBuddyIntlExecutor extends DefaultExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
-    const transformed = super.transformRequest(model, body, stream, credentials);
+    const transformed = normalizeCodeBuddyToolChoice(super.transformRequest(model, body, stream, credentials));
     transformed.stream = true;
 
     const eff = transformed.reasoning_effort;

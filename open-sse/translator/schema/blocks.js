@@ -11,6 +11,12 @@ export const OPENAI_BLOCK = {
   FUNCTION: "function",
 };
 
+export const OPENAI_TOOL_CHOICE = {
+  AUTO: "auto",
+  NONE: "none",
+  REQUIRED: "required",
+};
+
 // Claude content blocks.
 export const CLAUDE_BLOCK = {
   TEXT: "text",

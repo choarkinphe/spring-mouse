@@ -1,5 +1,6 @@
 import { DefaultExecutor } from "./default.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
+import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
 
 /**
  * CodeBuddyExecutor — talks to https://copilot.tencent.com/v2/chat/completions
@@ -20,7 +21,7 @@ export class CodeBuddyExecutor extends DefaultExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
-    const transformed = super.transformRequest(model, body, stream, credentials);
+    const transformed = normalizeCodeBuddyToolChoice(super.transformRequest(model, body, stream, credentials));
     transformed.stream = true;
 
     // Tencent's content filter flags CLI agent system prompts ("You are Claude

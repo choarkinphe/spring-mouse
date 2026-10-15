@@ -35,6 +35,7 @@
 // completion — the caller (chat.js) owns parent lifecycle.
 
 import { FORMATS } from "../translator/formats.js";
+import { canonicalizeUsage } from "./usageTracking.js";
 
 // Outcomes mirror the fixed enum the routing telemetry consumer accepts; an
 // out-of-enum value would be dropped there, so they are kept identical.
@@ -52,6 +53,9 @@ export const TERMINAL_REASONS = Object.freeze({
   CLIENT_ABORT: "client_abort",
   STREAM_ERROR: "stream_error",
   INCOMPLETE: "incomplete",
+  OUTPUT_LIMIT: "output_limit",
+  CONTENT_FILTER: "content_filter",
+  EMPTY_STREAM: "empty_stream",
   PARSE_ERROR: "parse_error",
   RESPONSE_ERROR: "response_error",
   UNKNOWN: "unknown",
@@ -69,6 +73,8 @@ const REASON_VALUES = new Set(Object.values(TERMINAL_REASONS));
 const VALID = Object.freeze({ outcome: ROUTING_OUTCOMES.VALID_TERMINAL, terminalReason: TERMINAL_REASONS.TERMINAL });
 const FAILED = Object.freeze({ outcome: ROUTING_OUTCOMES.FAILED, terminalReason: TERMINAL_REASONS.UPSTREAM_ERROR });
 const INCOMPLETE = Object.freeze({ outcome: ROUTING_OUTCOMES.INCOMPLETE, terminalReason: TERMINAL_REASONS.INCOMPLETE });
+const OUTPUT_LIMIT = Object.freeze({ outcome: ROUTING_OUTCOMES.INCOMPLETE, terminalReason: TERMINAL_REASONS.OUTPUT_LIMIT });
+const CONTENT_FILTER = Object.freeze({ outcome: ROUTING_OUTCOMES.INCOMPLETE, terminalReason: TERMINAL_REASONS.CONTENT_FILTER });
 const CANCELLED = Object.freeze({ outcome: ROUTING_OUTCOMES.CANCELLED, terminalReason: TERMINAL_REASONS.CLIENT_ABORT });
 
 function normalizeOutcome(value) {
@@ -92,7 +98,10 @@ export function normalizeRoutingTokens(usage) {
   if (!usage || typeof usage !== "object") return { promptTokens: null, completionTokens: null };
   const prompt = usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount ?? usage.inputTokenCount;
   const completion = usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? usage.outputTokenCount;
-  return { promptTokens: toInteger(prompt), completionTokens: toInteger(completion) };
+  // Claude input excludes cached reads/writes; OpenAI input already includes them.
+  // Use the same idempotent accounting convention as persisted usage.
+  const canonical = canonicalizeUsage({ ...usage, prompt_tokens: prompt });
+  return { promptTokens: toInteger(prompt) === null ? null : toInteger(canonical.prompt_tokens), completionTokens: toInteger(completion) };
 }
 
 // ---- per-format terminal classification -----------------------------------
@@ -103,7 +112,8 @@ function openAIFinishOutcome(finishReason) {
   if (reason === "error") return FAILED;
   // A truncated / filtered turn is NOT a valid terminal, but it is a terminal:
   // the protocol said the turn is over, it just did not finish cleanly.
-  if (reason === "length" || reason === "content_filter") return INCOMPLETE;
+  if (reason === "length") return OUTPUT_LIMIT;
+  if (reason === "content_filter") return CONTENT_FILTER;
   return VALID;
 }
 
@@ -112,12 +122,12 @@ function geminiFinishOutcome(finishReason) {
   const reason = finishReason.toUpperCase();
   if (reason === "FINISH_REASON_UNSPECIFIED") return null;
   if (reason === "STOP") return VALID;
-  if (reason === "MAX_TOKENS") return INCOMPLETE;
+  if (reason === "MAX_TOKENS") return OUTPUT_LIMIT;
   // SAFETY / RECITATION / PROHIBITED_CONTENT / MALFORMED_FUNCTION_CALL / ...
   return FAILED;
 }
 
-function responsesStatusOutcome(status) {
+function responsesStatusOutcome(status, incompleteReason = null) {
   if (typeof status !== "string" || !status) return null;
   switch (status.toLowerCase()) {
     case "completed":
@@ -126,6 +136,8 @@ function responsesStatusOutcome(status) {
     case "failed":
       return FAILED;
     case "incomplete":
+      if (incompleteReason === "max_output_tokens") return OUTPUT_LIMIT;
+      if (incompleteReason === "content_filter") return CONTENT_FILTER;
       return INCOMPLETE;
     case "cancelled":
     case "canceled":
@@ -157,19 +169,20 @@ export function classifyResponsesEvent(eventName, chunk) {
     case "response.failed":
       return FAILED;
     case "response.incomplete":
-      return INCOMPLETE;
+      return responsesStatusOutcome("incomplete", chunk?.response?.incomplete_details?.reason ?? chunk?.incomplete_details?.reason);
     case "error":
       return FAILED;
     default:
       break;
   }
-  return responsesStatusOutcome(chunk?.response?.status ?? chunk?.status);
+  return responsesStatusOutcome(chunk?.response?.status ?? chunk?.status, chunk?.response?.incomplete_details?.reason ?? chunk?.incomplete_details?.reason);
 }
 
 /** Claude Messages API streaming event. `message_stop` is the terminal. */
 export function classifyClaudeEvent(chunk) {
   if (!chunk || typeof chunk !== "object") return null;
   if (chunk.type === "error" || chunk.error) return FAILED;
+  if (chunk.type === "message_delta" && chunk.delta?.stop_reason === "max_tokens") return OUTPUT_LIMIT;
   if (chunk.type === "message_stop") return VALID;
   return null;
 }
@@ -190,7 +203,7 @@ export function classifyOllamaEvent(chunk) {
   if (chunk.error) return FAILED;
   if (chunk.done === true) {
     const reason = typeof chunk.done_reason === "string" ? chunk.done_reason.toLowerCase() : "";
-    if (reason === "length") return INCOMPLETE;
+    if (reason === "length") return OUTPUT_LIMIT;
     return VALID;
   }
   return null;
@@ -290,7 +303,7 @@ export function classifyJsonBody(body, targetFormat, { lenient = false } = {}) {
     }
     case FORMATS.OPENAI_RESPONSES:
     case FORMATS.OPENAI_RESPONSE: {
-      const byStatus = responsesStatusOutcome(body.status);
+      const byStatus = responsesStatusOutcome(body.status, body.incomplete_details?.reason);
       if (byStatus) return byStatus;
       // A status that is present but unrecognized (e.g. "in_progress") means the
       // response never reached a terminal state.
@@ -300,7 +313,7 @@ export function classifyJsonBody(body, targetFormat, { lenient = false } = {}) {
     }
     case FORMATS.CLAUDE: {
       if (body.type === "message") {
-        return body.stop_reason === "max_tokens" ? INCOMPLETE : VALID;
+        return body.stop_reason === "max_tokens" ? OUTPUT_LIMIT : VALID;
       }
       if (Array.isArray(body.content)) return VALID;
       break;

@@ -6,9 +6,9 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./str
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { createLiveTokenProgress } from "./liveTokenProgress.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
-import { classifyStreamEvent, hasContentForFormat } from "./routingOutcome.js";
+import { classifyStreamEvent, hasContentForFormat, TERMINAL_REASONS } from "./routingOutcome.js";
 
-import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
+import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER, EMPTY_STREAM_ERROR } from "./sseConstants.js";
 
 export { COLORS, formatSSE };
 export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
@@ -57,6 +57,7 @@ export function createSSEStream(options = {}) {
     requestId = null,
     routingObserver: suppliedRoutingObserver = null,
     routing = null,
+    onStreamAbortReady = null,
   } = options;
   const routingObserver = suppliedRoutingObserver || routing;
 
@@ -106,6 +107,7 @@ export function createSSEStream(options = {}) {
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
   let protocolTerminal = null;
   let translatedFailureSent = false;
+  let streamCompleted = false;
 
   const settleObserver = (info = {}) => {
     if (!routingObserver) return;
@@ -126,11 +128,21 @@ export function createSSEStream(options = {}) {
       return classified;
     } catch { /* telemetry is fail-open */ }
   };
-  const completeStream = (finalUsage, fallback = { outcome: "incomplete", terminalReason: "incomplete" }) => {
-    const terminal = protocolTerminal || fallback;
+  const completeStream = (finalUsage, fallback = null, deliveryOutcome = "stream_complete") => {
+    if (streamCompleted) return;
+    streamCompleted = true;
+    const terminal = { ...(protocolTerminal || fallback || {
+      outcome: "incomplete",
+      terminalReason: ttftAt === null ? TERMINAL_REASONS.EMPTY_STREAM : TERMINAL_REASONS.INCOMPLETE,
+    }), deliveryOutcome };
     settleObserver({ ...terminal, usage: finalUsage, upstreamStatus: null });
     onStreamComplete?.(completedContent(), finalUsage, ttftAt, terminal);
   };
+  // Transport cancellation can happen after a real terminal but before flush.
+  // Keep the observed usage/terminal, while recording delivery independently.
+  onStreamAbortReady?.((outcome, terminalReason) => {
+    completeStream(state?.usage || usage, { outcome, terminalReason }, terminalReason);
+  });
 
   function captureCompletedText(kind, text) {
     if (!text || captureLimit <= 0) return;
@@ -465,6 +477,15 @@ export function createSSEStream(options = {}) {
         // through the same classifier/usage path before deciding the outcome.
         if (buffer) this.transform(sharedEncoder.encode("\n"), controller);
 
+        // Do not turn an empty 200 stream into a synthetic successful answer.
+        const clientFormat = sourceFormat || targetFormat;
+        if (!protocolTerminal && ttftAt === null && [FORMATS.CLAUDE, FORMATS.OPENAI].includes(clientFormat)) {
+          const payload = clientFormat === FORMATS.CLAUDE
+            ? { type: "error", error: EMPTY_STREAM_ERROR } : { error: EMPTY_STREAM_ERROR };
+          controller.enqueue(sharedEncoder.encode(formatSSE(payload, clientFormat)));
+          translatedFailureSent = true;
+        }
+
         if (mode === STREAM_MODE.PASSTHROUGH) {
           if (!hasValidUsage(usage) && totalContentLength > 0) {
             usage = estimateUsageFromInputTokens(resolvedInputTokenEstimate, totalContentLength, FORMATS.OPENAI);
@@ -539,7 +560,7 @@ export function createSSEStream(options = {}) {
         
         completeStream(state?.usage);
       } catch (error) {
-        completeStream(state?.usage || usage, { outcome: "failed", terminalReason: "stream_error" });
+        completeStream(state?.usage || usage, { outcome: "failed", terminalReason: "stream_error" }, "stream_error");
         console.log("Error in flush:", error);
       } finally {
         reqLogger?.close?.();
@@ -548,7 +569,7 @@ export function createSSEStream(options = {}) {
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null, onStreamAbortReady = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -566,10 +587,11 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     inputTokenEstimate,
     requestId,
     routingObserver,
+    onStreamAbortReady,
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null, targetFormat = FORMATS.OPENAI) {
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, completedContentMaxChars = Infinity, inputTokenEstimate = null, requestId = null, routingObserver = null, targetFormat = FORMATS.OPENAI, onStreamAbortReady = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     targetFormat,
@@ -584,5 +606,6 @@ export function createPassthroughStreamWithLogger(provider = null, reqLogger = n
     inputTokenEstimate,
     requestId,
     routingObserver,
+    onStreamAbortReady,
   });
 }

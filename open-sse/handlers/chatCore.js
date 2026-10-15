@@ -429,22 +429,22 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // happens and the attempt row would sit at outcome=unknown forever. Settle
       // it here as a cancellation; the wrapper is once-only and prefers an
       // already-recorded protocol terminal, so a normal completion is untouched.
-      try { routingObserver?.settleCancelled?.({ terminalReason: "client_abort" }); } catch { /* telemetry is fail-open */ }
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       if (completeAbortedStream) completeAbortedStream("cancelled", "client_abort");
       else saveFailedUsage("cancelled");
+      try { routingObserver?.settleCancelled?.({ terminalReason: "client_abort" }); } catch { /* telemetry is fail-open */ }
       finishRequest();
       if (onDisconnect) onDisconnect(reason);
     },
     onError: (error) => {
       compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "stream_error" });
+      trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
+      if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error");
+      else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       try {
         if (error?.name === "AbortError") routingObserver?.settleCancelled?.({ terminalReason: "client_abort" });
         else routingObserver?.settleFailed?.({ terminalReason: "stream_error" });
       } catch { /* telemetry is fail-open */ }
-      trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
-      if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error");
-      else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       finishRequest();
     },
     onComplete: () => {
@@ -661,7 +661,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     compactionDiag.emit("end", { status: compactionStreamStatus, outcome: "stream_usage_complete" });
     return onStreamComplete(...args);
   } : onStreamComplete;
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete: onCompactionStreamComplete, streamDetailId });
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete: onCompactionStreamComplete, streamDetailId,
+    onStreamAbortReady: (complete) => { completeAbortedStream = complete; },
+  });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

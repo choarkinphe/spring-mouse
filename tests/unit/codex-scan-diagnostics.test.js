@@ -102,3 +102,25 @@ describe("Codex scan diagnostic integration", () => {
     expect(await new Response(result.replacementBody).text()).toBe(text);
   });
 });
+
+describe("persistable Codex phase timing", () => {
+  it("returns numeric wait/buffer timings without changing the replayed stream", async () => {
+    const { BaseExecutor } = await import("../../open-sse/executors/base.js");
+    vi.useFakeTimers();
+    const original = frame("response.output_text.delta", { delta: "synthetic answer" }) + frame("response.completed", { response: { status: "completed" } });
+    vi.spyOn(BaseExecutor.prototype, "execute").mockImplementation(async () => {
+      await new Promise(r => setTimeout(r, 30));
+      return { response: new Response(new ReadableStream({ start(controller) {
+        setTimeout(() => { controller.enqueue(encoder.encode(original)); controller.close(); }, 50);
+      } })), timing: { upstreamHeadersMs: 30 } };
+    });
+    const ex = new CodexExecutor();
+    vi.spyOn(ex, "prefetchImages").mockResolvedValue();
+    const pending = ex.execute({ model: "gpt-6-sol", body: { input: [] }, credentials: {} });
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+    expect(result.timing).toMatchObject({ upstreamHeadersMs: 30, firstOutputWaitMs: 50, streamScanMs: 50, postOutputBufferMs: 0, executorTotalMs: 80, upstreamAttempts: 1 });
+    expect(await result.response.text()).toBe(original);
+    expect(JSON.stringify(result.timing)).not.toContain("synthetic answer");
+  });
+});

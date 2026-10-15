@@ -277,6 +277,7 @@ export class BaseExecutor {
           signal, timeoutMs, timeoutMessage: "fetch connect timeout",
           onTimeout: error => connectCtrl.abort(error),
         });
+        const upstreamHeadersMs = Math.max(0, Date.now() - fetchT0);
         sizeDiag?.response(response.status);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
@@ -291,7 +292,7 @@ export class BaseExecutor {
           continue;
         }
 
-        return { response, url, headers, transformedBody };
+        return { response, url, headers, transformedBody, timing: { upstreamHeadersMs } };
       } catch (error) {
         sizeDiag?.error(error);
         lastError = error;

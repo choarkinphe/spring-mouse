@@ -36,7 +36,7 @@ export async function GET(request) {
       || null;
 
     const latency = detail.latency && Object.fromEntries(
-      ["ttft", "total", "preDispatchMs", "queueWaitMs", "weight"]
+      ["ttft", "total", "preDispatchMs", "queueWaitMs", "weight", "upstreamHeadersMs", "firstOutputWaitMs", "streamScanMs", "postOutputBufferMs", "executorTotalMs", "upstreamAttempts"]
         .filter(key => Number.isFinite(detail.latency[key]) && detail.latency[key] >= 0)
         .map(key => [key, detail.latency[key]]),
     );

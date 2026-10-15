@@ -64,6 +64,7 @@ jobs:
           unit/realtime-time-filter.test.js
           unit/usage-dashboard-scope.test.js
           unit/chat-routing-telemetry.test.js
+          unit/routing-outcome.test.js
           unit/streaming-attempt-settlement.test.js
           unit/stream-terminal-persistence.test.js
           unit/glm53-thinking.test.js

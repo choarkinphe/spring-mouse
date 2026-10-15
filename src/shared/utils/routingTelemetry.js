@@ -69,6 +69,9 @@ export const ROUTING_TERMINAL_REASONS = Object.freeze([
   "upstream_error",
   "incomplete",
   "parse_error",
+  "output_limit",
+  "content_filter",
+  "empty_stream",
   "response_error",
   "unknown",
 ]);

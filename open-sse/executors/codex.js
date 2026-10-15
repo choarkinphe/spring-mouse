@@ -622,6 +622,18 @@ export class CodexExecutor extends BaseExecutor {
         hostedHistory,
       });
       donePeek();
+      // Numeric, final-attempt diagnostics only; never persist scanned payloads.
+      const scan = peek.scanDiagnostics || peek.upstreamError?.scanDiagnostics;
+      result.timing = {
+        ...result.timing,
+        executorTotalMs: Math.max(0, Date.now() - execT0),
+        upstreamAttempts: attempt + 1,
+        ...(scan ? {
+          firstOutputWaitMs: scan.firstOutputAfterMs,
+          streamScanMs: scan.elapsedMs,
+          postOutputBufferMs: scan.firstOutputAfterMs === null ? null : Math.max(0, scan.elapsedMs - scan.firstOutputAfterMs),
+        } : {}),
+      };
       if (peek.errorStatus) {
         // A protocol rejection is not the overload retry policy. Return it now
         // so request errors fail fast and account/model routing sees a failure.
@@ -964,6 +976,14 @@ export class CodexExecutor extends BaseExecutor {
           if (genericFailure) { matched = genericFailure.code || "sse_error"; break; }
         }
         const lowerText = text.toLowerCase();
+        const outputPattern = !outputStarted && CODEX_SSE_USER_OUTPUT_PATTERNS.find(p => lowerText.includes(p));
+        // A complete answer can arrive in one transport chunk. Record its first
+        // output before returning on the terminal frame, without delaying release.
+        if (outputPattern) {
+          outputStarted = true;
+          firstOutputType = outputPattern.startsWith("event: ") ? outputPattern.slice(7) : outputPattern.slice(8, -1);
+          diagnostics.outputDetected();
+        }
         if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) { releaseReason = "terminal"; break; }
         // Post-output phase: content-aware release. Once the turn has produced a
         // substantial amount of text it is plainly healthy, so stop buffering; a short
@@ -979,16 +999,12 @@ export class CodexExecutor extends BaseExecutor {
             || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
           continue;
         }
-        const outputPattern = CODEX_SSE_USER_OUTPUT_PATTERNS.find(p => lowerText.includes(p));
         if (outputPattern) {
-          firstOutputType = outputPattern.startsWith("event: ") ? outputPattern.slice(7) : outputPattern.slice(8, -1);
           // Output has started. Do not stop here: keep scanning so a same-turn
           // capacity/overload rejection still triggers fallback. The scan ends on the
           // first of: a terminal frame, enough output to prove the turn is healthy,
           // the byte cap, or the hard time ceiling — so a healthy stream is released
           // almost immediately while a short burst before a rejection is caught.
-          outputStarted = true;
-          diagnostics.outputDetected();
           releaseReason = "output-grace";
           if (!graceEnabled) break;
           graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
@@ -1019,6 +1035,7 @@ export class CodexExecutor extends BaseExecutor {
       return {
         matched,
         errorStatus: genericFailure?.status,
+        scanDiagnostics,
         message,
         accountFallback,
         stoppedOnDeadline: false,
@@ -1091,7 +1108,7 @@ export class CodexExecutor extends BaseExecutor {
         try { reader.cancel(reason); } catch { /* noop */ }
       },
     });
-    return { matched: null, message: null, accountFallback: false, stoppedOnDeadline, replacementBody };
+    return { matched: null, message: null, accountFallback: false, stoppedOnDeadline, replacementBody, scanDiagnostics };
   }
 
   // Parse Codex usage_limit_reached to extract precise resetsAtMs; fallback to default otherwise

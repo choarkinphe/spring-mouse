@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
+import { normalizeRoutingTokens } from "open-sse/utils/routingOutcome.js";
 
 // The producer is deliberately optional. Routing must remain load-bearing only
 // for the client response; telemetry can be absent during an older deploy or a
@@ -14,6 +15,7 @@ const VALID_REASONS = new Set([
   "accounts_exhausted", "transport_error", "upstream_http_error", "internal_error", "client_abort",
   "model_fallback", "account_fallback", "response_unobserved", "stream_error", "output_error",
   "terminal", "upstream_error", "incomplete", "parse_error", "response_error", "unknown",
+  "output_limit", "content_filter", "empty_stream",
   "header_timeout", "first_output_timeout", "sse_scan_limit", "queue_full", "deadline_exceeded", "weight_exceeds_capacity",
 ]);
 
@@ -104,6 +106,7 @@ function normalizeStrategy(value) {
 
 function normalizeObserverInfo(info = {}) {
   const usage = info?.usage && typeof info.usage === "object" ? info.usage : {};
+  const tokens = normalizeRoutingTokens(usage);
   return {
     sourceFormat: safeText(info.sourceFormat, 64),
     targetFormat: safeText(info.targetFormat, 64),
@@ -112,8 +115,8 @@ function normalizeObserverInfo(info = {}) {
     upstreamStatus: status(info.upstreamStatus ?? info.status),
     ttftMs: nonNegative(info.ttftMs),
     durationMs: nonNegative(info.durationMs),
-    promptTokens: nonNegative(info.promptTokens ?? usage.prompt_tokens ?? usage.input_tokens ?? usage.inputTokenCount),
-    completionTokens: nonNegative(info.completionTokens ?? usage.completion_tokens ?? usage.output_tokens ?? usage.outputTokenCount),
+    promptTokens: nonNegative(info.promptTokens ?? tokens.promptTokens),
+    completionTokens: nonNegative(info.completionTokens ?? tokens.completionTokens),
   };
 }
 

@@ -22,3 +22,9 @@ describe("dashboard conversation latency", () => {
     expect(data.latency).toBeUndefined();
   });
 });
+
+it("exposes only numeric phase timings, excluding payload diagnostics", async () => {
+  mocks.read.mockResolvedValue({ latency: { scope: "request", upstreamHeadersMs: 12, firstOutputWaitMs: 100, streamScanMs: 150, postOutputBufferMs: 50, executorTotalMs: 180, upstreamAttempts: 2, scanDiagnostics: { body: "secret" } } });
+  const data = await (await GET(request())).json();
+  expect(data.latency).toEqual({ scope: "request", upstreamHeadersMs: 12, firstOutputWaitMs: 100, streamScanMs: 150, postOutputBufferMs: 50, executorTotalMs: 180, upstreamAttempts: 2 });
+});

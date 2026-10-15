@@ -113,7 +113,7 @@ describe("OpenAI Chat Completions terminal classification", () => {
   it("treats length / content_filter as explicit but incomplete terminals", () => {
     for (const reason of ["length", "content_filter"]) {
       expect(classifyOpenAIChatChunk({ choices: [{ finish_reason: reason }] }))
-        .toEqual({ outcome: ROUTING_OUTCOMES.INCOMPLETE, terminalReason: TERMINAL_REASONS.INCOMPLETE });
+        .toEqual({ outcome: ROUTING_OUTCOMES.INCOMPLETE, terminalReason: reason === "length" ? TERMINAL_REASONS.OUTPUT_LIMIT : TERMINAL_REASONS.CONTENT_FILTER });
     }
   });
 
@@ -484,5 +484,27 @@ describe("non-streaming observer wiring", () => {
     expect(result.success).toBe(true);
     const parsed = await result.response.json();
     expect(parsed.choices[0].message.content).toBe("hi");
+  });
+});
+
+describe("cache-inclusive routing size and bounded finish reasons", () => {
+  it("counts Claude cache reads and writes exactly once, preserving unknown inputs", () => {
+    expect(normalizeRoutingTokens({ input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 560000, cache_creation_input_tokens: 3000 }))
+      .toEqual({ promptTokens: 563100, completionTokens: 5 });
+    expect(normalizeRoutingTokens({ prompt_tokens: 563100, completion_tokens: 5, cached_tokens: 560000, cache_creation_input_tokens: 3000 }))
+      .toEqual({ promptTokens: 563100, completionTokens: 5 });
+    expect(normalizeRoutingTokens({ prompt_tokens: 563100, prompt_tokens_details: { cached_tokens: 560000 } }).promptTokens).toBe(563100);
+    expect(normalizeRoutingTokens({ output_tokens: 5 })).toEqual({ promptTokens: null, completionTokens: 5 });
+  });
+  it("distinguishes output limits from missing terminals in all supported limit shapes", () => {
+    const cases = [
+      classifyOpenAIChatChunk({ choices: [{ finish_reason: "length" }] }),
+      classifyClaudeEvent({ type: "message_delta", delta: { stop_reason: "max_tokens" } }),
+      classifyJsonBody({ type: "message", stop_reason: "max_tokens" }, FORMATS.CLAUDE),
+      classifyResponsesEvent("response.incomplete", { response: { incomplete_details: { reason: "max_output_tokens" } } }),
+      classifyJsonBody({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }, FORMATS.OPENAI_RESPONSES),
+    ];
+    for (const result of cases) expect(result).toEqual({ outcome: "incomplete", terminalReason: "output_limit" });
+    expect(classifyResponsesEvent("response.incomplete", { response: { incomplete_details: { reason: "private arbitrary text" } } }).terminalReason).toBe("incomplete");
   });
 });

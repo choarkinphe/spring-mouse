@@ -165,3 +165,17 @@ describe("BaseExecutor.execute — computeRetryDelay hook veto", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("header timing", () => {
+  it("measures the final fetch separately from retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const ex = makeExec({ baseUrl: "https://x/api", retry: { 502: { attempts: 1, delayMs: 100 } } });
+      fetchMock.mockImplementationOnce(async () => { await new Promise(r => setTimeout(r, 40)); return res(502); })
+        .mockImplementationOnce(async () => { await new Promise(r => setTimeout(r, 25)); return res(200); });
+      const pending = ex.execute({ model: "m", body: {}, stream: true, credentials: creds });
+      await vi.advanceTimersByTimeAsync(200);
+      expect((await pending).timing.upstreamHeadersMs).toBe(25);
+    } finally { vi.useRealTimers(); }
+  });
+});

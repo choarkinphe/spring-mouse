@@ -23,7 +23,7 @@ const CODEX_SOURCE_TO_TARGET = {
 /**
  * Determine which SSE transform stream to use based on provider/format.
  */
-function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver }) {
+function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, onStreamAbortReady }) {
   const isDroidCLI = userAgent?.toLowerCase().includes("droid") || userAgent?.toLowerCase().includes("codex-cli");
   // Responses-API providers (e.g. codex) emit Responses SSE → translate into client format
   const isResponsesProvider = PROVIDERS[provider]?.format === FORMATS.OPENAI_RESPONSES;
@@ -31,14 +31,14 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 
   if (needsCodexTranslation) {
     const codexTarget = CODEX_SOURCE_TO_TARGET[sourceFormat] || FORMATS.OPENAI;
-    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver);
+    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, onStreamAbortReady);
   }
 
   if (needsTranslation(targetFormat, sourceFormat)) {
-    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver);
+    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, onStreamAbortReady);
   }
 
-  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, targetFormat);
+  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, targetFormat, onStreamAbortReady);
 }
 
 function estimateInputTokensFromHeaders(headers) {
@@ -51,7 +51,7 @@ function estimateInputTokensFromHeaders(headers) {
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true, onStreamAbortReady = null }) {
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -91,7 +91,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
       });
     }
   };
-  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete: onTerminalComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver });
+  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete: onTerminalComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver, onStreamAbortReady });
 
   // Responses passthrough: synthesize response.failed + [DONE] if the stream aborts/stalls before a terminal event
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -184,6 +184,7 @@ function createObservedCompletion(context) {
         type: "streaming",
         outcome: terminal?.outcome || "unknown",
         terminalReason: terminal?.terminalReason || "unknown",
+        deliveryOutcome: terminal?.deliveryOutcome || "unknown",
         truncated: contentObj?.truncated,
       },
       pxpipe: context.pxpipe,

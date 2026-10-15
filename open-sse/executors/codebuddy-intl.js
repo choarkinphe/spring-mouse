@@ -1,4 +1,4 @@
-import { DefaultExecutor } from "./default.js";
+import { CodeBuddyBaseExecutor } from "./codebuddy-base.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
 import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
 
@@ -10,7 +10,7 @@ import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
  * request carries the IDE's OpenAI-style reasoning params. Force stream and
  * mirror reasoning_summary exactly like CodeBuddyExecutor.
  */
-export class CodeBuddyIntlExecutor extends DefaultExecutor {
+export class CodeBuddyIntlExecutor extends CodeBuddyBaseExecutor {
   constructor() {
     super("codebuddy-intl");
   }

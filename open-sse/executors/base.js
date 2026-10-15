@@ -7,6 +7,7 @@ import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 import { dispatchMouseTask } from "../../src/lib/mouse/tunnel.js";
 import { createRequestSizeDiagnostics } from "../utils/requestSizeDiagnostics.js";
+import { runWithAbortDeadline } from "../utils/abortable.js";
 
 function abortError(reason) {
   if (reason?.name === "AbortError") return reason;
@@ -189,7 +190,7 @@ export class BaseExecutor {
     };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null, overloadDeadline = null, hasFallback = false }) {
     if (credentials?.mouseExecution) {
       return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions, requestId });
     }
@@ -198,6 +199,15 @@ export class BaseExecutor {
     let lastError = null;
     let lastStatus = 0;
     const retryAttemptsByUrl = {};
+    const remainingMs = () => Number.isFinite(overloadDeadline) ? overloadDeadline - Date.now() : Infinity;
+    const checkDeadline = () => {
+      if (signal?.aborted) throw abortError(signal.reason);
+      if (remainingMs() <= 0) {
+        const error = new Error("Upstream dispatch deadline exceeded");
+        error.name = "TimeoutError";
+        throw error;
+      }
+    };
 
     // Merge default retry config with provider-specific config
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
@@ -205,6 +215,9 @@ export class BaseExecutor {
     // Schedule retry via retryConfig[statusKey]. Returns true when caller should `urlIndex--; continue`
     // response (optional) lets a subclass hook compute a dynamic delay (e.g. antigravity Retry-After).
     const tryRetry = async (urlIndex, statusKey, reason, response = null, controller = null) => {
+      // The router can try another channel. Repeating the same failed endpoint
+      // here consumes its fallback budget and re-uploads a potentially huge body.
+      if (hasFallback) return false;
       const { attempts, delayMs } = resolveRetryEntry(retryConfig[statusKey]);
       if (attempts <= 0 || retryAttemptsByUrl[urlIndex] >= attempts) return false;
       // Hook: subclass may derive delay from the response (headers/body). null → skip retry, use fallback.
@@ -214,6 +227,7 @@ export class BaseExecutor {
         if (dynamic === false) return false; // hook vetoes retry (e.g. Retry-After too long)
         if (dynamic != null) waitMs = dynamic;
       }
+      if (waitMs >= remainingMs()) return false;
       retryAttemptsByUrl[urlIndex]++;
       if (response && controller) discardResponse(response, controller);
       log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${waitMs / 1000}s`);
@@ -222,6 +236,7 @@ export class BaseExecutor {
     };
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
+      checkDeadline();
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       // Diagnostic (observation only): transformRequest runs BEFORE the fetch and
       // has no timeout of its own, so a provider that walks a multi-megabyte body
@@ -241,8 +256,8 @@ export class BaseExecutor {
 
       // Abort if upstream doesn't return response headers within connection timeout
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      checkDeadline();
+      const timeoutMs = Math.min(this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS, remainingMs());
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       let sizeDiag = null;
@@ -253,13 +268,15 @@ export class BaseExecutor {
           retry: retryAttemptsByUrl[urlIndex], serialized: bodyStr, body: transformedBody, log });
         const fetchT0 = Date.now();
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
-        const response = await proxyAwareFetch(url, {
+        const response = await runWithAbortDeadline(() => proxyAwareFetch(url, {
           method: "POST",
           headers,
           body: bodyStr,
           signal: mergedSignal
-        }, proxyOptions);
-        clearTimeout(connectTimer);
+        }, proxyOptions), {
+          signal, timeoutMs, timeoutMessage: "fetch connect timeout",
+          onTimeout: error => connectCtrl.abort(error),
+        });
         sizeDiag?.response(response.status);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
@@ -277,9 +294,9 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (error) {
         sizeDiag?.error(error);
-        clearTimeout(connectTimer);
         lastError = error;
         if (signal?.aborted) throw abortError(signal.reason);
+        checkDeadline();
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError

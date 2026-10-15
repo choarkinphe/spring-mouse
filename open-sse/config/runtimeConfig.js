@@ -90,6 +90,11 @@ export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEO
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
+// Keep time for another channel before committing a CodeBuddy stream. Once an
+// output delta is received this deadline is removed; it is not a stream TTL.
+export const FIRST_OUTPUT_FALLBACK_RESERVE_MS = envMs("FIRST_OUTPUT_FALLBACK_RESERVE_MS", 30 * 1000);
+export const OPENAI_STREAM_PREAMBLE_MAX_BYTES = 512 * 1024;
+
 // Shared by the Codex first-output detector and its diagnostic observer.
 export const CODEX_SSE_OUTPUT_DELTA_TYPES = Object.freeze([
   "response.output_text.delta",

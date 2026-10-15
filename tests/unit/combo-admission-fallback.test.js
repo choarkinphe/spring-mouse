@@ -113,6 +113,7 @@ afterEach(async () => {
 describe("real combo routing and account admission", () => {
   it("prefers international when it has capacity", async () => {
     expect(await (await handleChat(request())).json()).toEqual({ provider: "codebuddy-intl" });
+    expect(mocks.handleChatCore.mock.calls[0][0].hasFallback).toBe(true);
   });
   it("immediately falls back to CN when international is full", async () => {
     await occupy("codebuddy-intl");
@@ -120,6 +121,17 @@ describe("real combo routing and account admission", () => {
     expect(await (await handleChat(request())).json()).toEqual({ provider: "codebuddy-cn" });
     expect(Date.now() - start).toBeLessThan(1500);
     expect(mocks.handleChatCore).toHaveBeenCalledTimes(1);
+    expect(mocks.handleChatCore.mock.calls[0][0].hasFallback).toBe(false);
+  });
+  it("moves a first-output timeout to CN instead of retrying another international account", async () => {
+    await connectionsRepo.createProviderConnection({provider: "codebuddy-intl", authType: "apikey", apiKey: "second-test-key", isActive: true, priority: 2});
+    mocks.handleChatCore.mockImplementation(async ({modelInfo}) => modelInfo.provider === "codebuddy-intl"
+      ? {success: false, status: 503, error: "Timed out waiting for first upstream output",
+          upstreamError: {origin: "sse_first_output_timeout", source: "sse", status: 200, layer: "gateway"},
+          response: Response.json({error: {message: "Timed out waiting for first upstream output"}}, {status: 503})}
+      : {success: true, response: Response.json({provider: modelInfo.provider})});
+    expect(await (await handleChat(request())).json()).toEqual({provider: "codebuddy-cn"});
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
   });
   it.each([429, 500, 503])("falls back to CN after international returns %s", async (status) => {
     mocks.handleChatCore.mockImplementation(async ({ modelInfo }) => modelInfo.provider === "codebuddy-intl"

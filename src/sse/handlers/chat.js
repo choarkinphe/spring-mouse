@@ -737,6 +737,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         // Shared across every model this request tries, so a combo whose members
         // all reach the same saturated upstream cannot multiply the retry budget.
         overloadDeadline,
+        hasFallback,
         onCredentialsRefreshed: async (newCreds) => {
           await updateProviderCredentials(credentials.connectionId, {
             ...newCreds,

@@ -93,6 +93,8 @@ export function buildRequestDetail(base, overrides = {}) {
       ...(routing.timing ? {
         preDispatchMs: routing.timing.preDispatchMs,
         queueWaitMs: routing.timing.queueWaitMs,
+        upstreamHeadersMs: routing.timing.upstreamHeadersMs,
+        firstOutputWaitMs: routing.timing.firstOutputWaitMs,
         weight: routing.timing.weight,
       } : {}),
     },

@@ -1,4 +1,4 @@
-import { DefaultExecutor } from "./default.js";
+import { CodeBuddyBaseExecutor } from "./codebuddy-base.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
 import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
 
@@ -11,7 +11,7 @@ import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
  * client sent it, so we force it true here — spring-mouse still re-aggregates the
  * SSE into a JSON response for non-streaming clients.
  */
-export class CodeBuddyExecutor extends DefaultExecutor {
+export class CodeBuddyExecutor extends CodeBuddyBaseExecutor {
   constructor() {
     super("codebuddy-cn");
   }

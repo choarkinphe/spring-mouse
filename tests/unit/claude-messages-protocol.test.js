@@ -554,3 +554,22 @@ describe("Claude Messages → deepseek/deepseek-chat (native Claude transport)",
     expect(sentBody().model).toBe("deepseek-v4-pro");
   });
 });
+
+  it.each(["codebuddy-intl", "codebuddy-cn"])("%s full nonstream tool pipeline", async provider => {
+    fetchMock.mockResolvedValue(openaiSSE([
+      { id: "chatcmpl-3", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_xyz", type: "function", function: { name: "get_weather", arguments: "" } }] }, finish_reason: null }] },
+      { id: "chatcmpl-3", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"Paris"}' } }] }, finish_reason: null }] },
+      { id: "chatcmpl-3", object: "chat.completion.chunk", created: 1, model: "gpt-4o", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } },
+    ]));
+
+    const res = await runClaudeMessages(provider, "deepseek-v4.1-flash", claudeBody({ stream: false }));
+
+    const json = await res.response.json();
+    expect(json.type).toBe("message");
+    expect(json.choices).toBeUndefined();
+    expect(json.stop_reason).toBe("tool_use");
+    expect(json.content).toEqual([
+      { type: "tool_use", id: "call_xyz", name: "get_weather", input: { city: "Paris" } },
+    ]);
+    expect(json.usage).toEqual({ input_tokens: 5, output_tokens: 3 });
+  });

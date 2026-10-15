@@ -778,7 +778,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
-    const { shouldFallback, modelLevel, transport } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
+    const { shouldFallback, modelLevel, transport, accountScoped } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
       const scanBound = result.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
@@ -812,7 +812,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       //   anything else (4xx) → account-scoped → no breaker at all, just rotate
       const throttled = scanBound || modelLevel || transport;
       const upstreamOutage = !throttled && Number(result.status) >= 500;
-      if (throttled || upstreamOutage) {
+      if (!accountScoped && (throttled || upstreamOutage)) {
         const breaker = await recordProviderModelFailure(provider, model, credentials.providerStrategy, { modelLevel: throttled });
         if (breaker.open) {
           const retryAfterMs = breaker.retryAfterMs || 60_000;
@@ -854,7 +854,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
 
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
-      attempt.complete({ outcome: "failed", terminalReason: "account_fallback", upstreamStatus: result.status, fallbackReason: "account_fallback" });
+      attempt.complete({ outcome: "failed", terminalReason: accountScoped ? "header_timeout" : "account_fallback", upstreamStatus: result.status, fallbackReason: "account_fallback" });
       excludeConnectionIds.add(credentials.connectionId);
       if (modelLevel) modelLevelExcluded.add(credentials.connectionId);
       lastError = result.error;

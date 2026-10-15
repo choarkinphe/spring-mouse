@@ -70,14 +70,14 @@ describe.each([CodeBuddyIntlExecutor, CodeBuddyExecutor])('%s first output gate'
     await result.response.body.cancel();expect(src.cancel).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
   });
-  it('returns a model-fallback timeout when response headers never arrive', async () => {
+  it('returns an account timeout when response headers never arrive', async () => {
     vi.useFakeTimers();let signal;
     fetchMock.mockImplementation((_u,o)=>{signal=o.signal;return new Promise(()=>{});});
-    const work=new Executor().execute({...args(),hasFallback:true,overloadDeadline:Date.now()+150000});
+    const work=new Executor().execute({...args(),hasFallback:false,overloadDeadline:Date.now()+150000});
     await vi.advanceTimersByTimeAsync(60000);
     const result=await work;
     expect(result.response.status).toBe(503);
-    expect(result.response.__smUpstreamError).toMatchObject({origin:'sse_first_output_timeout',source:'dispatch',layer:'gateway'});
+    expect(result.response.__smUpstreamError).toMatchObject({origin:'upstream_header_timeout',source:'dispatch',layer:'gateway'});
     expect(signal.aborted).toBe(true);expect(fetchMock).toHaveBeenCalledOnce();
   });
   it('does not re-upload a failed request when another channel is available', async () => {
@@ -85,6 +85,12 @@ describe.each([CodeBuddyIntlExecutor, CodeBuddyExecutor])('%s first output gate'
     const result=await new Executor().execute({...args(),hasFallback:true,overloadDeadline:Date.now()+150000});
     expect(result.response.status).toBe(503);expect(await result.response.text()).toBe('unavailable');
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it.each([[90000,60000,'upstream_header_timeout'],[1000,500,'sse_first_output_timeout']])('distinguishes a full header timeout from a shortened candidate budget (%s)',async (budget, elapsed, origin)=>{
+    vi.useFakeTimers();fetchMock.mockImplementation(()=>new Promise(()=>{}));
+    const work=new Executor().execute({...args(),hasFallback:true,overloadDeadline:Date.now()+budget});
+    await vi.advanceTimersByTimeAsync(elapsed);
+    expect((await work).response.__smUpstreamError.origin).toBe(origin);
   });
 });
 

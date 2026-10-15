@@ -2,7 +2,7 @@ import { recordRoutingDuration } from "@/lib/system/concurrency.js";
 import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
+import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
 import { errorResponse, normalizeErrorStatus } from "open-sse/utils/error.js";
@@ -526,6 +526,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, upstreamError = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   const isUpstream = upstreamError?.source === "http" || upstreamError?.source === "sse";
+  const accountScoped = upstreamError?.origin === SSE_ERROR_ORIGINS.HEADER_TIMEOUT;
   const scanBound = upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
     || upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT;
 
@@ -535,7 +536,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
     let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
-    if (scanBound) {
+    if (accountScoped) {
+      shouldFallback = true;
+      cooldownMs = ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS;
+    } else if (scanBound) {
       // Keep the existing bounded fallback policy without blaming the account.
       // A local scan limit is not proof that the upstream model is overloaded.
       shouldFallback = true;
@@ -576,13 +580,14 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // fan-out budget, while a transport failure says nothing about the model.
     // Counting it as model-level would let two dead nodes in front of a healthy
     // account fail the request instead of rotating to that account.
-    const transportFailure = !isUpstream && Number(status) >= 500 && shouldFallback;
+    const transportFailure = !accountScoped && !isUpstream && Number(status) >= 500 && shouldFallback;
     const modelLevelSignal = modelLevel === true && !(cooldownMs > 0);
     decision = {
       shouldFallback,
       cooldownMs: transportFailure ? 0 : cooldownMs,
       modelLevel: modelLevelSignal,
       transport: transportFailure,
+      ...(accountScoped ? { accountScoped: true } : {}),
     };
     if (!shouldFallback) return { value: decision };
 
@@ -602,6 +607,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       gatewayError: reason,
       gatewayErrorCode: status,
       gatewayErrorAt: new Date().toISOString(),
+      ...(accountScoped ? { lastError: reason, errorCode: normalizeErrorStatus(status), lastErrorAt: new Date().toISOString() } : {}),
     };
 
     // Model-level: record the evidence, keep the account's health untouched.

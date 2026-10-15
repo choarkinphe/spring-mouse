@@ -190,7 +190,7 @@ export class BaseExecutor {
     };
   }
 
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null, overloadDeadline = null, hasFallback = false }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null, overloadDeadline = null, hasFallback = false, retryWithinEndpoint = true }) {
     if (credentials?.mouseExecution) {
       return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions, requestId });
     }
@@ -217,7 +217,7 @@ export class BaseExecutor {
     const tryRetry = async (urlIndex, statusKey, reason, response = null, controller = null) => {
       // The router can try another channel. Repeating the same failed endpoint
       // here consumes its fallback budget and re-uploads a potentially huge body.
-      if (hasFallback) return false;
+      if (hasFallback || !retryWithinEndpoint) return false;
       const { attempts, delayMs } = resolveRetryEntry(retryConfig[statusKey]);
       if (attempts <= 0 || retryAttemptsByUrl[urlIndex] >= attempts) return false;
       // Hook: subclass may derive delay from the response (headers/body). null → skip retry, use fallback.

@@ -15,10 +15,15 @@ export const ERROR_TYPES = {
 
 // Explicit upstream rejection and gateway-enforced SSE scan bounds are distinct.
 export const SSE_ERROR_ORIGINS = Object.freeze({
+  HEADER_TIMEOUT: "upstream_header_timeout",
   OVERLOAD: "sse_overload",
   FIRST_OUTPUT_TIMEOUT: "sse_first_output_timeout",
   SCAN_LIMIT: "sse_scan_limit",
 });
+
+// A CodeBuddy account can stop answering while sibling accounts remain healthy.
+// This is a short model-scoped retry suppression, not a permanent auth failure.
+export const ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS = 60 * 1000;
 
 // Default error messages per status code (client-facing)
 export const DEFAULT_ERROR_MESSAGES = {

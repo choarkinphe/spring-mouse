@@ -138,6 +138,9 @@ export function attemptTerminalFromResult(result, { fallbackReason = null } = {}
   if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT) {
     return { outcome: "failed", terminalReason: "first_output_timeout", upstreamStatus, fallbackReason };
   }
+  if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.HEADER_TIMEOUT) {
+    return { outcome: "failed", terminalReason: "header_timeout", upstreamStatus, fallbackReason };
+  }
   if (result?.upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT) {
     return { outcome: "failed", terminalReason: "sse_scan_limit", upstreamStatus, fallbackReason };
   }

@@ -133,6 +133,28 @@ describe("real combo routing and account admission", () => {
     expect(await (await handleChat(request())).json()).toEqual({provider: "codebuddy-cn"});
     expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
   });
+  it("temporarily skips only the silent account and keeps healthy siblings available", async () => {
+    let silent = null;
+    const healthy = await connectionsRepo.createProviderConnection({provider: "codebuddy-intl", authType: "apikey", apiKey: "healthy-test-key", isActive: true, priority: 2});
+    mocks.handleChatCore.mockImplementation(async ({credentials, modelInfo}) => (silent ||= credentials.connectionId) === credentials.connectionId
+      ? {success: false, status: 503, error: "Timed out waiting for upstream response headers",
+          upstreamError: {origin: "upstream_header_timeout", source: "dispatch", layer: "gateway"},
+          response: Response.json({error: {message: "header timeout"}}, {status: 503})}
+      : {success: true, response: Response.json({provider: modelInfo.provider})});
+    expect(await (await handleChat(request())).json()).toEqual({provider: "codebuddy-intl"});
+    const healthyId = [accounts["codebuddy-intl"].id, healthy.id].find(id => id !== silent);
+    const failed = await connectionsRepo.getProviderConnectionById(silent);
+    expect(failed.isActive).toBe(true);
+    expect(Date.parse(failed.modelLock_flash) - Date.now()).toBeGreaterThan(50000);
+    expect(Date.parse(failed.modelLock_flash) - Date.now()).toBeLessThanOrEqual(60000);
+    expect((await connectionsRepo.getProviderConnectionById(healthyId)).modelLock_flash).toBeUndefined();
+    const count = mocks.handleChatCore.mock.calls.length;
+    expect(await (await handleChat(request())).json()).toEqual({provider: "codebuddy-intl"});
+    expect(mocks.handleChatCore.mock.calls.slice(count).map(c => c[0].credentials.connectionId)).toEqual([healthyId]);
+    const {getProviderModelBreaker, getModelOverloadThrottle} = await import("../../src/sse/services/providerBreaker.js");
+    expect((await getProviderModelBreaker("codebuddy-intl", "flash")).open).toBe(false);
+    expect((await getModelOverloadThrottle("codebuddy-intl", "flash")).open).toBe(false);
+  });
   it.each([429, 500, 503])("falls back to CN after international returns %s", async (status) => {
     mocks.handleChatCore.mockImplementation(async ({ modelInfo }) => modelInfo.provider === "codebuddy-intl"
       ? { success: false, status, error: "upstream unavailable", response: Response.json({ error: { message: "upstream unavailable" } }, { status }) }

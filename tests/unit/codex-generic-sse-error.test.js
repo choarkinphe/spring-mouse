@@ -23,6 +23,25 @@ async function executeError(payload, event = "error", prefix = "") {
 }
 
 describe("Codex errors inside HTTP 200 SSE", () => {
+  it("repairs before dispatch and records anonymous repair evidence", async () => {
+    const upstream = vi.spyOn(Object.getPrototypeOf(CodexExecutor.prototype), "execute")
+      .mockImplementation(async ({ body }) => {
+        expect(body.tools).toEqual([{ type: "web_search" }]);
+        expect(body.tool_choice).toBe("none");
+        return { response: new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n') };
+      });
+    const log = { errorLine: vi.fn() };
+    const body = { input: [{ type: "web_search_call", action: { query: "PRIVATE_QUERY" } }], tools: [], tool_choice: "none" };
+    const result = await new CodexExecutor().execute({ model: "gpt-6-astra", body, stream: true, credentials: {}, log });
+    expect(result.response.status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(1);
+    const lines = log.errorLine.mock.calls.map((args) => args[2]);
+    const metadata = JSON.parse(lines.find((line) => line.startsWith("CODEX-SCAN | ")).split("CODEX-SCAN | ")[1]);
+    expect(metadata.hostedHistory).toMatchObject({ searchHistoryItems: 1, declarationRestored: true, toolsDisabled: true });
+    expect(lines.join("\n")).not.toContain("PRIVATE_QUERY");
+    await result.response.text();
+  });
+
   it.each([
     [{ type: "error", error: { type: "invalid_request_error", code: "context_length_exceeded", message: "Context limit exceeded" } }, "error", 400],
     [{ type: "response.failed", response: { error: { code: "invalid_encrypted_content", message: "Invalid encrypted content" } } }, "response.failed", 400],

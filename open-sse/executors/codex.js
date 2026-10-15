@@ -23,6 +23,7 @@ import {
 import { dbg } from "../utils/debugLog.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
+import { normalizeCodexHostedHistory } from "../utils/codexHostedHistory.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 // The generic OpenAI 500 blurb ("An error occurred while processing your request…
@@ -542,6 +543,8 @@ export class CodexExecutor extends BaseExecutor {
   }
 
   async execute(args) {
+    // Keep repair metadata local: executors may serve concurrent requests.
+    const hostedHistory = normalizeCodexHostedHistory(args.body);
     const imgCount = Array.isArray(args.body?.input) ? args.body.input.reduce((n, it) => n + (Array.isArray(it.content) ? it.content.filter(c => c.type === "image_url").length : 0), 0) : 0;
     const inputLen = Array.isArray(args.body?.input) ? args.body.input.length : 0;
     dbg("CODEX", `execute start | inputItems=${inputLen} | images=${imgCount} | sessionId=${this._currentSessionId || "pending"}`);
@@ -616,6 +619,7 @@ export class CodexExecutor extends BaseExecutor {
         scanId: randomUUID(), attempt: attempt + 1,
         model: /^[a-z0-9][a-z0-9._/-]{0,95}$/i.test(args.model || "") ? args.model : null,
         connectionId: /^[a-f0-9-]{36}$/i.test(args.credentials?.connectionId || "") ? args.credentials.connectionId : null,
+        hostedHistory,
       });
       donePeek();
       if (peek.errorStatus) {
@@ -1137,6 +1141,8 @@ export class CodexExecutor extends BaseExecutor {
     convertSystemToDeveloperRole(body);
     // Strip server-generated item IDs (rs_/fc_/resp_/msg_) — Codex /responses can't resolve when store=false
     stripStoredItemReferences(body);
+    // Also cover direct transform callers, before normalization can drop choices.
+    normalizeCodexHostedHistory(body);
     // Flatten function tools + drop unsupported types
     normalizeCodexTools(body);
 

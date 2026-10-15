@@ -3,10 +3,12 @@ import { CODEBUDDY_RATE_LIMIT, SSE_ERROR_ORIGINS } from "../config/errorConfig.j
 import { runWithAbortDeadline } from "./abortable.js";
 import { buildUpstreamError, errorResponse, normalizeErrorStatus } from "./error.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
+import { FORMATS } from "../translator/formats.js";
+import { CLAUDE_BLOCK } from "../translator/schema/blocks.js";
 
 // Inspect only the preamble. Keep its exact bytes for replay, then hand over the
 // reader without a deadline. Role/usage/heartbeat frames are not model output.
-export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abort } = {}) {
+export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abort, format = FORMATS.OPENAI } = {}) {
   if (!response.ok) return response;
   const reader = response.body?.getReader();
   const stop = () => {
@@ -16,7 +18,7 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
   const fail = (message, origin = null, payload = null) => {
     stop();
     const quota = [CODEBUDDY_RATE_LIMIT.throttleCode, CODEBUDDY_RATE_LIMIT.quotaCode].includes(Number(payload?.code));
-    const status = quota ? HTTP_STATUS.RATE_LIMITED
+    const status = quota || payload?.error?.type === "rate_limit_error" ? HTTP_STATUS.RATE_LIMITED
       : origin ? HTTP_STATUS.SERVICE_UNAVAILABLE
       : normalizeErrorStatus(payload?.error?.status || payload?.status);
     const result = payload ? Response.json(payload, { status }) : errorResponse(status, message);
@@ -41,6 +43,21 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
     if (item?.error || (Number(item?.code) > 0 && (item?.msg || item?.message))) {
       return fail(String(item.error?.message || item.msg || item.message || "Upstream stream error"), null, item);
     }
+    if (format === FORMATS.CLAUDE) {
+      // message_start, ping and empty text/thinking block starts carry no output.
+      // A tool start is already actionable: never rotate after accepting it.
+      const block = item?.content_block;
+      const delta = item?.delta;
+      return (item?.type === "content_block_start" && (
+        (block?.type === CLAUDE_BLOCK.TOOL_USE && (block.id || block.name))
+        || (typeof block?.text === "string" && block.text.length > 0)
+        || (typeof block?.thinking === "string" && block.thinking.length > 0)
+      )) || (item?.type === "content_block_delta" && (
+        (typeof delta?.text === "string" && delta.text.length > 0)
+        || (typeof delta?.thinking === "string" && delta.thinking.length > 0)
+        || (typeof delta?.partial_json === "string" && delta.partial_json.length > 0)
+      )) || item?.type === "message_stop" ? true : null;
+    }
     return item?.choices?.some(choice => {
       const d = choice.delta || {};
       return (typeof d.content === "string" && d.content.length > 0)
@@ -51,15 +68,22 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
         || choice.finish_reason != null;
     }) ? true : null;
   };
+  const inspectFrame = (frame) => inspect(frame.split(/\r?\n/)
+    .filter(line => line.startsWith("data:"))
+    .map(line => line.slice(5).replace(/^ /, "")).join("\n"));
   let ready;
   try {
     ready = await runWithAbortDeadline(async () => {
       while (true) {
         const { value, done } = await reader.read();
         if (done) {
+          pending += decoder.decode();
           // A gateway can return a JSON error with HTTP 200 instead of SSE.
-          const error = inspect(pending.replace(/^data:\s*/, "").trim());
-          return error instanceof Response ? error : fail("Upstream ended before any complete model output event");
+          // A final valid SSE event need not have a trailing blank line.
+          const result = /(^|\n)data:/.test(pending) ? inspectFrame(pending) : inspect(pending.trim());
+          if (result instanceof Response) return result;
+          return result === true && /(^|\n)data:/.test(pending)
+            ? true : fail("Upstream ended before any complete model output event");
         }
         buffered.push(value);
         size += value.byteLength;
@@ -68,8 +92,7 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
         while ((separator = /\r?\n\r?\n/.exec(pending))) {
           const frame = pending.slice(0, separator.index);
           pending = pending.slice(separator.index + separator[0].length);
-          const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).replace(/^ /, "")).join("\n");
-          const result = inspect(data);
+          const result = inspectFrame(frame);
           if (result) return result;
         }
         if (size >= OPENAI_STREAM_PREAMBLE_MAX_BYTES) {

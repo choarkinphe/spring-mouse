@@ -93,3 +93,54 @@ it("clears the watchdog on downstream cancellation", async () => {
   await output.cancel("window closed");
   expect(control.handleDisconnect).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each(["visible_stall", "upstream_stall"])("captures %s byte evidence before error settlement", async (stage) => {
+  vi.useFakeTimers();
+  let upstream;
+  const onSnapshot = vi.fn();
+  const onError = vi.fn(() => expect(onSnapshot).toHaveBeenCalledOnce());
+  const control = createStreamController({ onError, log: { errorLine() {} } });
+  const response = new Response(new ReadableStream({ start(c) { upstream = c; } }));
+  control.signal.addEventListener("abort", () => upstream.error(new DOMException("aborted", "AbortError")));
+  const transform = new TransformStream({ transform(chunk, c) { if (chunk[0] !== 0) c.enqueue(chunk); } });
+  const output = pipeWithDisconnect(response, transform, control, null,
+    stage === "upstream_stall" ? 5000 : 10000, { onSnapshot }, stage === "visible_stall" ? 5000 : 10000);
+  const consuming = new Response(output).arrayBuffer();
+  upstream.enqueue(new Uint8Array([1, 2]));
+  await vi.advanceTimersByTimeAsync(4000);
+  if (stage === "visible_stall") upstream.enqueue(new Uint8Array([0, 3, 4]));
+  await vi.advanceTimersByTimeAsync(2000);
+  await consuming;
+  expect(onError).toHaveBeenCalledOnce();
+  expect(onSnapshot.mock.calls[0][0]).toMatchObject({
+    stage, upstreamBytes: stage === "visible_stall" ? 5 : 2,
+    transformedBytes: 2, transformedIdleMs: 6000,
+  });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("stores only allowlisted transport error codes, never error messages", async () => {
+  const onSnapshot = vi.fn();
+  const control = createStreamController({ log: { errorLine() {} } });
+  const failure = Object.assign(new Error("private response text"), { cause: { code: "UND_ERR_SOCKET" } });
+  const response = new Response(new ReadableStream({ start(c) { c.error(failure); } }));
+  await new Response(pipeWithDisconnect(response, new TransformStream(), control, null, 5000, { onSnapshot })).text();
+  expect(onSnapshot).toHaveBeenCalledOnce();
+  expect(onSnapshot.mock.calls[0][0]).toMatchObject({ stage: "stream_error", errorCode: "UND_ERR_SOCKET" });
+  expect(JSON.stringify(onSnapshot.mock.calls)).not.toContain("private response text");
+});
+
+it("captures an incoming-client abort before its settlement hook", async () => {
+  vi.useFakeTimers();
+  const client = new AbortController(), onSnapshot = vi.fn();
+  const control = createStreamController({ clientSignal: client.signal, log: { line() {} },
+    onDisconnect: () => expect(onSnapshot).toHaveBeenCalledOnce() });
+  let upstream;
+  const response = new Response(new ReadableStream({ start(c) { upstream = c; } }));
+  const out = pipeWithDisconnect(response, new TransformStream(), control, null, 5000, { onSnapshot });
+  control.signal.addEventListener("abort", () => upstream.error(new DOMException("aborted", "AbortError")));
+  const consume = new Response(out).text();
+  client.abort(); await consume;
+  expect(onSnapshot.mock.calls[0][0].stage).toBe("controller_abort");
+  expect(vi.getTimerCount()).toBe(0);
+});

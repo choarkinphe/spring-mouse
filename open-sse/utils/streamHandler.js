@@ -1,5 +1,5 @@
 // Stream handler with disconnect detection - shared for all providers
-import { STREAM_STALL_TIMEOUT_MS, STREAM_STALL_CHECK_INTERVAL_MS, STREAM_VISIBLE_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { STREAM_STALL_TIMEOUT_MS, STREAM_STALL_CHECK_INTERVAL_MS, STREAM_VISIBLE_STALL_TIMEOUT_MS, STREAM_TRANSPORT_ERROR_CODES } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
 // Get HH:MM:SS timestamp
@@ -215,7 +215,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       clearTimeout(stallCheckTimer);
       stallCheckTimer = null;
     }
-    streamController.signal?.removeEventListener("abort", clearStall);
+    streamController.signal?.removeEventListener("abort", captureAbort);
   };
   // 优化：使用单一定时器进行低频检查，而非每 chunk 重置定时器
   const checkStall = () => {
@@ -236,6 +236,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
         clearStall();
         const err = new Error(`Upstream stream starved the client: ${msg}`);
         err.code = "UPSTREAM_VISIBLE_STALL";
+        emitDiag("visible_stall");
         streamController.handleError?.(err);
         streamController.abort?.();
         return;
@@ -245,7 +246,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     if (gap > stallTimeoutMs) {
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${gap}ms`);
       clearStall();
-      streamController.handleError?.(new Error("stream stall timeout"));
+      emitDiag("upstream_stall");
+      const err = new Error("stream stall timeout");
+      err.code = "UPSTREAM_STALL";
+      streamController.handleError?.(err);
       streamController.abort?.();
       stallCheckTimer = null;
       return;
@@ -270,14 +274,13 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     startTime: streamController.startTime,
     isConnected: () => streamController.isConnected(),
     handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag("complete"); clearStall(); streamController.handleComplete(); },
-    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag(`error:${e?.message}`); clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag(`disconnect:${r}`); clearStall(); streamController.handleDisconnect(r); },
+    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag("stream_error", e); clearStall(); streamController.handleError(e); },
+    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); emitDiag("client_abort"); clearStall(); streamController.handleDisconnect(r); },
     abort: () => { clearStall(); streamController.abort(); }
   };
 
   if (!streamController.signal?.aborted) {
     armStall();
-    streamController.signal?.addEventListener("abort", clearStall, { once: true });
   }
   dbg(tag, `pipe start | stallTimeout=${stallTimeoutMs}ms`);
 
@@ -302,9 +305,27 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   let lastDiagVisibleAt = 0;
   let maxVisibleGapMs = 0;
   let diagEmitted = false;
-  const emitDiag = (outcome) => {
+  // These are raw upstream and post-transform byte counts, not delivery ACKs or
+  // true first-token timing. Persist only this fixed, content-free schema.
+  const snapshot = (stage, error = null) => ({
+    stage,
+    upstreamBytes: totalBytes,
+    transformedBytes: visibleBytes,
+    upstreamChunks: chunkCount,
+    transformedChunks: visibleChunks,
+    durationMs: Date.now() - t0,
+    upstreamIdleMs: Date.now() - lastChunkAt,
+    transformedIdleMs: sawVisible ? Date.now() - lastVisibleAt : null,
+    firstTransformedByteMs: firstVisibleAt ? firstVisibleAt - t0 : null,
+    maxTransformedGapMs: Math.max(maxVisibleGapMs, Date.now() - (lastDiagVisibleAt || t0)),
+    errorCode: STREAM_TRANSPORT_ERROR_CODES.includes(error?.code || error?.cause?.code)
+      ? error.code || error.cause.code : null,
+  });
+  if (diag) diag.snapshot = snapshot;
+  const emitDiag = (outcome, error = null) => {
     if (diagEmitted) return;
     diagEmitted = true;
+    try { diag?.onSnapshot?.(snapshot(outcome, error)); } catch { /* telemetry is fail-open */ }
     const dur = Date.now() - t0;
     // Only interesting when the turn ran long enough to have been a candidate.
     if (dur < 60000) return;
@@ -315,6 +336,12 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     // here — the upstream keeps streaming while the client sees nothing.
     diag?.log?.(`STREAM-DIAG ${outcome} | ${diag.provider}/${diag.model} | dur=${dur}ms | up_chunks=${chunkCount} up_bytes=${totalBytes} | vis_chunks=${visibleChunks} vis_bytes=${visibleBytes} | first_vis_ms=${firstVisibleMs} max_gap_ms=${maxVisibleGapMs}`);
   };
+  // An incoming request abort fires controller.signal before chatCore settles
+  // usage, bypassing the downstream reader.cancel wrapper. Snapshot there too.
+  function captureAbort() { emitDiag("controller_abort"); clearStall(); }
+  if (!streamController.signal?.aborted) {
+    streamController.signal?.addEventListener("abort", captureAbort, { once: true });
+  }
 
   const upstreamTap = new TransformStream({
     transform(chunk, controller) {

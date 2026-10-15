@@ -100,6 +100,11 @@ describe("real chatCore transport termination", () => {
     expect(saveRequestUsage.mock.calls[0][0].status).toBe(status);
     expect(saveRequestUsage.mock.calls[0][0].tokens).toMatchObject({ prompt_tokens: 16, completion_tokens: 3 });
     expect(saveRequestDetail.mock.calls.at(-1)[0].status).toBe(status);
+    const transport = saveRequestDetail.mock.calls.at(-1)[0].latency.streamTransport;
+    expect(transport).toMatchObject({ stage: status === "cancelled" ? "client_abort" : "stream_error" });
+    expect(transport.upstreamBytes).toBeGreaterThan(0);
+    expect(transport.transformedBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(transport)).not.toContain("synthetic stream failure");
     expect(onRequestSuccess).not.toHaveBeenCalled();
   });
 });

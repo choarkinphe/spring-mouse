@@ -79,6 +79,7 @@ jobs:
           unit/stream-first-token-timing.test.js
           unit/base-executor-retry.test.js
           unit/codebuddy-first-output.test.js
+          unit/minimax-first-output.test.js
           unit/base-executor-socket-release.test.js
           unit/stream-stall-timer-cleanup.test.js
           unit/claude-messages-protocol.test.js

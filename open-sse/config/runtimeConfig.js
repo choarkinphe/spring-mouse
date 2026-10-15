@@ -55,6 +55,9 @@ export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search")
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
 export const STREAM_STALL_CHECK_INTERVAL_MS = 1000;
+export const STREAM_TRANSPORT_ERROR_CODES = Object.freeze([
+  "ECONNRESET", "ETIMEDOUT", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_BODY_TIMEOUT",
+]);
 
 // How long the CLIENT may go without a byte, once it has received its first one,
 // before the turn is abandoned.
@@ -90,7 +93,7 @@ export const STREAM_VISIBLE_STALL_TIMEOUT_MS = envMs("STREAM_VISIBLE_STALL_TIMEO
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
-// Keep time for another channel before committing a CodeBuddy stream. Once an
+// Keep time for another channel before committing a guarded stream. Once an
 // output delta is received this deadline is removed; it is not a stream TTL.
 export const FIRST_OUTPUT_FALLBACK_RESERVE_MS = envMs("FIRST_OUTPUT_FALLBACK_RESERVE_MS", 30 * 1000);
 export const OPENAI_STREAM_PREAMBLE_MAX_BYTES = 512 * 1024;

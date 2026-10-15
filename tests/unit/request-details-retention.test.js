@@ -63,6 +63,15 @@ async function setup({ batchSize = 5, maxRecords = 100 } = {}) {
 }
 
 describe("requestDetails retention", () => {
+  it("keeps content-free stream transport snapshots through normalization and storage", async () => {
+    const db = await setup({ batchSize: 1 });
+    const streamTransport = { stage: "visible_stall", upstreamBytes: 5000, transformedBytes: 100, transformedIdleMs: 201000, errorCode: null };
+    await db.saveRequestDetail({ ...makeDetail(1), latency: { ttft: 10, total: 211000, streamTransport } });
+    await vi.waitFor(async () => {
+      const got = await db.getRequestDetailByRequestId("req-1");
+      expect(got?.latency?.streamTransport).toEqual(streamTransport);
+    });
+  });
   it("persists rows across multiple flushes", async () => {
     const db = await setup({ batchSize: 5 });
 

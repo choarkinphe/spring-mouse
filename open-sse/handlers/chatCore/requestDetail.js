@@ -89,6 +89,7 @@ export function buildRequestDetail(base, overrides = {}) {
     timestamp: new Date().toISOString(),
     latency: {
       ...(base.latency || { ttft: 0, total: 0 }),
+      ...(routing.streamTransport ? { streamTransport: routing.streamTransport } : {}),
       scope: routing.timing?.scope || "attempt",
       ...(routing.timing ? {
         preDispatchMs: routing.timing.preDispatchMs,

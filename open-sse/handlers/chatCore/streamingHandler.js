@@ -82,8 +82,18 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   const completedContentMaxChars = observabilityEnabled ? observabilityMaxJsonChars : 0;
   const inputTokenEstimate = estimateInputTokensFromHeaders(clientRawRequest?.headers);
+  const transportDiag = {
+    provider, model,
+    log: (msg) => log?.errorLine?.("", "🔬", msg),
+    onSnapshot: (snapshot) => { if (routing) routing.streamTransport = snapshot; },
+  };
   if (routingObserver) routingObserver.emitHeaders({ status: providerResponse.status, sourceFormat, targetFormat, streamMode: "stream", nativePassthrough: !needsTranslation(targetFormat, sourceFormat) });
   const onTerminalComplete = (content, usage, ttftAt, terminal) => {
+    // A protocol-terminal snapshot may precede the final translated tail; its
+    // stage makes that boundary explicit. Error snapshots run before settlement.
+    if (routing && !routing.streamTransport) {
+      routing.streamTransport = transportDiag.snapshot?.("protocol_terminal");
+    }
     onStreamComplete?.(content, usage, ttftAt, terminal);
     if (terminal?.outcome === "valid_terminal" && onRequestSuccess) {
       Promise.resolve().then(onRequestSuccess).catch(err => {
@@ -100,11 +110,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   // Diagnostic only: reports upstream bytes vs client-visible bytes for every turn
   // that ran past 60s, so the two shapes (stalled vs merely slow) can be told apart
   // from production data before any watchdog is built on the difference.
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, {
-    provider,
-    model,
-    log: (msg) => log?.errorLine?.("", "🔬", msg),
-  });
+  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs, transportDiag);
 
   if (observabilityEnabled) {
     saveRequestDetail(buildRequestDetail({

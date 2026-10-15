@@ -23,6 +23,7 @@ import TraeExecutor from "./trae.js";
 import ZedExecutor from "./zed.js";
 import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
+import { FirstOutputExecutor } from "./first-output.js";
 import { DevinCliExecutor } from "./devin-cli.js";
 
 const executors = {
@@ -52,6 +53,8 @@ const executors = {
   mmf: new MimoFreeExecutor(), // Alias for mimo-free
   "codebuddy-cn": new CodeBuddyExecutor(),
   "codebuddy-intl": new CodeBuddyIntlExecutor(),
+  minimax: new FirstOutputExecutor("minimax"),
+  "minimax-cn": new FirstOutputExecutor("minimax-cn"),
   trae: new TraeExecutor(),
   zed: new ZedExecutor(),
   windsurf: new WindsurfExecutor(),

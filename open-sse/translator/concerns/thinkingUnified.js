@@ -62,7 +62,7 @@ export function extractThinking(body) {
   const t = body.thinking;
   if (t && typeof t === "object") {
     if (t.type === "disabled") return { mode: "none" };
-    if (t.type === "adaptive" || t.type === "enabled") {
+    if ((t.type === "adaptive" || t.type === "enabled") && !body.reasoning_effort && !body.reasoning?.effort) {
       const budget = Number(t.budget_tokens);
       if (Number.isFinite(budget) && budget > 0) return { mode: "budget", budget };
       return { mode: "auto" };
@@ -272,6 +272,16 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       // Z.ai ignores thinking.disabled → must use enable_thinking:false to turn off.
       if (none && canDisable) { body.enable_thinking = false; delete body.thinking; break; }
       body.thinking = { type: "enabled" };
+      break;
+    }
+    case "zai-effort": {
+      // https://docs.z.ai/guides/llm/glm-5.3: disabled -> enabled + low.
+      // Leave the provider default intact for auto; never silently turn low into max.
+      body.thinking = { type: "enabled" };
+      const level = toLevel(eff);
+      if (level === "minimal" || level === "low") body.reasoning_effort = "low";
+      else if (level === "medium" || level === "high") body.reasoning_effort = "high";
+      else if (["xhigh", "max", "ultra"].includes(level)) body.reasoning_effort = "max";
       break;
     }
     case "qwen-responses": {

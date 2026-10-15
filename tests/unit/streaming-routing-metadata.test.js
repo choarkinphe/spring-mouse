@@ -51,6 +51,7 @@ describe("streaming routing metadata", () => {
       { content: "completed", thinking: null },
       { prompt_tokens: 12, completion_tokens: 4 },
       Date.now() - 10,
+      { outcome: "valid_terminal", terminalReason: "terminal" },
     );
 
     expect(saveRequestUsage).toHaveBeenCalledWith(expect.objectContaining({

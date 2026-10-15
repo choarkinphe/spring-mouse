@@ -415,6 +415,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   log?.debug?.("REQUEST", `${provider.toUpperCase()} | ${model} | ${msgCount} msgs`);
 
   let requestFinished = false;
+  let completeAbortedStream = null;
   const finishRequest = () => {
     if (requestFinished) return;
     requestFinished = true;
@@ -430,7 +431,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // already-recorded protocol terminal, so a normal completion is untouched.
       try { routingObserver?.settleCancelled?.({ terminalReason: "client_abort" }); } catch { /* telemetry is fail-open */ }
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
-      saveFailedUsage("cancelled");
+      if (completeAbortedStream) completeAbortedStream("cancelled", "client_abort");
+      else saveFailedUsage("cancelled");
       finishRequest();
       if (onDisconnect) onDisconnect(reason);
     },
@@ -441,7 +443,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         else routingObserver?.settleFailed?.({ terminalReason: "stream_error" });
       } catch { /* telemetry is fail-open */ }
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
-      saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
+      if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error");
+      else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
       finishRequest();
     },
     onComplete: () => {
@@ -648,6 +651,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
+  // Transport failures bypass TransformStream.flush. Finalize the same bounded,
+  // once-only detail/usage callback so a disconnect cannot leave a success row.
+  completeAbortedStream = (outcome, terminalReason) => onStreamComplete(null, null, null, { outcome, terminalReason });
   const compactionStreamStatus = providerResponse.status;
   const onCompactionStreamComplete = compactionDiag ? (...args) => {
     compactionDiag.emit("end", { status: compactionStreamStatus, outcome: "stream_usage_complete" });

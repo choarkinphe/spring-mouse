@@ -146,6 +146,7 @@ export function classifyOpenAIChatChunk(chunk) {
 
 /** OpenAI Responses API streaming event (event name + parsed payload). */
 export function classifyResponsesEvent(eventName, chunk) {
+  if (chunk?.error) return FAILED;
   const type = typeof eventName === "string" && eventName
     ? eventName
     : (typeof chunk?.type === "string" ? chunk.type : null);

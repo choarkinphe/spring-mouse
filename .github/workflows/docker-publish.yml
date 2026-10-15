@@ -65,6 +65,9 @@ jobs:
           unit/usage-dashboard-scope.test.js
           unit/chat-routing-telemetry.test.js
           unit/streaming-attempt-settlement.test.js
+          unit/stream-terminal-persistence.test.js
+          unit/glm53-thinking.test.js
+          unit/codex-generic-sse-error.test.js
           unit/tool-stream-forwarding.test.js
           unit/openai-to-claude-response-tools.test.js
           unit/stream-first-token-timing.test.js

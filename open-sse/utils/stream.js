@@ -104,6 +104,8 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  let protocolTerminal = null;
+  let translatedFailureSent = false;
 
   const settleObserver = (info = {}) => {
     if (!routingObserver) return;
@@ -115,11 +117,19 @@ export function createSSEStream(options = {}) {
       if (ttftAt === null) ttftAt = Date.now();
       try { routingObserver?.noteFirstToken(); } catch { /* telemetry is fail-open */ }
     }
-    if (!routingObserver) return;
     try {
       const classified = classifyStreamEvent(targetFormat, eventName, parsed);
-      if (classified) routingObserver.recordTerminal(classified);
+      if (classified) {
+        protocolTerminal ||= classified;
+        routingObserver?.recordTerminal(classified);
+      }
+      return classified;
     } catch { /* telemetry is fail-open */ }
+  };
+  const completeStream = (finalUsage, fallback = { outcome: "incomplete", terminalReason: "incomplete" }) => {
+    const terminal = protocolTerminal || fallback;
+    settleObserver({ ...terminal, usage: finalUsage, upstreamStatus: null });
+    onStreamComplete?.(completedContent(), finalUsage, ttftAt, terminal);
   };
 
   function captureCompletedText(kind, text) {
@@ -176,9 +186,10 @@ export function createSSEStream(options = {}) {
         }
 
         // Capture Responses API event name to preserve framing in same-format passthrough
-        if (mode === STREAM_MODE.TRANSLATE && targetFormat === FORMATS.OPENAI_RESPONSES && trimmed.startsWith("event:")) {
+        if (trimmed.startsWith("event:")) {
           currentOpenAIResponsesEvent = trimmed.slice(6).trim();
         }
+        if (!trimmed) currentOpenAIResponsesEvent = null;
 
         // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
@@ -190,7 +201,7 @@ export function createSSEStream(options = {}) {
               const parsed = JSON.parse(trimmed.slice(5).trim());
 
               const idFixed = fixInvalidId(parsed);
-              observeEvent(null, parsed);
+              observeEvent(currentOpenAIResponsesEvent, parsed);
 
               // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
               let fieldsInjected = false;
@@ -294,7 +305,28 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
-        observeEvent(currentOpenAIResponsesEvent, parsed);
+        const classified = observeEvent(currentOpenAIResponsesEvent, parsed);
+        // A protocol failure must remain an error in the client's protocol.
+        // Some translators turn it into text + finish_reason=stop, which makes
+        // Claude Desktop treat a failed agent turn as an ordinary empty reply.
+        if (classified?.outcome === "failed" && sourceFormat !== targetFormat) {
+          const failedUsage = extractUsage(parsed);
+          if (failedUsage) state.usage = mergeUsage(state.usage, failedUsage);
+          if (!translatedFailureSent) {
+            const upstream = parsed.error || parsed.response?.error || {};
+            const error = { type: "api_error", message: String(upstream.message || "Upstream stream failed").slice(0, 2000) };
+            if (typeof upstream.code === "string") error.code = upstream.code.slice(0, 96);
+            const payload = sourceFormat === FORMATS.OPENAI_RESPONSES
+              ? { event: "response.failed", data: { type: "response.failed", response: { id: state.responseId || `resp_${Date.now()}`, status: "failed", error } } }
+              : sourceFormat === FORMATS.CLAUDE ? { type: "error", error } : { error };
+            const output = formatSSE(payload, sourceFormat);
+            reqLogger?.appendConvertedChunk?.(output);
+            controller.enqueue(sharedEncoder.encode(output));
+            translatedFailureSent = true;
+          }
+          continue;
+        }
+        if (translatedFailureSent) continue;
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -429,17 +461,11 @@ export function createSSEStream(options = {}) {
       try {
         const remaining = decoder.decode();
         if (remaining) buffer += remaining;
+        // EOF can terminate the final data line without a newline. Process it
+        // through the same classifier/usage path before deciding the outcome.
+        if (buffer) this.transform(sharedEncoder.encode("\n"), controller);
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
-          if (buffer) {
-            let output = buffer;
-            if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
-              output = "data: " + buffer.slice(5);
-            }
-            reqLogger?.appendConvertedChunk?.(output);
-            controller.enqueue(sharedEncoder.encode(output));
-          }
-
           if (!hasValidUsage(usage) && totalContentLength > 0) {
             usage = estimateUsageFromInputTokens(resolvedInputTokenEstimate, totalContentLength, FORMATS.OPENAI);
           }
@@ -447,7 +473,7 @@ export function createSSEStream(options = {}) {
           if (hasValidUsage(usage)) {
             logUsage(provider, usage, model, connectionId, apiKey);
           } else {
-            appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
+            appendRequestLog({ model, provider, connectionId, tokens: null, status: protocolTerminal?.outcome === "valid_terminal" ? "200 OK" : "STREAM FAILED" }).catch(() => { });
           }
           
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
@@ -462,42 +488,11 @@ export function createSSEStream(options = {}) {
             controller.enqueue(sharedEncoder.encode(doneOutput));
           }
 
-          if (onStreamComplete) {
-            onStreamComplete(completedContent(), usage, ttftAt);
-          }
-          settleObserver({
-            outcome: routingObserver?.hasTerminal() ? undefined : "incomplete",
-            terminalReason: routingObserver?.hasTerminal() ? undefined : "incomplete",
-            usage,
-            upstreamStatus: null,
-          });
+          completeStream(usage);
           return;
         }
 
-        if (buffer.trim()) {
-          const parsed = parseSSELine(buffer.trim());
-          if (parsed && !parsed.done) {
-            const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
-
-            if (translated?._openaiIntermediate) {
-              for (const item of translated._openaiIntermediate) {
-                const openaiOutput = formatSSE(item, FORMATS.OPENAI);
-                reqLogger?.appendOpenAIChunk?.(openaiOutput);
-              }
-            }
-
-            if (translated?.length > 0) {
-              for (const item of translated) {
-                if (item === null || item === undefined) continue;
-                const output = formatSSE(item, sourceFormat);
-                reqLogger?.appendConvertedChunk?.(output);
-                controller.enqueue(sharedEncoder.encode(output));
-              }
-            }
-          }
-        }
-
-        const flushed = translateResponse(targetFormat, sourceFormat, null, state);
+        const flushed = translatedFailureSent ? null : translateResponse(targetFormat, sourceFormat, null, state);
 
         if (flushed?._openaiIntermediate) {
           for (const item of flushed._openaiIntermediate) {
@@ -539,20 +534,12 @@ export function createSSEStream(options = {}) {
         if (hasValidUsage(state?.usage)) {
           logUsage(state.provider || targetFormat, state.usage, model, connectionId, apiKey);
         } else {
-          appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
+          appendRequestLog({ model, provider, connectionId, tokens: null, status: protocolTerminal?.outcome === "valid_terminal" ? "200 OK" : "STREAM FAILED" }).catch(() => { });
         }
         
-        if (onStreamComplete) {
-          onStreamComplete(completedContent(), state?.usage, ttftAt);
-        }
-        settleObserver({
-          outcome: routingObserver?.hasTerminal() ? undefined : "incomplete",
-          terminalReason: routingObserver?.hasTerminal() ? undefined : "incomplete",
-          usage: state?.usage,
-          upstreamStatus: null,
-        });
+        completeStream(state?.usage);
       } catch (error) {
-        settleObserver({ outcome: "failed", terminalReason: "stream_error", usage: state?.usage });
+        completeStream(state?.usage || usage, { outcome: "failed", terminalReason: "stream_error" });
         console.log("Error in flush:", error);
       } finally {
         reqLogger?.close?.();

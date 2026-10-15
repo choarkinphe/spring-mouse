@@ -52,14 +52,6 @@ function estimateInputTokensFromHeaders(headers) {
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
 export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true }) {
-  if (onRequestSuccess) {
-    Promise.resolve()
-      .then(onRequestSuccess)
-      .catch(err => {
-        console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
-      });
-  }
-
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -74,7 +66,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     const sanitizedTitle = (titleMatch?.[1] || '').replace(/<[^>]*>/g, '').replace(/[\r\n]+/g, ' ').trim().slice(0, 160);
     const shortMsg = sanitizedTitle
       || (bodyText.length < 200 ? bodyText.replace(/<[^>]*>/g, '').trim().slice(0, 160) : `Upstream returned non-SSE response (${upstreamContentType})`);
-    const status = providerResponse.status || 502;
+    const status = providerResponse.status >= 400 ? providerResponse.status : 502;
     if (log?.errorLine) log.errorLine(reqTag, "✗", `BLOCKED ${status} · ${provider}/${model} · non-SSE (${upstreamContentType})\n    ${shortMsg}`);
     else console.warn(`[STREAM] ${provider} | ${model} | blocked pipe: ${shortMsg} [${status}]`);
     streamController?.handleError?.(new Error(`upstream non-SSE: ${status}`));
@@ -91,7 +83,15 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const completedContentMaxChars = observabilityEnabled ? observabilityMaxJsonChars : 0;
   const inputTokenEstimate = estimateInputTokensFromHeaders(clientRawRequest?.headers);
   if (routingObserver) routingObserver.emitHeaders({ status: providerResponse.status, sourceFormat, targetFormat, streamMode: "stream", nativePassthrough: !needsTranslation(targetFormat, sourceFormat) });
-  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver });
+  const onTerminalComplete = (content, usage, ttftAt, terminal) => {
+    onStreamComplete?.(content, usage, ttftAt, terminal);
+    if (terminal?.outcome === "valid_terminal" && onRequestSuccess) {
+      Promise.resolve().then(onRequestSuccess).catch(err => {
+        console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
+      });
+    }
+  };
+  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete: onTerminalComplete, apiKey, completedContentMaxChars, inputTokenEstimate, requestId, routingObserver });
 
   // Responses passthrough: synthesize response.failed + [DONE] if the stream aborts/stalls before a terminal event
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -116,7 +116,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
       providerResponse: "[Streaming - raw response not captured]",
       response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
       pxpipe,
-      status: "success"
+      status: "pending"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to save streaming request:", err.message);
     });
@@ -136,26 +136,31 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-function persistStreamUsage({ provider, model, originalModel, executedModel, routing, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log, recordUsage = true }, usage, ttftAt) {
+function streamStatus(terminal) {
+  if (terminal?.outcome === "cancelled") return "cancelled";
+  return terminal?.outcome === "valid_terminal" ? "success" : "error";
+}
+
+function persistStreamUsage({ provider, model, originalModel, executedModel, routing, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log, recordUsage = true }, usage, ttftAt, terminal) {
   const latency = {
     ttft: ttftAt != null ? ttftAt - requestStartTime : null,
     total: Date.now() - requestStartTime
   };
 
-  if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: "success", label: "STREAM USAGE", silent: true });
-  if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
+  if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: streamStatus(terminal), label: "STREAM USAGE", silent: true });
+  if (log?.line) log.line(reqTag, "📊", `${formatDoneLine({ usage, latency })} · ${terminal?.outcome || "unknown"}`);
   return latency;
 }
 
 function createUsageOnlyCompletion(context) {
-  return (_contentObj, usage, ttftAt) => {
-    persistStreamUsage(context, usage, ttftAt);
+  return (_contentObj, usage, ttftAt, terminal) => {
+    persistStreamUsage(context, usage, ttftAt, terminal);
   };
 }
 
 function createObservedCompletion(context) {
-  return (contentObj, usage, ttftAt) => {
-    const latency = persistStreamUsage(context, usage, ttftAt);
+  return (contentObj, usage, ttftAt, terminal) => {
+    const latency = persistStreamUsage(context, usage, ttftAt, terminal);
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
 
@@ -177,13 +182,24 @@ function createObservedCompletion(context) {
         content: safeContent,
         thinking: safeThinking,
         type: "streaming",
+        outcome: terminal?.outcome || "unknown",
+        terminalReason: terminal?.terminalReason || "unknown",
         truncated: contentObj?.truncated,
       },
       pxpipe: context.pxpipe,
-      status: "success"
+      status: streamStatus(terminal)
     }, { id: context.streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
+  };
+}
+
+function onceCompletion(callback) {
+  let completed = false;
+  return (...args) => {
+    if (completed) return;
+    completed = true;
+    return callback(...args);
   };
 }
 
@@ -213,7 +229,7 @@ export function buildOnStreamComplete({ provider, model, originalModel, executed
     recordUsage,
   };
   if (!observabilityEnabled) {
-    return { onStreamComplete: createUsageOnlyCompletion(usageContext), streamDetailId: null };
+    return { onStreamComplete: onceCompletion(createUsageOnlyCompletion(usageContext)), streamDetailId: null };
   }
 
   const maxChars = Math.max(1024, Number(observabilityMaxJsonChars) || 5 * 1024);
@@ -225,5 +241,5 @@ export function buildOnStreamComplete({ provider, model, originalModel, executed
     providerRequest: compactJsonField(finalBody || translatedBody || null, maxChars),
     pxpipe,
   };
-  return { onStreamComplete: createObservedCompletion(observedContext), streamDetailId };
+  return { onStreamComplete: onceCompletion(createObservedCompletion(observedContext)), streamDetailId };
 }

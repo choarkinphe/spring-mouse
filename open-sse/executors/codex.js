@@ -324,6 +324,7 @@ function errorFramePayloads(text) {
   let inError = false;
   for (const line of String(text || "").split(/\r?\n/)) {
     const trimmed = line.trim();
+    if (!trimmed) { inError = false; continue; }
     if (trimmed.startsWith("event:")) {
       const name = trimmed.slice(6).trim();
       inError = name === "error" || name === "response.failed";
@@ -333,15 +334,37 @@ function errorFramePayloads(text) {
     const payload = trimmed.slice(5).trim();
     if (!payload || payload === "[DONE]") continue;
     if (inError) { out.push(payload); continue; }
-    if (!payload.includes('"error"')) continue;
+    if (!payload.includes('"error"') && !payload.includes('"response.failed"')) continue;
     try {
       const parsed = JSON.parse(payload);
-      if (parsed && typeof parsed === "object" && parsed.error) out.push(payload);
+      if (parsed && typeof parsed === "object" && (parsed.error || parsed.response?.error || parsed.type === "error" || parsed.type === "response.failed")) out.push(payload);
     } catch {
       // Not a JSON error payload — ignore.
     }
   }
   return out;
+}
+
+// Only a complete error payload can establish a generic failure. Never classify
+// partial JSON, echoed request metadata, or output that merely quotes an error.
+function parseSseFailure(text) {
+  for (const payload of errorFramePayloads(text)) {
+    try {
+      const parsed = JSON.parse(payload);
+      const error = parsed?.response?.error || parsed?.error || parsed;
+      const safeTag = value => typeof value === "string" && /^[a-z0-9_.-]{1,96}$/i.test(value) ? value : null;
+      const code = safeTag(error?.code);
+      const type = safeTag(error?.type);
+      const explicitStatus = Number(error?.status_code ?? error?.status ?? parsed?.status);
+      let status = explicitStatus >= 400 && explicitStatus <= 599 && Number.isInteger(explicitStatus) ? explicitStatus : 502;
+      if (type === "authentication_error" || code === "invalid_api_key") status = 401;
+      else if (type === "permission_error" || code === "insufficient_permissions") status = 403;
+      else if (/rate_limit|insufficient_quota/.test(`${code} ${type}`)) status = 429;
+      else if (type === "invalid_request_error" || /^(invalid_|context_length_exceeded|unsupported_|missing_)/.test(code || "")) status = 400;
+      return { status, code, type, message: String(findNestedMessage(error) || "Upstream SSE error").slice(0, 2000) };
+    } catch { /* Wait for the remainder of a split JSON payload. */ }
+  }
+  return null;
 }
 
 // Human-readable duration for log lines: "1.5s" / "90s" / "300ms". A sub-second
@@ -595,6 +618,12 @@ export class CodexExecutor extends BaseExecutor {
         connectionId: /^[a-f0-9-]{36}$/i.test(args.credentials?.connectionId || "") ? args.credentials.connectionId : null,
       });
       donePeek();
+      if (peek.errorStatus) {
+        // A protocol rejection is not the overload retry policy. Return it now
+        // so request errors fail fast and account/model routing sees a failure.
+        result.response = codexSseErrorResponse(peek.errorStatus, peek.message, "sse_error", peek.upstreamError);
+        return result;
+      }
       if (!peek.matched) {
         // No output or error was observed before a time/byte scan bound fired.
         // Do not forward the unresolved stream or claim a confirmed overload:
@@ -720,6 +749,7 @@ export class CodexExecutor extends BaseExecutor {
     let text = "";
     let matched = null;
     let accountFallback = false;
+    let genericFailure = null;
     // Bounded post-output scan: see CODEX_SSE_OUTPUT_GRACE_MS. 0 disables it.
     const graceEnabled = CODEX_SSE_OUTPUT_GRACE_MS > 0;
     let graceDeadline = 0;
@@ -751,6 +781,7 @@ export class CodexExecutor extends BaseExecutor {
         log?.errorLine?.("", "🔬", `CODEX-SCAN | ${JSON.stringify({
           scanId, ...diagnosticContext, phase, releaseReason: stopReason || releaseReason,
           outputDetected: outputStarted, firstOutputType, upstreamStatus: response.status, ...snapshot,
+          ...(genericFailure ? { error: { code: genericFailure.code, type: genericFailure.type, status: genericFailure.status } } : {}),
         })}`);
       } catch { /* diagnostics must never affect routing */ }
       return { scanId, ...snapshot };
@@ -925,6 +956,8 @@ export class CodexExecutor extends BaseExecutor {
           if (accountHit) { matched = accountHit; accountFallback = true; break; }
           const retryHit = CODEX_SSE_RETRY_PATTERNS.find(p => errorText.includes(p));
           if (retryHit) { matched = retryHit; break; }
+          genericFailure = parseSseFailure(text);
+          if (genericFailure) { matched = genericFailure.code || "sse_error"; break; }
         }
         const lowerText = text.toLowerCase();
         if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) { releaseReason = "terminal"; break; }
@@ -978,8 +1011,10 @@ export class CodexExecutor extends BaseExecutor {
       try { await reader.cancel(); } catch { /* noop */ }
       try { reader.releaseLock(); } catch { /* noop */ }
       const message = extractSseErrorMessage(text, matched);
+      const failure = genericFailure || parseSseFailure(text);
       return {
         matched,
+        errorStatus: genericFailure?.status,
         message,
         accountFallback,
         stoppedOnDeadline: false,
@@ -988,7 +1023,10 @@ export class CodexExecutor extends BaseExecutor {
           source: "sse",
           status: response.status,
           message,
-          body: text.slice(0, 4000),
+          code: failure?.code || null,
+          type: failure?.type || null,
+          // Keep the error only; response.created can echo the entire request.
+          body: JSON.stringify({ error: { ...failure, message } }).slice(0, 4000),
           retryAfterMs: upstreamRetryAfterMs(response),
           receivedAt: new Date().toISOString(),
         },

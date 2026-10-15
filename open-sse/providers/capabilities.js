@@ -149,6 +149,8 @@ export const MODEL_CAPABILITIES = {
 
   // GLM vision variant (text GLM has no vision)
   "glm-4.6v":          { vision: true, reasoning: true, thinkingFormat: "zai", contextWindow: 128000 },
+  // GLM 5.3 rejects disabled thinking (1210); its native effort is low/high/max.
+  "glm-5.3":           { reasoning: true, thinkingFormat: "zai-effort", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 131072 },
   "glm-5.3-flash":     { vision: true, pdf: true, videoInput: true, reasoning: true, thinkingFormat: "zai", contextWindow: 1000000, maxOutput: 131072 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases

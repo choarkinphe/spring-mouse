@@ -51,6 +51,8 @@ jobs:
           unit/fetch-success-clears-account.test.js
           unit/xai-video-handler.test.js
           unit/mouse-tunnel.test.js
+          unit/mouse-execution.test.js
+          unit/mouse-diagnostic.test.js
           unit/account-schedule.test.js
           unit/traffic-repo.test.js
           unit/db-migration-chain.test.js

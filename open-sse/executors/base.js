@@ -142,7 +142,7 @@ export class BaseExecutor {
     return { status: response.status, message: bodyText || `HTTP ${response.status}` };
   }
 
-  async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null }) {
+  async executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null, overloadDeadline = null }) {
     const mouse = credentials.mouseExecution;
     if (!mouse?.mouseId) {
       throw new Error("Selected Mouse is not ready for task execution");
@@ -150,6 +150,16 @@ export class BaseExecutor {
     if (proxyOptions?.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
       throw new Error("Connection proxy is configured in Spring; Mouse transport requires the proxy to run on the Mouse host");
     }
+    if (signal?.aborted) throw abortError(signal.reason);
+    const remainingMs = () => Number.isFinite(overloadDeadline) ? overloadDeadline - Date.now() : Infinity;
+    const checkDeadline = () => {
+      if (remainingMs() <= 0) {
+        const error = new Error("Mouse dispatch deadline exceeded");
+        error.name = "TimeoutError";
+        throw error;
+      }
+    };
+    checkDeadline();
 
     const taskId = randomUUID();
     const targetUrl = this.buildUrl(model, stream, 0, credentials);
@@ -164,10 +174,16 @@ export class BaseExecutor {
       connectionId: credentials.connectionId, requestId, transport: "mouse",
       serialized: bodyStr, body: transformedBody, log });
     let upstream;
+    const waitController = new AbortController();
+    const taskSignal = signal ? AbortSignal.any([signal, waitController.signal]) : waitController.signal;
+    const dispatchStarted = Date.now();
     try {
-      upstream = await dispatchMouseTask(mouse.mouseId, {
+      checkDeadline();
+      // One waiting budget covers both acknowledgement and response headers.
+      // Stop the remote work too; merely abandoning the promise wastes capacity.
+      upstream = await runWithAbortDeadline(() => dispatchMouseTask(mouse.mouseId, {
         taskId,
-        signal,
+        signal: taskSignal,
         request: {
           method: "POST",
           url: targetUrl,
@@ -175,7 +191,8 @@ export class BaseExecutor {
           body: bodyStr,
           proxyOptions,
         },
-      });
+      }), { signal, timeoutMs: remainingMs(), timeoutMessage: "Mouse response deadline exceeded",
+        onTimeout: error => waitController.abort(error) });
       sizeDiag?.response(upstream.status);
     } catch (error) {
       sizeDiag?.error(error);
@@ -187,12 +204,13 @@ export class BaseExecutor {
       url: targetUrl,
       headers,
       transformedBody,
+      timing: { upstreamHeadersMs: Math.max(0, Date.now() - dispatchStarted) },
     };
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, requestId = null, overloadDeadline = null, hasFallback = false, retryWithinEndpoint = true }) {
     if (credentials?.mouseExecution) {
-      return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions, requestId });
+      return await this.executeViaMouse({ model, body, stream, credentials, signal, log, proxyOptions, requestId, overloadDeadline });
     }
 
     const fallbackCount = this.getFallbackCount();

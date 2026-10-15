@@ -163,7 +163,7 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
         return;
       }
       const onAbort = () => {
-        tunnel.send("cancel", { taskId, reason: "client_abort" });
+        tunnel.send("cancel", { taskId, reason: signal.reason?.name === "TimeoutError" ? "request_deadline" : "client_abort" });
         entry.settle(abortAsTunnelError(signal.reason));
       };
       signal.addEventListener("abort", onAbort, { once: true });

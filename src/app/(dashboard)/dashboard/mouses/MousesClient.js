@@ -67,6 +67,25 @@ export default function MousesClient() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [savingMouseId, setSavingMouseId] = useState("");
   const [upgradeCopiedMouseId, setUpgradeCopiedMouseId] = useState("");
+  const [testingMouseId, setTestingMouseId] = useState("");
+  const [testResults, setTestResults] = useState({});
+
+  const testMouse = async (mouse) => {
+    setTestingMouseId(mouse.id);
+    try {
+      const response = await fetch(`/api/mouses/${mouse.id}/test`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ springUrl: window.location.origin }),
+      });
+      const result = await response.json();
+      setTestResults(previous => ({ ...previous, [mouse.id]: result.ok
+        ? `任务往返正常 · ${result.elapsedMs} ms（未测试上游模型）` : result.error || "测试失败" }));
+    } catch {
+      setTestResults(previous => ({ ...previous, [mouse.id]: "测试请求失败，请重试" }));
+    } finally {
+      setTestingMouseId("");
+    }
+  };
 
   const loadData = useCallback(async () => {
     setError("");
@@ -285,6 +304,7 @@ export default function MousesClient() {
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-text-main">{mouse.name}</div>
                         <div className="font-mono text-xs text-text-muted">{mouse.clientId}</div>
+                        {testResults[mouse.id] && <div role="status" className="text-xs text-text-muted">{testResults[mouse.id]}</div>}
                       </td>
                       <td className="px-4 py-2.5">
                         {mouse.boundAccountCount
@@ -301,6 +321,8 @@ export default function MousesClient() {
                             </Button>
                           ) : (
                             <>
+                              <Button size="sm" variant="secondary" disabled={mouse.status !== "online" || Boolean(testingMouseId)}
+                                loading={testingMouseId === mouse.id} onClick={() => testMouse(mouse)}>测试连接</Button>
                               <Button
                                 size="sm"
                                 variant="secondary"

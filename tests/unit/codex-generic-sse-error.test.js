@@ -54,6 +54,8 @@ describe("Codex errors inside HTTP 200 SSE", () => {
     expect(upstream).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(result.response.__smUpstreamError).toMatchObject({ source: "sse", status: 200 });
+    expect(result.response.__smUpstreamError.diagnostics).toMatchObject({ parsed: true, kind: "upstream_error" });
+    expect(JSON.stringify(result.response.__smUpstreamError.diagnostics)).not.toContain(payload.error?.message || payload.response?.error?.message || payload.message);
     expect((await result.response.json()).error.message).toBe(payload.error?.message || payload.response?.error?.message || payload.message);
   });
 
@@ -61,6 +63,7 @@ describe("Codex errors inside HTTP 200 SSE", () => {
     const prefix = 'event: response.created\ndata: {"type":"response.created","response":{"instructions":"PRIVATE_PREAMBLE"}}\n\n';
     const { result } = await executeError({ error: { code: "new_provider_failure", message: "Provider failed" } }, "error", prefix);
     expect(result.response.__smUpstreamError.code).toBe("new_provider_failure");
+    expect(result.response.__smUpstreamError.diagnostics.nestedCode).toBe("other");
     expect(result.response.__smUpstreamError.body).not.toContain("PRIVATE_PREAMBLE");
   });
 });

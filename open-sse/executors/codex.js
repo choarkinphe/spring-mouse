@@ -23,7 +23,8 @@ import {
   hasRoomForRetry,
 } from "../config/runtimeConfig.js";
 import { dbg } from "../utils/debugLog.js";
-import { buildUpstreamError } from "../utils/error.js";
+import { buildUpstreamError, upstreamErrorDiagnostics } from "../utils/error.js";
+import { UPSTREAM_FAILURE_KINDS } from "../config/upstreamErrorDiagnostics.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 import { normalizeCodexHostedHistory } from "../utils/codexHostedHistory.js";
@@ -465,7 +466,11 @@ function codexSseErrorResponse(status, message, origin = null, upstreamError = n
     receivedAt: new Date().toISOString(),
   };
   // An actual SSE error is upstream evidence; a scan bound is gateway policy.
-  response.__smUpstreamError = { ...evidence, origin, layer: evidence.layer || "provider" };
+  response.__smUpstreamError = { ...evidence, origin, layer: evidence.layer || "provider",
+    diagnostics: upstreamErrorDiagnostics(JSON.stringify({ error: { code: evidence.code, type: evidence.type } }), {
+      origin, failureKind: evidence.layer === "gateway" ? UPSTREAM_FAILURE_KINDS.LIMIT : UPSTREAM_FAILURE_KINDS.ERROR,
+    }),
+  };
   return response;
 }
 

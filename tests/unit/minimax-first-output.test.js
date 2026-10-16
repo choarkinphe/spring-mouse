@@ -8,6 +8,7 @@ vi.mock("@/lib/usageDb.js", () => ({
 }));
 import { getExecutor } from "../../open-sse/executors/index.js";
 import { handleChatCore } from "../../open-sse/handlers/chatCore.js";
+import { guardOpenAIFirstOutput } from "../../open-sse/utils/openaiFirstOutput.js";
 import "../translator/registerAll.js";
 
 const encoder = new TextEncoder();
@@ -25,6 +26,38 @@ function source(prefix = "") {
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); fetchMock.mockReset(); });
 
 describe.each(["minimax", "minimax-cn"])("%s first-output admission", (provider) => {
+  it.each([[1002, 429], [1041, 429], [2045, 429], [2056, 429], [1004, 401], [2049, 401], [1008, 402], [1039, 400], [2013, 400], [1033, 502]])("classifies HTTP 200 business code %s as %s without retaining extra fields", async (code, status) => {
+    const payload = { base_resp: { status_code: code, status_msg: "private provider message" }, unrelated: "private payload" };
+    fetchMock.mockResolvedValueOnce(Response.json(payload, { headers: { "retry-after": "17" } }));
+    const result = await getExecutor(provider).execute(args());
+    expect(result.response.status).toBe(status);
+    expect(result.response.__smUpstreamError).toMatchObject({ status: 200, retryAfterMs: 17000,
+      diagnostics: { kind: "upstream_error", baseCode: code, parsed: true } });
+    expect(JSON.stringify(result.response.__smUpstreamError)).not.toContain("private");
+    expect(await result.response.text()).not.toContain("private");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it("recognizes split SSE business errors before output and releases the stream", async () => {
+    const src = source(start + 'data: {"base_resp":');
+    fetchMock.mockResolvedValueOnce(src.response);
+    const work = getExecutor(provider).execute(args());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    src.send('{"status_code":2056}}\n\n');
+    const result = await work;
+    expect(result.response.status).toBe(429);
+    expect(result.response.__smUpstreamError.diagnostics.baseCode).toBe(2056);
+    expect(src.cancel).toHaveBeenCalledOnce();
+  });
+  it("does not reject a successful business code or replay after accepted output", async () => {
+    const success = 'data: {"base_resp":{"status_code":0}}\n\n';
+    const lateError = 'data: {"base_resp":{"status_code":2056}}\n\n';
+    const payload = success + text + lateError;
+    fetchMock.mockResolvedValueOnce(new Response(payload));
+    const result = await getExecutor(provider).execute(args());
+    expect(result.response.status).toBe(200);
+    expect(await result.response.text()).toBe(payload);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
   it.each(["", start, '{"message":"upstream unavailable"}'])("rejects HTTP 200 with no output before returning a streaming success", async (preamble) => {
     fetchMock.mockResolvedValueOnce(new Response(preamble));
     const result = await getExecutor(provider).execute(args());
@@ -114,4 +147,27 @@ it("returns a retryable chatCore failure instead of committing an empty Claude H
   });
   expect(result.success).toBe(false); expect(result.status).toBe(502);
   expect(result.streaming).not.toBe(true); expect(result.upstreamError.status).toBe(200);
+});
+
+it("keeps MiniMax quota evidence through chatCore error parsing", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ base_resp: { status_code: 2056, status_msg: "synthetic" } }, { headers: { "retry-after": "45" } }));
+  const body = { model: "synthetic", messages: [{ role: "user", content: "synthetic" }], stream: true };
+  const result = await handleChatCore({
+    body, modelInfo: { provider: "minimax-cn", model: "synthetic" }, credentials: { apiKey: "test-key" },
+    requestId: "synthetic-minimax-quota", sourceFormatOverride: "claude",
+    clientRawRequest: { endpoint: "/v1/messages", body, headers: {} },
+    log: { debug() {}, info() {}, warn() {}, error() {}, line() {}, errorLine() {} },
+    requestLogFileDumpsEnabled: false,
+  });
+  expect(result.success).toBe(false);
+  expect(result.status).toBe(429);
+  expect(result.upstreamError).toMatchObject({ status: 200, retryAfterMs: 45000,
+    diagnostics: { baseCode: 2056, kind: "upstream_error" } });
+});
+
+it("does not apply MiniMax business codes to another provider", async () => {
+  const payload = 'data: {"base_resp":{"status_code":2056},"choices":[{"delta":{"content":"synthetic"}}]}\n\n';
+  const result = await guardOpenAIFirstOutput(new Response(payload), { provider: "codebuddy-cn", deadlineMs: Date.now() + 1000 });
+  expect(result.status).toBe(200);
+  expect(await result.text()).toBe(payload);
 });

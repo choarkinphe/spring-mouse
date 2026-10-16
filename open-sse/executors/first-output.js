@@ -40,6 +40,7 @@ export class FirstOutputExecutor extends DefaultExecutor {
     result.response = await guardOpenAIFirstOutput(result.response, {
       deadlineMs, signal: args.signal, abort: () => controller.abort(),
       format: result.responseFormat || args.credentials?.runtimeTransport?.format || this.config.format,
+      provider: this.provider,
     });
     result.timing = { upstreamHeadersMs: headersAt - now, firstOutputWaitMs: Date.now() - headersAt };
     return result;

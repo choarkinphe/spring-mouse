@@ -9,7 +9,7 @@ import { CLAUDE_BLOCK } from "../translator/schema/blocks.js";
 
 // Inspect only the preamble. Keep its exact bytes for replay, then hand over the
 // reader without a deadline. Role/usage/heartbeat frames are not model output.
-export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abort, format = FORMATS.OPENAI } = {}) {
+export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abort, format = FORMATS.OPENAI, provider } = {}) {
   if (!response.ok) return response;
   const reader = response.body?.getReader();
   const stop = () => {
@@ -42,6 +42,20 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
     if (data === "[DONE]") return fail("Upstream ended before any model output");
     let item;
     try { item = JSON.parse(data); } catch { return null; }
+    // MiniMax can return a business error in a JSON body or SSE frame over
+    // HTTP 200. Keep the numeric code, not arbitrary provider response fields.
+    const baseCode = item?.base_resp?.status_code;
+    if ((provider === "minimax" || provider === "minimax-cn") && Number.isSafeInteger(baseCode) && baseCode > 0 && baseCode <= 1e9) {
+      const status = [1002, 1041, 2045, 2056].includes(baseCode) ? 429
+        : [1004, 2049].includes(baseCode) ? 401
+        : [1039, 2013].includes(baseCode) ? 400
+        : baseCode === 1008 ? 402 : 502;
+      const message = `MiniMax upstream error (${baseCode})`;
+      return fail(message, null, {
+        base_resp: { status_code: baseCode },
+        error: { message, status, type: status === 429 ? "rate_limit_error" : "api_error" },
+      });
+    }
     if (item?.error || (Number(item?.code) > 0 && (item?.msg || item?.message))) {
       return fail(String(item.error?.message || item.msg || item.message || "Upstream stream error"), null, item);
     }

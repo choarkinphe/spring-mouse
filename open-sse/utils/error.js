@@ -1,4 +1,5 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, MAX_RATE_LIMIT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { UPSTREAM_DIAGNOSTIC_CODES as DIAGNOSTIC_CODES, UPSTREAM_DIAGNOSTIC_ORIGINS as DIAGNOSTIC_ORIGINS, UPSTREAM_DIAGNOSTIC_KINDS as DIAGNOSTIC_KINDS, UPSTREAM_DIAGNOSTIC_LIMITS as DIAGNOSTIC_LIMITS } from "../config/upstreamErrorDiagnostics.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 
 // SSE failures can arrive over HTTP 200. That transport status must never
@@ -80,6 +81,32 @@ function classifyErrorLayer(bodyText = "", message = "") {
   return "provider";
 }
 
+const diagnosticCode = (value) => Number.isSafeInteger(value) && Math.abs(value) <= DIAGNOSTIC_LIMITS.maxCode
+  ? value : DIAGNOSTIC_CODES.has(value) ? value : value == null ? null : "other";
+
+// Classify fresh errors at ingestion. Monitoring never needs to read stored
+// raw payloads. Unknown strings (including messages, IDs and tokens) are dropped.
+export function upstreamErrorDiagnostics(bodyText, { origin, failureKind } = {}) {
+  const diagnostics = {
+    version: 1, parsed: false, oversized: false,
+    origin: DIAGNOSTIC_ORIGINS.has(origin) ? origin : null,
+    kind: DIAGNOSTIC_KINDS.has(failureKind) ? failureKind : null,
+    code: null, type: null, nestedCode: null, baseCode: null,
+  };
+  if (typeof bodyText !== "string" || !bodyText) return diagnostics;
+  if (bodyText.length > DIAGNOSTIC_LIMITS.maxChars) return { ...diagnostics, oversized: true };
+  try {
+    const payload = JSON.parse(bodyText);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return diagnostics;
+    return { ...diagnostics, parsed: true,
+      code: diagnosticCode(payload.code),
+      type: diagnosticCode(payload.error?.type ?? payload.type),
+      nestedCode: diagnosticCode(payload.error?.code ?? payload.extError?.code),
+      baseCode: diagnosticCode(payload.base_resp?.status_code ?? payload.baseResp?.statusCode),
+    };
+  } catch { return diagnostics; }
+}
+
 export function buildUpstreamError(response, bodyText, message, source = "http", overrides = {}) {
   return {
     source,
@@ -90,6 +117,7 @@ export function buildUpstreamError(response, bodyText, message, source = "http",
     receivedAt: new Date().toISOString(),
     layer: classifyErrorLayer(bodyText, message),
     ...overrides,
+    diagnostics: upstreamErrorDiagnostics(bodyText, overrides),
   };
 }
 

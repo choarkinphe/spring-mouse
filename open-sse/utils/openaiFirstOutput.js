@@ -1,5 +1,6 @@
 import { HTTP_STATUS, OPENAI_STREAM_PREAMBLE_MAX_BYTES } from "../config/runtimeConfig.js";
 import { CODEBUDDY_RATE_LIMIT, SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
+import { UPSTREAM_FAILURE_KINDS } from "../config/upstreamErrorDiagnostics.js";
 import { runWithAbortDeadline } from "./abortable.js";
 import { buildUpstreamError, errorResponse, normalizeErrorStatus } from "./error.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
@@ -25,6 +26,7 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
     // Preserve HTTP 200 as transport evidence; the returned status is actionable.
     result.__smUpstreamError = buildUpstreamError(response, payload ? JSON.stringify(payload) : "", message, "sse", {
       origin, layer: origin ? "gateway" : "provider",
+      failureKind: payload ? UPSTREAM_FAILURE_KINDS.ERROR : origin ? UPSTREAM_FAILURE_KINDS.LIMIT : UPSTREAM_FAILURE_KINDS.EMPTY,
     });
     if (quota) {
       const parsed = applyCodeBuddyRateLimit({}, result, JSON.stringify(payload));

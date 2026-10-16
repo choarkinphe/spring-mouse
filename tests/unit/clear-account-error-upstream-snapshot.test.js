@@ -26,6 +26,7 @@ const UPSTREAM_SNAPSHOT = {
   lastUpstreamSource: "http",
   lastUpstreamRaw: "raw provider body",
   lastUpstreamAt: "2026-09-01T00:00:00.000Z",
+  lastUpstreamDiagnostics: { version: 1, kind: "upstream_error", type: "rate_limit_error" },
 };
 
 function mockConnection(overrides = {}) {
@@ -49,8 +50,8 @@ beforeEach(() => {
   dbMocks.getProviderConnections.mockResolvedValue([]);
 });
 
-describe("clearAccountError drops the stale upstream snapshot", () => {
-  it("clears the lastUpstream fields once the account has fully recovered", async () => {
+describe("clearAccountError retains historical upstream evidence", () => {
+  it("clears live health without erasing the last failure classification", async () => {
     mockConnection({
       testStatus: "limited",
       lastError: "The usage limit has been reached",
@@ -67,12 +68,8 @@ describe("clearAccountError drops the stale upstream snapshot", () => {
       lastError: null,
       errorCode: null,
       backoffLevel: 0,
-      lastUpstreamError: null,
-      lastUpstreamStatus: null,
-      lastUpstreamSource: null,
-      lastUpstreamRaw: null,
-      lastUpstreamAt: null,
     }));
+    for (const key of Object.keys(UPSTREAM_SNAPSHOT)) expect(lastUpdate()).not.toHaveProperty(key);
   });
 
   it("keeps the snapshot while another model is still locked", async () => {
@@ -95,7 +92,7 @@ describe("clearAccountError drops the stale upstream snapshot", () => {
     expect(update).not.toHaveProperty("testStatus");
   });
 
-  it("cleans up rows left healthy by an older build", async () => {
+  it("does not rewrite a healthy account just because historical evidence exists", async () => {
     mockConnection({
       testStatus: "active",
       lastError: null,
@@ -104,7 +101,7 @@ describe("clearAccountError drops the stale upstream snapshot", () => {
 
     await clearAccountError("acct-a", { _routingStartedAt: 0 }, "gpt-5");
 
-    expect(lastUpdate()).toEqual(expect.objectContaining({ lastUpstreamError: null }));
+    expect(lastUpdate()).toBeNull();
   });
 
   it("stays a no-op for a fully clean account", async () => {

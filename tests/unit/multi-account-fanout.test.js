@@ -149,13 +149,15 @@ describe("multi-account fan-out", () => {
     const [account] = await seedAccounts(1);
     mocks.handleChatCore.mockResolvedValue({
       success: false, status, error: "upstream rejected request",
-      upstreamError: { ...UPSTREAM(200, "upstream rejected request"), source: "sse" },
+      upstreamError: { ...UPSTREAM(200, "upstream rejected request"), source: "sse",
+        diagnostics: { version: 1, kind: "upstream_error", type: "api_error" } },
       response: new Response("upstream error", { status }),
     });
     expect((await handleChat(request())).status).toBe(status);
     // The transport's 200 is evidence, never the client's failure status.
     const stored = await connectionsRepo.getProviderConnectionById(account.id);
     expect(stored.lastUpstreamStatus).toBe(200);
+    expect(stored.lastUpstreamDiagnostics).toEqual({ version: 1, kind: "upstream_error", type: "api_error" });
     expect(stored.errorCode).toBe(status);
     for (const stream of [true, false]) {
       const res = await handleChat(new Request("https://router.test/v1/messages", {

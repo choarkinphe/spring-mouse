@@ -30,6 +30,7 @@ describe.each(["minimax", "minimax-cn"])("%s first-output admission", (provider)
     const result = await getExecutor(provider).execute(args());
     expect(result.response.status).toBe(502);
     expect(result.response.__smUpstreamError.status).toBe(200);
+    expect(result.response.__smUpstreamError.diagnostics).toMatchObject({ kind: "empty_output", parsed: false });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
   it("ignores metadata/heartbeat and replays the exact Claude bytes", async () => {
@@ -70,6 +71,7 @@ describe.each(["minimax", "minimax-cn"])("%s first-output admission", (provider)
     const result = await getExecutor(provider).execute(args());
     expect(result.response.status).toBe(429);
     expect(result.response.__smUpstreamError).toMatchObject({ status: 200, retryAfterMs: 12000 });
+    expect(result.response.__smUpstreamError.diagnostics).toMatchObject({ kind: "upstream_error", type: "rate_limit_error" });
   });
   it("uses OpenAI parsing when the selected runtime transport is OpenAI", async () => {
     const payload = 'data: {"choices":[{"delta":{"content":"synthetic"}}]}\n\ndata: [DONE]\n\n';

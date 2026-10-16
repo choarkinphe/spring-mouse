@@ -11,8 +11,10 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
-const AGENT_VERSION = "2.1.0";
+const AGENT_VERSION = "2.1.1";
+const REPORT_TIMEOUT_MS = 10_000;
 const DEFAULT_HEALTH_PORT = 9101;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -163,7 +165,7 @@ function describeError(error) {
   return parts.join(" <- ") || "unknown error";
 }
 
-class MouseAgent {
+export class MouseAgent {
   constructor(options) {
     this.options = options;
     this.startedAt = new Date().toISOString();
@@ -273,39 +275,23 @@ class MouseAgent {
   /**
    * Tells Spring the task is in hand, before any provider call is made.
    *
-   * This request deliberately carries no body. A request that carries one only
-   * becomes readable to Spring once the whole upload has been buffered, so folding
-   * this handshake into the result upload would silently make Spring's ack budget
-   * cover the provider call too — and every request slower than that budget would be
-   * killed even though the node was working normally.
+   * Keep the acknowledgement separate from the result stream. Acceptance must
+   * arrive before provider work begins, and cancellation must cover this wait.
    */
-  async reportStarted(taskId) {
-    let response;
-    try {
-      response = await fetch(this.resultUrl(), {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.options.token}`,
-          "X-Mouse-Task-Id": taskId,
-          "X-Mouse-Phase": "started",
-        },
-      });
-      await response.arrayBuffer().catch(() => {});
-    } catch (error) {
-      // Swallowing this used to make a node that cannot reach Spring look exactly
-      // like one that reported normally: Spring would still be sitting on its ack
-      // budget while the node carried on to the provider.
-      console.error(`[mouse] task ${taskId} could not report started: ${describeError(error)}`);
-      return;
-    }
-    // A 404 is Spring saying it is no longer waiting on this task — the handshake
-    // budget already expired, or the caller went away. The provider call that
-    // follows is then work nobody will collect, and the result upload fails too.
-    // It is only logged: the task is still attempted, because the reachability of
-    // Spring must not silently change how the node behaves.
-    if (!response.ok) {
-      console.error(`[mouse] task ${taskId} started report rejected (HTTP ${response.status}); Spring is no longer waiting on this task`);
-    }
+  async reportStarted(taskId, signal) {
+    const response = await fetch(this.resultUrl(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.options.token}`,
+        "X-Mouse-Task-Id": taskId,
+        "X-Mouse-Phase": "started",
+      },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REPORT_TIMEOUT_MS)]),
+    });
+    await response.arrayBuffer();
+    // No accepted handshake means there is no confirmed consumer for this
+    // work. In particular a 404 must never spend another upstream request.
+    if (!response.ok) throw new Error(`Spring rejected task handshake (HTTP ${response.status})`);
   }
 
   /**
@@ -328,7 +314,8 @@ class MouseAgent {
     try {
       // Announce the task before touching the network: this handshake is what Spring
       // stops its ack budget on, so it must not wait on the provider.
-      await this.reportStarted(taskId);
+      await this.reportStarted(taskId, controller.signal);
+      controller.signal.throwIfAborted();
 
       stage = "target-validation";
       const target = new URL(upstream.url || "");
@@ -359,8 +346,8 @@ class MouseAgent {
         duplex: "half",
         signal: controller.signal,
       });
+      await relay.body?.cancel();
       if (!relay.ok) {
-        const text = await relay.text().catch(() => "");
         const upstreamStatus = providerResponse.status;
         // This status belongs to the Mouse → Spring result-upload request, not
         // necessarily to the provider request. Keep both statuses explicit so a
@@ -368,10 +355,12 @@ class MouseAgent {
         throw new Error(
           `Spring result relay rejected (${relay.status}); provider response was HTTP ${upstreamStatus}. `
           + `The failure is in the Mouse → Spring relay path. `
-          + `Relay response: ${text.slice(0, 200)}`,
         );
       }
     } catch (error) {
+      // A rejected relay has no consumer. Stop its provider immediately, before
+      // attempting the separately bounded failure report.
+      controller.abort(error);
       console.error(`[mouse] task ${taskId} failed during ${stage}: ${describeError(error)}`);
       await this.reportFailure(taskId, error, stage).catch((reportError) => {
         console.error(`[mouse] could not report task ${taskId}: ${describeError(reportError)}`);
@@ -399,6 +388,7 @@ class MouseAgent {
         "Content-Type": "application/json",
       },
       body,
+      signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
     });
     await response.arrayBuffer().catch(() => {});
   }
@@ -451,7 +441,9 @@ async function main() {
   await agent.start();
 }
 
-main().catch((error) => {
-  console.error(`[mouse] startup failed: ${error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`[mouse] startup failed: ${error.message}`);
+    process.exit(1);
+  });
+}

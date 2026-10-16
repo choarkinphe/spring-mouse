@@ -59,10 +59,8 @@ export async function POST(request) {
       return NextResponse.json({ error: "x-mouse-task-id is required" }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
-    // The handshake half of a result: the node says it has the task, and sends no
-    // body at all. It has to be its own request — one that carries the upstream body
-    // only becomes readable here after the whole upload has been buffered, and waiting
-    // on that is exactly what used to consume the ack budget.
+    // Acknowledge before starting provider work. This separate, bodyless request
+    // moves the task from the handshake budget to the upstream response budget.
     if (request.headers.get("x-mouse-phase") === "started") {
       const accepted = markMouseTaskStarted(taskId);
       return NextResponse.json({ started: accepted }, { status: accepted ? 200 : 404, headers: NO_STORE_HEADERS });

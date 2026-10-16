@@ -29,8 +29,9 @@ export class MouseTunnelError extends Error {
 
 function registry() {
   if (!globalThis[REGISTRY_KEY]) {
-    globalThis[REGISTRY_KEY] = { tunnels: new Map(), pending: new Map() };
+    globalThis[REGISTRY_KEY] = { tunnels: new Map(), pending: new Map(), active: new Map() };
   }
+  globalThis[REGISTRY_KEY].active ||= new Map();
   return globalThis[REGISTRY_KEY];
 }
 
@@ -47,8 +48,7 @@ function ackTimeoutMs(override) {
 // Time allowed, after `started`, for the node to hand back the upstream response
 // head. The node is waiting on the provider here, so the budget has to clear a slow
 // provider queue. It deliberately does not cover the response body: the body arrives
-// on a separate upload that starts once the head is already in, and a request only
-// becomes readable to Spring after that upload finishes.
+// on a separate upload that is readable before the model finishes generating.
 function resultTimeoutMs(override) {
   const configured = Number(override ?? process.env.SPRING_MOUSE_TUNNEL_RESULT_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_RESULT_TIMEOUT_MS;
@@ -80,7 +80,7 @@ export function listTunneledMouseIds() {
  * that currently owns the slot is allowed to clear it.
  */
 export function unregisterTunnel(mouseId, handle = null) {
-  const { tunnels, pending } = registry();
+  const { tunnels, pending, active } = registry();
   const current = tunnels.get(mouseId);
   if (!current) return false;
   if (handle && current !== handle) return false;
@@ -89,6 +89,9 @@ export function unregisterTunnel(mouseId, handle = null) {
     if (entry.mouseId === mouseId) {
       entry.settle(new MouseTunnelError("offline", "Mouse tunnel disconnected"));
     }
+  }
+  for (const entry of active.values()) {
+    if (entry.mouseId === mouseId) entry.abortBody(new MouseTunnelError("offline", "Mouse tunnel disconnected"));
   }
   return true;
 }
@@ -121,7 +124,49 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
   if (!tunnel) return Promise.reject(new MouseTunnelError("offline", "Mouse node has no live tunnel"));
 
   return new Promise((resolve, reject) => {
-    const entry = { mouseId, settled: false, started: false, settle: null, markStarted: null, timer: null, resultTimer: null, detach: null };
+    const entry = { mouseId, settled: false, started: false, settle: null, markStarted: null, timer: null, resultTimer: null, detach: null, abortBody: null };
+
+    const cleanup = () => {
+      clearTimeout(entry.timer);
+      clearTimeout(entry.resultTimer);
+      entry.detach?.();
+      registry().pending.delete(taskId);
+      registry().active.delete(taskId);
+    };
+    // Headers resolve dispatch, but cancellation belongs to the entire stream.
+    // Read only on demand so a slow client applies backpressure to the upload.
+    const trackBody = body => {
+      const reader = body.getReader();
+      let closed = false;
+      let output;
+      const finish = () => { closed = true; cleanup(); };
+      entry.abortBody = error => {
+        if (closed) return;
+        finish();
+        output.error(error);
+        void reader.cancel(error).catch(() => {});
+      };
+      registry().active.set(taskId, entry);
+      return new ReadableStream({
+        start(controller) { output = controller; },
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            if (closed) return;
+            if (chunk.done) { finish(); controller.close(); reader.releaseLock(); }
+            else controller.enqueue(chunk.value);
+          } catch (error) {
+            if (!closed) { finish(); controller.error(error); }
+          }
+        },
+        cancel(reason) {
+          if (closed) return;
+          finish();
+          tunnel.send("cancel", { taskId, reason: "response_cancelled" });
+          return reader.cancel(reason);
+        },
+      }, { highWaterMark: 0 });
+    };
 
     function armResultTimeout() {
       const timeout = resultTimeoutMs(resultOverride);
@@ -139,10 +184,10 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
       entry.settled = true;
       clearTimeout(entry.timer);
       clearTimeout(entry.resultTimer);
-      entry.detach?.();
       registry().pending.delete(taskId);
-      if (error) reject(error);
-      else resolve(value);
+      if (error) { cleanup(); reject(error); }
+      else if (value?.body?.getReader) resolve({ ...value, body: trackBody(value.body) });
+      else { cleanup(); resolve(value); }
     };
 
     // Called when the node confirms it has taken the task on. From this point Spring
@@ -164,7 +209,9 @@ export function dispatchMouseTask(mouseId, { taskId, request, signal = null, ack
       }
       const onAbort = () => {
         tunnel.send("cancel", { taskId, reason: signal.reason?.name === "TimeoutError" ? "request_deadline" : "client_abort" });
-        entry.settle(abortAsTunnelError(signal.reason));
+        const error = abortAsTunnelError(signal.reason);
+        if (entry.settled) entry.abortBody?.(error);
+        else entry.settle(error);
       };
       signal.addEventListener("abort", onAbort, { once: true });
       entry.detach = () => signal.removeEventListener("abort", onAbort);

@@ -5,5 +5,8 @@ export default async function proxy(request) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon\\.ico).*)"],
+  // Node Proxy clones and drains POST bodies before invoking the route. A Mouse
+  // result is a live upload: let its own bearer-token/disabled-node checks run
+  // immediately instead of waiting for the model to finish generating.
+  matcher: ["/((?!_next/static|_next/image|favicon\\.ico|api/mouses/tunnel/result(?:/)?$).*)"],
 };

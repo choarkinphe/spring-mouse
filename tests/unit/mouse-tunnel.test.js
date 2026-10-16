@@ -224,6 +224,46 @@ describe("tunnel registry", () => {
 });
 
 describe("tunnel routes", () => {
+  it("keeps bearer authentication on result uploads", async () => {
+    const response = await resultRoute.POST(new Request("http://localhost/api/mouses/tunnel/result", {
+      method: "POST", headers: { Authorization: "Bearer invalid", "x-mouse-task-id": "invalid" }, body: "{}",
+    }));
+    expect(response.status).toBe(401);
+  });
+
+  it.each(["client", "consumer", "disconnect"])("cancels an active stream after headers (%s)", async reason => {
+    const { mouse } = await mousesRepo.createMouse({ name: `stream-${reason}` });
+    const { handle, frames } = collectorHandle(); tunnel.registerTunnel(mouse.id, handle);
+    const abort = new AbortController(); let cancelled = false;
+    const body = new ReadableStream({ cancel() { cancelled = true; } });
+    const work = tunnel.dispatchMouseTask(mouse.id, { taskId: `stream-${reason}`, signal: abort.signal });
+    tunnel.deliverMouseResult(`stream-${reason}`, { status: 200, body });
+    const result = await work;
+    const reader = result.body.getReader();
+    if (reason === "consumer") await reader.cancel();
+    else {
+      const read = expect(reader.read()).rejects.toMatchObject({ code: reason === "client" ? "aborted" : "offline" });
+      if (reason === "client") abort.abort();
+      else tunnel.unregisterTunnel(mouse.id);
+      await read;
+    }
+    expect(cancelled).toBe(true);
+    if (reason !== "disconnect") expect(frames.at(-1).event).toBe("cancel");
+    tunnel.unregisterTunnel(mouse.id);
+  });
+
+  it("releases cancellation tracking after the entire body ends", async () => {
+    const { mouse } = await mousesRepo.createMouse({ name: "complete-stream" });
+    const { handle, frames } = collectorHandle(); tunnel.registerTunnel(mouse.id, handle);
+    const abort = new AbortController();
+    const work = tunnel.dispatchMouseTask(mouse.id, { taskId: "complete-stream", signal: abort.signal });
+    tunnel.deliverMouseResult("complete-stream", { status: 200, body: new Response("complete").body });
+    const result = await work;
+    expect(await new Response(result.body).text()).toBe("complete");
+    abort.abort(); expect(frames.map(f => f.event)).toEqual(["task"]);
+    tunnel.unregisterTunnel(mouse.id);
+  });
+
   it("streams a ready frame, pushes the task, and accepts the replayed response", async () => {
     const { mouse, token } = await mousesRepo.createMouse({ name: "route-node" });
 
@@ -294,6 +334,15 @@ describe("tunnel routes", () => {
       body: "orphan",
     }));
     expect(response.status).toBe(404);
+  });
+
+  it("rejects results from a disabled node even with its valid token", async () => {
+    const { mouse, token } = await mousesRepo.createMouse({ name: "disabled-result" });
+    await mousesRepo.updateMouse(mouse.id, { disabled: true });
+    const response = await resultRoute.POST(new Request("http://localhost/api/mouses/tunnel/result", {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "x-mouse-task-id": "disabled-task" },
+    }));
+    expect(response.status).toBe(403);
   });
 
   it("refuses a result that carries no task id", async () => {

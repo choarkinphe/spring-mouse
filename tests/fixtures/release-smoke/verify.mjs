@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
+import { request as httpRequest } from "node:http";
 
 const base = process.env.SMOKE_URL || "http://127.0.0.1:8038";
 const control = process.env.SMOKE_CONTROL_URL || "http://127.0.0.1:8039";
@@ -21,6 +22,26 @@ const api = async (pathname, body, method = body ? "POST" : "GET") => {
   return response;
 };
 const health = await (await api("/api/health")).json(); assert.equal(health.ok, true);
+// The upload deliberately never reaches EOF. Node Proxy body buffering used to
+// prevent even the route's bearer check from running until the model finished.
+// Run against the built, isolated image, with no real token or provider call.
+await new Promise((resolve, reject) => {
+  const request = httpRequest(new URL("/api/mouses/tunnel/result", base), {
+    method: "POST", headers: { "content-type": "application/octet-stream" },
+  });
+  const timer = setTimeout(() => {
+    request.destroy(new Error("Mouse upload was buffered before route authentication"));
+  }, 5000);
+  request.on("error", error => { clearTimeout(timer); reject(error); });
+  request.on("response", response => {
+    clearTimeout(timer);
+    response.resume();
+    try { assert.equal(response.statusCode, 401); resolve(); }
+    catch (error) { reject(error); }
+    finally { request.destroy(); }
+  });
+  request.write("synthetic partial upload\n");
+});
 const login = await api("/api/auth/login", { password });
 cookie = login.headers.getSetCookie().map((value) => value.split(";")[0]).join("; "); assert.ok(cookie, "login cookie missing");
 const key = await (await api("/api/keys", { name: "isolated-release-smoke" })).json();
@@ -114,6 +135,49 @@ assert.ok(proxyAfter > proxyBefore, "proxy path fell back to direct; CONNECT was
 await api("/api/combos", { name: "release-fixture-fallback", models: ["qianwen/qwen3.8-flash", "qianwen-token-plan/qwen3.8-flash"], kind: "llm" });
 const fallback = await fetch(base + "/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "release-fixture-fallback", stream: false, messages: [{ role: "user", content: "smoke-stage-fallback" }] }), signal: AbortSignal.timeout(30000) });
 assert.equal(fallback.status, 200); await fallback.text();
+// Use the image's actual agent and gateway, with a synthetic account bound only
+// inside this isolated database. The provider holds EOF until client cancellation.
+const { MouseAgent } = await import("/app/mouse/agent.mjs");
+const enrolled = await (await api("/api/mouses", { name: "release-mouse-fixture" })).json();
+const mouse = new MouseAgent({ springUrl: base, token: enrolled.token });
+const heldTunnel = mouse.holdTunnel();
+heldTunnel.catch(() => {});
+const mouseAbort = new AbortController();
+try {
+  for (let i = 0; i < 100 && !mouse.tunnelOpen; i++) await sleep(50);
+  assert.ok(mouse.tunnelOpen, "fixture Mouse did not connect");
+  await api(`/api/providers/${connections[0].id}`, { mouseId: enrolled.mouse.id,
+    connectionProxyEnabled: false, connectionProxyUrl: "",
+    providerSpecificData: { connectionProxyEnabled: false, connectionProxyUrl: "" } }, "PUT");
+  const response = await fetch(base + "/v1/chat/completions", { method: "POST", headers,
+    body: JSON.stringify({ model: "qianwen/qwen3.8-flash", stream: true, messages: [{ role: "user", content: "smoke-stage-midstream" }] }),
+    signal: AbortSignal.any([mouseAbort.signal, AbortSignal.timeout(15000)]),
+  });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  let received = "";
+  while (!received.includes("fixture ok")) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false, "Mouse stream ended before first content");
+    received += new TextDecoder().decode(chunk.value);
+  }
+  assert.equal(mouse.activeTasks.size, 1, "request did not run through Mouse");
+  assert.ok((await (await fetch(control)).json()).active > 0, "first chunk arrived only after upstream EOF");
+  mouseAbort.abort();
+  await reader.cancel().catch(() => {});
+  for (let i = 0; i < 100; i++) {
+    if (!mouse.activeTasks.size && (await (await fetch(control)).json()).active === 0) break;
+    await sleep(50);
+  }
+  assert.equal(mouse.activeTasks.size, 0, "Mouse retained cancelled work");
+  assert.equal((await (await fetch(control)).json()).active, 0, "Mouse retained upstream stream");
+  console.log(JSON.stringify({ check: "mouse-stream", firstContentBeforeEOF: true, cancellationReleased: true }));
+} finally {
+  mouseAbort.abort();
+  await mouse.stop();
+  await heldTunnel.catch(() => {});
+  await api(`/api/providers/${connections[0].id}`, { mouseId: null }, "PUT");
+}
 // Successful HTTP responses must not hide producer-side telemetry loss.
 let routingHealth;
 for (let i = 0; i < 120; i++) {

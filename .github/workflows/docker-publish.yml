@@ -53,6 +53,8 @@ jobs:
           unit/mouse-tunnel.test.js
           unit/mouse-execution.test.js
           unit/mouse-diagnostic.test.js
+          unit/mouse-agent.test.js
+          unit/mouse-proxy.test.js
           unit/account-schedule.test.js
           unit/traffic-repo.test.js
           unit/db-migration-chain.test.js

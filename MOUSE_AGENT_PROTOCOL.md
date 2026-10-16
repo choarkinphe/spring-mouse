@@ -98,12 +98,10 @@ X-Mouse-Phase: started
 ```
 
 Spring retires its handshake timer on that report, and waits for the real answer
-under a much longer budget. The split is not cosmetic: a request that carries a
-body only becomes readable to Spring once the whole upload has been buffered, so
-folding this handshake into the upload would make Spring's handshake budget cover
-the provider call as well — and every request slower than that budget would then
-be killed while the node was working perfectly. Report `started` before touching
-the provider, always, including when the request turns out to be malformed locally.
+under a longer budget for upstream response headers. Report `started` before
+touching the provider and require a successful acknowledgement. A rejected,
+cancelled, or timed-out handshake must not start provider work. Agent 2.1.1 bounds
+the handshake and failure report to 10 seconds each.
 
 The response is then replayed as a second request of the node's own:
 
@@ -122,6 +120,16 @@ The status line and headers have to travel ahead of the body, so they go in
 headers; the body is the upload itself. The request stays open for as long as
 the upstream response lasts — Spring reads the body from it directly, which is
 what keeps streaming responses streaming.
+
+The result endpoint must bypass Next Node Proxy body cloning; the route itself
+still checks the Mouse bearer token and disabled state. A reverse proxy in front
+of Spring must also forward uploads incrementally. For Nginx, configure the result
+location with `proxy_http_version 1.1`, `proxy_request_buffering off` and
+`proxy_buffering off`, retaining the deployment's existing upstream and headers.
+The tunnel SSE location also needs response buffering disabled. A finite-response
+health check cannot prove this: verify that the first chunk arrives before EOF.
+Cancellation remains attached until the response body ends, not just until its
+headers arrive, so a disconnected client releases the Mouse's upstream request.
 
 Two details the agent has to get right:
 

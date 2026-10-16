@@ -132,9 +132,6 @@ const afterCancel = await fetch(base + "/v1/chat/completions", { method: "POST",
 assert.equal(afterCancel.status, 200); await afterCancel.text();
 const proxyAfter = (await (await fetch(control)).json()).proxyConnects;
 assert.ok(proxyAfter > proxyBefore, "proxy path fell back to direct; CONNECT was never observed");
-await api("/api/combos", { name: "release-fixture-fallback", models: ["qianwen/qwen3.8-flash", "qianwen-token-plan/qwen3.8-flash"], kind: "llm" });
-const fallback = await fetch(base + "/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "release-fixture-fallback", stream: false, messages: [{ role: "user", content: "smoke-stage-fallback" }] }), signal: AbortSignal.timeout(30000) });
-assert.equal(fallback.status, 200); await fallback.text();
 // Use the image's actual agent and gateway, with a synthetic account bound only
 // inside this isolated database. The provider holds EOF until client cancellation.
 const { MouseAgent } = await import("/app/mouse/agent.mjs");
@@ -153,6 +150,7 @@ try {
     body: JSON.stringify({ model: "qianwen/qwen3.8-flash", stream: true, messages: [{ role: "user", content: "smoke-stage-midstream" }] }),
     signal: AbortSignal.any([mouseAbort.signal, AbortSignal.timeout(15000)]),
   });
+  if (response.status !== 200) console.error(JSON.stringify({ event: "smoke.http.failure", endpoint: "/api/v1/chat/completions", status: response.status }));
   assert.equal(response.status, 200);
   const reader = response.body.getReader();
   let received = "";
@@ -178,6 +176,11 @@ try {
   await heldTunnel.catch(() => {});
   await api(`/api/providers/${connections[0].id}`, { mouseId: null }, "PUT");
 }
+// Run failure injection last so its 30-second account cooldown cannot mask
+// the independent Mouse streaming check above.
+await api("/api/combos", { name: "release-fixture-fallback", models: ["qianwen/qwen3.8-flash", "qianwen-token-plan/qwen3.8-flash"], kind: "llm" });
+const fallback = await fetch(base + "/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "release-fixture-fallback", stream: false, messages: [{ role: "user", content: "smoke-stage-fallback" }] }), signal: AbortSignal.timeout(30000) });
+assert.equal(fallback.status, 200); await fallback.text();
 // Successful HTTP responses must not hide producer-side telemetry loss.
 let routingHealth;
 for (let i = 0; i < 120; i++) {

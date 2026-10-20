@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
-import { formatQuotaAmount, formatResetTime, getRemainingPercentage } from "./utils";
+import { formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "./utils";
 
 const PAGE_SIZE = 10;
 
@@ -149,6 +149,7 @@ export default function QuotaTable({
           const countdown = formatResetTime(quota.resetAt);
           const resetDisplay = formatResetTimeDisplay(quota.resetAt);
           const amountLabel = formatQuotaAmount(quota) ?? "—";
+          const remainingLabel = formatQuotaRemainingLabel(quota);
           // recurring defaults true: a missing flag means the quota
           // refreshes at resetAt. Bonus/one-shot packs set recurring:false
           // and their resetAt is a hard expiry, so word it as "expires".
@@ -163,14 +164,14 @@ export default function QuotaTable({
               {/* Name */}
               <div className="flex w-36 min-w-0 items-center gap-1.5">
                 <span className="text-[10px] shrink-0">{colors.emoji}</span>
-                <span className={`${nameText} font-medium text-text-primary truncate`}>
-                  {quota.name}
+                <span className={`${nameText} font-medium text-text-primary truncate`} title={quota.displayName || quota.name}>
+                  {quota.displayName || quota.name}
                 </span>
               </div>
 
-              {/* Progress + used/total */}
+              {/* Remaining progress + usage detail */}
               <div className={`min-w-0 flex-1 ${compact ? "space-y-1" : "space-y-1.5"}`}>
-                <div className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
+                <div role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(quota.remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${quota.remaining}%`} className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
                   quota.remaining === 0 ? "border-black/10 dark:border-white/10" : "border-transparent"
                 }`}>
                   <div
@@ -180,14 +181,8 @@ export default function QuotaTable({
                 </div>
 
                 <div className={`flex items-center justify-between gap-1 min-w-0 ${compact ? "text-[10px]" : "text-xs"}`}>
-                  <span
-                    className="text-text-muted truncate"
-                    title={amountLabel}
-                  >
-                    {amountLabel}
-                  </span>
-                  <span className={`font-medium ${colors.text} shrink-0`} title={`${quota.remaining}% remaining`}>
-                    {quota.remaining}%
+                  <span className={`font-medium ${colors.text} truncate`} title={quota.balance !== undefined ? `账户余额：${amountLabel}` : `已用 / 总量：${amountLabel}`}>
+                    {remainingLabel}
                   </span>
                 </div>
               </div>
@@ -228,7 +223,7 @@ export default function QuotaTable({
                   onClick={() => onHideQuota(quota)}
                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-black/5 hover:text-text-primary dark:hover:bg-white/5"
                   title="Hide this quota row"
-                  aria-label={`Hide quota ${quota.name}`}
+                  aria-label={`Hide quota ${quota.displayName || quota.name}`}
                 >
                   <span className="material-symbols-outlined text-[15px]">
                     visibility_off

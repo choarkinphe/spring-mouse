@@ -2,7 +2,7 @@
 
 import { cn } from "@/shared/utils/cn";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
-import { formatQuotaAmount, formatResetTime } from "./utils";
+import { formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime } from "./utils";
 
 // Calculate color based on remaining percentage
 const getColorClasses = (remainingPercentage) => {
@@ -82,15 +82,15 @@ export default function QuotaProgressBar({
   
   return (
     <div className="space-y-2">
-      {/* Label and percentage */}
+      {/* Remaining amount is primary; used/total stays in the hover detail. */}
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-text-primary">
           {label}
         </span>
         <div className="flex items-center gap-1.5">
           <span className="text-xs">{colors.emoji}</span>
-          <span className={cn("font-medium", colors.text)}>
-            {remaining}%
+          <span className={cn("font-medium", colors.text)} title={`已用 / 总量：${formatQuotaAmount({ used, total, unit, balance, currency, unlimited }) ?? "—"}`}>
+            {unlimited ? "不限额" : formatQuotaRemainingLabel({ used, total, unit, balance, currency, remaining: percentage })}
           </span>
         </div>
       </div>
@@ -105,11 +105,8 @@ export default function QuotaProgressBar({
         </div>
       )}
 
-      {/* Usage details and countdown */}
-      <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>
-          {formatQuotaAmount({ used, total, unit, balance, currency, unlimited }) ?? "—"}
-        </span>
+      {/* Reset countdown */}
+      <div className="flex items-center justify-end text-xs text-text-muted">
         {countdown !== "-" && (
           <div className="flex items-center gap-1">
             <span>•</span>

@@ -41,12 +41,18 @@ function getCodexRateLimitBody(snapshot) {
 }
 
 function formatCodexWindow(window) {
-  const used = Math.max(0, Math.min(100, toFiniteNumber(window?.used_percent ?? window?.percent_used, 0)));
+  const rawUsed = window?.used_percent ?? window?.percent_used;
+  // A missing percentage is unknown, not an unused allowance.
+  const percent = toFiniteNumber(rawUsed, NaN);
+  if (!Number.isFinite(percent)) return null;
+  const used = Math.max(0, Math.min(100, percent));
+  const windowSeconds = toFiniteNumber(window?.limit_window_seconds, null);
   return {
     used,
     total: 100,
     remaining: Math.max(0, 100 - used),
     unit: "%",
+    ...(windowSeconds > 0 ? { windowSeconds } : {}),
     resetAt: parseResetTime(window?.reset_at ?? window?.resets_at ?? window?.resetAt ?? null),
     unlimited: false,
   };
@@ -61,12 +67,18 @@ function appendCodexQuotaWindows(quotas, prefix, snapshot) {
   let added = false;
 
   if (primary) {
-    quotas[prefix ? `${prefix}_session` : "session"] = formatCodexWindow(primary);
-    added = true;
+    const quota = formatCodexWindow(primary);
+    if (quota) {
+      quotas[prefix ? `${prefix}_session` : "session"] = quota;
+      added = true;
+    }
   }
   if (secondary) {
-    quotas[prefix ? `${prefix}_weekly` : "weekly"] = formatCodexWindow(secondary);
-    added = true;
+    const quota = formatCodexWindow(secondary);
+    if (quota) {
+      quotas[prefix ? `${prefix}_weekly` : "weekly"] = quota;
+      added = true;
+    }
   }
 
   return added;

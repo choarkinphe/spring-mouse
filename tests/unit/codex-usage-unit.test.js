@@ -46,6 +46,22 @@ describe("Codex usage percentage units", () => {
     }
   });
 
+  it("keeps legacy primary keys while exposing the actual seven-day duration", async () => {
+    proxyAwareFetch.mockResolvedValue(Response.json({ rate_limit: {
+      primary_window: { used_percent: 0, limit_window_seconds: 604800, reset_at: 1793082723 },
+      secondary_window: null,
+    } }));
+    const { quotas } = await getCodexUsage("test-token");
+    expect(Object.keys(quotas)).toEqual(["session"]);
+    expect(quotas.session).toMatchObject({ used: 0, remaining: 100, windowSeconds: 604800 });
+  });
+
+  it.each([{}, { used_percent: null }, { used_percent: "" }, { used_percent: "bad" }, { used_percent: false }])("does not turn an unknown percentage into unused quota: %j", async window => {
+    proxyAwareFetch.mockResolvedValue(Response.json({ rate_limit: { primary_window: window } }));
+    const { quotas } = await getCodexUsage("test-token");
+    expect(quotas).toEqual({});
+  });
+
   it("preserves percentage units when clamping aliased percentage values", async () => {
     proxyAwareFetch.mockResolvedValue({
       ok: true,

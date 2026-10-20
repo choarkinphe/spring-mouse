@@ -1261,7 +1261,7 @@ export default function ProviderLimits() {
                           className="shrink-0 rounded-md border border-black/10 px-1.5 py-0.5 transition-colors hover:bg-black/5 hover:text-text-primary dark:border-white/10 dark:hover:bg-white/5"
                           title="Show this quota row"
                         >
-                          {quotaRow.name}
+                          {quotaRow.displayName || quotaRow.name}
                         </button>
                       ))}
                     </div>

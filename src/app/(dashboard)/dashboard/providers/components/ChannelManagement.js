@@ -25,7 +25,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
 import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
-import { parseQuotaData, formatQuotaAmount, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
+import { parseQuotaData, formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
 import AddApiKeyModal from "../[id]/AddApiKeyModal";
 import ProviderDetailClient from "../[id]/ProviderDetailClient";
@@ -240,13 +240,11 @@ function ChannelQuota({ quotas, loading }) {
     <div className="w-full max-w-[38rem]">
       <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#647688]">
         <span>上游配额快照</span>
-        <Tooltip text="配额来自账号对应的提供商接口；数字为已用 / 总量，进度条长度为剩余占比，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
+        <Tooltip text="配额来自账号对应的提供商接口；主数值显示余量或余额，悬停数值可查看已用 / 总量。进度条长度为剩余占比，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
           <span className="material-symbols-outlined text-[13px]! leading-none" aria-label="配额口径说明">info</span>
         </Tooltip>
       </div>
-      {/* Single column: a counted quota now carries name + "used / total unit"
-          + reset countdown, which no longer fits two columns without truncating
-          the quota name down to a couple of characters. */}
+      {/* Keep the remaining amount prominent; used/total stays in the tooltip. */}
       <div className="grid w-full grid-cols-1 gap-2">
         {quotas.slice(0, 4).map((quota) => {
           const remaining = getRemainingPercentage(quota);
@@ -255,16 +253,18 @@ function ChannelQuota({ quotas, loading }) {
           return (
             <div key={quota.modelKey || quota.name} className="min-w-0">
               <div className="mb-1 flex items-center gap-2 text-[11px] leading-none">
-                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.name}</span>
+                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.displayName || quota.name}</span>
                 {quota.unlimited ? (
                   <span className="shrink-0 text-[#7dd3fc]">不限额</span>
                 ) : (
-                  <span title={quota.balance !== undefined ? "账户余额" : "已用 / 总量"} className="shrink-0 font-mono text-[#e4edf5]">{quota.unit === "%" ? "已用 " : ""}{amount ?? `${remaining}%`}</span>
+                  <Tooltip text={quota.balance !== undefined ? `账户余额：${amount ?? "—"}` : `已用 / 总量：${amount ?? "—"}`}>
+                    <span tabIndex={0} className="shrink-0 font-mono text-[#e4edf5]">{formatQuotaRemainingLabel(quota)}</span>
+                  </Tooltip>
                 )}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>
               {!quota.unlimited && (
-                <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]">
+                <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]" role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${remaining}%`}>
                   <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />
                 </div>
               )}
@@ -281,12 +281,12 @@ const CHANNEL_DATA_SCOPE_ITEMS = [
   {
     icon: "account_balance_wallet",
     title: "配额与重置",
-    text: "来自账号对应的提供商接口快照；数字为已用 / 总量，进度条为剩余占比，重置时间以提供商返回值为准。",
+    text: "来自账号对应的提供商接口快照；主数值为余量或余额，悬停查看已用 / 总量。进度条为剩余占比，重置时间以提供商返回值为准。",
   },
   {
     icon: "schedule",
     title: "Codex 窗口",
-    text: "session / weekly 对应上游 primary / secondary 窗口，通常约为 5 小时 / 7 天；具体周期以返回的重置时间为准。",
+    text: "session / weekly 是上游 primary / secondary 窗口的内部标识，不代表固定周期；显示名称按上游实际返回的窗口时长标注，重置时间以提供商返回值为准。",
   },
   {
     icon: "route",

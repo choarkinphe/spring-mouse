@@ -2,7 +2,7 @@ import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // Unit-aware snapshots must not reuse legacy normalized rows without units.
-export const QUOTA_CACHE_KEY = "quotaCacheData:v2";
+export const QUOTA_CACHE_KEY = "quotaCacheData:v3";
 export const REFRESH_INTERVAL_MS = 60000;
 // Claude usage/quota endpoint rate-limits; poll it less often than other providers
 export const CLAUDE_REFRESH_INTERVAL_MS = 600000;
@@ -345,6 +345,19 @@ function getQuotaUnit(quota) {
   return typeof quota?.unit === "string" ? quota.unit.trim() : "";
 }
 
+export function getQuotaWindowLabel(quotaType, windowSeconds) {
+  const seconds = getQuotaNumber(windowSeconds);
+  const review = quotaType.startsWith("review_");
+  let label;
+  if (seconds === 604800) label = "周额度";
+  else if (seconds === 86400) label = "24 小时额度";
+  else if (seconds > 0 && seconds % 3600 === 0) label = `${seconds / 3600} 小时额度`;
+  else if (seconds > 0 && seconds % 60 === 0) label = `${seconds / 60} 分钟额度`;
+  else if (seconds > 0) label = `${seconds} 秒额度`;
+  else label = quotaType.endsWith("weekly") ? "次额度窗口" : "主额度窗口";
+  return review ? `代码审查 · ${label}` : label;
+}
+
 /** Used / total in the provider's unit, or its actual currency balance. */
 export function formatQuotaAmount(quota) {
   const balance = formatQuotaBalance(quota);
@@ -386,6 +399,13 @@ export function formatRemainingQuota(quota) {
   if (explicitRemaining !== null) return `${Math.max(0, Math.round(explicitRemaining))}%`;
   if (used !== null && total > 0) return `${calculatePercentage(used, total)}%`;
   return null;
+}
+
+/** Primary quota text always answers how much remains; totals belong in details. */
+export function formatQuotaRemainingLabel(quota) {
+  const remaining = formatRemainingQuota(quota);
+  if (remaining === null) return "余量暂不可用";
+  return `${formatQuotaBalance(quota) !== null ? "余额" : "余量"} ${remaining}`;
 }
 
 export function getQuotaVisibilityKey(quota) {
@@ -460,8 +480,10 @@ export function parseQuotaData(provider, data) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             normalizedQuotas.push({
               name: quotaType,
-              used: quota.used || 0,
-              total: quota.total || 0,
+              displayName: getQuotaWindowLabel(quotaType, quota.windowSeconds),
+              windowSeconds: quota.windowSeconds,
+              used: quota.used,
+              total: quota.total,
               remaining: quota.remaining,
               unit: quota.unit || "%", // Older Codex payloads predate unit metadata.
               resetAt: quota.resetAt || null,

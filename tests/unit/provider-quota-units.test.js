@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatQuotaAmount,
+  formatQuotaRemainingLabel,
   formatQuotaBalance,
   formatRemainingQuota,
   getRemainingPercentage,
@@ -58,6 +59,20 @@ describe("remaining quota labels", () => {
   });
 });
 
+describe("remaining-first quota labels", () => {
+  it.each([
+    [{ used: 275.36, total: 500, unit: "积分" }, "余量 224.64 积分"],
+    [{ used: 500, total: 500, unit: "积分" }, "余量 0 积分"],
+    [{ used: 0, total: 100, unit: "%" }, "余量 100%"],
+    [{ used: 27, total: 100, unit: "%" }, "余量 73%"],
+    [{ used: 12.5, total: 500, unit: "credits" }, "余量 487.5 credits"],
+    [{ balance: 42.5, currency: "CNY" }, "余额 ¥42.50"],
+    [undefined, "余量暂不可用"],
+  ])("shows only remaining amount for %j", (quota, expected) => {
+    expect(formatQuotaRemainingLabel(quota)).toBe(expected);
+  });
+});
+
 describe("quota currency balances", () => {
   it.each([
     ["missing balance", {}, null],
@@ -79,6 +94,15 @@ describe("normalized provider quota units", () => {
     expect(formatQuotaAmount(quota)).toBe("23% / 100%");
     expect(formatRemainingQuota(quota)).toBe("77%");
     expect(getRemainingPercentage(quota)).toBe(77);
+  });
+
+  it.each([
+    [604800, "周额度"], [18000, "5 小时额度"], [86400, "24 小时额度"], [3600, "1 小时额度"],
+    [undefined, "主额度窗口"],
+  ])("labels primary windows by actual duration %s without changing their identity", (windowSeconds, displayName) => {
+    const [quota] = parseQuotaData("codex", { quotas: { session: { used: 0, total: 100, remaining: 100, windowSeconds } } });
+    expect(quota).toMatchObject({ name: "session", displayName });
+    expect(formatRemainingQuota(quota)).toBe("100%");
   });
 
   it("preserves explicit units without guessing from total=100", () => {

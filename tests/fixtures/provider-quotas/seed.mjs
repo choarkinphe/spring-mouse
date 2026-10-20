@@ -6,6 +6,7 @@ const providers = [
   { provider: "codex", authType: "oauth", name: "Codex" },
   { provider: "qoder", authType: "oauth", name: "Qoder" },
   { provider: "deepseek", authType: "apikey", name: "DeepSeek" },
+  { provider: "codebuddy-cn", authType: "oauth", name: "CodeBuddy CN" },
 ];
 for (const item of providers) await createProviderConnection({ ...item, apiKey: item.authType === "apikey" ? "fixture-not-real" : undefined, accessToken: item.authType === "oauth" ? "fixture-not-real" : undefined, priority: 1, isActive: true });
 await createApiKey("Provider quota fixture", "fixture-machine-id");

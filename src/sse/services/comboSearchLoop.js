@@ -2,11 +2,13 @@ import { FORMATS } from "../../../open-sse/translator/formats.js";
 import { ROLE, OPENAI_BLOCK, OPENAI_TOOL_CHOICE, CLAUDE_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, CLAUDE_STOP } from "../../../open-sse/translator/schema/index.js";
 import { CODEX_HOSTED_HISTORY } from "../../../open-sse/config/codexHostedHistory.js";
 import { sseChunk } from "../../../open-sse/utils/sse.js";
+import { SSE_HEADERS_CORS } from "../../../open-sse/utils/sseConstants.js";
 
 export const COMBO_SEARCH_FUNCTION = "spring_mouse_web_search";
 export const COMBO_SEARCH_LIMITS = Object.freeze({ rounds: 4, calls: 8, resultsBytes: 64 * 1024, maxResults: 10, queryBytes: 4096, timeoutMs: 120000 });
 const SUPPORTED = [FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES];
 const encoder = new TextEncoder();
+const JSON_HEADERS_CORS = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" };
 const hosted = (tool) => CODEX_HOSTED_HISTORY.searchToolTypes.includes(tool?.type) || /^web_search_\d{8}$/.test(tool?.type || "");
 const toolName = (tool) => tool?.function?.name ?? tool?.name;
 const schema = {
@@ -244,7 +246,7 @@ export async function runComboSearchLoop({ body, sourceFormat, search, runChat, 
   } catch (error) {
     const known = error instanceof LoopError;
     const code = known ? error.code : "combo_search_failed";
-    return Response.json(sourceFormat === FORMATS.CLAUDE ? { type: "error", error: { type: "api_error", message: code } } : { error: { type: "gateway_search_error", code, message: code } }, { status: known ? error.status : 502 });
+    return Response.json(sourceFormat === FORMATS.CLAUDE ? { type: "error", error: { type: "api_error", message: code } } : { error: { type: "gateway_search_error", code, message: code } }, { status: known ? error.status : 502, headers: JSON_HEADERS_CORS });
   } finally {
     clearTimeout(timer);
     removeAbort?.();
@@ -254,7 +256,7 @@ export async function runComboSearchLoop({ body, sourceFormat, search, runChat, 
 // Serialize native buffered objects, not a lossy OpenAI pivot: thinking signatures,
 // redacted thinking and Responses encrypted reasoning must remain byte-for-byte.
 function finalResponse(data, format, stream) {
-  if (!stream) return Response.json(data);
+  if (!stream) return Response.json(data, { headers: JSON_HEADERS_CORS });
   const frames = [];
   const event = (type, payload) => frames.push(`event: ${type}\n${sseChunk(payload)}`);
   if (format === FORMATS.OPENAI) {
@@ -281,6 +283,18 @@ function finalResponse(data, format, stream) {
     event("message_delta", { type: "message_delta", delta: { stop_reason: data.stop_reason, stop_sequence: data.stop_sequence ?? null }, usage: data.usage });
     event("message_stop", { type: "message_stop" });
   } else {
+    // Chat -> Responses JSON translation can omit item IDs. Allocate once before
+    // emitting anything so added/delta/done and the terminal output all agree.
+    const prefixes = { [RESPONSES_ITEM.MESSAGE]: "msg", [RESPONSES_ITEM.REASONING]: "rs", [RESPONSES_ITEM.FUNCTION_CALL]: "fc", [RESPONSES_ITEM.CUSTOM_TOOL_CALL]: "ctc" };
+    const ids = new Set(data.output.map((item) => item.id).filter((id) => typeof id === "string" && id));
+    data.output.forEach((item, index) => {
+      if (typeof item.id === "string" && item.id) return;
+      const base = `${prefixes[item.type] ?? "item"}_${data.id || "buffered"}_${index}`;
+      let id = base;
+      for (let suffix = 1; ids.has(id); suffix++) id = `${base}_${suffix}`;
+      item.id = id;
+      ids.add(id);
+    });
     let seq = 0;
     const emit = (type, fields) => event(type, { type, sequence_number: seq++, ...fields });
     const pending = { ...data, output: [], status: "in_progress", usage: null };
@@ -313,5 +327,7 @@ function finalResponse(data, format, stream) {
     });
     emit(data.status === "incomplete" ? "response.incomplete" : data.status === "failed" ? "response.failed" : "response.completed", { response: data });
   }
-  return new Response(frames.join(""), { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
+  // The body was rebuilt: use the same safe headers as normal client responses,
+  // never forward stale content-length/encoding or upstream cookies.
+  return new Response(frames.join(""), { headers: SSE_HEADERS_CORS });
 }

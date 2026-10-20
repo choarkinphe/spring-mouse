@@ -15,7 +15,7 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { useModelPricing } from "@/shared/hooks/useModelPricing";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
-import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { describeModelSource, getProviderCustomModelRows, getModelDisplayCapabilities } from "@/shared/utils/providerCustomModels";
 import { hasModelsDevCatalog } from "@/shared/utils/modelCatalog";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
@@ -277,31 +277,22 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   }, []);
 
-  // /api/models/custom returns a global list, so the last response is cached on
-  // window and reused when the component remounts (for example after leaving and
-  // re-entering the page). Cached rows render immediately and are then refreshed
-  // in the background — previously the grid drew the static catalog first and
-  // visibly "filled in" the synced models a moment later.
-  const fetchCustomModels = useCallback(async () => {
-    const cacheKey = "__smCustomModelsCache";
-    const cached = typeof window !== "undefined" ? window[cacheKey] : null;
-    if (Array.isArray(cached)) {
-      setCustomModels(cached);
-      setCustomModelsLoaded(true);
-    }
-    try {
-      const res = await fetch("/api/models/custom", { cache: "no-store" });
-      const data = await res.json();
-      if (res.ok) {
-        const rows = data.models || [];
-        if (typeof window !== "undefined") window[cacheKey] = rows;
-        setCustomModels(rows);
+  const fetchCustomModels = useMemo(() => {
+    let latestRequest = 0;
+    return async () => {
+      const requestId = ++latestRequest;
+      try {
+        const res = await fetch("/api/models/custom", { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok && requestId === latestRequest) {
+          setCustomModels(data.models || []);
+        }
+      } catch (error) {
+        console.log("Error fetching custom models:", error);
+      } finally {
+        if (requestId === latestRequest) setCustomModelsLoaded(true);
       }
-    } catch (error) {
-      console.log("Error fetching custom models:", error);
-    } finally {
-      setCustomModelsLoaded(true);
-    }
+    };
   }, []);
 
   // Fetch free models from Kilo API for kilocode provider
@@ -1036,7 +1027,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         {/* Custom models first */}
         {customModelRows.map((model) => {
-          const rowCaps = getCaps(`${providerStorageAlias}/${model.id}`) || model.capabilities || {};
+          const rowCaps = getModelDisplayCapabilities(model, getCaps(`${providerStorageAlias}/${model.id}`));
           const rowOverrideCaps = model.manualCapabilities || capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
           const rowBusyPrefix = `${providerStorageAlias}|${model.id}|`;
           const rowBusyCapabilityKey = togglingCapability?.startsWith(rowBusyPrefix)

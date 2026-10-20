@@ -34,10 +34,16 @@ export function resolveProviderAliases(providerId, { provider, prefix } = {}) {
 // they were imported from so the dashboard can tell "came from the provider's
 // own /models" apart from "came from the shared capability catalog".
 export function describeModelSource(source) {
-  if (source === "official") return "官方";
+  if (source === "official") return "官方同步";
   if (source === "models-dev" || source === "catalog") return "目录";
   if (source === "static") return "内置";
   return null;
+}
+
+export function getModelDisplayCapabilities(model, resolved) {
+  const manual = model?.manualCapabilities
+    || (model?.origin === "capability-override" || (!model?.modelSource && !model?.source) ? model?.capabilities : null);
+  return { ...(resolved || model?.capabilities || {}), ...(manual || {}) };
 }
 
 export function getProviderCustomModelRows({
@@ -73,6 +79,7 @@ export function getProviderCustomModelRows({
       ...(model.source ? { modelSource: model.source } : {}),
       ...(model.providerId ? { providerId: model.providerId } : {}),
       ...(model.manualCapabilities ? { manualCapabilities: model.manualCapabilities } : {}),
+      ...(model.origin ? { origin: model.origin } : {}),
       ...(model.capabilities && Object.keys(model.capabilities).length > 0
         ? { capabilities: model.capabilities }
         : {}),

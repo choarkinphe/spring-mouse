@@ -38,6 +38,14 @@ beforeEach(() => {
 });
 
 describe("model capability overrides resolve a channel's display prefix", () => {
+  it.each([true, false])("preserves official Go manual vision=%s under both provider names", async (vision) => {
+    state.customModels = [{ providerId: "opencode-go", providerAlias: "ocg", id: "deepseek-v4.1-flash", source: "official", declaredCapabilities: {}, capabilities: { vision }, manualCapabilities: { vision } }];
+    await refreshModelCapabilityOverrides({ force: true });
+    expect(getCapabilitiesForModel("opencode-go", "deepseek-v4.1-flash").vision).toBe(vision);
+    expect(getCapabilitiesForModel("ocg", "deepseek-v4.1-flash").vision).toBe(vision);
+    expect(getCapabilitiesForModel("deepseek", "deepseek-v4.1-flash").vision).toBe(false);
+  });
+
   it("exposes a node-hosted model's vision capability under the combo prefix", async () => {
     state.customModels = [{
       providerAlias: NODE_ID,

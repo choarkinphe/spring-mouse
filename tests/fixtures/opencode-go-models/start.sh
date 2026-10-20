@@ -32,7 +32,7 @@ for _ in $(seq 1 20); do
 done
 if [ "$ready" != true ]; then printf 'Mock readiness failed\n' >&2; exit 1; fi
 "$NODE_BIN" --import "$REPO/tests/fixtures/claude-desktop-smoke/register.mjs" "$HERE/seed.mjs"
-"$NODE_BIN" "$REPO/node_modules/next/dist/bin/next" dev --turbopack --hostname 127.0.0.1 --port "$SMOKE_PORT" &
+"$NODE_BIN" "$REPO/node_modules/next/dist/bin/next" dev "${SMOKE_BUNDLER:---turbopack}" --hostname 127.0.0.1 --port "$SMOKE_PORT" &
 pids+=($!)
 ready=false
 for _ in $(seq 1 120); do

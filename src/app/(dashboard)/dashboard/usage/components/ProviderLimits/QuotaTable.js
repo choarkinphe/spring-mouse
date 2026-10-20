@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
 import { formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "./utils";
+import { reconcilePagination } from "./pagination";
 
 const PAGE_SIZE = 10;
+const EMPTY_QUOTAS = [];
 
 /**
  * Format reset time display (Today, 12:00 PM)
@@ -80,13 +82,13 @@ function sortQuotas(quotas, sortMode) {
  * Quota Table Component - Table-based display for quota data
  */
 export default function QuotaTable({
-  quotas = [],
+  quotas = EMPTY_QUOTAS,
   compact = false,
   sortMode = "default",
   showSortLabel = false,
   onHideQuota = null,
 }) {
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(() => ({ quotas, sortMode, page: 1 }));
 
   const normalizedQuotas = useMemo(
     () => quotas.map((quota, index) => ({
@@ -104,13 +106,19 @@ export default function QuotaTable({
 
   const totalPages = Math.max(1, Math.ceil(sortedQuotas.length / PAGE_SIZE));
 
-  useEffect(() => {
-    setPage(1);
-  }, [sortMode, quotas]);
+  const currentPagination = reconcilePagination(pagination, quotas, sortMode, totalPages);
+  // Reconcile before committing so a reset/clamp cannot revive an old page later.
+  if (currentPagination !== pagination) {
+    setPagination(currentPagination);
+  }
+  const { page } = currentPagination;
 
-  useEffect(() => {
-    setPage((currentPage) => Math.min(currentPage, totalPages));
-  }, [totalPages]);
+  function changePage(offset) {
+    setPagination((current) => {
+      const next = reconcilePagination(current, quotas, sortMode, totalPages);
+      return { ...next, page: Math.max(1, Math.min(totalPages, next.page + offset)) };
+    });
+  }
 
   if (!quotas || quotas.length === 0) {
     return null;
@@ -248,7 +256,7 @@ export default function QuotaTable({
           <div className="mt-1.5 flex items-center justify-end gap-1">
             <button
               type="button"
-              onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+              onClick={() => changePage(-1)}
               disabled={page === 1}
               className="flex h-6 items-center rounded-md border border-black/10 px-2 text-[10px] text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
             >
@@ -256,7 +264,7 @@ export default function QuotaTable({
             </button>
             <button
               type="button"
-              onClick={() => setPage((currentPage) => Math.min(totalPages, currentPage + 1))}
+              onClick={() => changePage(1)}
               disabled={page === totalPages}
               className="flex h-6 items-center rounded-md border border-black/10 px-2 text-[10px] text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
             >

@@ -4,7 +4,8 @@ import { useState, useCallback, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Drawer } from "@/shared/components";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
-import { getProviderAlias, isNonChatServiceProvider, supportsLiveModelSync, usesUpstreamModelList } from "@/shared/constants/providers";
+import { getProviderAlias, isNonChatServiceProvider, supportsLiveModelSync } from "@/shared/constants/providers";
+import { shouldUseStaticModelCatalog, isVisibleModelCatalogRow } from "@/shared/utils/providerCustomModels";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // ── ModelRow ───────────────────────────────────────────────────
@@ -21,6 +22,8 @@ export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCusto
         <div className="flex flex-col gap-1">
           <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{fullModel}</code>
           {model.name && <span className="text-[9px] text-text-muted/70 italic pl-1">{model.name}</span>}
+          {model.verified === false && <span className="text-[9px] text-amber-600 pl-1">内置·未验证</span>}
+          {model.verified === true && <span className="text-[9px] text-emerald-600 pl-1">官方目录</span>}
         </div>
         {onTest && (
           <div className="relative group/btn">
@@ -112,6 +115,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   const { copied, copy } = useCopyToClipboard();
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
+  const [snapshots, setSnapshots] = useState({});
   const [modelTestResults, setModelTestResults] = useState({});
   const [testingModelId, setTestingModelId] = useState(null);
   const [testError, setTestError] = useState("");
@@ -122,7 +126,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   // Native (non-chat) providers: their models can't be pinged through the chat
   // endpoint, and their live list is synced (not just the static seed).
   const nonChat = isNonChatServiceProvider(providerId);
-  const canSync = nonChat && supportsLiveModelSync(providerId);
+  const canSync = supportsLiveModelSync(providerId);
   const [syncingModels, setSyncingModels] = useState(false);
   const [modelSyncStatus, setModelSyncStatus] = useState(null);
 
@@ -135,7 +139,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       const aliasData = await aliasRes.json();
       const customData = await customRes.json();
       if (aliasRes.ok) setModelAliases(aliasData.aliases || {});
-      if (customRes.ok) setCustomModels(customData.models || []);
+      if (customRes.ok) { setCustomModels(customData.models || []); setSnapshots(customData.snapshots || {}); }
     } catch (e) { console.log("ModelsCard fetch error:", e); }
   }, []);
 
@@ -195,23 +199,17 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       const connRes = await fetch("/api/providers", { cache: "no-store" });
       const connData = await connRes.json().catch(() => ({}));
       if (!connRes.ok) throw new Error(connData.error || "读取连接失败");
-      const activeConnection = (connData.connections || []).find(
-        (c) => c.provider === providerId && c.isActive !== false,
-      );
-      if (!activeConnection) {
-        setModelSyncStatus({ type: "error", text: "请先添加并启用一个连接" });
+      const activeConnections = (connData.connections || []).filter((connection) => connection.provider === providerId && connection.isActive !== false);
+      if (activeConnections.length !== 1) {
+        setModelSyncStatus({ type: "error", text: activeConnections.length ? "多个账号请在渠道模型管理中选择同步连接" : "请先添加并启用一个连接" });
         return;
       }
-      const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
-      const officialData = await officialRes.json().catch(() => ({}));
-      if (!officialRes.ok || !Array.isArray(officialData.models)) {
-        throw new Error(officialData.error || "读取上游模型失败");
-      }
+      const activeConnection = activeConnections[0];
 
       const res = await fetch("/api/providers/model-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, supportedModels: officialData.models, officialFetched: true }),
+        body: JSON.stringify({ providerId, connectionId: activeConnection.id }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -247,7 +245,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   };
 
   // Built-in models — filter by kindFilter if provided
-  const allBuiltIn = usesUpstreamModelList(providerId) ? [] : getModelsByProviderId(providerId);
+  const allBuiltIn = shouldUseStaticModelCatalog(providerId, snapshots) ? getModelsByProviderId(providerId) : [];
   const builtInModels = kindFilter
     ? allBuiltIn.filter((m) => {
         if (m.kinds) return m.kinds.includes(kindFilter);
@@ -257,7 +255,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
   // Custom models for this provider + kind, dedupe vs built-in
   const myCustomModels = customModels.filter(
-    (m) => m.providerAlias === providerAlias
+    (m) => isVisibleModelCatalogRow(m, snapshots) && m.providerAlias === providerAlias
       && getModelKind(m, "llm") === effectiveType
       && !builtInModels.some((b) => b.id === m.id)
   );
@@ -295,7 +293,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
             return (
               <ModelRow
                 key={model.id}
-                model={model}
+                model={{ ...model, verified: snapshots[providerId]?.status === "success" ? (snapshots[providerId].modelIds || []).some((entry) => (typeof entry === "string" ? entry : entry?.id) === model.id) : false }}
                 fullModel={`${providerAlias}/${model.id}`}
                 alias={existingAlias}
                 copied={copied}
@@ -313,7 +311,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
           {myCustomModels.map((model) => (
             <ModelRow
               key={`${model.id}-${model.type}`}
-              model={{ id: model.id, name: model.name }}
+              model={{ id: model.id, name: model.name, ...(model.source === "official" ? { verified: true } : {}) }}
               fullModel={`${providerAlias}/${model.id}`}
               copied={copied}
               onCopy={copy}

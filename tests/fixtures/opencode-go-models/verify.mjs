@@ -17,7 +17,7 @@ assert.ok(connection);
 const listingUrl = `${base}/api/providers/${connection.id}/models`;
 const rows = async () => (await read(`${base}/api/models/custom`)).models.filter((item) => item.providerAlias === "ocg");
 const sync = async (supportedModels, officialFetched = true) => {
-  const response = await fetch(`${base}/api/providers/model-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: "opencode-go", supportedModels, officialFetched }) });
+  const response = await fetch(`${base}/api/providers/model-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: "opencode-go", connectionId: connection.id, supportedModels, officialFetched }) });
   return { status: response.status, body: await response.json() };
 };
 try {
@@ -46,12 +46,15 @@ try {
   await setMode("empty");
   const empty = await read(listingUrl);
   assert.deepEqual(empty.models, []);
-  assert.equal((await sync(empty.models)).status, 200);
-  assert.deepEqual((await rows()).map((item) => item.id), ["manual-keep"]);
+  assert.equal((await sync(empty.models)).status, 409);
+  assert.deepEqual(await rows(), after);
+  const { snapshots } = await read(`${base}/api/models/custom`);
+  assert.equal(snapshots["opencode-go"].source, "official");
+  assert.deepEqual(snapshots["opencode-go"].modelIds.sort(), listing.models.map((item) => item.id).sort());
   const requests = (await read(`${mock}/requests`)).requests;
   assert.ok(requests.length >= 4);
   assert.ok(requests.every((item) => item.authorizationPresent === false));
-  console.log("Go catalog verified: public GET, protocol metadata, authoritative sync, stale removal, manual preservation, upstream failures, malformed response and empty catalog. Only the manual model remains, ready for browser candidate search and re-sync.");
+  console.log("Go catalog verified: public GET, protocol metadata, server-side discovery, authoritative snapshot, stale removal, manual preservation, upstream failures, malformed response and empty catalog protection.");
 } finally {
   await setMode("ok");
 }

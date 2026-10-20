@@ -1,170 +1,131 @@
 import { NextResponse } from "next/server";
 import REGISTRY from "open-sse/providers/registry/index.js";
-import { syncCustomModels } from "@/models";
+import { getProviderConnectionById, syncCustomModels } from "@/models";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import {
   fetchModelsDevCatalog,
-  mergeSyncedModels,
-  MODELS_DEV_CATALOG_URL,
   parseModelsDevCatalog,
+  MODELS_DEV_CATALOG_URL,
   resolveModelsDevProviderKey,
-  SYNC_SOURCE_STATIC,
 } from "@/shared/utils/modelCatalog";
-import { supportsLiveModelSync } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
+import { OFFICIAL_MODEL_CATALOG } from "@/shared/config/officialModelCatalog";
+import { discoverConnectionModels } from "@/lib/services/officialModelDiscovery";
 
 export const dynamic = "force-dynamic";
 
-const normalizeSupportedModel = (model) => {
-  if (typeof model === "string") {
-    return model ? { id: model, name: model, type: "llm", capabilities: {} } : null;
-  }
+const normalizeModel = (model) => {
+  if (typeof model === "string") return model.trim() ? { id: model.trim(), name: model.trim(), type: "llm" } : null;
+  if (!model || typeof model !== "object" || typeof model.id !== "string" || !model.id.trim()) return null;
+  return { ...model, id: model.id, name: model.name || model.id };
+};
 
-  const id = model?.id || model?.name;
-  if (!id) return null;
-
-  return {
-    ...model,
-    id,
-    name: model?.name || id,
-    type: model?.type || model?.kind || "llm",
-    capabilities: model?.capabilities || {},
-  };
+const resolveCatalog = (provider, providerId) => {
+  if (provider?.modelCatalog) return provider.modelCatalog;
+  const key = resolveModelsDevProviderKey(providerId);
+  return key ? { type: "models-dev", url: MODELS_DEV_CATALOG_URL, provider: key } : null;
 };
 
 /**
- * Resolve the external capability catalog for a channel. Registry entries may
- * declare one explicitly; everything else is looked up in the shared mapping
- * table so preset channels do not depend on a per-provider registry edit.
+ * Persist only a successful, non-empty official directory. The endpoint is
+ * deliberately re-run here rather than trusting a browser's model array or
+ * `officialFetched` flag. A public directory is still marked public: it is
+ * discovery evidence, not an account entitlement check.
  */
-const resolveCatalog = (provider, providerId) => {
-  const declared = provider?.modelCatalog;
-  if (declared) return declared;
-  const providerKey = resolveModelsDevProviderKey(providerId);
-  if (!providerKey) return null;
-  return { type: "models-dev", url: MODELS_DEV_CATALOG_URL, provider: providerKey };
-};
-
 export async function POST(request) {
   try {
-    const body = await request.json();
-    const providerId = body?.providerId;
-    const supportedModels = Array.isArray(body?.supportedModels) ? body.supportedModels : [];
-    if (!providerId) {
-      return NextResponse.json({ error: "providerId required" }, { status: 400 });
-    }
-
+    const body = await request.json().catch(() => ({}));
+    const providerId = typeof body?.providerId === "string" ? body.providerId : "";
+    const connectionId = typeof body?.connectionId === "string" ? body.connectionId : "";
+    if (!providerId) return NextResponse.json({ error: "providerId is required" }, { status: 400 });
     const provider = REGISTRY.find((entry) => entry.id === providerId);
-    const upstreamOnly = provider?.modelListSource === "upstream";
-    if (upstreamOnly && (!Array.isArray(body.supportedModels) || body.officialFetched !== true)) {
-      return NextResponse.json({ error: "A successful upstream model listing is required" }, { status: 502 });
+    const publicWithoutConnection = !connectionId && provider?.noAuth === true && OFFICIAL_MODEL_CATALOG[providerId]?.scope === "public";
+    if (!connectionId && !publicWithoutConnection) return NextResponse.json({ error: "providerId and connectionId are required" }, { status: 400 });
+    const connection = publicWithoutConnection ? { id: `public:${providerId}`, provider: providerId, isActive: true } : await getProviderConnectionById(connectionId);
+    if (!connection) return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    if (connection.isActive === false) return NextResponse.json({ error: "Connection is inactive" }, { status: 409 });
+    if (connection.provider !== providerId) {
+      return NextResponse.json({ error: "Connection does not belong to provider" }, { status: 400 });
     }
-    if (upstreamOnly && supportedModels.some((model) => {
-      const id = typeof model === "string" ? model : model?.id || model?.name;
-      return typeof id !== "string" || !id.trim();
-    })) {
-      return NextResponse.json({ error: "Upstream returned an invalid model list" }, { status: 502 });
+    const discovered = await discoverConnectionModels(connection);
+    if (discovered.error) {
+      return NextResponse.json({ error: discovered.error, discovery: { status: discovered.unsupported ? "unsupported" : "failed", source: "official" } }, { status: discovered.status || 502 });
     }
+    const officialModels = discovered.models.map(normalizeModel).filter(Boolean);
+    // Empty success is observable but not destructive. This prevents an
+    // upstream outage or account with no entitlement from deleting a useful
+    // prior directory; retrying a successful non-empty listing is required.
+    if (officialModels.length === 0) {
+      return NextResponse.json({
+        error: "Official directory returned no models; existing synchronized models were not changed",
+        discovery: discovered.discovery,
+      }, { status: 409 });
+    }
+
+    // models.dev (when available) is metadata only. It can enrich an ID that
+    // the official directory returned, never add a catalog-only ID.
     const catalog = resolveCatalog(provider, providerId);
-    // Compatible channels (openai-compatible-* / anthropic-compatible-*) are
-    // provider nodes, not registry entries — they are always syncable.
-    const canSyncLive = supportsLiveModelSync(providerId);
-    // Channels with neither a live endpoint nor a catalog entry (codebuddy-*,
-    // cline, zed, …) still declare their models in the registry. Syncing those
-    // is what makes them selectable in the strict combo picker.
-    const staticModels = getModelsByProviderId(providerId)
-      .map((model) => ({ ...model, id: model.id, name: model.name || model.id }));
-    const canSyncStatic = staticModels.length > 0;
-
-    if (!canSyncLive && !catalog && !canSyncStatic) {
-      return NextResponse.json({ error: "This provider does not support model synchronization" }, { status: 400 });
-    }
-
-    // ── 1. External capability catalog (best effort, never fatal) ───────────
     let catalogModels = [];
-    let catalogWarning = "";
+    let warning;
     if (catalog?.type === "models-dev" && catalog.provider) {
       const payload = await fetchModelsDevCatalog({ url: catalog.url || MODELS_DEV_CATALOG_URL });
-      if (!payload) {
-        catalogWarning = "capability catalog unreachable";
-      } else {
-        catalogModels = parseModelsDevCatalog(payload, catalog.provider);
-        if (catalogModels.length === 0) {
-          catalogWarning = `capability catalog has no entry for "${catalog.provider}"`;
-        }
-      }
+      if (payload) catalogModels = parseModelsDevCatalog(payload, catalog.provider);
+      else warning = "capability catalog unavailable; official model IDs were retained";
     }
-
     const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
-    const staticById = new Map(staticModels.map((model) => [model.id, model]));
+    const staticById = new Map(getModelsByProviderId(providerId).map((model) => [model.id, model]));
+    const models = officialModels.map((official) => {
+      // Runtime routing annotations are not discovery sources. Keep only
+      // known-ID annotations; never spread the static registry's extra IDs.
+      const known = staticById.get(official.id);
+      const routing = {};
+      for (const key of ["supportedFormats", "targetFormat", "upstreamModelId", "quotaFamily", "kind", "type"]) {
+        if (known?.[key] !== undefined) routing[key] = known[key];
+      }
+      const allowedKinds = new Set(["llm", "imageToText", "embedding", "image", "tts", "stt", "webSearch", "webFetch", "systemone", "video", "music"]);
+      const declaredKind = allowedKinds.has(official.kind) ? official.kind : allowedKinds.has(official.type) ? official.type : null;
+      const providerKind = provider?.serviceKinds?.length === 1 ? provider.serviceKinds[0] : null;
+      const type = declaredKind || known?.kind || known?.type || (allowedKinds.has(providerKind) ? providerKind : "llm");
+      const model = { ...routing, ...official, type, kind: type };
+      const metadata = catalogById.get(model.id);
+      if (!metadata) return { ...model, source: "official" };
+      const providerName = model.name && model.name !== model.id ? model.name : "";
+      return {
+        ...metadata,
+        ...model,
+        id: model.id,
+        name: providerName || metadata.name || model.id,
+        capabilities: { ...(metadata.capabilities || {}), ...(model.capabilities || {}) },
+        source: "official",
+      };
+    });
 
-    // ── 2. Provider's own /models list (authoritative for naming) ───────────
-    const officialModels = supportedModels
-      .map((model) => {
-        const normalized = normalizeSupportedModel(model);
-        if (!normalized) return null;
-        // Protocol metadata is a known-id annotation, never a source of extra
-        // discoverable ids. Public /models directories may omit it entirely.
-        const supportedFormats = upstreamOnly && staticById.get(normalized.id)?.supportedFormats;
-        if (supportedFormats) normalized.supportedFormats = supportedFormats;
-        const metadata = catalogById.get(normalized.id);
-        if (!metadata) return normalized;
-        // Catalog metadata wins for capabilities/limits, the provider wins for
-        // the id (it is what the endpoint actually accepts).
-        // A provider that omits `name` is normalized to `name === id`; that bare
-        // id must not shadow the catalog's human-readable display name (e.g.
-        // deepseek's `deepseek-flash` is shown as "DeepSeek V4.1 Flash").
-        const providerName = normalized.name && normalized.name !== normalized.id ? normalized.name : "";
-        return {
-          ...normalized,
-          ...metadata,
-          id: normalized.id,
-          name: providerName || metadata.name || normalized.id,
-          capabilities: { ...(metadata.capabilities || {}), ...(normalized.capabilities || {}) },
-        };
-      })
-      .filter(Boolean);
-
-    // ── 3. Union: official ∪ catalog ∪ registry-static ─────────────────────
-    // Previously the catalog only *enriched* ids present in the live list, so
-    // anything the account's /models endpoint omitted was silently dropped.
-    const { models: mergedModels, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels: upstreamOnly ? [] : catalogModels });
-
-    // Union-based channels retain their static entries. Upstream-only channels
-    // may enrich returned ids, but must never expand the live directory from a seed.
-    const known = new Set(mergedModels.map((model) => model.id));
-    let staticOnlyCount = 0;
-    for (const model of upstreamOnly ? [] : staticModels) {
-      if (!model?.id || known.has(model.id)) continue;
-      known.add(model.id);
-      mergedModels.push({ ...model, source: SYNC_SOURCE_STATIC });
-      staticOnlyCount += 1;
-    }
-    const models = mergedModels;
-
-    if (models.length === 0 && !upstreamOnly) {
-      return NextResponse.json(
-        { error: catalogWarning || "The model catalog returned no supported models" },
-        { status: 502 },
-      );
-    }
-
-    const providerAlias = provider?.uiAlias || provider?.alias || provider?.id || providerId;
+    const providerAlias = provider?.uiAlias || provider?.alias || providerId;
     const result = await syncCustomModels(models.map((model) => ({
       ...model,
       providerAlias,
-      providerId: provider?.id || providerId,
+      providerId,
       syncedAt: new Date().toISOString(),
-    })), upstreamOnly ? { replaceSyncedFor: providerAlias } : {});
+    })), {
+      replaceSyncedFor: providerAlias,
+      syncSnapshot: {
+        providerId,
+        providerAlias,
+        connectionId: connection.id,
+        scope: discovered.listingScope || discovered.discovery?.scope || "account",
+        models,
+      },
+    });
     await refreshModelCapabilityOverrides({ force: true });
 
     return NextResponse.json({
       success: true,
       total: models.length,
       officialCount: officialModels.length,
-      catalogCount: catalogOnlyCount,
-      staticCount: staticOnlyCount,
-      ...(catalogWarning ? { warning: catalogWarning } : {}),
+      catalogCount: models.filter((model) => catalogById.has(model.id)).length,
+      staticCount: 0,
+      ...(warning ? { warning } : {}),
+      discovery: discovered.discovery,
       ...result,
     });
   } catch (error) {

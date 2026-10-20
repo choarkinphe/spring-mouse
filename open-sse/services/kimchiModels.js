@@ -131,7 +131,11 @@ async function fetchKimchiCatalogRaw(token, endpoint, options = {}) {
     }
 
     const data = await response.json();
-    return Array.isArray(data?.models) ? data.models : [];
+    if (!Array.isArray(data?.models) || data.error || data.warning || data.success === false || (data.code !== undefined && ![0, 200, "0", "200"].includes(data.code)) || data.has_more === true || data.next_cursor || data.next_page_token || data.nextPageToken
+      || data.models.some((model) => !model || typeof model !== "object" || typeof (model.slug || model.id || model.model) !== "string" || !(model.slug || model.id || model.model).trim())) {
+      throw new Error("Kimchi returned an invalid or incomplete model directory");
+    }
+    return data.models;
   } finally {
     clearTimeout(timeout);
   }

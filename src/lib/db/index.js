@@ -61,6 +61,12 @@ export {
   getMitmAlias, setMitmAliasAll,
 } from "./repos/aliasRepo.js";
 
+// Provider-level official-directory sync markers. These are separate from model
+// rows so an empty official directory is distinguishable from an unlisted one.
+export {
+  getModelSyncSnapshots, getModelSyncSnapshot, recordModelSyncSnapshot,
+} from "./repos/modelSyncRepo.js";
+
 // Measured model capabilities
 export {
   getModelCapabilityTests, claimModelCapabilityTest, saveModelCapabilityTest, deleteModelCapabilityTests,
@@ -131,12 +137,14 @@ export async function exportDb() {
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
+    modelSyncSnapshots: {},
     modelCapabilityTests: [],
     mitmAlias: {},
     pricing: {},
   };
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
+  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelSyncSnapshots'`)) out.modelSyncSnapshots[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
   for (const r of db.all(`SELECT value FROM kv WHERE scope = 'modelCapabilityTests'`)) out.modelCapabilityTests.push(parseJson(r.value));
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
@@ -166,7 +174,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM mouseAccessTokens`);
     db.run(`DELETE FROM mouses`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing', 'modelCapabilityTests')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'modelSyncSnapshots', 'mitmAlias', 'pricing', 'modelCapabilityTests')`);
 
     // Settings
     if (payload.settings) {
@@ -257,6 +265,10 @@ export async function importDb(payload) {
     }
     for (const [a, m] of Object.entries(payload.modelAliases || {})) {
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelAliases', ?, ?)`, [a, stringifyJson(m)]);
+    }
+    for (const [providerId, snapshot] of Object.entries(payload.modelSyncSnapshots || {})) {
+      if (!snapshot || snapshot.providerId !== providerId || snapshot.status !== "success" || snapshot.source !== "official") continue;
+      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelSyncSnapshots', ?, ?)`, [providerId, stringifyJson(snapshot)]);
     }
     for (const m of payload.customModels || []) {
       const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;

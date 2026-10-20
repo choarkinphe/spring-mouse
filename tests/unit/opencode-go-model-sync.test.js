@@ -13,6 +13,7 @@ let connection;
 let GET;
 let POST;
 let repo;
+let snapshots;
 
 const jsonResponse = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -21,10 +22,10 @@ const jsonResponse = (data, status = 200) => new Response(JSON.stringify(data), 
 const getModels = (id = connection.id) => GET(new Request(`http://localhost/api/providers/${id}/models`), {
   params: Promise.resolve({ id }),
 });
-const sync = (body) => POST(new Request("http://localhost/api/providers/model-sync", {
+const sync = (body = {}) => POST(new Request("http://localhost/api/providers/model-sync", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ providerId: "opencode-go", ...body }),
+  body: JSON.stringify({ providerId: "opencode-go", connectionId: connection.id, ...body }),
 }));
 
 beforeEach(async () => {
@@ -49,6 +50,7 @@ beforeEach(async () => {
     provider: "opencode-go", authType: "apikey", name: "Isolated test connection", apiKey: "test-key-not-for-discovery",
   });
   repo = await import("@/lib/db/repos/aliasRepo.js");
+  snapshots = await import("@/lib/db/repos/modelSyncRepo.js");
   ({ GET } = await import("@/app/api/providers/[id]/models/route.js"));
   ({ POST } = await import("@/app/api/providers/model-sync/route.js"));
 });
@@ -72,7 +74,10 @@ describe("OpenCode Go public model listing GET", () => {
     const response = await getModels();
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body).toMatchObject({ provider: "opencode-go", connectionId: connection.id, listingScope: "public" });
+    expect(body).toMatchObject({
+      provider: "opencode-go", connectionId: connection.id, listingScope: "public",
+      discovery: { status: "success", source: "official", scope: "public", count: 2, fetchedAt: expect.any(String) },
+    });
     expect(body.models).toEqual([
       { id: "minimax-m3", name: "MiniMax M3", object: "model", created: 1, owned_by: "opencode", supportedFormats: ["openai", "claude"] },
       { id: "new-go-model", name: "new-go-model", object: "model", created: 2, owned_by: "opencode" },
@@ -88,11 +93,19 @@ describe("OpenCode Go public model listing GET", () => {
     const { updateProviderConnection } = await import("@/lib/db/repos/connectionsRepo.js");
     await updateProviderConnection(connection.id, { apiKey: "" });
     fetchMock.mockResolvedValue(jsonResponse({ object: "list", data: [{ id: "public-model" }] }));
-    expect((await getModels()).status).toBe(200);
+    const response = await getModels();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      discovery: { status: "success", source: "official", scope: "public", count: 1 },
+    });
   });
 
   it("returns 404 for an unknown connection without fetching", async () => {
-    expect((await getModels("missing")).status).toBe(404);
+    const response = await getModels("missing");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: "Connection not found", discovery: { status: "failed", source: "official" },
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -100,7 +113,11 @@ describe("OpenCode Go public model listing GET", () => {
     fetchMock.mockResolvedValue(new Response("sensitive upstream diagnostic", { status }));
     const response = await getModels();
     expect(response.status).toBe(status);
-    expect(await response.json()).toEqual({ error: `Failed to fetch models: ${status}` });
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: `Failed to fetch models: ${status}`, discovery: { status: "failed", source: "official" },
+    });
+    expect(JSON.stringify(body)).not.toContain("sensitive upstream diagnostic");
   });
 
   it.each([
@@ -110,30 +127,44 @@ describe("OpenCode Go public model listing GET", () => {
     fetchMock.mockResolvedValue(jsonResponse(payload));
     const response = await getModels();
     expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: "Upstream returned an invalid model list" });
+    expect(await response.json()).toMatchObject({
+      error: "Upstream returned an invalid model list", discovery: { status: "failed", source: "official" },
+    });
   });
 
   it("rejects invalid JSON", async () => {
     fetchMock.mockResolvedValue(new Response("<html>not JSON</html>"));
-    expect((await getModels()).status).toBe(502);
+    const response = await getModels();
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      error: "Upstream returned an invalid model list", discovery: { status: "failed", source: "official" },
+    });
   });
 
   it.each([new Error("network unavailable"), new DOMException("timed out", "TimeoutError")])("fails closed on fetch errors (%s)", async (error) => {
     fetchMock.mockRejectedValue(error);
     const response = await getModels();
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: "Failed to fetch models" });
+    expect(await response.json()).toMatchObject({
+      error: "Failed to fetch models", discovery: { status: "failed", source: "official" },
+    });
   });
 
   it("accepts a successful empty directory without restoring the static seed", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ object: "list", data: [] }));
     const response = await getModels();
     expect(response.status).toBe(200);
-    expect((await response.json()).models).toEqual([]);
+    expect(await response.json()).toMatchObject({
+      models: [], discovery: { status: "success", source: "official", scope: "public", count: 0 },
+    });
   });
 });
 
 describe("OpenCode Go model sync with real isolated persistence", () => {
+  const storedState = async () => ({
+    models: await repo.getCustomModels(),
+    snapshots: await snapshots.getModelSyncSnapshots(),
+  });
   const seed = async () => {
     await repo.addCustomModel({ providerAlias: "ocg", id: "manual-keep", name: "My manual model" });
     await repo.addCustomModel({ providerAlias: "ocg", id: "manual-also-listed" });
@@ -144,19 +175,30 @@ describe("OpenCode Go model sync with real isolated persistence", () => {
       { providerAlias: "ocg", id: "old-models-dev", source: "models-dev" },
       { providerAlias: "ds", id: "other-provider", source: "official" },
     ]);
+    await snapshots.recordModelSyncSnapshot({
+      providerId: "opencode-go", providerAlias: "ocg", connectionId: connection.id,
+      scope: "public", models: [{ id: "old-official" }], syncedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await snapshots.recordModelSyncSnapshot({
+      providerId: "deepseek", providerAlias: "ds", connectionId: "other-connection",
+      scope: "account", models: [{ id: "other-provider" }], syncedAt: "2026-01-01T00:00:00.000Z",
+    });
   };
 
   it("replaces stale synchronized rows with the public list, never unions static IDs, and preserves manual rows", async () => {
     await seed();
     const beforeManual = (await repo.getCustomModels()).filter(m => m.id.startsWith("manual"));
-    fetchMock.mockResolvedValue(jsonResponse({ object: "list", data: [
+    const otherSnapshot = await snapshots.getModelSyncSnapshot("deepseek");
+    fetchMock.mockImplementation(async () => jsonResponse({ object: "list", data: [
       { id: "minimax-m3" }, { id: "new-go-model" }, { id: "manual-also-listed" },
     ] }));
     const listing = await (await getModels()).json();
-    const response = await sync({ officialFetched: true, supportedModels: listing.models });
+    expect(listing.discovery).toMatchObject({ status: "success", source: "official", count: 3 });
+    const response = await sync();
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       success: true, total: 3, officialCount: 3, catalogCount: 0, staticCount: 0, added: 2, unchanged: 1, removed: 4,
+      discovery: { status: "success", source: "official", scope: "public", count: 3 },
     });
     const rows = await repo.getCustomModels();
     const go = rows.filter(m => m.providerAlias === "ocg");
@@ -165,51 +207,92 @@ describe("OpenCode Go model sync with real isolated persistence", () => {
     expect(go.find(m => m.id === "minimax-m3")).toMatchObject({ providerId: "opencode-go", source: "official", supportedFormats: ["openai", "claude"] });
     expect(go.find(m => m.id === "new-go-model").supportedFormats).toBeUndefined();
     expect(rows.some(m => m.id === "other-provider")).toBe(true);
-    // No models.dev request or any additional metadata/discovery call.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await snapshots.getModelSyncSnapshot("opencode-go")).toMatchObject({
+      providerId: "opencode-go", providerAlias: "ocg", connectionId: connection.id,
+      status: "success", source: "official", scope: "public", count: 3,
+      modelIds: ["minimax-m3", "new-go-model", "manual-also-listed"], syncedAt: expect.any(String),
+    });
+    expect(await snapshots.getModelSyncSnapshot("deepseek")).toEqual(otherSnapshot);
+    // GET previews the directory; POST independently discovers it again. No models.dev union.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([MODELS_URL, MODELS_URL]);
   });
 
   it("retains known protocol annotations even when syncing a raw official list", async () => {
-    const response = await sync({ officialFetched: true, supportedModels: [{ id: "glm-5.1" }, { id: "new-go-model" }] });
+    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "glm-5.1" }, { id: "new-go-model" }] }));
+    const response = await sync({
+      officialFetched: false,
+      supportedModels: [{ id: "glm-5.1", supportedFormats: ["forged-format"] }, { id: "client-only" }],
+    });
     expect(response.status).toBe(200);
     const rows = await repo.getCustomModels();
     expect(rows.find(m => m.id === "glm-5.1").supportedFormats).toEqual(["openai"]);
     expect(rows.find(m => m.id === "new-go-model").supportedFormats).toBeUndefined();
-    expect(rows).toHaveLength(2);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rows.map(m => m.id).sort()).toEqual(["glm-5.1", "new-go-model"]);
+    expect(await snapshots.getModelSyncSnapshot("opencode-go")).toMatchObject({
+      count: 2, modelIds: ["glm-5.1", "new-go-model"], connectionId: connection.id,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("treats an explicitly successful empty list as authoritative, clearing only synced rows", async () => {
+  it("rejects a successful empty official list without changing rows or snapshots", async () => {
     await seed();
-    fetchMock.mockResolvedValue(jsonResponse({ object: "list", data: [] }));
+    const before = await storedState();
+    fetchMock.mockImplementation(async () => jsonResponse({ object: "list", data: [] }));
     const listing = await (await getModels()).json();
-    const response = await sync({ officialFetched: true, supportedModels: listing.models });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, total: 0, removed: 4, staticCount: 0 });
-    expect((await repo.getCustomModels()).map(m => m.id).sort()).toEqual(["manual-also-listed", "manual-keep", "other-provider"]);
+    expect(listing.discovery).toMatchObject({ status: "success", source: "official", count: 0 });
+    const response = await sync({ officialFetched: true, supportedModels: [{ id: "client-only" }] });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: expect.stringMatching(/no models/i),
+      discovery: { status: "success", source: "official", scope: "public", count: 0 },
+    });
+    expect(await storedState()).toEqual(before);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each([
     {}, { officialFetched: false, supportedModels: [] }, { officialFetched: true },
     { officialFetched: true, supportedModels: {} }, { officialFetched: true, supportedModels: [{}] },
     { officialFetched: true, supportedModels: [{ id: " " }] }, { officialFetched: true, supportedModels: [{ id: 3 }] },
-  ])("does not mutate existing models on unsuccessful or invalid sync (%j)", async (payload) => {
+  ])("does not trust client fields or mutate persistence on invalid official discovery (%j)", async (payload) => {
     await seed();
-    const before = await repo.getCustomModels();
-    expect((await sync(payload)).status).toBe(502);
-    expect(await repo.getCustomModels()).toEqual(before);
+    const before = await storedState();
+    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "valid" }, {}] }));
+    const response = await sync(payload);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({
+      error: "Upstream returned an invalid model list", discovery: { status: "failed", source: "official" },
+    });
+    expect(await storedState()).toEqual(before);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires a connection ID even when the client claims successful discovery", async () => {
+    await seed();
+    const before = await storedState();
+    const response = await sync({ connectionId: undefined, officialFetched: true, supportedModels: [{ id: "client-only" }] });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "providerId and connectionId are required" });
+    expect(await storedState()).toEqual(before);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps stored rows unchanged after a failed GET and refuses a fallback-empty sync", async () => {
+  it("keeps stored rows and snapshots unchanged after a failed GET and fallback-empty sync", async () => {
     await seed();
-    const before = await repo.getCustomModels();
-    fetchMock.mockResolvedValue(new Response("unavailable", { status: 503 }));
+    const before = await storedState();
+    fetchMock.mockImplementation(async () => new Response("unavailable", { status: 503 }));
     const listingResponse = await getModels();
     const listing = await listingResponse.json();
     expect(listingResponse.status).toBe(503);
-    expect((await sync({ officialFetched: listingResponse.ok, supportedModels: listing.models || [] })).status).toBe(502);
-    expect(await repo.getCustomModels()).toEqual(before);
+    expect(listing).toMatchObject({ discovery: { status: "failed", source: "official" } });
+    const response = await sync({ officialFetched: listingResponse.ok, supportedModels: listing.models || [] });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: "Failed to fetch models: 503", discovery: { status: "failed", source: "official" },
+    });
+    expect(await storedState()).toEqual(before);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the dashboard and internal API catalogs limited to listed/manual rows, not the static seed", async () => {

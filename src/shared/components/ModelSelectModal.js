@@ -6,6 +6,8 @@ import Modal from "./Modal";
 import Drawer from "./Drawer";
 import ProviderIcon from "./ProviderIcon";
 import CapacityBadges from "./CapacityBadges";
+import { isVisibleModelCatalogRow, shouldUseStaticModelCatalog } from "@/shared/utils/providerCustomModels";
+import { isSuccessfulOfficialDiscovery } from "@/shared/utils/officialModelDiscovery";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, AI_PROVIDERS, ALIAS_TO_ID, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, getProviderAlias, supportsLiveModelSync } from "@/shared/constants/providers";
@@ -45,6 +47,7 @@ export default function ModelSelectModal({
   const [providerConnections, setProviderConnections] = useState(activeProviders);
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
+  const [snapshots, setSnapshots] = useState({});
   const [disabledModels, setDisabledModels] = useState({});
   const [liveModelsByProvider, setLiveModelsByProvider] = useState({});
   const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
@@ -104,6 +107,7 @@ export default function ModelSelectModal({
       setCombos(combosResult.status === "fulfilled" ? combosResult.value.combos || [] : []);
       setProviderNodes(nodesResult.status === "fulfilled" ? nodesResult.value.nodes || [] : []);
       setCustomModels(customResult.status === "fulfilled" ? customResult.value.models || [] : []);
+      setSnapshots(customResult.status === "fulfilled" ? customResult.value.snapshots || {} : {});
       setDisabledModels(disabledResult.status === "fulfilled" ? disabledResult.value.disabled || {} : {});
 
       const catalogConnections = [];
@@ -146,6 +150,7 @@ export default function ModelSelectModal({
           });
           if (!response.ok) return;
           const data = await response.json();
+          if (!isSuccessfulOfficialDiscovery(data)) return;
           const models = normalizeModels(Array.isArray(data.models) ? data.models : []);
           if (cancelled || models.length === 0) return;
 
@@ -179,7 +184,7 @@ export default function ModelSelectModal({
           if (!response.ok) throw new Error(`Failed to fetch custom models: ${response.status}`);
           return response.json();
         })
-        .then((data) => setCustomModels(data.models || []))
+        .then((data) => { setCustomModels(data.models || []); setSnapshots(data.snapshots || {}); })
         .catch((error) => console.warn("Unable to refresh custom models for selector:", error));
     };
     window.addEventListener("customModelChanged", refreshCustomModels);
@@ -282,7 +287,7 @@ export default function ModelSelectModal({
         const explicitEnabledModels = connection?.providerSpecificData?.enabledModels;
         const providerCatalog = liveModelsByProvider[providerId]?.length
           ? liveModelsByProvider[providerId]
-          : (availableModelsOnly ? [] : getModelsByProviderId(providerId));
+          : (availableModelsOnly || !shouldUseStaticModelCatalog(providerId, snapshots) ? [] : getModelsByProviderId(providerId));
         const effectiveCatalog = availableModelsOnly && Array.isArray(explicitEnabledModels) && explicitEnabledModels.length > 0
           ? explicitEnabledModels.map((id) => ({ id, name: id }))
           : providerCatalog;
@@ -294,6 +299,7 @@ export default function ModelSelectModal({
             value: fullModel,
           }));
         const customRegisteredModels = customModels
+          .filter((model) => isVisibleModelCatalogRow(model, snapshots))
           .filter((m) => m.providerAlias === alias)
           .map((m) => ({
             id: m.id,
@@ -301,6 +307,8 @@ export default function ModelSelectModal({
             value: `${alias}/${m.id}`,
             kind: getModelKind(m),
             isCustom: true,
+            modelSource: m.source === "official" && !snapshots[providerId] ? "unverified" : m.source || "manual",
+            verified: m.source === "official" && Boolean(snapshots[providerId]),
           }));
 
         // For typed kinds, only include hardcoded typed models (aliases are typically LLM-only and lack type info)
@@ -370,6 +378,7 @@ export default function ModelSelectModal({
           kind: getModelKind(m),
         }));
         const registeredCustom = customModels
+          .filter((model) => isVisibleModelCatalogRow(model, snapshots))
           .filter((m) => m.providerAlias === providerId)
           .map((m) => ({
             id: m.id,
@@ -377,6 +386,8 @@ export default function ModelSelectModal({
             value: `${nodePrefix}/${m.id}`,
             kind: getModelKind(m),
             isCustom: true,
+            modelSource: m.source === "official" && !snapshots[providerId] ? "unverified" : m.source || "manual",
+            verified: m.source === "official" && Boolean(snapshots[providerId]),
           }));
         const seen = new Set();
         const mergedModels = filterByKind([...liveNodeModels, ...nodeModels, ...registeredCustom].filter((m) => {
@@ -403,11 +414,9 @@ export default function ModelSelectModal({
           hasModels: mergedModels.length > 0,
         };
       } else {
-        // Union the live /models result with the built-in catalog instead of
-        // letting it replace the catalog. Live lists are often partial (deepseek
-        // reports 2 of its 7 models), and replacing dropped the rest from the
-        // picker even though the channel page still lists them.
-        const staticCatalogModels = getModelsByProviderId(providerId);
+        // A validated live directory replaces seed IDs. Existing configured
+        // references remain manageable but are not proof of official support.
+        const staticCatalogModels = shouldUseStaticModelCatalog(providerId, snapshots) ? getModelsByProviderId(providerId) : [];
         const liveProviderModels = liveModelsByProvider[providerId] || [];
         const connection = providerConnections.find((p) => p.provider === providerId);
         const explicitEnabledModels = connection?.providerSpecificData?.enabledModels;
@@ -422,11 +431,8 @@ export default function ModelSelectModal({
             ...comboCatalogModels.filter((m) => !seenCatalogIds.has(m.id)),
           ];
         } else {
-          hardcodedModels = liveProviderModels.length
-            ? [
-              ...liveProviderModels,
-              ...staticCatalogModels.filter((s) => !liveProviderModels.some((l) => l.id === s.id)),
-            ]
+          hardcodedModels = Object.prototype.hasOwnProperty.call(liveModelsByProvider, providerId)
+            ? liveProviderModels
             : staticCatalogModels;
         }
         const hardcodedIds = new Set(hardcodedModels.map((m) => m.id));
@@ -434,6 +440,8 @@ export default function ModelSelectModal({
         // Custom models: if no hardcoded models (e.g. openrouter), show all aliases for this provider
         // Otherwise only show aliases where aliasName === modelId ("Add Model" button pattern)
         const hasHardcoded = hardcodedModels.length > 0;
+        const snapshot = snapshots[providerId];
+        const snapshotIds = new Set((snapshot?.modelIds || []).map((entry) => typeof entry === "string" ? entry : entry?.id).filter(Boolean));
         const customAliasModels = Object.entries(modelAliases)
           .filter(([aliasName, fullModel]) =>
             fullModel.startsWith(`${alias}/`) &&
@@ -442,17 +450,18 @@ export default function ModelSelectModal({
           )
           .map(([aliasName, fullModel]) => {
             const modelId = fullModel.replace(`${alias}/`, "");
-            return { id: modelId, name: aliasName, value: fullModel, isCustom: true };
+            return { id: modelId, name: aliasName, value: fullModel, isCustom: true, isConfigured: true, ...(snapshot ? { modelSource: snapshotIds.has(modelId) ? "official" : "manual", verified: snapshotIds.has(modelId) } : { modelSource: "manual" }) };
           });
 
         // Custom models registered via /api/models/custom (provider "Add Model" button)
         const customAliasIds = new Set(customAliasModels.map((m) => m.id));
         const customRegisteredModels = customModels
+          .filter((model) => isVisibleModelCatalogRow(model, snapshots))
           .filter((m) => [alias, providerId].includes(m.providerAlias) && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
-          .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, isCustom: true }));
+          .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, kind: getModelKind(m), isCustom: true, modelSource: m.source === "official" && !snapshots[providerId] ? "unverified" : m.source || "manual", verified: m.source === "official" && Boolean(snapshots[providerId]) }));
 
         const merged = [
-          ...hardcodedModels.map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) })),
+          ...hardcodedModels.map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m), modelSource: liveProviderModels.some((live) => live.id === m.id) || snapshotIds.has(m.id) ? "official" : "static", verified: liveProviderModels.some((live) => live.id === m.id) || snapshotIds.has(m.id) })),
           ...customAliasModels,
           ...customRegisteredModels,
         ];
@@ -497,7 +506,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [availableModelsOnly, comboModelIdsByProvider, filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, providerConnections, liveModelsByProvider]);
+  }, [availableModelsOnly, comboModelIdsByProvider, filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, providerConnections, liveModelsByProvider, snapshots]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
   const filteredCombos = useMemo(() => {
@@ -681,8 +690,8 @@ export default function ModelSelectModal({
                     ) : (
                       <>
                         <span className="min-w-0 break-words">{model.name}</span>
-                        {model.isCustom && (
-                          <span className="shrink-0 rounded bg-surface-2 px-1 py-0.5 text-[9px] font-normal text-text-muted">custom</span>
+                        {(model.isCustom || model.modelSource) && (
+                          <span className="shrink-0 rounded bg-surface-2 px-1 py-0.5 text-[9px] font-normal text-text-muted">{model.modelSource === "official" ? "官方" : model.modelSource === "static" ? "内置·未验证" : model.modelSource === "unverified" ? "历史同步·未验证" : model.isConfigured ? "已配置·未验证" : "自定义"}</span>
                         )}
                         <span className="shrink-0"><CapacityBadges caps={getCaps(model.value)} /></span>
                       </>

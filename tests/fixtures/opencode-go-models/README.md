@@ -18,7 +18,7 @@ With the fixture running, verify real API behavior:
 node tests/fixtures/opencode-go-models/verify.mjs
 ```
 
-The verifier covers discovery, known-model protocol metadata, synchronization, stale removal, manual preservation, failed/malformed upstream responses, failed-sync protection, valid empty-directory cleanup, and absence of Authorization on the public request. It ends with only the manual row in storage and the mock restored to success mode. Reload the page, open Add Model, and search `kimi` to verify candidates; then synchronize again.
+The verifier covers discovery, known-model protocol metadata, server-side re-discovery during synchronization, the atomic official snapshot, stale removal, manual preservation, failed/malformed upstream responses, empty-directory protection (HTTP 409, no changes), and absence of Authorization on the public request. It leaves the last valid official rows and manual row intact, with the mock restored to success mode.
 
 The mock's loopback-only `POST /state` accepts `{ "mode": "ok" | "error" | "malformed" | "empty" | "reject" }`. Error mode returns 503 for catalog requests; reject mode returns 400 for chat requests. `/requests` records whether Authorization was sent, never its value; chat entries also include the synthetic session, User-Agent and model.
 

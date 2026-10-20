@@ -153,7 +153,7 @@ describe("official model sync review regressions", () => {
   it("normalizes Codex upstream type=model to internal LLM and matching snapshot IDs", async () => {
     connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-codex-token" });
     fetchMock.mockImplementation(async (url, options) => {
-      if (url === "https://chatgpt.com/backend-api/codex/models?client_version=0.144.6") {
+      if (url === "https://chatgpt.com/backend-api/codex/models?client_version=0.163.0") {
         expect(options.headers.Authorization).toBe("Bearer test-only-codex-token");
         return jsonResponse({ data: [{ id: "codex-new-review-model", type: "model", name: "New Codex model" }] });
       }
@@ -173,7 +173,7 @@ describe("official model sync review regressions", () => {
       status: "success", source: "official", modelIds: ["codex-new-review-model"], count: 1,
     });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://chatgpt.com/backend-api/codex/models?client_version=0.144.6",
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.163.0",
       MODELS_DEV_URL,
     ]);
   });

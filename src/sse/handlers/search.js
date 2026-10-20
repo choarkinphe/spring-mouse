@@ -1,20 +1,15 @@
 import {
-  getProviderCredentials,
-  markAccountUnavailable,
-  clearAccountError,
   extractApiKey,
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
-import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
-import { handleSearchCore } from "open-sse/handlers/search/index.js";
-import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { errorResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { recordIngressUsage } from "../services/ingressUsage.js";
-import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
+import { executeGatewaySearchResponse } from "../services/gatewaySearch.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
 
 /**
@@ -82,7 +77,7 @@ export async function handleSearch(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey, settings),
+      handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey),
       log,
       comboName: providerInput,
       comboStrategy,
@@ -90,124 +85,9 @@ export async function handleSearch(request) {
     });
   }
 
-  return handleSingleProviderSearch(body, providerInput, request, apiKey, settings);
+  return handleSingleProviderSearch(body, providerInput, request, apiKey);
 }
 
-async function handleSingleProviderSearch(body, providerInput, request, apiKey, settings) {
-  const accessTags = await resolveApiKeyAccessTags(apiKey);
-  const query = body.query;
-  const providerId = resolveProviderId(providerInput);
-  const resolvedProvider = AI_PROVIDERS[providerId];
-
-  if (!resolvedProvider) {
-    log.warn("SEARCH", "Unknown provider", { provider: providerInput });
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Unknown provider: ${providerInput}`);
-  }
-
-  const providerConfig = resolvedProvider.searchConfig;
-  const supportsSearch = !!providerConfig || !!resolvedProvider.searchViaChat;
-
-  if (!supportsSearch) {
-    log.warn("SEARCH", "Provider does not support web search", { provider: providerId });
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, `Provider ${providerId} does not support web search`);
-  }
-
-  if (providerInput !== providerId) {
-    log.info("ROUTING", `${providerInput} → ${providerId}`);
-  } else {
-    log.info("ROUTING", `Provider: ${providerId}`);
-  }
-
-  // Sanitized body forwarded to core
-  const coreBody = {
-    query: query.trim(),
-    provider: providerId,
-    max_results: body.max_results,
-    search_type: body.search_type,
-    country: body.country,
-    language: body.language,
-    time_range: body.time_range,
-    offset: body.offset,
-    domain_filter: body.domain_filter,
-    content_options: body.content_options,
-    provider_options: body.provider_options
-  };
-
-  // No-auth providers (e.g. searxng) bypass credential lookup
-  if (resolvedProvider.noAuth) {
-    log.info("AUTH", `\x1b[32m${providerId} no-auth mode\x1b[0m`);
-    const result = await handleSearchCore({
-      body: coreBody,
-      provider: resolvedProvider,
-      providerConfig,
-      credentials: null,
-      signal: request.signal,
-      log
-    });
-    if (result.success) return result.response;
-    return result.response;
-  }
-
-  // Credential + fallback loop
-  const excludeConnectionIds = new Set();
-  let lastError = null;
-  let lastStatus = null;
-
-  while (true) {
-    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, null, { accessTags, requesterId: apiKey || "local" });
-
-    if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This provider account is not available for this API key");
-    if (!credentials || credentials.allRateLimited) {
-      if (credentials?.allRateLimited) {
-        const errorMsg = lastError || credentials.lastError || "Unavailable";
-        const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
-        log.warn("SEARCH", `[${providerId}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${providerId}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
-      }
-      if (excludeConnectionIds.size === 0) {
-        log.error("AUTH", `No credentials for provider: ${providerId}`);
-        return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${providerId}`);
-      }
-      log.warn("SEARCH", "No more accounts available", { provider: providerId });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
-    }
-
-    log.info("AUTH", `\x1b[32mUsing ${providerId} account: ${credentials.connectionName}\x1b[0m`);
-
-    const refreshedCredentials = await checkAndRefreshToken(providerId, credentials);
-
-    const result = await handleSearchCore({
-      body: coreBody,
-      provider: resolvedProvider,
-      providerConfig,
-      credentials: refreshedCredentials,
-      signal: request.signal,
-      log,
-      onCredentialsRefreshed: async (newCreds) => {
-        await updateProviderCredentials(credentials.connectionId, {
-          accessToken: newCreds.accessToken,
-          refreshToken: newCreds.refreshToken,
-          providerSpecificData: newCreds.providerSpecificData,
-          testStatus: "active"
-        });
-      },
-      onRequestSuccess: async () => {
-        await clearAccountError(credentials.connectionId, credentials);
-      }
-    });
-
-    if (result.success) return result.response;
-
-    const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, providerId);
-
-    if (shouldFallback) {
-      log.warn("AUTH", `Account ${credentials.connectionName} unavailable (${result.status}), trying fallback`);
-      excludeConnectionIds.add(credentials.connectionId);
-      lastError = result.error;
-      lastStatus = result.status;
-      continue;
-    }
-
-    return result.response;
-  }
+function handleSingleProviderSearch(body, providerInput, request, apiKey) {
+  return executeGatewaySearchResponse(body, providerInput, { apiKey, signal: request.signal });
 }

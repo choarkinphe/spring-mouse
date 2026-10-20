@@ -135,6 +135,30 @@ function buildBraveRequest(config, params) {
   };
 }
 
+function buildDeepseekRequest(config, params) {
+  const query = params.query?.trim();
+  if (!query || [...query].length > config.maxQueryLength) {
+    throw new Error(`DeepSeek query must contain 1–${config.maxQueryLength} Unicode characters`);
+  }
+  const requested = params.maxResults ?? config.defaultMaxResults;
+  if (!Number.isInteger(requested) || requested < 1) {
+    throw new Error("DeepSeek count must be a positive integer");
+  }
+  return {
+    // Credentials are only sent to the configured endpoint, never a client override.
+    url: config.baseUrl,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${params.token}` },
+      body: JSON.stringify({
+        query,
+        count: Math.min(requested, config.maxMaxResults),
+        need_content: params.contentOptions?.full_page === true,
+      }),
+    },
+  };
+}
+
 function buildPerplexityRequest(config, params) {
   const body = { query: params.query, max_results: params.maxResults };
   if (params.country) body.country = params.country;
@@ -350,6 +374,7 @@ function buildSearxngRequest(config, params) {
 // ── Dispatcher ──────────────────────────────────────────────────────────
 
 const BUILDERS = {
+  "deepseek": buildDeepseekRequest,
   "serper": buildSerperRequest,
   "brave-search": buildBraveRequest,
   "perplexity": buildPerplexityRequest,

@@ -9,7 +9,8 @@
 // 22 adds the per-key request-rate override on apiKeys
 // (rpmLimit / rpmQueueMax / queueTimeoutMs).
 // The columns themselves are additive, so syncSchemaFromTables() backfills them.
-export const SCHEMA_VERSION = 24;
+// 25 adds the combo search binding (`search`, JSON, NULL = disabled).
+export const SCHEMA_VERSION = 25;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -181,6 +182,7 @@ export const TABLES = {
       groupName: "TEXT",
       sortOrder: "INTEGER DEFAULT 0",
       capabilities: "TEXT NOT NULL DEFAULT '{}'",
+      search: "TEXT DEFAULT NULL",
       accessTags: "TEXT NOT NULL DEFAULT '[]'",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",

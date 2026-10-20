@@ -9,6 +9,7 @@ import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, D
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
+import { COMBO_SEARCH_MODE, COMBO_SEARCH_MAX_RESULTS, getComboSearchProviders, getComboSearchValidationError } from "open-sse/services/comboSearch.js";
 
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
@@ -769,6 +770,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="truncate font-mono text-[15px] font-semibold text-text-main">{combo.name}</h2>
+              {combo.search && <span className="rounded-md border border-[#38bdf8]/20 px-1.5 py-0.5 text-[10px] text-[#7dd3fc]">联网搜索 · {getComboSearchProviders().find(({ id }) => id === combo.search.provider)?.name || combo.search.provider}</span>}
               <span className="rounded-md border border-white/[0.08] bg-black/[0.12] px-1.5 py-0.5 text-[10px] text-text-muted" title="数值越小越靠前">排序 {combo.sortOrder ?? 0}</span>
             </div>
           </div>
@@ -1445,6 +1447,9 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
   const [groupName, setGroupName] = useState(combo?.groupName || "");
   const [sortOrder, setSortOrder] = useState(String(combo?.sortOrder ?? 0));
   const [accessTags, setAccessTags] = useState(combo?.accessTags || []);
+  const [searchEnabled, setSearchEnabled] = useState(!!combo?.search);
+  const searchProviders = getComboSearchProviders().filter(({ id }) => activeProviders.some((connection) => connection.provider === id && connection.isActive !== false));
+  const [searchProvider, setSearchProvider] = useState(combo?.search?.provider || searchProviders[0]?.id || "");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1574,8 +1579,14 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
         return;
       }
     }
+    const search = searchEnabled ? { mode: COMBO_SEARCH_MODE, provider: searchProvider, maxResults: COMBO_SEARCH_MAX_RESULTS } : null;
+    const searchError = getComboSearchValidationError(search, {
+      kind: combo?.kind, models, combos: combos.filter((candidate) => !combo || candidate.id !== combo.id), comboPath: [name.trim()],
+    });
+    if (searchError) { alert(searchError); return; }
     setSaving(true);
     await onSave({
+      search,
       name: name.trim(),
       groupName: groupName.trim() || null,
       sortOrder: normalizedSortOrder,
@@ -1692,6 +1703,25 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                 );
               })}
               <span className="ml-1 text-[10px] text-text-muted">声明后需至少保留一个可承接节点。</span>
+            </div>
+
+            <div className="mt-3 border-t border-[#38bdf8]/10 pt-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-text-main">
+                <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
+                网关联网搜索
+              </label>
+              <p className="mt-1 text-[11px] text-text-muted">由网关调用已配置的专用搜索服务，模型按需搜索。需要工具调用节点；支持回退、轮询和自动路由，暂不支持融合策略。启用后流式回答会先缓冲，首字延迟较高。</p>
+              {searchEnabled && (
+                <label className="mt-2 flex flex-col gap-1">
+                  <span className="text-xs text-text-muted">专用搜索通道</span>
+                  <select aria-label="专用搜索通道" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value)} className="h-9 w-full rounded-md border border-black/10 bg-white px-2 text-sm text-text-main dark:border-white/10 dark:bg-black/20">
+                    <option value="">请选择已配置的搜索通道</option>
+                    {searchProvider && !searchProviders.some(({ id }) => id === searchProvider) && <option value={searchProvider} disabled>{searchProvider}（未配置或已停用）</option>}
+                    {searchProviders.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+                  </select>
+                  <span className="text-[10px] text-text-muted">{searchProviders.length ? `网关模式 · 每次最多 ${COMBO_SEARCH_MAX_RESULTS} 条结果` : "请先在通道页面配置专用搜索服务。"}</span>
+                </label>
+              )}
             </div>
           </section>
 

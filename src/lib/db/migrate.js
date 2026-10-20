@@ -146,8 +146,8 @@ function importLegacyMain(adapter, data) {
 
   importWithAssertion(adapter, "combos", data.combos || [], (c) => {
     adapter.run(
-      `INSERT OR REPLACE INTO combos(id, name, kind, models, isActive, groupName, sortOrder, capabilities, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.isActive === false ? 0 : 1, c.groupName || null, Number.isFinite(c.sortOrder) ? c.sortOrder : 0, stringifyJson(c.capabilities || {}), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+      `INSERT OR REPLACE INTO combos(id, name, kind, models, isActive, groupName, sortOrder, capabilities, search, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.isActive === false ? 0 : 1, c.groupName || null, Number.isFinite(c.sortOrder) ? c.sortOrder : 0, stringifyJson(c.capabilities || {}), c.search ? stringifyJson(c.search) : null, c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
     );
   }, (c) => ({ id: c.id ?? null, name: c.name ?? null }));
 

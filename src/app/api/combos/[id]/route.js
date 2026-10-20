@@ -1,3 +1,4 @@
+import { normalizeComboSearch, getComboSearchValidationError } from "open-sse/services/comboSearch.js";
 import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError, resetComboRotation } from "open-sse/services/combo.js";
 import { getComboById, updateCombo, deleteCombo, getComboByName, getCombos } from "@/lib/localDb";
@@ -92,7 +93,15 @@ export async function PUT(request, { params }) {
     if (capabilityError) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }
-    updateData = { ...updateData, models: normalizedModels, capabilities: normalizedCapabilities };
+    const search = body.search === undefined ? (prev.search ?? null) : normalizeComboSearch(body.search);
+    const searchError = search === undefined ? "Invalid combo search configuration" : getComboSearchValidationError(search, {
+      kind: body.kind === undefined ? prev.kind : body.kind,
+      models: normalizedModels,
+      combos: (await getCombos()).filter((combo) => combo.id !== id),
+      comboPath: [body.name || prev.name],
+    });
+    if (searchError) return NextResponse.json({ error: searchError }, { status: 400 });
+    updateData = { ...updateData, search, models: normalizedModels, capabilities: normalizedCapabilities };
     if (body.accessTags !== undefined) updateData.accessTags = normalizeAccessTags(body.accessTags);
 
     if (body.groupName !== undefined) updateData = { ...updateData, groupName: body.groupName?.trim() || null };

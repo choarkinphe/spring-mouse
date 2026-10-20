@@ -199,7 +199,30 @@ function normalizeSearxng(data, _query, _searchType) {
   return { results, totalResults: results.length };
 }
 
+function normalizeDeepseek(data) {
+  if (!Array.isArray(data?.results)) throw new Error("Invalid DeepSeek search response");
+  const now = new Date().toISOString();
+  const results = data.results.map((item, idx) => {
+    const result = makeResult("deepseek", {
+      title: item.title,
+      url: item.url,
+      snippet: item.snippet || item.summary,
+      score: Number.isFinite(item.rerank_score) ? item.rerank_score / 3 : undefined,
+      published_at: item.date,
+      favicon_url: item.site_icon,
+      full_text: item.content,
+    }, idx, now);
+    // Preserve useful documented fields without retaining the raw upstream payload.
+    result.metadata.site_name = item.site_name ?? null;
+    result.metadata.authority = item.authority ?? null;
+    result.metadata.summary = item.summary || "";
+    return result;
+  });
+  return { results, totalResults: results.length };
+}
+
 const NORMALIZERS = {
+  "deepseek": normalizeDeepseek,
   "serper": normalizeSerper,
   "brave-search": normalizeBrave,
   "perplexity": normalizePerplexity,

@@ -188,6 +188,18 @@ describe("official model directory GET contract", () => {
     expect((await response.json()).discovery.status).toBe("failed");
   });
 
+  it("uses the current Codex client version so GPT-6 models are not silently filtered", async () => {
+    const connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-oauth-token" });
+    fetchMock.mockImplementation(async (input) => {
+      const version = new URL(input).searchParams.get("client_version");
+      return jsonResponse({ models: (version === "0.163.0" ? ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"] : ["gpt-5.6-sol"]).map((slug) => ({ slug, type: "model" })) });
+    });
+    const response = await getModels(connection.id);
+    expect(response.status).toBe(200);
+    expect((await response.json()).models.map((model) => model.id)).toEqual(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]);
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("client_version")).toBe("0.163.0");
+  });
+
   it("rejects invalid JSON without a registry fallback", async () => {
     const connection = await createConnection("openai");
     fetchMock.mockResolvedValue(new Response("<html>not a directory</html>"));

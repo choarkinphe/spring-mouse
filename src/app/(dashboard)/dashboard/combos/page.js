@@ -1069,7 +1069,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           availableModelsOnly
           closeOnSelect={false}
           presentation="drawer"
-          drawerWidth="lg"
+          drawerWidth="xl"
         />
       )}
     </section>
@@ -1784,7 +1784,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
           addedModelValues={modelValues}
           closeOnSelect={false}
           presentation="drawer"
-          drawerWidth="lg"
+          drawerWidth="xl"
         />
       )}
     </>

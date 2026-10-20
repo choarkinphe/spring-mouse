@@ -23,6 +23,8 @@ const PROVIDER_ORDER = [
 // Providers that need no auth — always show in model selector
 const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter(id => FREE_PROVIDERS[id].noAuth);
 const EMPTY_PROVIDERS = [];
+const ALL_RAIL_ID = "__all__";
+const COMBOS_RAIL_ID = "__combos__";
 
 export default function ModelSelectModal({
   isOpen,
@@ -51,6 +53,7 @@ export default function ModelSelectModal({
   const [disabledModels, setDisabledModels] = useState({});
   const [liveModelsByProvider, setLiveModelsByProvider] = useState({});
   const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
+  const [activeChannel, setActiveChannel] = useState(null);
 
   // Filter active providers by serviceKinds when kindFilter set (e.g. "webSearch", "webFetch").
   // The selector owns a refreshed copy so a long-lived routing page cannot keep stale connections.
@@ -67,6 +70,7 @@ export default function ModelSelectModal({
   const handleClose = () => {
     onClose();
     setSearchQuery("");
+    setActiveChannel(null);
   };
   const SelectionSurface = presentation === "drawer" ? Drawer : Modal;
   const selectionSurfaceProps = presentation === "drawer"
@@ -569,6 +573,38 @@ export default function ModelSelectModal({
     }
   };
 
+  // Rail entries: "all channels", "combos", then one entry per channel.
+  const railItems = useMemo(() => {
+    const items = [{
+      id: ALL_RAIL_ID,
+      name: "全部渠道",
+      symbol: "grid_view",
+      count: Object.values(filteredGroups).reduce((sum, group) => sum + group.models.length, 0),
+    }];
+    if (filteredCombos.length > 0) {
+      items.push({ id: COMBOS_RAIL_ID, name: "组合", symbol: "layers", count: filteredCombos.length });
+    }
+    Object.entries(filteredGroups).forEach(([providerId, group]) => {
+      items.push({
+        id: providerId,
+        name: group.name,
+        symbol: null,
+        color: group.color,
+        count: group.models.length,
+      });
+    });
+    return items;
+  }, [filteredGroups, filteredCombos]);
+
+  // A live query searches across every channel, so the pane falls back to the
+  // grouped overview; without a query the pane shows one channel at a time.
+  const activeRailId = useMemo(() => {
+    if (searchQuery.trim()) return ALL_RAIL_ID;
+    if (activeChannel && railItems.some((item) => item.id === activeChannel)) return activeChannel;
+    const firstChannel = railItems.find((item) => item.id !== ALL_RAIL_ID && item.id !== COMBOS_RAIL_ID);
+    return firstChannel?.id ?? ALL_RAIL_ID;
+  }, [activeChannel, railItems, searchQuery]);
+
   const modelChipClass = (selected, placeholder = false) => `
     inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-[9px] border px-2.5 py-1.5
     text-left text-xs font-medium leading-4 transition-all duration-150 ease-out
@@ -587,129 +623,232 @@ export default function ModelSelectModal({
     </span>
   );
 
-  return (
-    <SelectionSurface {...selectionSurfaceProps}>
-      <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-3 py-2.5 text-xs text-text-muted">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
-          <span className="material-symbols-outlined text-[15px]">info</span>
-        </span>
-        <span className="min-w-0 flex-1 leading-5">
-          {availableModelsOnly
-            ? "仅显示渠道同步、显式启用、自定义或已有组合启用的模型；点击添加，再次点击移除。"
-            : "Click to add, click again to remove. Changes are saved automatically."}
-        </span>
-        {isRefreshingCatalog && (
-          <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-[10px] text-[#7dd3fc]" title="Refreshing provider model catalogs">
-            <span className="material-symbols-outlined animate-spin text-[13px]">progress_activity</span>
-            Syncing
+  const renderComboSection = () => (
+    filteredCombos.length > 0 && (
+      <section>
+        <div className="sticky top-0 z-10 mb-2 flex items-center gap-2 border-b border-border-subtle bg-surface/95 pb-2 backdrop-blur-sm">
+          <span className="flex size-7 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
+            <span className="material-symbols-outlined text-[17px]">layers</span>
           </span>
-        )}
+          <span className="text-xs font-semibold text-text-main">Combos</span>
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">{filteredCombos.length}</span>
+        </div>
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {filteredCombos.map((combo) => {
+            const isAdded = addedModelValues.includes(combo.name);
+            const isSelected = selectedModel === combo.name || isAdded;
+            return (
+              <button
+                key={combo.id}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
+                className={modelChipClass(isSelected)}
+              >
+                {isSelected && <SelectedMark />}
+                <span className="min-w-0 break-words">{combo.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    )
+  );
+
+  const renderModelChips = (group) => (
+    <div className="flex min-w-0 flex-wrap gap-2">
+      {group.models.map((model) => {
+        const isPlaceholder = model.isPlaceholder;
+        const isAdded = addedModelValues.includes(model.value);
+        const isSelected = selectedModel === model.value || isAdded;
+        return (
+          <button
+            key={model.value}
+            type="button"
+            aria-pressed={isSelected}
+            onClick={() => handleSelect(model)}
+            title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : model.name}
+            className={modelChipClass(isSelected, isPlaceholder)}
+          >
+            {isSelected && !isPlaceholder && <SelectedMark />}
+            {isPlaceholder ? (
+              <>
+                <span className="material-symbols-outlined shrink-0 text-[14px]">edit</span>
+                <span className="min-w-0 break-words">{model.name}</span>
+              </>
+            ) : (
+              <>
+                <span className="min-w-0 break-words">{model.name}</span>
+                {(model.isCustom || model.modelSource) && (
+                  <span className="shrink-0 rounded bg-surface-2 px-1 py-0.5 text-[9px] font-normal text-text-muted">{model.modelSource === "official" ? "官方" : model.modelSource === "static" ? "内置·未验证" : model.modelSource === "unverified" ? "历史同步·未验证" : model.isConfigured ? "已配置·未验证" : "自定义"}</span>
+                )}
+                <span className="shrink-0"><CapacityBadges caps={getCaps(model.value)} /></span>
+              </>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderGroupSection = ([providerId, group]) => (
+    <section key={providerId} className="min-w-0">
+      <div className="sticky top-0 z-10 mb-2 flex items-center gap-2 border-b border-border-subtle bg-surface/95 pb-2 backdrop-blur-sm">
+        <span className="flex size-7 items-center justify-center overflow-hidden rounded-lg border border-border-subtle bg-surface-2">
+          <ProviderIcon
+            src={`/providers/${providerId}.png`}
+            alt={group.name}
+            size={16}
+            fallbackText={(group.name || providerId).slice(0, 2).toUpperCase()}
+            fallbackColor={group.color}
+          />
+        </span>
+        <span className="min-w-0 truncate text-xs font-semibold text-text-main">{group.name}</span>
+        <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">{group.models.length}</span>
       </div>
 
-      <div className="relative mb-4">
-        <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-text-muted">search</span>
-        <input
-          type="text"
-          placeholder="Search models or providers..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="h-10 w-full rounded-[10px] border border-transparent bg-surface-2 pl-10 pr-3 text-sm text-text-main outline-none transition-all placeholder:text-text-muted/70 focus:border-brand-500/40 focus:ring-2 focus:ring-brand-500/25"
-        />
+      {renderModelChips(group)}
+    </section>
+  );
+
+  const hasResults = Object.keys(filteredGroups).length > 0 || filteredCombos.length > 0;
+
+  const emptyState = (
+    <div className="flex min-h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-8 text-center text-text-muted">
+      <span className="material-symbols-outlined mb-2 text-3xl">search_off</span>
+      <p className="text-sm font-medium text-text-main">No models found</p>
+      <p className="mt-1 text-xs">Try another model name or provider.</p>
+    </div>
+  );
+
+  const infoBanner = (
+    <div className="flex items-start gap-2.5 rounded-xl border border-[#38bdf8]/15 bg-[#38bdf8]/[0.045] px-3 py-2.5 text-xs text-text-muted">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
+        <span className="material-symbols-outlined text-[15px]">info</span>
+      </span>
+      <span className="min-w-0 flex-1 leading-5">
+        {availableModelsOnly
+          ? "仅显示渠道同步、显式启用、自定义或已有组合启用的模型；点击添加，再次点击移除。"
+          : "Click to add, click again to remove. Changes are saved automatically."}
+      </span>
+      {isRefreshingCatalog && (
+        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 text-[10px] text-[#7dd3fc]" title="Refreshing provider model catalogs">
+          <span className="material-symbols-outlined animate-spin text-[13px]">progress_activity</span>
+          Syncing
+        </span>
+      )}
+    </div>
+  );
+
+  const searchBox = (
+    <div className="relative">
+      <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-text-muted">search</span>
+      <input
+        type="text"
+        placeholder="Search models or providers..."
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        className="h-10 w-full rounded-[10px] border border-transparent bg-surface-2 pl-10 pr-3 text-sm text-text-main outline-none transition-all placeholder:text-text-muted/70 focus:border-brand-500/40 focus:ring-2 focus:ring-brand-500/25"
+      />
+    </div>
+  );
+
+  if (presentation !== "drawer") {
+    return (
+      <SelectionSurface {...selectionSurfaceProps}>
+        <div className="mb-4">{infoBanner}</div>
+        <div className="mb-4">{searchBox}</div>
+
+        <div className="max-h-[min(62vh,520px)] min-w-0 space-y-4 overflow-x-hidden overflow-y-auto pr-1 custom-scrollbar">
+          {renderComboSection()}
+          {Object.entries(filteredGroups).map(renderGroupSection)}
+          {!hasResults && emptyState}
+        </div>
+      </SelectionSurface>
+    );
+  }
+
+  // Drawer presentation: channel rail on the left, models on the right, so a
+  // long catalog stays scannable instead of expanding into one tall column.
+  const activeGroup = activeRailId === ALL_RAIL_ID || activeRailId === COMBOS_RAIL_ID
+    ? null
+    : filteredGroups[activeRailId];
+
+  return (
+    <SelectionSurface
+      {...selectionSurfaceProps}
+      bodyScroll={false}
+      bodyClassName="flex min-h-0 flex-col overflow-hidden p-0"
+    >
+      <div className="flex shrink-0 flex-col gap-3 border-b border-border-subtle px-5 py-4">
+        {infoBanner}
+        {searchBox}
       </div>
 
-      <div className={presentation === "drawer"
-        ? "min-w-0 space-y-5 overflow-x-hidden pb-2"
-        : "max-h-[min(62vh,520px)] min-w-0 space-y-4 overflow-x-hidden overflow-y-auto pr-1 custom-scrollbar"
-      }>
-        {filteredCombos.length > 0 && (
-          <section>
-            <div className="sticky top-0 z-10 mb-2 flex items-center gap-2 border-b border-border-subtle bg-surface/95 pb-2 backdrop-blur-sm">
-              <span className="flex size-7 items-center justify-center rounded-lg bg-[#38bdf8]/10 text-[#7dd3fc]">
-                <span className="material-symbols-outlined text-[17px]">layers</span>
-              </span>
-              <span className="text-xs font-semibold text-text-main">Combos</span>
-              <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">{filteredCombos.length}</span>
-            </div>
-            <div className="flex min-w-0 flex-wrap gap-2">
-              {filteredCombos.map((combo) => {
-                const isAdded = addedModelValues.includes(combo.name);
-                const isSelected = selectedModel === combo.name || isAdded;
-                return (
-                  <button
-                    key={combo.id}
-                    type="button"
-                    aria-pressed={isSelected}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
-                    className={modelChipClass(isSelected)}
-                  >
-                    {isSelected && <SelectedMark />}
-                    <span className="min-w-0 break-words">{combo.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-        )}
+      <div className="flex min-h-0 flex-1">
+        <nav className="flex w-[13rem] shrink-0 flex-col gap-1 overflow-y-auto border-r border-border-subtle bg-black/[0.02] p-3 custom-scrollbar dark:bg-white/[0.012]">
+          {railItems.map((item) => {
+            const isActive = item.id === activeRailId;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveChannel(item.id)}
+                aria-current={isActive ? "true" : undefined}
+                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                  isActive
+                    ? "bg-[#38bdf8]/[0.12] text-[#7dd3fc]"
+                    : "text-text-main hover:bg-white/[0.04] dark:hover:bg-white/[0.03]"
+                }`}
+              >
+                {item.symbol ? (
+                  <span className={`material-symbols-outlined shrink-0 text-[15px] ${isActive ? "text-[#7dd3fc]" : "text-text-muted"}`}>{item.symbol}</span>
+                ) : (
+                  <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded border border-border-subtle bg-surface-2">
+                    <ProviderIcon
+                      src={`/providers/${item.id}.png`}
+                      alt={item.name}
+                      size={14}
+                      fallbackText={(item.name || item.id).slice(0, 2).toUpperCase()}
+                      fallbackColor={item.color}
+                    />
+                  </span>
+                )}
+                <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{item.name}</span>
+                <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[9px] text-text-muted">{item.count}</span>
+              </button>
+            );
+          })}
+        </nav>
 
-        {Object.entries(filteredGroups).map(([providerId, group]) => (
-          <section key={providerId} className="min-w-0">
-            <div className="sticky top-0 z-10 mb-2 flex items-center gap-2 border-b border-border-subtle bg-surface/95 pb-2 backdrop-blur-sm">
-              <span className="flex size-7 items-center justify-center overflow-hidden rounded-lg border border-border-subtle bg-surface-2">
-                <ProviderIcon
-                  src={`/providers/${providerId}.png`}
-                  alt={group.name}
-                  size={16}
-                  fallbackText={(group.name || providerId).slice(0, 2).toUpperCase()}
-                  fallbackColor={group.color}
-                />
-              </span>
-              <span className="min-w-0 truncate text-xs font-semibold text-text-main">{group.name}</span>
-              <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">{group.models.length}</span>
+        <div className="min-w-0 flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
+          {activeRailId === COMBOS_RAIL_ID ? (
+            renderComboSection()
+          ) : activeGroup ? (
+            <section className="min-w-0">
+              <div className="mb-3 flex items-center gap-2 border-b border-border-subtle pb-2">
+                <span className="flex size-7 items-center justify-center overflow-hidden rounded-lg border border-border-subtle bg-surface-2">
+                  <ProviderIcon
+                    src={`/providers/${activeRailId}.png`}
+                    alt={activeGroup.name}
+                    size={16}
+                    fallbackText={(activeGroup.name || activeRailId).slice(0, 2).toUpperCase()}
+                    fallbackColor={activeGroup.color}
+                  />
+                </span>
+                <span className="min-w-0 truncate text-xs font-semibold text-text-main">{activeGroup.name}</span>
+                <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted">{activeGroup.models.length}</span>
+              </div>
+              {renderModelChips(activeGroup)}
+            </section>
+          ) : (
+            <div className="space-y-5">
+              {renderComboSection()}
+              {Object.entries(filteredGroups).map(renderGroupSection)}
             </div>
-
-            <div className="flex min-w-0 flex-wrap gap-2">
-              {group.models.map((model) => {
-                const isPlaceholder = model.isPlaceholder;
-                const isAdded = addedModelValues.includes(model.value);
-                const isSelected = selectedModel === model.value || isAdded;
-                return (
-                  <button
-                    key={model.value}
-                    type="button"
-                    aria-pressed={isSelected}
-                    onClick={() => handleSelect(model)}
-                    title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : model.name}
-                    className={modelChipClass(isSelected, isPlaceholder)}
-                  >
-                    {isSelected && !isPlaceholder && <SelectedMark />}
-                    {isPlaceholder ? (
-                      <>
-                        <span className="material-symbols-outlined shrink-0 text-[14px]">edit</span>
-                        <span className="min-w-0 break-words">{model.name}</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="min-w-0 break-words">{model.name}</span>
-                        {(model.isCustom || model.modelSource) && (
-                          <span className="shrink-0 rounded bg-surface-2 px-1 py-0.5 text-[9px] font-normal text-text-muted">{model.modelSource === "official" ? "官方" : model.modelSource === "static" ? "内置·未验证" : model.modelSource === "unverified" ? "历史同步·未验证" : model.isConfigured ? "已配置·未验证" : "自定义"}</span>
-                        )}
-                        <span className="shrink-0"><CapacityBadges caps={getCaps(model.value)} /></span>
-                      </>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-        ))}
-
-        {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
-          <div className="flex min-h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-8 text-center text-text-muted">
-            <span className="material-symbols-outlined mb-2 text-3xl">search_off</span>
-            <p className="text-sm font-medium text-text-main">No models found</p>
-            <p className="mt-1 text-xs">Try another model name or provider.</p>
-          </div>
-        )}
+          )}
+          {!hasResults && emptyState}
+        </div>
       </div>
     </SelectionSurface>
   );

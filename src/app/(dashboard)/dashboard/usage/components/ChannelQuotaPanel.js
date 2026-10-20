@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Card from "@/shared/components/Card";
 import { AI_PROVIDERS, USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
-import { formatQuotaBalance, getQuotaCache, getRemainingPercentage, parseQuotaData, setQuotaCache } from "./ProviderLimits/utils";
+import { formatQuotaBalance, formatRemainingQuota, getQuotaCache, getRemainingPercentage, parseQuotaData, setQuotaCache } from "./ProviderLimits/utils";
 import useProviderStore from "@/store/providerStore";
 import useSettingsStore from "@/store/settingsStore";
 
@@ -46,23 +46,6 @@ function isFreshCache(entry) {
   return cachedAt > 0 && Date.now() - cachedAt < QUOTA_CACHE_MAX_AGE_MS;
 }
 
-// Counted quotas (CodeBuddy credits) say more as a remaining amount than as a
-// bare percentage: this card already shows a remaining-ratio bar, and "0 积分"
-// answers "how much is left" directly without stealing width from the channel
-// and quota names (the row is only ~358px wide, and "1,000 / 1,000 积分" needs
-// 115px of it). Only quotas that carry a unit switch; percentage-only
-// providers keep the % form.
-function formatRemainingQuota(quota) {
-  const used = Number(quota?.used);
-  const total = Number(quota?.total);
-  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
-
-  const unit = typeof quota?.unit === "string" ? quota.unit.trim() : "";
-  if (!unit) return null;
-
-  return `${Math.max(0, total - used).toLocaleString()} ${unit}`;
-}
-
 function toQuotaSnapshot(connection, quotas) {
   if (!Array.isArray(quotas) || quotas.length === 0) return null;
 
@@ -76,8 +59,10 @@ function toQuotaSnapshot(connection, quotas) {
       quotaName: balanceQuota.name || "余额",
       kind: "balance",
       balance: Number(balanceQuota.balance),
-      value: formatQuotaBalance(balanceQuota),
-      progress: balanceQuota.balance > 0 ? 100 : 0,
+      value: formatRemainingQuota(balanceQuota),
+      progress: balanceQuota.remainingPercentage !== undefined
+        ? getRemainingPercentage(balanceQuota)
+        : balanceQuota.balance > 0 ? 100 : 0,
     };
   }
 
@@ -94,6 +79,7 @@ function toQuotaSnapshot(connection, quotas) {
       quotaName: measured.quota.name || "额度",
       kind: "percentage",
       value: formatRemainingQuota(measured.quota) ?? `${measured.remaining}%`,
+      valueDescription: measured.quota.unit === "%" ? "剩余比例" : measured.quota.unit ? "剩余额度" : "剩余比例",
       progress: measured.remaining,
     };
   }
@@ -292,7 +278,7 @@ export default function ChannelQuotaPanel() {
                   <img src={snapshot.icon} alt="" className="size-4 shrink-0 rounded-sm object-contain" />
                 ) : null}
                 <span className="min-w-0 flex-1 truncate text-xs text-text-main">{snapshot.label}</span>
-                <span className="text-xs text-text-muted">{snapshot.value}</span>
+                <span title={`${snapshot.valueDescription || "余额"}：${snapshot.value}`} className="text-xs text-text-muted">{snapshot.value}</span>
                 <button type="button" onClick={() => toggleSnapshotVisibility(snapshot.id)} className="grid size-6 place-items-center rounded text-text-muted hover:bg-surface-2 hover:text-primary" aria-label={`${quotaHidden.includes(snapshot.id) ? "显示" : "隐藏"} ${snapshot.label}`} title={quotaHidden.includes(snapshot.id) ? "显示" : "隐藏"}>
                   <span className="material-symbols-outlined text-[16px]">{quotaHidden.includes(snapshot.id) ? "visibility_off" : "visibility"}</span>
                 </button>
@@ -329,7 +315,7 @@ export default function ChannelQuotaPanel() {
                 <div className="h-1 w-20 justify-self-end overflow-hidden rounded-full bg-border">
                   <div className={`h-full rounded-full ${snapshot.progress <= 5 ? "bg-rose-400" : snapshot.progress <= 30 ? "bg-amber-400" : "bg-emerald-400"}`} style={{ width: `${Math.max(0, Math.min(snapshot.progress, 100))}%` }} />
                 </div>
-                <span className={`justify-self-end rounded border px-1.5 py-0.5 font-mono text-[11px] ${quotaTone(snapshot)}`}>{snapshot.value}</span>
+                <span title={`${snapshot.valueDescription || "余额"}：${snapshot.value}`} aria-label={`${snapshot.label} ${snapshot.valueDescription || "余额"} ${snapshot.value}`} className={`justify-self-end rounded border px-1.5 py-0.5 font-mono text-[11px] ${quotaTone(snapshot)}`}>{snapshot.value}</span>
               </div>
             ))}
           </div>

@@ -2,7 +2,7 @@
 
 import { cn } from "@/shared/utils/cn";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
-import { formatResetTime } from "./utils";
+import { formatQuotaAmount, formatResetTime } from "./utils";
 
 // Calculate color based on remaining percentage
 const getColorClasses = (remainingPercentage) => {
@@ -62,6 +62,9 @@ export default function QuotaProgressBar({
   label = "",
   used = 0,
   total = 0,
+  unit,
+  balance,
+  currency,
   unlimited = false,
   resetTime = null,
   recurring = true,
@@ -105,7 +108,7 @@ export default function QuotaProgressBar({
       {/* Usage details and countdown */}
       <div className="flex items-center justify-between text-xs text-text-muted">
         <span>
-          {used.toLocaleString()} / {total.toLocaleString()} requests
+          {formatQuotaAmount({ used, total, unit, balance, currency, unlimited }) ?? "—"}
         </span>
         {countdown !== "-" && (
           <div className="flex items-center gap-1">

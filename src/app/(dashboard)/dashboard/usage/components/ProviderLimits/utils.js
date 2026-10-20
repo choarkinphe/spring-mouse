@@ -1,7 +1,8 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-export const QUOTA_CACHE_KEY = "quotaCacheData";
+// Unit-aware snapshots must not reuse legacy normalized rows without units.
+export const QUOTA_CACHE_KEY = "quotaCacheData:v2";
 export const REFRESH_INTERVAL_MS = 60000;
 // Claude usage/quota endpoint rate-limits; poll it less often than other providers
 export const CLAUDE_REFRESH_INTERVAL_MS = 600000;
@@ -311,13 +312,16 @@ export function getRemainingPercentage(quota) {
   return calculatePercentage(quota?.used, quota?.total);
 }
 
-export function formatQuotaBalance(quota) {
-  const amount = Number(quota?.balance);
-  if (!Number.isFinite(amount)) return null;
+// Number(null) / Number("") are zero, but absent quota data is not a zero balance.
+function getQuotaNumber(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
 
-  const currency = typeof quota?.currency === "string" ? quota.currency.trim().toUpperCase() : "";
+function formatQuotaCurrency(amount, currency) {
   if (!currency) return amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
-
   try {
     return new Intl.NumberFormat("zh-CN", {
       style: "currency",
@@ -328,6 +332,60 @@ export function formatQuotaBalance(quota) {
   } catch {
     return `${amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} ${currency}`;
   }
+}
+
+export function formatQuotaBalance(quota) {
+  const amount = getQuotaNumber(quota?.balance);
+  if (amount === null) return null;
+  const currency = typeof quota?.currency === "string" ? quota.currency.trim().toUpperCase() : "";
+  return formatQuotaCurrency(amount, currency);
+}
+
+function getQuotaUnit(quota) {
+  return typeof quota?.unit === "string" ? quota.unit.trim() : "";
+}
+
+/** Used / total in the provider's unit, or its actual currency balance. */
+export function formatQuotaAmount(quota) {
+  const balance = formatQuotaBalance(quota);
+  if (balance !== null) return balance;
+
+  const used = getQuotaNumber(quota?.used);
+  const total = getQuotaNumber(quota?.total);
+  if (used === null || (total === null && !quota?.unlimited)) return null;
+
+  const unit = getQuotaUnit(quota);
+  const unlimited = quota?.unlimited || total === 0;
+  const usedLabel = used.toLocaleString();
+  const totalLabel = unlimited ? "∞" : total.toLocaleString();
+  // Only explicit metadata identifies percentages; a count can also total 100.
+  if (unit === "%") return `${usedLabel}% / ${totalLabel}${unlimited ? "" : "%"}`;
+  if (quota?.currency) {
+    const currency = String(quota.currency).trim().toUpperCase();
+    return `${formatQuotaCurrency(used, currency)} / ${unlimited ? "∞" : formatQuotaCurrency(total, currency)}`;
+  }
+  return `${usedLabel} / ${totalLabel}${unit ? ` ${unit}` : ""}`;
+}
+
+/** Remaining amount for counted quotas, percentage for percentage-only quotas. */
+export function formatRemainingQuota(quota) {
+  const balance = formatQuotaBalance(quota);
+  if (balance !== null) return balance;
+
+  const used = getQuotaNumber(quota?.used);
+  const total = getQuotaNumber(quota?.total);
+  const unit = getQuotaUnit(quota);
+  if (((unit && unit !== "%") || quota?.currency) && used !== null && total > 0) {
+    const remaining = Math.max(0, total - used);
+    return quota?.currency
+      ? formatQuotaCurrency(remaining, String(quota.currency).trim().toUpperCase())
+      : `${remaining.toLocaleString()} ${unit}`;
+  }
+
+  const explicitRemaining = getQuotaNumber(quota?.remaining) ?? getQuotaNumber(quota?.remainingPercentage);
+  if (explicitRemaining !== null) return `${Math.max(0, Math.round(explicitRemaining))}%`;
+  if (used !== null && total > 0) return `${calculatePercentage(used, total)}%`;
+  return null;
 }
 
 export function getQuotaVisibilityKey(quota) {
@@ -374,6 +432,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
             });
           });
@@ -388,6 +447,7 @@ export function parseQuotaData(provider, data) {
               modelKey: modelKey, // Keep modelKey for sorting
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });
@@ -403,6 +463,23 @@ export function parseQuotaData(provider, data) {
               used: quota.used || 0,
               total: quota.total || 0,
               remaining: quota.remaining,
+              unit: quota.unit || "%", // Older Codex payloads predate unit metadata.
+              resetAt: quota.resetAt || null,
+            });
+          });
+        }
+        break;
+
+      case "opencode-go":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([quotaType, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || quotaType,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              remaining: quota.remaining,
+              remainingPercentage: quota.remainingPercentage,
+              unit: quota.unit || "%",
               resetAt: quota.resetAt || null,
             });
           });
@@ -416,6 +493,7 @@ export function parseQuotaData(provider, data) {
               name: quotaType,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
             });
           });
@@ -463,6 +541,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
             });
           });
@@ -470,16 +549,16 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "vercel-ai-gateway":
-        // Vercel returns currency credit balance, not request quotas.
-        // The 'Remaining (USD)' row needs explicit remainingPercentage because
-        // its used/total values would otherwise compute the wrong direction
-        // (e.g. used=95.5 / total=100 → 4% instead of 96%).
+        // The legacy Remaining (USD) row stores balance in `used`, not spending.
+        // Preserve the ratio metadata and expose the money amount without inversion.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              balance: quota.balance ?? (name === "Remaining (USD)" ? quota.used : undefined),
+              currency: quota.currency || "USD",
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });
@@ -520,6 +599,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });
@@ -535,6 +615,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });
@@ -568,6 +649,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,
             });
@@ -583,6 +665,7 @@ export function parseQuotaData(provider, data) {
               name,
               used: quota.used || 0,
               total: quota.total || 0,
+              unit: quota.unit,
               resetAt: quota.resetAt || null,
             });
           });

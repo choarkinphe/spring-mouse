@@ -18,12 +18,17 @@ export default {
     },
   },
   category: "apikey",
+  features: { usage: true, usageApikey: true },
   // The public Go /models directory is authoritative for discovery, not proof
   // of access for a particular subscription. Seeds below only retain metadata.
   modelListSource: "upstream",
   transport: {
     baseUrl: "https://opencode.ai/inference/go/openai/v1/chat/completions",
     headers: {},
+    usage: {
+      url: "https://opencode.ai/zen/go/v1/usage",
+      windows: { rolling: "5-hour", weekly: "Weekly", monthly: "Monthly" },
+    },
     // Public catalog additions do not establish Messages/Responses support.
     unknownModelFormats: ["openai"],
   },

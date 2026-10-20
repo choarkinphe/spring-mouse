@@ -25,7 +25,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
 import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
-import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
+import { parseQuotaData, formatQuotaAmount, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
 import AddApiKeyModal from "../[id]/AddApiKeyModal";
 import ProviderDetailClient from "../[id]/ProviderDetailClient";
@@ -227,20 +227,6 @@ function getResetCreditCount(resetCredits) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
-// Counted quotas (CodeBuddy credits, request budgets) read better as
-// "1,000 / 1,000 积分" than as a bare percentage — the percentage is already
-// carried by the progress bar below. Quotas that only expose a remaining
-// percentage (kimi / ollama / grok) have no usable used/total pair, so those
-// keep the % form.
-function getQuotaAmountLabel(quota) {
-  const used = Number(quota?.used);
-  const total = Number(quota?.total);
-  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
-
-  const unit = typeof quota?.unit === "string" ? quota.unit.trim() : "";
-  return `${used.toLocaleString()} / ${total.toLocaleString()}${unit ? ` ${unit}` : ""}`;
-}
-
 function ChannelQuota({ quotas, loading }) {
   if (loading) {
     return <div className="h-10 w-full max-w-[32rem] animate-pulse rounded-lg bg-white/[0.045]" />;
@@ -264,8 +250,7 @@ function ChannelQuota({ quotas, loading }) {
       <div className="grid w-full grid-cols-1 gap-2">
         {quotas.slice(0, 4).map((quota) => {
           const remaining = getRemainingPercentage(quota);
-          const balance = formatQuotaBalance(quota);
-          const amount = getQuotaAmountLabel(quota);
+          const amount = formatQuotaAmount(quota);
           const reset = formatResetTime(quota.resetAt);
           return (
             <div key={quota.modelKey || quota.name} className="min-w-0">
@@ -274,10 +259,7 @@ function ChannelQuota({ quotas, loading }) {
                 {quota.unlimited ? (
                   <span className="shrink-0 text-[#7dd3fc]">不限额</span>
                 ) : (
-                  <>
-                    {balance && <span className="shrink-0 font-mono text-[#e4edf5]">{balance}</span>}
-                    <span className="shrink-0 font-mono text-[#e4edf5]">{amount ?? `${remaining}%`}</span>
-                  </>
+                  <span title={quota.balance !== undefined ? "账户余额" : "已用 / 总量"} className="shrink-0 font-mono text-[#e4edf5]">{quota.unit === "%" ? "已用 " : ""}{amount ?? `${remaining}%`}</span>
                 )}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>

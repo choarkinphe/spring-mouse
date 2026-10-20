@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
-import { formatResetTime, getRemainingPercentage } from "./utils";
+import { formatQuotaAmount, formatResetTime, getRemainingPercentage } from "./utils";
 
 const PAGE_SIZE = 10;
 
@@ -148,6 +148,7 @@ export default function QuotaTable({
           const colors = getColorClasses(quota.remaining);
           const countdown = formatResetTime(quota.resetAt);
           const resetDisplay = formatResetTimeDisplay(quota.resetAt);
+          const amountLabel = formatQuotaAmount(quota) ?? "—";
           // recurring defaults true: a missing flag means the quota
           // refreshes at resetAt. Bonus/one-shot packs set recurring:false
           // and their resetAt is a hard expiry, so word it as "expires".
@@ -181,11 +182,11 @@ export default function QuotaTable({
                 <div className={`flex items-center justify-between gap-1 min-w-0 ${compact ? "text-[10px]" : "text-xs"}`}>
                   <span
                     className="text-text-muted truncate"
-                    title={`${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
+                    title={amountLabel}
                   >
-                    {quota.used.toLocaleString()} / {quota.total > 0 ? quota.total.toLocaleString() : "∞"}
+                    {amountLabel}
                   </span>
-                  <span className={`font-medium ${colors.text} shrink-0`}>
+                  <span className={`font-medium ${colors.text} shrink-0`} title={`${quota.remaining}% remaining`}>
                     {quota.remaining}%
                   </span>
                 </div>

@@ -48,6 +48,18 @@ export default {
     { id: "deepseek-chat", name: "DeepSeek V3.2 Chat" },
     { id: "deepseek-reasoner", name: "DeepSeek V3.2 Reasoner" },
   ],
+  serviceKinds: ["llm", "webSearch"],
+  searchConfig: {
+    baseUrl: "https://api.deepseek.com/v1/tools/search",
+    method: "POST",
+    authType: "apikey",
+    authHeader: "Authorization",
+    searchTypes: ["web"],
+    defaultMaxResults: 10,
+    maxMaxResults: 50,
+    maxQueryLength: 128,
+    timeoutMs: 10000,
+  },
   features: {
     usage: true,
     usageApikey: true,

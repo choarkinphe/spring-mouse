@@ -23,6 +23,10 @@ import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from "open-sse/config/runtimeConfig.js";
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { detectFormat } from "open-sse/services/provider.js";
+import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
+import { runComboSearchLoop } from "../services/comboSearchLoop.js";
+import { runGatewaySearch } from "../services/gatewaySearch.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
@@ -49,18 +53,22 @@ function resolveComboRequestModels(comboModels, requiredCapabilities, capabiliti
   return { models };
 }
 
-async function resolveComboRoutingModels(entries, requiredCapabilities, capabilities, comboPath, accessTags) {
+async function resolveComboRoutingModels(entries, requiredCapabilities, capabilities, comboPath, accessTags, searchBinding = null) {
   const nodes = Array.isArray(entries) ? entries : [];
   const ids = nodes.map((entry) => typeof entry === "string" ? entry : entry.model);
   const now = new Date();
   // Only load the graph when a capability check actually traverses a sub-combo.
-  const options = requiredCapabilities.size && ids.some((id) => !id.includes("/")) ? {
+  const options = (searchBinding || requiredCapabilities.size) && ids.some((id) => !id.includes("/")) ? {
     combos: await getCombos(),
     comboPath,
     isEntryAvailable: (entry) => isComboModelActive(entry, now) && canAccessWithTags(accessTags, entry?.accessTags),
     isComboAvailable: (combo) => canAccessWithTags(accessTags, combo.accessTags),
   } : undefined;
-  return resolveComboRequestModels(nodes, requiredCapabilities, capabilities, options);
+  const resolved = resolveComboRequestModels(nodes, requiredCapabilities, capabilities, options);
+  if (resolved.error || !searchBinding) return resolved;
+  const resolver = createComboCapabilityResolver(options);
+  const models = resolved.models.filter((entry) => resolver.supports(entry, ["tools"], ["tools"]));
+  return models.length ? { models } : { error: "No active tools-capable model can execute this combo's search binding" };
 }
 
 function withOriginalModelContext(clientRawRequest, originalModel) {
@@ -274,12 +282,15 @@ export async function handleChat(request, clientRawRequest = null) {
         log.warn("AUTH", `${routedModelStr} | denied by combo access tags`);
         return finishEarly(errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key"), "access_denied");
       }
-      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags);
+      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags, combo?.search);
       if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
 
       const comboStrategies = settings.comboStrategies || {};
       const comboConfig = comboStrategies[routedModelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
+      if (combo?.search && comboStrategy === "fusion") {
+        return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing"), "unsupported_capability");
+      }
       routing.hint({ strategy: comboStrategy, comboName: routedModelStr });
       const routedEntries = comboStrategy === "auto"
         ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: routedModelStr, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest, routing })
@@ -316,7 +327,7 @@ export async function handleChat(request, clientRawRequest = null) {
         response = await handleComboChat({
           body,
           models: routedModels,
-          handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, routing, role: "primary", routeKind: comboRouteKind, routed: true }),
+          handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, routing, role: "primary", routeKind: comboRouteKind, routed: true, search: combo?.search || null }),
           log,
           comboName: routedModelStr,
           comboStrategy,
@@ -350,7 +361,41 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false } = {}) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, options = {}) {
+  // A combo may bind a gateway search provider. The loop lives here — outside
+  // the single-attempt transport and inside the combo's model routing — so each
+  // search round still goes through account selection, token refresh and the
+  // combo's own fallback budget. Nested combos resolve to this wrapper again,
+  // carrying the binding down until a real provider/model leaf is reached.
+  const searchBinding = options?.search || null;
+  if (searchBinding && options.role === "primary") {
+    const info = await getModelInfo(modelStr);
+    if (info.provider) {
+      const sourceFormat = (request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null) || detectFormat(body);
+      return runComboSearchLoop({
+        body,
+        sourceFormat,
+        search: searchBinding,
+        signal: options.clientSignal || request?.signal,
+        deadlineMs: overloadDeadline,
+        runChat: (roundBody, { signal }) => handleSingleModelChatInner(roundBody, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...options, clientSignal: signal }),
+        runSearch: ({ query, maxResults }, { signal }) => runGatewaySearch({
+          provider: searchBinding.provider,
+          query,
+          maxResults,
+          apiKey,
+          accessTags,
+          signal,
+          deadlineMs: overloadDeadline,
+          log,
+        }),
+      });
+    }
+  }
+  return handleSingleModelChatInner(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, options);
+}
+
+async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null } = {}) {
   if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
   if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
     return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
@@ -446,7 +491,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
-      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [...comboPath, modelStr], accessTags);
+      const effectiveSearch = internalRequest || role === "panel" || role === "classifier" ? null : search || combo?.search || null;
+      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [...comboPath, modelStr], accessTags, effectiveSearch);
       if (resolved.error) {
         const response = errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
         routing?.complete({ outcome: "failed", terminalReason: "unsupported_capability" });
@@ -456,6 +502,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboConfig = comboStrategies[modelStr] || {};
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
+      if (effectiveSearch && comboStrategy === "fusion") {
+        return errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing");
+      }
       const routedEntries = comboStrategy === "auto"
         ? await applyAutoRouting({ body, entries: resolved.models, comboConfig, comboName: modelStr, requiredCapabilities, request, apiKey, accessTags, overloadDeadline, log, clientRawRequest, autoRoutingDepth, routing, comboPath })
         : resolved.models;
@@ -500,7 +549,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true }),
+        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true, search: effectiveSearch }),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -583,7 +632,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     try {
       credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
         accessTags, requesterId: apiKey || "local", reserveSlot: true, body, signal: clientSignal || request?.signal, requestId,
-        requiredCapabilities: detectRequiredCapabilities(body),
+        requiredCapabilities: search ? new Set([...detectRequiredCapabilities(body), "tools"]) : detectRequiredCapabilities(body),
         deadlineMs: overloadDeadline,
         waitForCapacity: !hasFallback,
       });

@@ -56,6 +56,15 @@ describe("public models list", () => {
     expect(data.models.filter(m => m.provider === "qianwen").map(m => m.model).sort()).toEqual(["live", "manual"]);
   });
 
+  it("declares gateway search without exposing the bound provider or credentials", async () => {
+    await createCombo({ name: "search-route", models: ["ds/deepseek-flash"], search: { mode: "gateway", provider: "deepseek", maxResults: 5 } });
+    const models = await buildModelsList(["llm"]);
+    const entry = models.find((model) => model.id === "search-route");
+    expect(entry.capabilities).toEqual({ search: true });
+    expect(entry).not.toHaveProperty("search");
+    expect(JSON.stringify(entry)).not.toContain("deepseek");
+  });
+
   it("exposes a combo's declared context and input capabilities", async () => {
     await createCombo({
       name: "media-route",

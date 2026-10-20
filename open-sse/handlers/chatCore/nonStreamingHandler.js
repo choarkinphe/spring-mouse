@@ -360,6 +360,9 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   if (sourceFormat === FORMATS.CLAUDE && translatedResponse?.choices?.[0]) {
     translatedResponse = openAICompletionToClaudeMessage(translatedResponse);
   }
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.choices?.[0]) {
+    translatedResponse = openAICompletionToResponses(translatedResponse, customToolNames);
+  }
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   if (sourceFormat === FORMATS.CLAUDE && !isClaudeMessageResponse) {
     return rejectBody(`Upstream response cannot be converted to a Claude Message from ${provider}`);

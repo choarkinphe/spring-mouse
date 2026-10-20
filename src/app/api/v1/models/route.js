@@ -23,6 +23,7 @@ import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/p
 import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags";
 import { getActiveComboModels } from "open-sse/services/combo.js";
+import { normalizeComboSearch } from "open-sse/services/comboSearch.js";
 import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
 import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKTOP_FALLBACK_CREATED_AT } from "@/shared/utils/claudeDesktopDiscovery.js";
 import { resolveHarnessProfiles } from "@/shared/utils/harnessRoute.js";
@@ -327,10 +328,12 @@ export async function buildModelsList(kindFilter, options = {}) {
     if (Number.isInteger(capabilities.contextWindow) && capabilities.contextWindow > 0) {
       entry.context_window = capabilities.contextWindow;
     }
-    if (capabilities.vision === true || capabilities.audioInput === true) {
+    const search = normalizeComboSearch(combo.search);
+    if (capabilities.vision === true || capabilities.audioInput === true || search) {
       entry.capabilities = {
         ...(capabilities.vision === true ? { vision: true } : {}),
         ...(capabilities.audioInput === true ? { audio_input: true } : {}),
+        ...(search ? { search: true } : {}),
       };
     }
     models.push(entry);

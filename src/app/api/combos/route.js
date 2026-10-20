@@ -1,3 +1,4 @@
+import { normalizeComboSearch, getComboSearchValidationError } from "open-sse/services/comboSearch.js";
 import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError } from "open-sse/services/combo.js";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
@@ -79,7 +80,13 @@ export async function POST(request) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: normalizedModels, kind: kind || null, isActive, groupName: groupName?.trim() || null, sortOrder, capabilities: normalizedCapabilities, accessTags: normalizeAccessTags(accessTags) });
+    const search = normalizeComboSearch(body.search);
+    const searchError = search === undefined ? "Invalid combo search configuration" : getComboSearchValidationError(search, {
+      kind, models: normalizedModels, combos: await getCombos(), comboPath: [name],
+    });
+    if (searchError) return NextResponse.json({ error: searchError }, { status: 400 });
+
+    const combo = await createCombo({ search, name, models: normalizedModels, kind: kind || null, isActive, groupName: groupName?.trim() || null, sortOrder, capabilities: normalizedCapabilities, accessTags: normalizeAccessTags(accessTags) });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {

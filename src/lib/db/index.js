@@ -128,7 +128,7 @@ export async function exportDb() {
       rotatedAt: r.rotatedAt || null,
       revokedAt: r.revokedAt || null,
     })),
-    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), isActive: r.isActive !== 0, groupName: r.groupName || null, sortOrder: Number.isFinite(r.sortOrder) ? r.sortOrder : 0, capabilities: parseJson(r.capabilities, {}), search: parseJson(r.search, null), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
     modelCapabilityTests: [],
@@ -251,8 +251,8 @@ export async function importDb(payload) {
     }
     for (const c of payload.combos || []) {
       db.run(
-        `INSERT OR REPLACE INTO combos(id, name, kind, models, isActive, groupName, sortOrder, capabilities, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.isActive === false ? 0 : 1, c.groupName || null, Number.isFinite(c.sortOrder) ? c.sortOrder : 0, stringifyJson(c.capabilities || {}), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO combos(id, name, kind, models, isActive, groupName, sortOrder, capabilities, search, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.isActive === false ? 0 : 1, c.groupName || null, Number.isFinite(c.sortOrder) ? c.sortOrder : 0, stringifyJson(c.capabilities || {}), c.search ? stringifyJson(c.search) : null, c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
       );
     }
     for (const [a, m] of Object.entries(payload.modelAliases || {})) {

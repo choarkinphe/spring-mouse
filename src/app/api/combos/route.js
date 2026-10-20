@@ -71,7 +71,10 @@ export async function POST(request) {
       return NextResponse.json({ error: "Context window must be a positive integer" }, { status: 400 });
     }
     await refreshModelCapabilityOverrides();
-    const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities);
+    const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities, {
+      combos: await getCombos(),
+      comboPath: [name],
+    });
     if (capabilityError) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }

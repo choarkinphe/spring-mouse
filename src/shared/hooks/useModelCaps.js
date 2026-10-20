@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
+import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
 
 // Module cache: one /api/models fetch shared by every useModelCaps instance.
 let cache = null; // { byFull, byId } | null
@@ -60,7 +61,7 @@ function resolveCaps(byFull, byId, input) {
   return pickModelCapabilities(c);
 }
 
-export function useModelCaps() {
+export function useModelCaps(combos) {
   const [byFull, setByFull] = useState(() => cache?.byFull || {});
   const [byId, setById] = useState(() => cache?.byId || {});
 
@@ -84,9 +85,13 @@ export function useModelCaps() {
     return () => window.removeEventListener("customModelChanged", handleChange);
   }, []);
 
+  const getModelCapabilities = useCallback((id) => resolveCaps(byFull, byId, id), [byFull, byId]);
+  const resolver = useMemo(() => createComboCapabilityResolver({ combos, getModelCapabilities }), [combos, getModelCapabilities]);
   const getCaps = useCallback(
-    (key) => resolveCaps(byFull, byId, key),
-    [byFull, byId],
+    (key, options) => (options
+      ? createComboCapabilityResolver({ combos, ...options, getModelCapabilities })
+      : resolver).getCapabilities(key),
+    [resolver, combos, getModelCapabilities],
   );
 
   return { getCaps };

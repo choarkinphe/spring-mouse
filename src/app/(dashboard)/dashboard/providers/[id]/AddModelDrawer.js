@@ -33,6 +33,8 @@ export default function AddModelDrawer({
 }) {
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState(null); // null = not loaded yet
+  const [listingError, setListingError] = useState("");
+  const [publicListing, setPublicListing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [verified, setVerified] = useState(false);
   const [testError, setTestError] = useState("");
@@ -51,23 +53,35 @@ export default function AddModelDrawer({
     [existingModelIds],
   );
 
-  // Seed the search list from the first active account's /models endpoint.
+  // Seed candidates through an active connection's listing API. Some providers
+  // expose a public directory rather than an account-scoped list.
   useEffect(() => {
     if (!isOpen) return undefined;
     const active = connections.find((connection) => connection.isActive !== false);
     if (!active) return undefined;
     let cancelled = false;
     fetch(`/api/providers/${active.id}/models`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : {}))
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.models)) {
+          throw new Error(data.error || "无有效模型列表");
+        }
+        return data;
+      })
       .then((data) => {
         if (cancelled) return;
-        const ids = (data.models || [])
+        setListingError("");
+        setPublicListing(data.listingScope === "public");
+        const ids = data.models
           .map((model) => (typeof model === "string" ? model : model?.id || model?.name))
           .filter(Boolean);
         setCandidates([...new Set(ids)]);
       })
-      .catch(() => {
-        if (!cancelled) setCandidates([]);
+      .catch((error) => {
+        if (!cancelled) {
+          setCandidates([]);
+          setListingError(error.message || "请求失败");
+        }
       });
     return () => {
       cancelled = true;
@@ -166,6 +180,12 @@ export default function AddModelDrawer({
           {hasActiveConnection && candidates === null && (
             <p className="text-xs text-text-muted">正在读取上游 /models 列表…</p>
           )}
+          {listingError && (
+            <p className="text-xs text-warning">上游模型列表获取失败（{listingError}），仍可手动输入 ID 并测试。</p>
+          )}
+          {publicListing && !listingError && (
+            <p className="text-xs text-text-muted">候选来自官方公开目录，不代表当前账号的模型权限，请测试后添加。</p>
+          )}
 
           {matches.length > 0 && (
             <div className="custom-scrollbar flex max-h-56 flex-col gap-0.5 overflow-y-auto rounded-[10px] border border-border-subtle bg-surface-2/40 p-1.5">
@@ -184,7 +204,7 @@ export default function AddModelDrawer({
             </div>
           )}
 
-          {cleanId && candidates !== null && matches.length === 0 && !duplicate && (
+          {cleanId && candidates !== null && !listingError && matches.length === 0 && !candidates.includes(cleanId) && !duplicate && (
             <p className="text-xs text-text-muted">上游列表没有匹配项，将按你输入的 ID 提交。</p>
           )}
           {duplicate && (

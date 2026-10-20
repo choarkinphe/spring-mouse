@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { normalizeComboModelsForStorage, normalizeComboCapabilities, getComboCapabilityValidationError, resetComboRotation } from "open-sse/services/combo.js";
-import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
+import { getComboById, updateCombo, deleteCombo, getComboByName, getCombos } from "@/lib/localDb";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
@@ -84,7 +84,11 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Context window must be a positive integer" }, { status: 400 });
     }
     await refreshModelCapabilityOverrides();
-    const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities);
+    const capabilityError = getComboCapabilityValidationError(normalizedModels, normalizedCapabilities, {
+      // Validate the edited graph, not a stale copy of this combo (also on rename).
+      combos: (await getCombos()).filter((combo) => combo.id !== id),
+      comboPath: [body.name || prev.name],
+    });
     if (capabilityError) {
       return NextResponse.json({ error: capabilityError }, { status: 400 });
     }

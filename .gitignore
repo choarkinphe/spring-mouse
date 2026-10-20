@@ -20,6 +20,7 @@
 /.next-preview/
 /.next-capability-preview/
 /.next-jevapi-preview/
+/.next-opencode-go-preview/
 /.next-capability-build/
 /out/
 cli/.build-home/

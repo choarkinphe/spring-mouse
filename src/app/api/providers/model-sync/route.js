@@ -96,12 +96,17 @@ export async function POST(request) {
     }
 
     const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
+    const staticById = new Map(staticModels.map((model) => [model.id, model]));
 
     // ── 2. Provider's own /models list (authoritative for naming) ───────────
     const officialModels = supportedModels
       .map((model) => {
         const normalized = normalizeSupportedModel(model);
         if (!normalized) return null;
+        // Protocol metadata is a known-id annotation, never a source of extra
+        // discoverable ids. Public /models directories may omit it entirely.
+        const supportedFormats = upstreamOnly && staticById.get(normalized.id)?.supportedFormats;
+        if (supportedFormats) normalized.supportedFormats = supportedFormats;
         const metadata = catalogById.get(normalized.id);
         if (!metadata) return normalized;
         // Catalog metadata wins for capabilities/limits, the provider wins for
@@ -126,7 +131,7 @@ export async function POST(request) {
     const { models: mergedModels, catalogOnlyCount } = mergeSyncedModels({ officialModels, catalogModels: upstreamOnly ? [] : catalogModels });
 
     // Union-based channels retain their static entries. Upstream-only channels
-    // may enrich returned ids, but must never infer account access from a seed.
+    // may enrich returned ids, but must never expand the live directory from a seed.
     const known = new Set(mergedModels.map((model) => model.id));
     let staticOnlyCount = 0;
     for (const model of upstreamOnly ? [] : staticModels) {

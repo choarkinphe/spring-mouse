@@ -191,7 +191,7 @@ export default function CombosPage() {
   const [comboStrategies, setComboStrategies] = useState({});
   const [modelAliases, setModelAliases] = useState({});
   const [savingModels, setSavingModels] = useState(false);
-  const { getCaps } = useModelCaps();
+  const { getCaps } = useModelCaps(combos);
   const [confirmState, setConfirmState] = useState(null);
   // Master-detail selection. `null` means "follow the first combo", so deleting
   // the selected row falls back to the head of the list without needing an effect.
@@ -507,6 +507,7 @@ export default function CombosPage() {
           activeProviders={activeProviders}
           getCaps={getCaps}
           groupOptions={groupOptions}
+          combos={combos}
         />
       )}
 
@@ -521,6 +522,7 @@ export default function CombosPage() {
           activeProviders={activeProviders}
           getCaps={getCaps}
           groupOptions={groupOptions}
+          combos={combos}
         />
       )}
 
@@ -1436,7 +1438,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
   );
 }
 
-function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProviders, getCaps, groupOptions = [], kindFilter = null }) {
+function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProviders, getCaps, combos = [], groupOptions = [], kindFilter = null }) {
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
@@ -1463,9 +1465,13 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
   // Use stable index-based IDs so duplicates and similar names are handled correctly
   const modelValues = models.map(getComboModelValue);
   const modelItems = models.map((entry, i) => ({ uid: `item-${i}`, entry }));
+  const memberCaps = models.map((entry) => getCaps?.(entry, {
+    combos: combos.filter((candidate) => !combo || candidate.id !== combo.id),
+    comboPath: [name.trim()],
+  }));
   const capableMembers = {
-    vision: models.filter((entry) => getCaps?.(getComboModelValue(entry))?.vision === true),
-    audioInput: models.filter((entry) => getCaps?.(getComboModelValue(entry))?.audioInput === true),
+    vision: memberCaps.filter((caps) => caps?.vision === true),
+    audioInput: memberCaps.filter((caps) => caps?.audioInput === true),
   };
 
   const handleDragEnd = (event) => {

@@ -18,6 +18,9 @@ export default {
     },
   },
   category: "apikey",
+  // The public Go /models directory is authoritative for discovery, not proof
+  // of access for a particular subscription. Seeds below only retain metadata.
+  modelListSource: "upstream",
   transport: {
     baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
     headers: {},

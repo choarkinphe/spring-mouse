@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   getModelInfo: vi.fn(),
   getComboModelEntries: vi.fn(),
   getComboByName: vi.fn(),
+  getCombos: vi.fn(),
   getSettings: vi.fn(),
   getProviderCredentials: vi.fn(),
   attempts: [],
@@ -49,6 +50,7 @@ vi.mock("../../src/sse/services/model.js", () => ({
 vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
   getComboByName: mocks.getComboByName,
+  getCombos: mocks.getCombos,
 }));
 vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: vi.fn(async (_p, c) => c),
@@ -116,6 +118,34 @@ beforeEach(() => {
   mocks.handleComboChat.mockImplementation(async ({ models }) => {
     mocks.attempts.push(models);
     return new Response("ok", { status: 200 });
+  });
+});
+
+describe("nested capability routing", () => {
+  it.each([true, false])("dispatches images only through a declared child (vision=%s)", async (enabled) => {
+    const graph = [
+      { name: "outer", capabilities: { vision: true }, models: ["gpt-6.1-sol"] },
+      { name: "gpt-6.1-sol", capabilities: { vision: enabled }, models: ["middle"] },
+      { name: "middle", capabilities: { vision: true }, models: ["probe/vision"] },
+    ];
+    mocks.getCombos.mockResolvedValue(graph);
+    mocks.getComboByName.mockImplementation(async (name) => graph.find((combo) => combo.name === name));
+    mocks.getComboModelEntries.mockImplementation(async (name) => graph.find((combo) => combo.name === name)?.models.map((model) => ({ model })) || null);
+    mocks.getModelInfo.mockImplementation(async (id) => ({ provider: id.includes("/") ? "probe" : null, model: id.split("/").at(-1) }));
+    mocks.getSettings.mockResolvedValue({ comboStrategies: {} });
+    const { handleComboChat } = await vi.importActual("open-sse/services/combo.js");
+    mocks.handleComboChat.mockImplementation(handleComboChat);
+    mocks.handleChatCore.mockResolvedValue({ success: true, response: new Response("leaf answer") });
+    const messages = [{ role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,x" } }] }];
+    const response = await handleChat(request({ model: "outer", messages }));
+    expect(response.status).toBe(enabled ? 200 : 400);
+    if (enabled) {
+      expect(mocks.handleChatCore).toHaveBeenCalledTimes(1);
+      expect(mocks.handleChatCore.mock.calls[0][0]).toMatchObject({ modelInfo: { provider: "probe", model: "vision" }, body: { messages } });
+      expect(mocks.handleComboChat.mock.calls.map(([options]) => options.comboName)).toEqual(["outer", "gpt-6.1-sol", "middle"]);
+    } else {
+      expect(mocks.handleChatCore).not.toHaveBeenCalled();
+    }
   });
 });
 

@@ -708,17 +708,19 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     setSyncingModels(true);
     setModelSyncStatus(null);
     try {
-      // Upstream-only channels must not replace an account's catalog with a
+      // Upstream-only channels must not replace a live directory with a
       // platform-wide seed when listing fails. Other channels keep union sync.
       let officialModels = [];
       let officialWarning = "";
       let officialFetched = false;
+      let publicListing = false;
       try {
         const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
         const officialData = await officialRes.json().catch(() => ({}));
         if (officialRes.ok && Array.isArray(officialData.models)) {
           officialFetched = true;
           officialModels = officialData.models;
+          publicListing = officialData.listingScope === "public";
         } else {
           officialWarning = officialData.error || `HTTP ${officialRes.status}`;
         }
@@ -753,6 +755,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         type: "success",
         text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")} (${detail}), ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`
           + (data.removed ? ` · 清理 ${data.removed} 个旧同步模型` : "")
+          + (publicListing ? " · 官方公开目录，不代表当前账号的模型权限" : "")
           + (officialWarning ? ` · 官方接口不可用（${officialWarning}），已用能力目录补齐` : ""),
       });
     } catch (error) {

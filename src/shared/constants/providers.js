@@ -89,7 +89,7 @@ export const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 export const ANTHROPIC_COMPATIBLE_PREFIX = "anthropic-compatible-";
 export const CUSTOM_EMBEDDING_PREFIX = "custom-embedding-";
 
-// Providers with an authenticated dashboard-side live model listing.
+// Providers with a dashboard-side live model listing (public or authenticated).
 // Providers carrying `modelCatalog` are handled separately because they add
 // capability metadata from an external catalog during synchronization.
 export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
@@ -100,6 +100,7 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "github",
   "openai",
   "openrouter",
+  "opencode-go",
   "anthropic",
   "alicode",
   "alicode-intl",

@@ -1,9 +1,9 @@
-import { getProviderAlias, usesUpstreamModelList } from "@/shared/constants/providers";
+import { getProviderAlias, resolveProviderId, usesUpstreamModelList } from "@/shared/constants/providers";
 import { PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
 
-// Old union-sync rows are not evidence that this account can use the model.
+// Old union-sync rows are not evidence that the upstream directory lists a model.
 export function isListedCustomModel(model) {
-  if (!usesUpstreamModelList(model?.providerId || model?.providerAlias)) return true;
+  if (!usesUpstreamModelList(resolveProviderId(model?.providerId || model?.providerAlias))) return true;
   return !["catalog", "models-dev", "static"].includes(model?.source);
 }
 

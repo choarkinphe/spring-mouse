@@ -17,6 +17,9 @@ export const HTTP_STATUS = {
 // Re-export error config (backward compat)
 export { ERROR_TYPES, DEFAULT_ERROR_MESSAGES, BACKOFF_CONFIG, COOLDOWN_MS } from "./errorConfig.js";
 
+// Bound nested combo traversal in both capability checks and request dispatch.
+export const COMBO_RESOLUTION_LIMITS = Object.freeze({ maxDepth: 32, maxVisits: 4096 });
+
 // Cache TTLs (seconds)
 export const CACHE_TTL = {
   userInfo: 300,    // 5 minutes

@@ -212,6 +212,41 @@ const PROVIDER_MODELS_CONFIG = {
   "qianwen-token-plan": createOpenAIModelsConfig(QIANWEN_ENDPOINTS["qianwen-token-plan"].models),
   openai: createOpenAIModelsConfig("https://api.openai.com/v1/models"),
   openrouter: createOpenAIModelsConfig("https://openrouter.ai/api/v1/models"),
+  "opencode-go": {
+    // Official public directory, not an account entitlement check. Do not send
+    // stored credentials to this unauthenticated discovery endpoint.
+    customResolver: async () => {
+      const response = await fetch("https://opencode.ai/inference/go/v1/models", {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) {
+        return { error: `Failed to fetch models: ${response.status}`, status: response.status };
+      }
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        return { error: "Upstream returned an invalid model list", status: 502 };
+      }
+      if (!Array.isArray(data?.data) || data.data.some((model) =>
+        typeof model?.id !== "string" || !model.id.trim())) {
+        return { error: "Upstream returned an invalid model list", status: 502 };
+      }
+      const known = new Map(getStaticProviderModels("opencode-go").map((model) => [model.id, model]));
+      return {
+        listingScope: "public",
+        models: data.data.map((model) => ({
+          ...model,
+          name: model.name || known.get(model.id)?.name || model.id,
+          ...(known.get(model.id)?.supportedFormats
+            ? { supportedFormats: known.get(model.id).supportedFormats } : {}),
+        })),
+      };
+    },
+  },
   anthropic: {
     url: "https://api.anthropic.com/v1/models",
     method: "GET",
@@ -564,6 +599,7 @@ export async function GET(request, { params }) {
         provider: connection.provider,
         connectionId: connection.id,
         models: result.models,
+        ...(result.listingScope ? { listingScope: result.listingScope } : {}),
         ...(result.warning ? { warning: result.warning } : {})
       });
     }

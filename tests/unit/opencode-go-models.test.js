@@ -18,8 +18,10 @@ function pickTransport(provider, sourceFormat, alias, model) {
   return supported?.includes(sourceFormat) ? rt : null;
 }
 
-describe("OpenCode Go model catalog", () => {
-  it("matches the documented model IDs", () => {
+// This seed retains protocol metadata only; live discovery/sync is tested in
+// opencode-go-model-sync.test.js and must not be constrained to this snapshot.
+describe("OpenCode Go known protocol metadata seed", () => {
+  it("retains the known model IDs without defining the live directory", () => {
     const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);
     expect(ids).toEqual([
       "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6",

@@ -10,17 +10,17 @@ import {
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
-import { getSettings, getComboByName } from "@/lib/localDb";
+import { getSettings, getComboByName, getCombos } from "@/lib/localDb";
 import { getModelInfo, getComboModelEntries } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability, isComboModelActive } from "open-sse/services/combo.js";
 import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel } from "open-sse/services/autoRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
-import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS } from "open-sse/config/runtimeConfig.js";
+import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from "open-sse/config/runtimeConfig.js";
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
@@ -40,21 +40,27 @@ import { isClaudeMessagesRouteRequest, getClaudeMessagesComboError, getComboTarg
 import { resolveHarnessTarget, resolveLegacyClaudeMessagesRoute } from "@/shared/utils/harnessRoute.js";
 import { isNonChatServiceProvider } from "@/shared/constants/providers";
 
-function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities) {
+function resolveComboRequestModels(comboModels, requiredCapabilities, capabilities, options) {
   const unsupported = getUnsupportedComboRequestCapability(requiredCapabilities, capabilities);
   if (unsupported) return { error: `Combo does not declare ${unsupported} input support` };
 
-  const models = getComboModelsForRequest(comboModels, requiredCapabilities, capabilities);
+  const models = getComboModelsForRequest(comboModels, requiredCapabilities, capabilities, options);
   if (models.length === 0) return { error: "No active combo model can handle this request's declared inputs" };
   return { models };
 }
 
-function resolveComboRoutingModels(entries, requiredCapabilities, capabilities) {
+async function resolveComboRoutingModels(entries, requiredCapabilities, capabilities, comboPath, accessTags) {
   const nodes = Array.isArray(entries) ? entries : [];
-  const resolved = resolveComboRequestModels(nodes.map((entry) => typeof entry === "string" ? entry : entry.model), requiredCapabilities, capabilities);
-  if (resolved.error) return resolved;
-  const byModel = new Map(nodes.map((entry) => [typeof entry === "string" ? entry : entry.model, entry]));
-  return { models: resolved.models.map((model) => byModel.get(model) || model) };
+  const ids = nodes.map((entry) => typeof entry === "string" ? entry : entry.model);
+  const now = new Date();
+  // Only load the graph when a capability check actually traverses a sub-combo.
+  const options = requiredCapabilities.size && ids.some((id) => !id.includes("/")) ? {
+    combos: await getCombos(),
+    comboPath,
+    isEntryAvailable: (entry) => isComboModelActive(entry, now) && canAccessWithTags(accessTags, entry?.accessTags),
+    isComboAvailable: (combo) => canAccessWithTags(accessTags, combo.accessTags),
+  } : undefined;
+  return resolveComboRequestModels(nodes, requiredCapabilities, capabilities, options);
 }
 
 function withOriginalModelContext(clientRawRequest, originalModel) {
@@ -268,7 +274,7 @@ export async function handleChat(request, clientRawRequest = null) {
         log.warn("AUTH", `${routedModelStr} | denied by combo access tags`);
         return finishEarly(errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key"), "access_denied");
       }
-      const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
+      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags);
       if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
 
       const comboStrategies = settings.comboStrategies || {};
@@ -352,6 +358,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (comboPath.includes(modelStr)) {
     log.warn("COMBO", `Skipping cyclic route: ${[...comboPath, modelStr].join(" → ")}`);
     return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `Cyclic combo route skipped: ${modelStr}`);
+  }
+  if (!modelStr.includes("/") && comboPath.length >= COMBO_RESOLUTION_LIMITS.maxDepth) {
+    return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "Combo nesting depth exceeded");
   }
   const modelInfo = await getModelInfo(modelStr);
   const effectiveRouteKind = routeKind || modelInfo.routeKind;
@@ -437,7 +446,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
-      const resolved = resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities);
+      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [...comboPath, modelStr], accessTags);
       if (resolved.error) {
         const response = errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
         routing?.complete({ outcome: "failed", terminalReason: "unsupported_capability" });

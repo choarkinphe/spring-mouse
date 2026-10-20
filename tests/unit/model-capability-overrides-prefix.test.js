@@ -73,6 +73,19 @@ describe("model capability overrides resolve a channel's display prefix", () => 
     expect(getComboModelsForRequest([comboEntry], new Set(["vision"]), visionCapabilities)).toEqual([comboEntry]);
   });
 
+  it("resolves gpt-6.1-sol as a declared sub-combo backed by a provider override", async () => {
+    const model = "opaque-vision-model";
+    state.customModels = [{ providerAlias: NODE_ID, providerId: NODE_ID, id: model, capabilities: { vision: true } }];
+    state.providerNodes = [{ id: NODE_ID, type: "openai-compatible", prefix: NODE_PREFIX }];
+    await refreshModelCapabilityOverrides({ force: true });
+    const combos = [{ name: "gpt-6.1-sol", models: [`${NODE_PREFIX}/${model}`], capabilities: visionCapabilities }];
+    expect(getComboCapabilityValidationError(["gpt-6.1-sol"], visionCapabilities, { combos })).toBeNull();
+    expect(getComboModelsForRequest(["gpt-6.1-sol"], new Set(["vision"]), visionCapabilities, { combos })).toEqual(["gpt-6.1-sol"]);
+    state.customModels[0].capabilities.vision = false;
+    await refreshModelCapabilityOverrides({ force: true });
+    expect(getComboCapabilityValidationError(["gpt-6.1-sol"], visionCapabilities, { combos })).toContain("视觉");
+  });
+
   it("picks the prefix up from a connection's providerSpecificData", async () => {
     state.customModels = [{
       providerAlias: NODE_ID,

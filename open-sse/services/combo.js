@@ -5,7 +5,8 @@
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { errorResponse, unavailableResponse } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
-import { getCapabilitiesForModel, getMeasuredCapabilitiesForConnection } from "../providers/capabilities.js";
+import { getCapabilitiesForModel } from "../providers/capabilities.js";
+export { DEFAULT_COMBO_CAPABILITIES, normalizeComboCapabilities, getComboCapabilityValidationError, getUnsupportedComboRequestCapability, getComboModelsForRequest } from "./comboCapabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { canAccessWithTags, normalizeAccessTags } from "../../src/shared/utils/accessTags.js";
 import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/utils/schedule.js";
@@ -241,99 +242,8 @@ export function normalizeComboModelsForStorage(models) {
   return normalized;
 }
 
-export const DEFAULT_COMBO_CAPABILITIES = Object.freeze({
-  contextWindow: null,
-  vision: false,
-  audioInput: false,
-});
-
-const DECLARABLE_INPUT_CAPABILITIES = [
-  ["vision", "视觉"],
-  ["audioInput", "音频输入"],
-];
-
-/**
- * Normalize the capabilities a combo exposes to callers. Context size is an
- * optional explicit declaration; image and audio support default to disabled.
- */
-export function normalizeComboCapabilities(value) {
-  if (value == null) return { ...DEFAULT_COMBO_CAPABILITIES };
-  if (typeof value !== "object" || Array.isArray(value)) return null;
-
-  const rawContextWindow = value.contextWindow;
-  let contextWindow = null;
-  if (rawContextWindow !== undefined && rawContextWindow !== null && rawContextWindow !== "") {
-    const parsed = Number(rawContextWindow);
-    if (!Number.isInteger(parsed) || parsed <= 0) return null;
-    contextWindow = parsed;
-  }
-
-  return {
-    contextWindow,
-    vision: value.vision === true,
-    audioInput: value.audioInput === true,
-  };
-}
-
 function comboModelIdentifier(entry) {
   return typeof entry === "string" ? entry : String(entry?.model || "");
-}
-
-function modelSupportsCapabilities(modelEntry, capabilities) {
-  const modelStr = comboModelIdentifier(modelEntry);
-  const slash = modelStr.indexOf("/");
-  const provider = slash > 0 ? modelStr.slice(0, slash) : "";
-  const model = slash > 0 ? modelStr.slice(slash + 1) : modelStr;
-  const modelCapabilities = getCapabilitiesForModel(provider, model);
-  return capabilities.every((capability) => modelCapabilities[capability] === true);
-}
-
-/**
- * A declared input capability is valid only when at least one combo member can
- * actually serve it. This keeps a combo's public metadata and routing promise
- * aligned without relying on a global cross-combo fallback pool.
- */
-export function getComboCapabilityValidationError(models, capabilities) {
-  const normalized = normalizeComboCapabilities(capabilities);
-  if (!normalized) return "组合能力配置无效：上下文窗口必须是正整数";
-  const memberModels = Array.isArray(models) ? models.map(comboModelIdentifier).filter(Boolean) : [];
-  for (const [capability, label] of DECLARABLE_INPUT_CAPABILITIES) {
-    if (normalized[capability] && !memberModels.some((model) => modelSupportsCapabilities(model, [capability]))) {
-      return `组合声明支持${label}，但没有添加支持${label}的模型节点`;
-    }
-  }
-  return null;
-}
-
-/** Return which declared input capability a request cannot use on this combo. */
-export function getUnsupportedComboRequestCapability(requiredCapabilities, capabilities) {
-  const normalized = normalizeComboCapabilities(capabilities) || DEFAULT_COMBO_CAPABILITIES;
-  for (const [capability, label] of DECLARABLE_INPUT_CAPABILITIES) {
-    if (requiredCapabilities?.has(capability) && !normalized[capability]) return label;
-  }
-  return null;
-}
-
-/**
- * Keep only members that can preserve a request's declared image/audio inputs.
- * This prevents an image/audio request from falling through to a text-only
- * member after the capable member fails.
- */
-export function getComboModelsForRequest(models, requiredCapabilities, capabilities) {
-  const normalized = normalizeComboCapabilities(capabilities) || DEFAULT_COMBO_CAPABILITIES;
-  const required = DECLARABLE_INPUT_CAPABILITIES
-    .map(([capability]) => capability)
-    .filter((capability) => requiredCapabilities?.has(capability) && normalized[capability]);
-  const measuredHard = ["pdf", "videoInput", "tools"].filter((key) => requiredCapabilities?.has(key));
-  if (required.length === 0 && measuredHard.length === 0) return models;
-  return (models || []).filter((model) => {
-    if (!modelSupportsCapabilities(model, required)) return false;
-    if (measuredHard.length === 0) return true;
-    const id = comboModelIdentifier(model);
-    const slash = id.indexOf("/");
-    const caps = getMeasuredCapabilitiesForConnection(slash > 0 ? id.slice(0, slash) : "", slash > 0 ? id.slice(slash + 1) : id, null);
-    return measuredHard.every((key) => caps[key] !== false);
-  });
 }
 
 function comboModelEntry(entry) {

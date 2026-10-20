@@ -1291,7 +1291,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             Back to Providers
           </Link>
         )}
-        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+        <div data-testid="model-management-header" className="flex min-w-0 flex-wrap items-start gap-4">
+          <div data-testid="model-management-identity" className="flex min-w-0 flex-[1_1_24rem] items-start gap-3 sm:gap-4">
           {isCompatible ? (
             <button
               type="button"
@@ -1322,7 +1323,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   href={providerInfo.notice?.apiKeyUrl || providerInfo.notice?.signupUrl || providerInfo.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
                 >
                   <span className="material-symbols-outlined text-sm">open_in_new</span>
                   {providerInfo.notice?.apiKeyUrl ? "Get API Key" : "Sign up / Learn more"}
@@ -1330,7 +1331,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               )}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-text-muted">
-              <p>
+              <p className="shrink-0 whitespace-nowrap">
                 {connections.length} 个账号 · {modelGrid.count} 个模型
               </p>
               {providerThinkingLevels && (
@@ -1351,7 +1352,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                           role="radio"
                           aria-checked={active}
                           onClick={() => handleThinkingModeChange(opt)}
-                          className={`inline-flex h-7 items-center rounded-[8px] border px-2.5 text-xs transition-colors ${
+                          className={`inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-[8px] border px-2.5 text-xs transition-colors ${
                             active
                               ? "border-brand-500/45 bg-brand-500/10 font-medium text-brand-500"
                               : "border-border-subtle bg-surface-2 text-text-muted hover:border-border hover:text-text-main"
@@ -1371,11 +1372,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               </p>
             )}
           </div>
-          <p className="text-xs text-text-muted">{hasAuthoritativeSync ? `官方目录同步于 ${new Date(officialSnapshot.syncedAt).toLocaleString()}` : supportsModelSync ? "尚未同步官方目录；内置模型未经当前账号验证" : "此渠道暂未提供已验证的官方目录获取方式；内置模型仅供手动配置"}</p>
-          {hasAuthoritativeSync && officialSnapshot.scope === "public" && <p className="text-xs text-text-muted">该公开目录不代表当前账号具有调用权限；逐个模型权限需由实际请求验证。</p>}
-          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          </div>
+          <div data-testid="model-management-actions" className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 sm:justify-end">
             {supportsModelSync && connections.filter((connection) => connection.isActive !== false).length > 1 && (
-              <select aria-label="模型目录连接" value={selectedSyncConnectionId} onChange={(event) => setSelectedSyncConnectionId(event.target.value)} className="rounded-lg border border-border bg-background px-2 py-2 text-sm">
+              <select aria-label="模型目录连接" value={selectedSyncConnectionId} onChange={(event) => setSelectedSyncConnectionId(event.target.value)} className="min-w-0 max-w-full rounded-lg border border-border bg-background px-2 py-2 text-sm">
                 <option value="">选择同步连接</option>
                 {connections.filter((connection) => connection.isActive !== false).map((connection) => <option key={connection.id} value={connection.id}>{connection.name || connection.email || connection.id}</option>)}
               </select>
@@ -1475,6 +1475,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               )}
             </div>
           </div>
+        </div>
+        <div data-testid="model-management-directory-status" className="mt-3 min-w-0 space-y-1 text-xs leading-5 text-text-muted">
+          <p>{hasAuthoritativeSync ? `官方目录同步于 ${new Date(officialSnapshot.syncedAt).toLocaleString()}` : supportsModelSync ? "尚未同步官方目录；内置模型未经当前账号验证" : "此渠道暂未提供已验证的官方目录获取方式；内置模型仅供手动配置"}</p>
+          {hasAuthoritativeSync && officialSnapshot.scope === "public" && <p>该公开目录不代表当前账号具有调用权限；逐个模型权限需由实际请求验证。</p>}
         </div>
 
         {batchMode && (

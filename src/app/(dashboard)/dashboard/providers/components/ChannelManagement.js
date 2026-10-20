@@ -385,9 +385,10 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
   // through a Mouse node; only offer the picker when it would actually work.
   const mouseSupported = supportsMouseExecution(provider.id);
 
-  const handleApiKeySubmit = async (event) => {
+  const handleConnectionSubmit = async (event) => {
     event.preventDefault();
-    if (!apiKey.trim() && provider.id !== "ollama-local") {
+    if (submitting) return;
+    if (!provider.noAuth && !apiKey.trim() && provider.id !== "ollama-local") {
       setError("请输入 API Key");
       return;
     }
@@ -417,7 +418,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
         id: data.connection?.id ?? null,
         name: data.connection?.name || displayName.trim() || provider.name,
         provider: data.connection?.provider || provider.id,
-        authType: data.connection?.authType || "apikey",
+        authType: data.connection?.authType || (provider.noAuth ? "none" : "apikey"),
         mouseName: mouseSupported && mouseId ? mouses.find((mouse) => mouse.id === mouseId)?.name : undefined,
       });
       onClose();
@@ -462,6 +463,17 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
               <span className="block truncate text-base font-semibold text-text-main">{provider.name}</span>
               <span className="mt-0.5 block text-sm text-text-muted">选择认证方式并完成渠道接入</span>
             </span>
+            {provider.notice?.apiKeyUrl && (
+              <a
+                href={provider.notice.apiKeyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#38bdf8]/25 px-2.5 py-2 text-xs font-medium text-[#7dd3fc] transition-colors hover:bg-[#38bdf8]/[0.08]"
+              >
+                <span className="material-symbols-outlined text-[15px]">open_in_new</span>
+                获取 API Key
+              </a>
+            )}
           </div>
 
           {methods.length > 1 && (
@@ -486,7 +498,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
           )}
 
           {authMethod === "apikey" && (
-            <form onSubmit={handleApiKeySubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
+            <form onSubmit={handleConnectionSubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
               <div className="grid gap-4">
                 <label className="grid gap-1.5 text-sm font-medium text-text-main">
                   渠道名称
@@ -539,14 +551,18 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
           )}
 
           {authMethod === "none" && (
-            <div className="rounded-xl border border-border-subtle bg-bg/30 p-5">
+            <form onSubmit={handleConnectionSubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
               <h3 className="font-semibold text-text-main">无需密钥的渠道</h3>
-              <p className="mt-1 text-sm text-text-muted">该提供商无需填写密钥；如需调整更多参数，可在此抽屉中继续展开高级选项。</p>
+              <p className="mt-1 text-sm text-text-muted">该提供商无需填写密钥，点击“创建渠道”即可添加。创建成功不代表上游模型一定可用。</p>
               <button type="button" onClick={() => setShowAdvanced((value) => !value)} className="mt-4 flex items-center gap-1 text-sm font-medium text-[#7dd3fc] hover:text-[#bae6fd]">
                 高级配置 <span className="material-symbols-outlined text-[17px]">{showAdvanced ? "expand_less" : "expand_more"}</span>
               </button>
               {showAdvanced && <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">当前提供商不需要额外的认证参数。</p>}
-            </div>
+              {error && <p role="alert" className="mt-4 rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-300">{error}</p>}
+              <div className="mt-5 flex justify-end">
+                <Button type="submit" loading={submitting} icon="add">创建渠道</Button>
+              </div>
+            </form>
           )}
         </div>
       </Drawer>
@@ -707,7 +723,9 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
     ? "OAuth 授权"
     : created.authType === "cookie"
       ? "Cookie 认证"
-      : "API 密钥";
+      : created.authType === "none"
+        ? "无需密钥"
+        : "API 密钥";
   const rows = [
     [isAccount ? "账号名称" : "渠道名称", channelLabel],
     ["提供商", providerLabel],
@@ -942,7 +960,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
             <span className="min-w-0 truncate">{providerName}</span>
             <span className="shrink-0 text-[#506070]">/</span>
-            <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
+            <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : connection.authType === "cookie" ? "Cookie" : connection.authType === "none" ? "无需密钥" : "API Key"}</span>
             {connection.email && <><span className="shrink-0 text-[#506070]">·</span><span className="min-w-0 truncate">{connection.email}</span></>}
           </span>
           {connection.accessTags?.length > 0 && (

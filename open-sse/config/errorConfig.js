@@ -55,6 +55,13 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
+// Verification rejection: suppress only the affected account, then allow retry.
+export const CODEBUDDY_VERIFICATION = Object.freeze({
+  provider: "codebuddy-intl",
+  code: 11128,
+  cooldownMs: 5 * 60 * 1000,
+});
+
 // CodeBuddy 14003 explicitly advises waiting about one minute.
 export const CODEBUDDY_RATE_LIMIT = Object.freeze({
   quotaCode: 6004,

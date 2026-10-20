@@ -132,9 +132,9 @@ export function getModelLockKey(model) {
  */
 export function isModelLockActive(connection, model) {
   const key = getModelLockKey(model);
-  const expiry = connection[key] || connection[MODEL_LOCK_ALL];
-  if (!expiry) return false;
-  return new Date(expiry).getTime() > Date.now();
+  const now = Date.now();
+  return [connection[key], connection[MODEL_LOCK_ALL]]
+    .some(expiry => expiry && new Date(expiry).getTime() > now);
 }
 
 /**

@@ -145,6 +145,66 @@ beforeEach(async () => {
 });
 
 describe("multi-account fan-out", () => {
+  it("rotates intl 11128 to a healthy sibling and skips the rejected account across models", async () => {
+    const provider = "codebuddy-intl";
+    const [rejected, healthy] = await seedAccounts(2, provider);
+    const { parseUpstreamError } = await import("../../open-sse/utils/error.js");
+    const { CodeBuddyIntlExecutor } = await import("../../open-sse/executors/codebuddy-intl.js");
+    const body = { code: 11128, msg: "channel verification failed" };
+    const parsed = await parseUpstreamError(new Response(JSON.stringify(body), { status: 400 }), new CodeBuddyIntlExecutor());
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-x" });
+    mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+      mocks.attempts.push(credentials.connectionId);
+      if (credentials.connectionId === healthy.id) return { success: true, response: new Response("ok") };
+      return { success: false, status: parsed.statusCode, error: parsed.message,
+        upstreamError: parsed.upstreamError, response: new Response(JSON.stringify(body), { status: 400 }) };
+    });
+    expect((await handleChat(request(`${provider}/model-x`))).status).toBe(200);
+    expect(mocks.attempts).toEqual([rejected.id, healthy.id]);
+    const stored = await connectionsRepo.getProviderConnectionById(rejected.id);
+    expect(stored).toMatchObject({ isActive: true, testStatus: "unavailable", errorCode: 400,
+      lastUpstreamStatus: 400, lastUpstreamRaw: JSON.stringify(body), lastUpstreamDiagnostics: { code: 11128 } });
+    expect(Date.parse(stored.modelLock___all) - Date.now()).toBeGreaterThan(290000);
+    expect(Date.parse(stored.modelLock___all) - Date.now()).toBeLessThanOrEqual(300000);
+    expect((await connectionsRepo.getProviderConnectionById(healthy.id)).modelLock___all).toBeUndefined();
+    // A stale model-specific expiry must not re-admit the blocked account.
+    await connectionsRepo.updateProviderConnection(rejected.id, { "modelLock_model-y": new Date(Date.now() - 1000).toISOString() });
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-y" });
+    mocks.attempts.length = 0;
+    expect((await handleChat(request(`${provider}/model-y`))).status).toBe(200);
+    expect(mocks.attempts).toEqual([healthy.id]);
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+    expect((await getProviderModelBreaker(provider, "model-x")).open).toBe(false);
+    expect(mocks.updateProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("drains an all-11128 pool once, retains 400, and never refills or opens the model breaker", async () => {
+    const provider = "codebuddy-intl";
+    await seedAccounts(4, provider);
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-x" });
+    failEveryAccount({ status: 400, error: JSON.stringify({ code: 11128, msg: "channel verification failed" }) });
+    expect((await handleChat(request(`${provider}/model-x`))).status).toBe(400);
+    expect(mocks.attempts).toHaveLength(4);
+    expect(new Set(mocks.attempts).size).toBe(4);
+    expect((await handleChat(request(`${provider}/model-x`))).status).toBe(400);
+    expect(mocks.attempts).toHaveLength(4); // later requests do not hit a cooling account
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+    expect((await getProviderModelBreaker(provider, "model-x")).open).toBe(false);
+    expect(mocks.updateProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it.each([11115, 99999])("keeps unrelated CodeBuddy HTTP 400 code %s terminal without quarantining siblings", async (code) => {
+    const provider = "codebuddy-intl";
+    const accounts = await seedAccounts(2, provider);
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-x" });
+    failEveryAccount({ status: 400, error: JSON.stringify({ code, msg: "request rejected" }) });
+    expect((await handleChat(request(`${provider}/model-x`))).status).toBe(400);
+    expect(mocks.attempts).toHaveLength(1);
+    for (const account of accounts) {
+      expect((await connectionsRepo.getProviderConnectionById(account.id)).modelLock___all).toBeUndefined();
+    }
+  });
+
   it.each([429, 502])("keeps an SSE failure's effective %s status through subsequent cooldown requests", async (status) => {
     const [account] = await seedAccounts(1);
     mocks.handleChatCore.mockResolvedValue({

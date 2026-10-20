@@ -2,7 +2,7 @@
 
 Run the `opencode-go-models-fixture` Claude Preview configuration. The unified `start.sh` starts a local catalog mock (9057), seeds a fresh temporary SQLite database and HOME, starts the dashboard (8057), and waits for both health checks. It refuses occupied ports and cleans up only its child processes.
 
-The shared smoke preload suppresses background services and blocks external fetch. This fixture redirects only `https://opencode.ai/inference/go/v1/models` to the local mock; no real subscription key is used. This guard is not an operating-system network sandbox. Browser-side public assets can still load normally.
+The shared smoke preload suppresses background services and blocks external fetch. This fixture redirects the public Go catalog and Go Chat Completions routes to the local mock; no real subscription key is used. The chat mock requires session and client identity headers and supports JSON and SSE. This guard is not an operating-system network sandbox. Browser-side public assets can still load normally.
 
 Seeded rows:
 
@@ -20,4 +20,12 @@ node tests/fixtures/opencode-go-models/verify.mjs
 
 The verifier covers discovery, known-model protocol metadata, synchronization, stale removal, manual preservation, failed/malformed upstream responses, failed-sync protection, valid empty-directory cleanup, and absence of Authorization on the public request. It ends with only the manual row in storage and the mock restored to success mode. Reload the page, open Add Model, and search `kimi` to verify candidates; then synchronize again.
 
-The mock's loopback-only `POST /state` accepts `{ "mode": "ok" | "error" | "malformed" | "empty" }`. Error mode returns 503; the UI must show a failure, keep existing models, and not submit a model-sync request. `/requests` records whether Authorization was sent, never its value.
+The mock's loopback-only `POST /state` accepts `{ "mode": "ok" | "error" | "malformed" | "empty" | "reject" }`. Error mode returns 503 for catalog requests; reject mode returns 400 for chat requests. `/requests` records whether Authorization was sent, never its value; chat entries also include the synthetic session, User-Agent and model.
+
+For isolated routing verification, start the same unified launcher with `SMOKE_PORT=8087`, `MOCK_PORT=9087` and a separate `NEXT_DIST_DIR`, then run:
+
+```bash
+node tests/fixtures/opencode-go-models/verify-routing.mjs
+```
+
+The routing verifier checks health, account/model probes, independent test sessions, stable user sessions, OpenAI/Claude JSON and SSE translation, and rejection handling. It requires the seeded fixture account and healthy loopback mock. Real callers must supply stable session information; the gateway does not create fake conversations from accounts or request IDs.

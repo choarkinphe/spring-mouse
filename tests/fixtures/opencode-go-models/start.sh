@@ -15,7 +15,7 @@ SMOKE_DIR="$(mktemp -d /tmp/sm-opencode-go.XXXXXX)"
 export DATA_DIR="$SMOKE_DIR/data" HOME="$SMOKE_DIR/home"
 mkdir -p "$DATA_DIR" "$HOME"
 export JWT_SECRET="fixture-not-real" INITIAL_PASSWORD="fixture-password" API_KEY_SECRET="fixture-not-real" MACHINE_ID_SALT="fixture-salt"
-export NEXT_DIST_DIR=".next-opencode-go-preview" NEXT_TELEMETRY_DISABLED=1
+export NEXT_DIST_DIR="${NEXT_DIST_DIR:-.next-opencode-go-preview}" NEXT_TELEMETRY_DISABLED=1
 export SPRING_MOUSE_REDIS_URL="" SPRING_MOUSE_REDIS_REQUIRED=false
 export NODE_OPTIONS="--require $HERE/preload.cjs"
 pids=()

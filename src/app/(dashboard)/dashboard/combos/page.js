@@ -1361,20 +1361,22 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
             label="路由节点权限标签"
             hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
           />
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <div className="flex items-center gap-1 text-[10px] text-text-muted">
-              <span className="material-symbols-outlined text-[13px] text-[#fbbf24]">equalizer</span>
-              <span>自动层级</span>
-              <span className="text-[9px] text-text-muted/70">任务复杂度越高，优先级越高</span>
+          {showAutoTier && (
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex items-center gap-1 text-[10px] text-text-muted">
+                <span className="material-symbols-outlined text-[13px] text-[#fbbf24]">equalizer</span>
+                <span>自动层级</span>
+                <span className="text-[9px] text-text-muted/70">任务复杂度越高，优先级越高</span>
+              </div>
+              <SegmentedControl
+                options={AUTO_TIER_OPTIONS}
+                value={autoTier}
+                onChange={(value) => onAutoTierChange?.(value)}
+                size="xs"
+                className="w-fit border border-amber-400/15 bg-amber-400/[0.035]"
+              />
             </div>
-            <SegmentedControl
-              options={AUTO_TIER_OPTIONS}
-              value={autoTier}
-              onChange={(value) => onAutoTierChange?.(value)}
-              size="xs"
-              className="w-fit border border-amber-400/15 bg-amber-400/[0.035]"
-            />
-          </div>
+          )}
           <div className="border-t border-black/5 pt-2 dark:border-white/5">
           {schedule ? (
             <>

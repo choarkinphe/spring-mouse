@@ -82,3 +82,15 @@ export async function incrementHotCounter(key, ttlSeconds = 120) {
   `, { keys: [fullKey(key)], arguments: [String(Math.max(1, Math.floor(Number(ttlSeconds) || 120)))] }));
   return result === null ? null : Number(result);
 }
+
+/**
+ * Drop a counter so the next `incrementHotCounter` starts again at 1.
+ *
+ * Unlike `deleteHotJson` this must be a real DEL: that helper leaves an
+ * invalidation marker string behind, and INCR on a non-numeric value fails.
+ */
+export async function resetHotCounter(key) {
+  try {
+    return await routingRedis((client) => client.del(fullKey(key))) !== null;
+  } catch { return false; }
+}

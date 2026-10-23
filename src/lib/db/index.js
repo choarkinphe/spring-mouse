@@ -96,6 +96,15 @@ export {
   getUserPromptsByRequestIds,
 } from "./repos/requestDetailsRepo.js";
 
+// Leases belong to an in-flight process, never to a restored backup.
+function persistentCheckinState(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    throw new Error("Invalid check-in state");
+  }
+  const { leaseId, leaseUntil, ...persistent } = state;
+  return persistent;
+}
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();
@@ -138,6 +147,7 @@ export async function exportDb() {
     modelAliases: {},
     customModels: [],
     modelSyncSnapshots: {},
+    codebuddyCheckin: {},
     modelCapabilityTests: [],
     mitmAlias: {},
     pricing: {},
@@ -145,6 +155,9 @@ export async function exportDb() {
 
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelAliases'`)) out.modelAliases[r.key] = parseJson(r.value);
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'modelSyncSnapshots'`)) out.modelSyncSnapshots[r.key] = parseJson(r.value);
+  for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'codebuddyCheckin'`)) {
+    Object.defineProperty(out.codebuddyCheckin, r.key, { value: persistentCheckinState(parseJson(r.value)), enumerable: true, configurable: true, writable: true });
+  }
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'customModels'`)) out.customModels.push(parseJson(r.value));
   for (const r of db.all(`SELECT value FROM kv WHERE scope = 'modelCapabilityTests'`)) out.modelCapabilityTests.push(parseJson(r.value));
   for (const r of db.all(`SELECT key, value FROM kv WHERE scope = 'mitmAlias'`)) out.mitmAlias[r.key] = parseJson(r.value);
@@ -174,7 +187,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM mouseAccessTokens`);
     db.run(`DELETE FROM mouses`);
     db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'modelSyncSnapshots', 'mitmAlias', 'pricing', 'modelCapabilityTests')`);
+    db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'modelSyncSnapshots', 'codebuddyCheckin', 'mitmAlias', 'pricing', 'modelCapabilityTests')`);
 
     // Settings
     if (payload.settings) {
@@ -269,6 +282,9 @@ export async function importDb(payload) {
     for (const [providerId, snapshot] of Object.entries(payload.modelSyncSnapshots || {})) {
       if (!snapshot || snapshot.providerId !== providerId || snapshot.status !== "success" || snapshot.source !== "official") continue;
       db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('modelSyncSnapshots', ?, ?)`, [providerId, stringifyJson(snapshot)]);
+    }
+    for (const [key, state] of Object.entries(payload.codebuddyCheckin || {})) {
+      db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('codebuddyCheckin', ?, ?)`, [key, stringifyJson(persistentCheckinState(state))]);
     }
     for (const m of payload.customModels || []) {
       const k = `${m.providerAlias}|${m.id}|${m.type || "llm"}`;

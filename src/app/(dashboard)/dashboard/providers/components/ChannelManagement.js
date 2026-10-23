@@ -20,6 +20,7 @@ import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
+import CodeBuddyCheckin from "./CodeBuddyCheckin";
 import { cn } from "@/shared/utils/cn";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
@@ -973,6 +974,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
+        <CodeBuddyCheckin connection={connection} onRefreshQuota={onRefreshQuota} />
         <div className="mt-2 flex min-w-0 items-center text-xs">
           {errorEvidence && connection.isActive !== false ? (
             <div

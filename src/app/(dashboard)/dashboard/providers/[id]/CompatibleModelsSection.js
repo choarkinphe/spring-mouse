@@ -5,7 +5,7 @@ import PropTypes from "prop-types";
 import { SelectionCheckbox, Toggle } from "@/shared/components";
 import { CAPACITY_META } from "@/shared/constants/models";
 import { cn } from "@/shared/utils/cn";
-import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { describeModelSource, getProviderCustomModelRows, getModelDisplayCapabilities } from "@/shared/utils/providerCustomModels";
 import ModelPricingBadge from "./ModelPricingBadge";
 import CapabilityEvidenceBadge from "./CapabilityEvidenceBadge";
 
@@ -190,7 +190,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
             <span className="material-symbols-outlined text-[18px]">add</span>
             添加模型
           </button>
-          {allModels.map(({ id, alias, source, modelSource, providerId, capabilities }) => {
+          {allModels.map(({ id, alias, source, modelSource, providerId, capabilities, manualCapabilities, origin }) => {
             const capsKey = `${providerStorageAlias}/${id}`;
             // Mirror ProviderDetailClient: the parent tracks the in-flight toggle as
             // "<alias>|<modelId>|<capabilityKey>"; the card only needs the suffix.
@@ -200,7 +200,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               : null;
             // Locally stored capabilities win; the shared resolver fills the rest
             // so a partially-known model still shows every applicable badge.
-            const caps = getCaps(capsKey) || capabilities || {};
+            const caps = getModelDisplayCapabilities({ modelSource, capabilities, manualCapabilities, origin }, getCaps(capsKey));
             const sourceLabel = describeModelSource(modelSource);
             const overrideCaps = capabilityOverrides[`${providerStorageAlias}|${id}|llm`] || {};
             return (

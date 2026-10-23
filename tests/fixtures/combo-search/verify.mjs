@@ -39,6 +39,8 @@ try {
       const res = await fetch(`${base}${protocol.route}`, { method: "POST", headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: name, ...protocol.body, stream }), signal: AbortSignal.timeout(120000) });
       const raw = await res.text();
       assert.equal(res.status, 200, `${protocol.label} stream=${stream}: ${raw.slice(0, 2000)}`);
+      assert.equal(res.headers.get("access-control-allow-origin"), "*", `${protocol.label} stream=${stream}: missing CORS`);
+      for (const header of ["content-encoding", "set-cookie"]) assert.equal(res.headers.has(header), false, `${protocol.label}: unsafe rebuilt response header ${header}`);
       assert.ok(!raw.includes("spring_mouse_web_search"), "internal search calls must not leak to clients");
       if (!stream) {
         const data = JSON.parse(raw);
@@ -56,6 +58,31 @@ try {
           assert.ok(events.filter((event) => event !== "[DONE]").map((event) => event.choices?.[0]?.delta?.content || "").join("").includes(resultUrl));
         } else {
           assert.equal(events.at(-1).type, protocol.terminal);
+          if (protocol.label === "Responses") {
+            const output = events.at(-1).response.output;
+            assert.ok(output.some((item) => item.type === "message"));
+            assert.equal(new Set(output.map((item) => item.id)).size, output.length);
+            for (const item of output) assert.ok(typeof item.id === "string" && item.id.length > 0, `missing ${item.type} item ID`);
+            assert.deepEqual(events.map((event) => event.sequence_number), events.map((_, index) => index));
+            for (const [output_index, item] of output.entries()) {
+              const added = events.find((event) => event.type === "response.output_item.added" && event.output_index === output_index);
+              const done = events.find((event) => event.type === "response.output_item.done" && event.output_index === output_index);
+              assert.equal(added?.item.id, item.id);
+              assert.deepEqual(done?.item, item);
+            }
+            for (const event of events.filter((event) => event.output_index != null && !event.item)) {
+              const item = output[event.output_index];
+              assert.ok(item, `invalid output_index in ${event.type}`);
+              assert.equal(event.item_id, item.id, `mismatched item_id in ${event.type}`);
+              if (item.type === "message") {
+                assert.ok(Number.isInteger(event.content_index));
+                const part = item.content[event.content_index];
+                assert.ok(part, `invalid content_index in ${event.type}`);
+                if (event.type === "response.output_text.delta") assert.equal(event.delta, part.text);
+                if (event.type === "response.content_part.done") assert.deepEqual(event.part, part);
+              }
+            }
+          }
           const text = protocol.label === "Responses"
             ? events.filter((event) => event.type === "response.output_text.delta").map((event) => event.delta).join("")
             : events.filter((event) => event.type === "content_block_delta").map((event) => event.delta?.text || "").join("");

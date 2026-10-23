@@ -63,7 +63,7 @@ export default function AddModelDrawer({
     fetch(`/api/providers/${active.id}/models`, { cache: "no-store" })
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok || !Array.isArray(data.models)) {
+        if (!res.ok || !Array.isArray(data.models) || data.warning || data.discovery?.status !== "success") {
           throw new Error(data.error || "无有效模型列表");
         }
         return data;

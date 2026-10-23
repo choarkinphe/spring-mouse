@@ -69,6 +69,19 @@ for (const format of formats) describe(format, () => {
     }
   });
 
+  it.each([false, true])("uses normal safe response headers for buffered output (stream=%s)", async (stream) => {
+    const upstream = (data) => Response.json(data, { headers: { "Access-Control-Allow-Origin": "*", "Content-Length": "1", "Content-Encoding": "gzip", "Set-Cookie": "upstream-secret=value" } });
+    const runChat = vi.fn().mockResolvedValueOnce(upstream(reply(format, [call(format)]))).mockResolvedValueOnce(upstream(reply(format)));
+    const response = await runComboSearchLoop({ body: body(format, { stream }), sourceFormat: format, runChat, runSearch: async () => ({ results: [] }) });
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("content-type")).toBe(stream ? "text/event-stream" : "application/json");
+    if (stream) {
+      expect(response.headers.get("cache-control")).toBe("no-cache");
+      expect(response.headers.get("connection")).toBe("keep-alive");
+    }
+    for (const header of ["content-length", "content-encoding", "set-cookie"]) expect(response.headers.has(header)).toBe(false);
+  });
+
   it("maps an explicit hosted choice and resets it after a gateway round", async () => {
     const hosted = format === "claude" ? { type: "web_search_20250305", name: "web_search" } : { type: "web_search" };
     const runChat = vi.fn().mockResolvedValueOnce(json(reply(format, [call(format)]))).mockResolvedValueOnce(json(reply(format)));
@@ -89,6 +102,7 @@ for (const format of formats) describe(format, () => {
     const runSearch = vi.fn();
     const response = await runComboSearchLoop({ body: body(format, { tools: [userTool(format, NAME)], tool_choice: "none" }), sourceFormat: format, runChat, runSearch });
     expect(response.status).toBe(400);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(await response.text()).toContain("reserved_tool_name");
     expect(runChat).not.toHaveBeenCalled();
     expect(runSearch).not.toHaveBeenCalled();
@@ -166,6 +180,50 @@ for (const format of formats) describe(format, () => {
       const argumentsDone = parsed.find((frame) => frame.event === "response.function_call_arguments.done");
       expect(argumentsDone.data.arguments).toBe(JSON.stringify({ query: "latest release", max_results: 3 }));
       expect(parsed.at(-1).data.response.output.at(-1).name).toBe("user_action");
+    }
+  });
+});
+
+describe("buffered Responses item identity", () => {
+  it.each([false, true])("correlates all events when translated items lack IDs (mixed tools: %s)", async (mixed) => {
+    const format = "openai-responses";
+    const data = reply(format, [call(format, "user_action", "external"), call(format, "other_action", "external_2"), ...(mixed ? [call(format)] : [])]);
+    data.output.forEach((item) => { delete item.id; });
+    data.output[1].content.push({ type: "output_text", text: "second part", annotations: [] }, { type: "refusal", refusal: "cannot comply" });
+    const response = await runComboSearchLoop({ body: body(format, { stream: true }), sourceFormat: format, runChat: async () => json(data), runSearch: vi.fn() });
+    const parsed = events(await response.text()).map((frame) => frame.data);
+    const output = parsed.at(-1).response.output;
+    expect(output).toHaveLength(4);
+    expect(output.map((item) => item.id)).toEqual([expect.stringMatching(/^rs_/), expect.stringMatching(/^msg_/), expect.stringMatching(/^fc_/), expect.stringMatching(/^fc_/)]);
+    expect(new Set(output.map((item) => item.id)).size).toBe(output.length);
+    expect(output[0].encrypted_content).toBe("opaque");
+    expect(output.slice(2).map((item) => item.call_id)).toEqual(["external", "external_2"]);
+    for (const [output_index, item] of output.entries()) {
+      const frames = parsed.filter((frame) => frame.output_index === output_index);
+      expect(frames[0]).toMatchObject({ type: "response.output_item.added", item: { id: item.id } });
+      expect(frames.at(-1)).toMatchObject({ type: "response.output_item.done", item });
+      for (const frame of frames.slice(1, -1)) {
+        expect(frame.item_id).toBe(item.id);
+        if (item.type === "message") {
+          expect(Number.isInteger(frame.content_index)).toBe(true);
+          const part = item.content[frame.content_index];
+          expect(part).toBeDefined();
+          if (frame.type.endsWith(".delta")) expect(frame.delta).toBe(part.text ?? part.refusal);
+          if (frame.type === "response.content_part.done") expect(frame.part).toEqual(part);
+        }
+      }
+    }
+    expect(parsed.map((frame) => frame.sequence_number)).toEqual(parsed.map((_, index) => index));
+  });
+
+  it("retains existing native item IDs in every event", async () => {
+    const format = "openai-responses";
+    const data = reply(format, [call(format, "user_action", "external")]);
+    const response = await runComboSearchLoop({ body: body(format, { stream: true }), sourceFormat: format, runChat: async () => json(data), runSearch: vi.fn() });
+    const parsed = events(await response.text()).map((frame) => frame.data);
+    expect(parsed.at(-1).response.output).toEqual(data.output);
+    for (const frame of parsed.filter((frame) => frame.output_index != null)) {
+      expect(frame.item?.id ?? frame.item_id).toBe(data.output[frame.output_index].id);
     }
   });
 });

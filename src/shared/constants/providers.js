@@ -1,6 +1,7 @@
 // Provider definitions
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { RISK_NOTICE } from "@/shared/constants/providersDisplay";
+import { OFFICIAL_MODEL_CATALOG } from "@/shared/config/officialModelCatalog";
 
 const MEDIA_ENTRY_KEYS = [
   "serviceKinds", "ttsConfig", "sttConfig", "embeddingConfig",
@@ -89,9 +90,9 @@ export const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
 export const ANTHROPIC_COMPATIBLE_PREFIX = "anthropic-compatible-";
 export const CUSTOM_EMBEDDING_PREFIX = "custom-embedding-";
 
-// Providers with a dashboard-side live model listing (public or authenticated).
-// Providers carrying `modelCatalog` are handled separately because they add
-// capability metadata from an external catalog during synchronization.
+// Existing provider-owned listing implementations in officialModelDiscovery.
+// A third-party capability catalog or a static registry is NOT listing support.
+// Newly implemented declarative directories live in OFFICIAL_MODEL_CATALOG.
 export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "claude",
   "gemini",
@@ -158,6 +159,7 @@ export function usesUpstreamModelList(providerId) {
 
 export function supportsLiveModelSync(providerId) {
   return OFFICIAL_MODEL_SYNC_PROVIDERS.has(providerId)
+    || Boolean(OFFICIAL_MODEL_CATALOG[providerId])
     || isOpenAICompatibleProvider(providerId)
     || isAnthropicCompatibleProvider(providerId);
 }

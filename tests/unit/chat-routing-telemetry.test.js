@@ -47,7 +47,10 @@ vi.mock("@/lib/redis/routingEvents.js", () => ({ enqueueRoutingEvent: mocks.enqu
 vi.mock("open-sse/index.js", () => ({}));
 vi.mock("open-sse/handlers/chatCore.js", () => ({ handleChatCore: mocks.handleChatCore }));
 vi.mock("open-sse/utils/bypassHandler.js", () => ({ handleBypassRequest: vi.fn(() => null) }));
-vi.mock("open-sse/translator/formats.js", () => ({ detectFormatByEndpoint: vi.fn(() => null) }));
+vi.mock("open-sse/translator/formats.js", () => ({
+  FORMATS: { OPENAI: "openai", CLAUDE: "claude", OPENAI_RESPONSES: "openai-responses" },
+  detectFormatByEndpoint: vi.fn(() => null),
+}));
 vi.mock("open-sse/services/projectId.js", () => ({ getProjectIdForConnection: vi.fn(async () => null) }));
 vi.mock("open-sse/services/combo.js", () => ({
   handleComboChat: mocks.handleComboChat,

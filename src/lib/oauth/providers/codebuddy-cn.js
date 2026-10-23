@@ -1,4 +1,5 @@
 import { CODEBUDDY_CONFIG } from "../constants/oauth.js";
+import { CODEBUDDY_CHECKIN } from "@/shared/config/codebuddyCheckin.js";
 
 // CodeBuddy (Tencent) - Browser OAuth Polling Flow
 // 1. POST stateUrl → get { state, authUrl }
@@ -8,12 +9,12 @@ const codebuddyCn = {
   config: CODEBUDDY_CONFIG,
   flowType: "device_code",
   requestDeviceCode: async (config) => {
-    const response = await fetch(`${config.stateUrl}?platform=${config.platform}`, {
+    const response = await fetch(`${config.stateUrl}?platform=workbuddy`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
-        "User-Agent": config.userAgent,
+        "User-Agent": CODEBUDDY_CHECKIN.userAgent,
         "X-Requested-With": "XMLHttpRequest",
         "X-Domain": "copilot.tencent.com",
         "X-No-Authorization": "true",
@@ -42,7 +43,7 @@ const codebuddyCn = {
       method: "GET",
       headers: {
         Accept: "application/json",
-        "User-Agent": config.userAgent,
+        "User-Agent": CODEBUDDY_CHECKIN.userAgent,
         "X-Requested-With": "XMLHttpRequest",
         "X-Domain": "copilot.tencent.com",
         "X-No-Authorization": "true",
@@ -56,6 +57,25 @@ const codebuddyCn = {
     const data = await response.json();
     // code 11217 = pending (RetryFetchToken), code 0 = success
     if (data.code === 0 && data.data?.accessToken) {
+      // WorkBuddy daily rewards require the UID from the same authorization
+      // state. Do not decode an unverified JWT or query with a fabricated state.
+      let uid = null;
+      try {
+        const accountResponse = await fetch(`${config.baseUrl}/v2/plugin/login/account?state=${encodeURIComponent(deviceCode)}`, {
+          headers: {
+            Accept: "application/json",
+            "User-Agent": CODEBUDDY_CHECKIN.userAgent,
+            Authorization: `Bearer ${data.data.accessToken}`,
+            "X-Domain": "copilot.tencent.com",
+            "X-No-User-Id": "true",
+            "X-No-Enterprise-Id": "true",
+          },
+          signal: AbortSignal.timeout(15000),
+          redirect: "error",
+        });
+        const account = accountResponse.ok ? await accountResponse.json() : null;
+        if (account?.code === 0 && ["string", "number"].includes(typeof account.data?.uid)) uid = String(account.data.uid);
+      } catch { /* Chat authorization can still work without the optional rewards identity. */ }
       return {
         ok: true,
         data: {
@@ -63,6 +83,7 @@ const codebuddyCn = {
           refresh_token: data.data.refreshToken || "",
           token_type: data.data.tokenType || "Bearer",
           expires_in: data.data.expiresIn,
+          codebuddy_uid: uid,
         },
       };
     }
@@ -73,7 +94,7 @@ const codebuddyCn = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
     expiresIn: tokens.expires_in || 86400,
-    providerSpecificData: {},
+    providerSpecificData: tokens.codebuddy_uid ? { codebuddyUid: tokens.codebuddy_uid } : {},
   }),
 };
 

@@ -20,7 +20,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
     : "border-border-subtle";
   const statusIcon = testStatus === "ok" ? "check_circle" : testStatus === "error" ? "cancel" : "smart_toy";
   const statusColor = testStatus === "ok" ? "text-green-500" : testStatus === "error" ? "text-red-500" : "text-text-muted";
-  const modelType = isCustom ? (sourceLabel || "Custom") : isFree ? "Free" : "LLM";
+  const modelType = isCustom ? (sourceLabel || "手动添加") : isFree ? "Free" : "LLM";
   const canToggleCaps = typeof onToggleCapability === "function";
 
   const runMenuAction = (action) => {

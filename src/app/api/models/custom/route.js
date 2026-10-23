@@ -3,16 +3,18 @@ import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabili
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { normalizeModelCapabilities } from "@/shared/utils/modelCatalog";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
+import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/models/custom - List all custom models
 export async function GET(request) {
   try {
-    const models = await getCustomModels();
+    const [models, snapshots] = await Promise.all([getCustomModels(), getModelSyncSnapshots()]);
     // ≈770KB uncompressed; see compressedJsonResponse for why route handlers
-    // have to opt in.
-    return compressedJsonResponse(request, { models });
+    // have to opt in. Snapshots are provider-level authoritative markers and
+    // must not be inferred from individual model rows.
+    return compressedJsonResponse(request, { models, snapshots });
   } catch (error) {
     console.log("Error fetching custom models:", error);
     return NextResponse.json({ error: "Failed to fetch custom models" }, { status: 500 });

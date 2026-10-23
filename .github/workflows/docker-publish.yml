@@ -72,6 +72,16 @@ jobs:
           unit/retention-settings.test.js
           unit/realtime-time-filter.test.js
           unit/usage-dashboard-scope.test.js
+          unit/codex-usage-unit.test.js
+          unit/provider-quota-units.test.js
+          unit/opencode-go-usage.test.js
+          unit/quota-table-pagination.test.js
+          unit/combo-search-config.test.js
+          unit/combo-search-integration.test.js
+          unit/combo-search-loop.test.js
+          unit/deepseek-search.test.js
+          unit/models-route-combos-only.test.js
+          unit/responses-cross-protocol-nonstream.test.js
           unit/chat-routing-telemetry.test.js
           unit/routing-outcome.test.js
           unit/streaming-attempt-settlement.test.js

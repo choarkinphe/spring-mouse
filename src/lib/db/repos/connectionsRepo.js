@@ -242,6 +242,8 @@ export async function deleteProviderConnection(id) {
     if (!row) return;
     provider = row.provider;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
+    const remaining = db.get(`SELECT 1 FROM providerConnections WHERE provider = ? LIMIT 1`, [row.provider]);
+    if (!remaining) db.run(`DELETE FROM kv WHERE scope = 'modelSyncSnapshots' AND key = ?`, [row.provider]);
     reorderInTx(db, row.provider);
     ok = true;
   });
@@ -252,7 +254,10 @@ export async function deleteProviderConnectionsByProvider(providerId) {
   await deleteModelCapabilityTests({ providerId });
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
-  db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+  db.transaction(() => {
+    db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+    db.run(`DELETE FROM kv WHERE scope = 'modelSyncSnapshots' AND key = ?`, [providerId]);
+  });
   return before?.n || 0;
 }
 

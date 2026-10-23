@@ -207,6 +207,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   // turn that streams megabytes the translator buffers into nothing, so the client
   // clock is what the real failure is measured against.
   let lastVisibleAt = 0;
+  let upstreamBytesAtLastVisible = null;
   let sawVisible = false;
   const t0 = Date.now();
   const tag = "STREAM";
@@ -221,21 +222,25 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   const checkStall = () => {
     stallCheckTimer = null;
     const now = Date.now();
-    // Client-visible starvation: bytes ARE arriving from upstream but not reaching
-    // the client. Only armed after the first visible byte — a slow START is the
-    // upstream watchdog's job, and bounding it here would abort legitimate slow
-    // starts. See STREAM_VISIBLE_STALL_TIMEOUT_MS for the measured numbers.
+    // Client-visible starvation is checked after the first output. Compare source
+    // bytes since that output so an upstream-idle turn is not misdiagnosed.
     if (sawVisible) {
       const visibleGap = now - lastVisibleAt;
       if (visibleGap > visibleStallTimeoutMs) {
-        const msg = `client starved for ${visibleGap}ms (limit ${visibleStallTimeoutMs}ms) while upstream kept sending (chunks=${chunkCount} bytes=${totalBytes})`;
+        const upstreamBytesSinceLastVisible = Math.max(0, totalBytes - (upstreamBytesAtLastVisible ?? totalBytes));
+        const stallCause = upstreamBytesSinceLastVisible > 0
+          ? "upstream_active_client_silent"
+          : "upstream_idle_client_silent";
+        const upstreamIdleMs = now - lastChunkAt;
+        const msg = `client output stalled for ${visibleGap}ms (limit ${visibleStallTimeoutMs}ms, cause=${stallCause}, upstream_bytes_since_last_output=${upstreamBytesSinceLastVisible}, upstream_idle=${upstreamIdleMs}ms)`;
         dbg(tag, `VISIBLE STALL TIMEOUT | ${msg}`);
         // `diag.log` routes through errorLine, which ignores LOG_LEVEL — without it
         // this fires silently under the production WARN level.
-        diag?.log?.(`VISIBLE STALL TIMEOUT | ${msg}`);
+        diag?.log?.(`VISIBLE STALL TIMEOUT cause=${stallCause} | ${msg}`);
         clearStall();
-        const err = new Error(`Upstream stream starved the client: ${msg}`);
+        const err = new Error(`Client received no transformed output: ${msg}`);
         err.code = "UPSTREAM_VISIBLE_STALL";
+        err.stallCause = stallCause;
         emitDiag("visible_stall");
         streamController.handleError?.(err);
         streamController.abort?.();
@@ -310,6 +315,8 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   const snapshot = (stage, error = null) => ({
     stage,
     upstreamBytes: totalBytes,
+    upstreamBytesAtLastVisible,
+    upstreamBytesSinceLastVisible: upstreamBytesAtLastVisible === null ? null : Math.max(0, totalBytes - upstreamBytesAtLastVisible),
     transformedBytes: visibleBytes,
     upstreamChunks: chunkCount,
     transformedChunks: visibleChunks,
@@ -359,9 +366,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
   });
 
-  // Counts client-visible output. Feeds both the diagnostic below and the visible
-  // stall watchdog: this is the only tap that can tell "the client is receiving"
-  // from "the upstream is sending".
+  // Counts transformed output and anchors the source-byte delta for stall diagnosis.
   const visibleTap = new TransformStream({
     transform(chunk, controller) {
       const sz = chunk?.byteLength || chunk?.length || 0;
@@ -369,6 +374,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
         const now = Date.now();
         sawVisible = true;
         lastVisibleAt = now;
+        upstreamBytesAtLastVisible = totalBytes;
         visibleChunks++;
         visibleBytes += sz;
         if (!firstVisibleAt) firstVisibleAt = now;

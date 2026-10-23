@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
+import { openaiResponsesToOpenAIResponse } from "../../open-sse/translator/response/openai-responses.js";
 import { initState } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 
@@ -48,5 +49,31 @@ describe("OpenAI Chat stream → Responses: empty tool_calls arrays", () => {
 
     expect(added).toBeTruthy();
     expect(textDone.data.text).toBe("Let me run that.");
+  });
+});
+
+describe("Responses → OpenAI Chat: completed text fallback", () => {
+  const chunk = (type, data = {}) => ({ type, ...data });
+
+  it("emits final text when the provider omits all text deltas", () => {
+    const state = initState(FORMATS.OPENAI_RESPONSES);
+    const output = openaiResponsesToOpenAIResponse(chunk("response.output_text.done", {
+      item_id: "msg_1", output_index: 0, content_index: 0, text: "completed answer",
+    }), state);
+
+    expect(output.choices[0].delta.content).toBe("completed answer");
+  });
+
+  it("does not repeat text already delivered through deltas", () => {
+    const state = initState(FORMATS.OPENAI_RESPONSES);
+    const delta = openaiResponsesToOpenAIResponse(chunk("response.output_text.delta", {
+      item_id: "msg_1", delta: "streamed",
+    }), state);
+    const done = openaiResponsesToOpenAIResponse(chunk("response.output_text.done", {
+      item_id: "msg_1", text: "streamed",
+    }), state);
+
+    expect(delta.choices[0].delta.content).toBe("streamed");
+    expect(done).toBeNull();
   });
 });

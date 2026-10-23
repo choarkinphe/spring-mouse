@@ -119,6 +119,41 @@ it.each(["visible_stall", "upstream_stall"])("captures %s byte evidence before e
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it.each([
+  { cause: "upstream_active_client_silent", sendUpstreamBytes: true, expectedBytesAfterOutput: 3 },
+  { cause: "upstream_idle_client_silent", sendUpstreamBytes: false, expectedBytesAfterOutput: 0 },
+])("classifies client-output stalls as $cause", async ({ cause, sendUpstreamBytes, expectedBytesAfterOutput }) => {
+  vi.useFakeTimers();
+  let upstream;
+  const onSnapshot = vi.fn();
+  const onError = vi.fn();
+  const diagLog = vi.fn();
+  const control = createStreamController({ onError, log: { errorLine() {} } });
+  const response = new Response(new ReadableStream({ start(c) { upstream = c; } }));
+  control.signal.addEventListener("abort", () => upstream.error(new DOMException("aborted", "AbortError")));
+  const transform = new TransformStream({ transform(chunk, c) { if (chunk[0] !== 0) c.enqueue(chunk); } });
+  const output = pipeWithDisconnect(response, transform, control, null, 10_000,
+    { onSnapshot, log: diagLog }, 5_000);
+  const consuming = new Response(output).arrayBuffer();
+  upstream.enqueue(new Uint8Array([1, 2]));
+  await vi.advanceTimersByTimeAsync(4_000);
+  if (sendUpstreamBytes) upstream.enqueue(new Uint8Array([0, 3, 4]));
+  await vi.advanceTimersByTimeAsync(2_000);
+  await consuming;
+
+  const failure = onError.mock.calls[0][0];
+  const snapshot = onSnapshot.mock.calls[0][0];
+  expect(failure).toMatchObject({ code: "UPSTREAM_VISIBLE_STALL", stallCause: cause });
+  expect(failure.message).toContain(`cause=${cause}`);
+  expect(diagLog).toHaveBeenCalledWith(expect.stringContaining(`cause=${cause}`));
+  expect(snapshot).toMatchObject({
+    stage: "visible_stall", upstreamBytes: 2 + expectedBytesAfterOutput,
+    transformedBytes: 2, upstreamBytesAtLastVisible: 2,
+    upstreamBytesSinceLastVisible: expectedBytesAfterOutput,
+  });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it("stores only allowlisted transport error codes, never error messages", async () => {
   const onSnapshot = vi.fn();
   const control = createStreamController({ log: { errorLine() {} } });

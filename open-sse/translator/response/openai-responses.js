@@ -501,15 +501,28 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     const delta = data.delta || "";
     if (!delta) return null;
 
+    state.responseTextDeltas ||= new Set();
+    state.responseTextDeltas.add(`${data.output_index ?? 0}:${data.content_index ?? 0}`);
+    if (data.item_id) state.responseTextDeltas.add(data.item_id);
+
     return buildChunk(
       { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
       { content: delta }
     );
   }
 
-  // Text content done (ignore, we handle via delta)
+  // Some Responses providers send only the final text event, without deltas.
   if (eventType === "response.output_text.done") {
-    return null;
+    const text = typeof data.text === "string" ? data.text : "";
+    const indexKey = `${data.output_index ?? 0}:${data.content_index ?? 0}`;
+    state.responseTextDeltas ||= new Set();
+    if (!text || state.responseTextDeltas.has(indexKey) || (data.item_id && state.responseTextDeltas.has(data.item_id))) return null;
+    state.responseTextDeltas.add(indexKey);
+    if (data.item_id) state.responseTextDeltas.add(data.item_id);
+    return buildChunk(
+      { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
+      { content: text }
+    );
   }
 
   // Function call started (standard function_call or custom_tool_call)

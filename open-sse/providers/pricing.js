@@ -2,8 +2,9 @@
 //
 // Fallback order (first match wins):
 //   1. PROVIDER_PRICING[provider][model]  — provider-specific override
-//   2. MODEL_PRICING[model]               — canonical model price (provider-agnostic)
-//   3. PATTERN_PRICING                    — glob pattern match (e.g. "codex-*")
+//   2. OpenCode Free directory models    — provider-scoped zero rates
+//   3. MODEL_PRICING[model]               — canonical model price (provider-agnostic)
+//   4. PATTERN_PRICING                    — glob pattern match (e.g. "codex-*")
 
 /**
  * Canonical model pricing — provider-agnostic.
@@ -359,11 +360,14 @@ export function matchPattern(pattern, model) {
   return regex.test(model);
 }
 
+const OPENCODE_FREE_PRICING = Object.freeze({ input: 0, output: 0, cached: 0, reasoning: 0, cache_creation: 0 });
+
 /**
- * Resolve pricing for a model using the 3-step fallback chain:
+ * Resolve pricing for a model:
  *   1. PROVIDER_PRICING[provider][model]
- *   2. MODEL_PRICING[model]
- *   3. PATTERN_PRICING (glob match)
+ *   2. OpenCode Free directory models (provider-scoped zero rates)
+ *   3. MODEL_PRICING[model]
+ *   4. PATTERN_PRICING (glob match)
  *
  * @param {string} provider
  * @param {string} model
@@ -377,12 +381,18 @@ export function getPricingForModel(provider, model) {
     return PROVIDER_PRICING[provider][model];
   }
 
-  // 2. Canonical model pricing (strip vendor prefix if needed: "deepseek/deepseek-chat" → "deepseek-chat")
+  // 2. OpenCode Free directory models must not inherit paid global rates.
+  if ((provider === "opencode" || provider === "oc")
+    && (model.endsWith("-free") || model === "big-pickle")) {
+    return OPENCODE_FREE_PRICING;
+  }
+
+  // 3. Canonical model pricing (strip vendor prefix if needed: "deepseek/deepseek-chat" → "deepseek-chat")
   const baseModel = model.includes("/") ? model.split("/").pop() : model;
   if (MODEL_PRICING[baseModel]) return MODEL_PRICING[baseModel];
   if (MODEL_PRICING[model]) return MODEL_PRICING[model];
 
-  // 3. Pattern match
+  // 4. Pattern match
   for (const { pattern, pricing } of PATTERN_PRICING) {
     if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
       return pricing;

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 
@@ -46,6 +47,22 @@ export class OpenCodeExecutor extends BaseExecutor {
     return MESSAGES_MODELS.has(model)
       ? `${base}/zen/v1/messages`
       : `${base}/zen/v1/chat/completions`;
+  }
+
+  parseError(response, bodyText) {
+    if (response.status === HTTP_STATUS.FORBIDDEN) {
+      try {
+        const payload = JSON.parse(bodyText);
+        const error = payload?.error?.type === "FreeTierError" ? payload.error : payload;
+        if (error?.type === "FreeTierError") {
+          return {
+            status: response.status,
+            message: `OpenCode Free：上游限制免费层仅供 OpenCode 客户端使用，当前请求被拒绝。模型目录同步成功不代表拥有调用权限；请在 OpenCode 中使用免费模型，或另行配置允许 API 调用的通道。（FreeTierError）${error.message ? ` 上游详情：${error.message}` : ""}`,
+          };
+        }
+      } catch { /* Preserve the original error when the response is not JSON. */ }
+    }
+    return super.parseError(response, bodyText);
   }
 
   buildHeaders(credentials, stream = true) {

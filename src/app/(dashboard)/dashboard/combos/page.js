@@ -5,7 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle, SegmentedControl } from "@/shared/components";
+import { AccessTagsEditor, Badge, Card, Button, Drawer, Input, ModuleSkeleton, DashboardHero, ModelSelectModal, ConfirmModal, CapacityBadges, Tooltip, Toggle } from "@/shared/components";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
@@ -65,13 +65,38 @@ function getComboModelAccessTags(entry) {
   return typeof entry === "object" && entry !== null ? normalizeAccessTags(entry.accessTags) : [];
 }
 
-const AUTO_TIER_OPTIONS = [
-  { value: "fast", label: "快速" },
-  { value: "balanced", label: "均衡" },
-  { value: "strong", label: "强力" },
+// The three tiers as sections of the node list, in the order a turn escalates:
+// the classifier says "simple" and the fast section answers, "complex" and the
+// strong section does. A tier is a routing destination, so it reads as a group
+// with its own members rather than as a property of each node.
+const AUTO_TIER_GROUPS = [
+  {
+    value: "fast",
+    label: "快速",
+    icon: "bolt",
+    tone: "text-emerald-300",
+    titleTone: "text-emerald-100",
+    hint: "简单任务走这里",
+  },
+  {
+    value: "balanced",
+    label: "均衡",
+    icon: "balance",
+    tone: "text-[#7dd3fc]",
+    titleTone: "text-[#bae6fd]",
+    hint: "普通任务走这里",
+  },
+  {
+    value: "strong",
+    label: "强力",
+    icon: "local_fire_department",
+    tone: "text-amber-300",
+    titleTone: "text-amber-100",
+    hint: "复杂任务走这里",
+  },
 ];
 
-const AUTO_TIER_LABELS = Object.fromEntries(AUTO_TIER_OPTIONS.map((option) => [option.value, option.label]));
+const AUTO_TIER_GROUP_LABELS = Object.fromEntries(AUTO_TIER_GROUPS.map((group) => [group.value, group.label]));
 
 function getComboModelAutoTier(entry) {
   return typeof entry === "object" && entry !== null && ["fast", "balanced", "strong"].includes(entry.autoTier)
@@ -79,16 +104,64 @@ function getComboModelAutoTier(entry) {
     : "balanced";
 }
 
-function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced") {
+const EFFORT_OPTIONS = [
+  { value: "", label: "跟随请求" },
+  { value: "none", label: "关闭" },
+  { value: "minimal", label: "最少" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "xhigh", label: "极高" },
+  { value: "max", label: "最大" },
+];
+
+const MIN_MEMBER_WEIGHT = 1;
+const MAX_MEMBER_WEIGHT = 1000;
+
+/**
+ * Build the stored node from its parts, collapsing back to a plain string when
+ * nothing is configured — that keeps existing rows byte-identical and makes
+ * "no options" unambiguous.
+ */
+function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced", { effort = null, weight = 1 } = {}) {
   const normalizedTags = normalizeAccessTags(accessTags);
   const normalizedTier = ["fast", "balanced", "strong"].includes(autoTier) ? autoTier : "balanced";
-  if (!schedule && normalizedTags.length === 0 && normalizedTier === "balanced") return model;
+  const normalizedEffort = EFFORT_OPTIONS.some((option) => option.value === effort) ? effort : null;
+  const parsedWeight = Number.parseInt(weight, 10);
+  const normalizedWeight = Number.isFinite(parsedWeight)
+    ? Math.min(MAX_MEMBER_WEIGHT, Math.max(MIN_MEMBER_WEIGHT, parsedWeight))
+    : MIN_MEMBER_WEIGHT;
+  const plain = !schedule && normalizedTags.length === 0 && normalizedTier === "balanced"
+    && !normalizedEffort && normalizedWeight === MIN_MEMBER_WEIGHT;
+  if (plain) return model;
   return {
     model,
     ...(schedule ? { schedule } : {}),
     ...(normalizedTags.length > 0 ? { accessTags: normalizedTags } : {}),
     ...(normalizedTier !== "balanced" ? { autoTier: normalizedTier } : {}),
+    ...(normalizedEffort ? { effort: normalizedEffort } : {}),
+    ...(normalizedWeight !== MIN_MEMBER_WEIGHT ? { weight: normalizedWeight } : {}),
   };
+}
+
+/** Read a node's editable parts without losing fields this UI does not show. */
+function comboModelEntryParts(entry) {
+  return {
+    schedule: getComboModelSchedule(entry),
+    accessTags: getComboModelAccessTags(entry),
+    autoTier: getComboModelAutoTier(entry),
+    effort: typeof entry === "object" && entry !== null ? (entry.effort || null) : null,
+    weight: typeof entry === "object" && entry !== null && Number.isInteger(entry.weight) ? entry.weight : MIN_MEMBER_WEIGHT,
+  };
+}
+
+function rebuildComboModelEntry(entry, patch = {}) {
+  const model = getComboModelValue(entry);
+  const parts = { ...comboModelEntryParts(entry), ...patch };
+  return buildComboModelEntry(model, parts.schedule, parts.accessTags, parts.autoTier, {
+    effort: parts.effort,
+    weight: parts.weight,
+  });
 }
 
 function isTimeWindowInvalid(window) {
@@ -190,6 +263,11 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  // Templates describe what could be built from THIS install's connected
+  // providers; the server computes them so the dashboard and the runtime agree
+  // on what "routable" means.
+  const [templates, setTemplates] = useState([]);
+  const [creatingTemplate, setCreatingTemplate] = useState(null);
   const [modelAliases, setModelAliases] = useState({});
   const [savingModels, setSavingModels] = useState(false);
   const { getCaps } = useModelCaps(combos);
@@ -211,25 +289,84 @@ export default function CombosPage() {
 
   const fetchData = async () => {
     try {
-      const [combosRes, providersRes, settingsRes] = await Promise.all([
+      const [combosRes, providersRes, settingsRes, templatesRes] = await Promise.all([
         fetch("/api/combos"),
         fetch("/api/providers"),
         fetch("/api/settings"),
+        fetch("/api/combo-templates"),
       ]);
       const combosData = await combosRes.json();
       const providersData = await providersRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      
+      // Templates are optional: a failure here must not block the page.
+      const templatesData = templatesRes.ok ? await templatesRes.json().catch(() => null) : null;
+
       // Only LLM combos here - webSearch/webFetch combos belong to media-providers/web
       if (combosRes.ok) setCombos((combosData.combos || []).filter(c => !c.kind || c.kind === "llm"));
       if (providersRes.ok) {
         setActiveProviders(providersData.connections || []);
       }
       setComboStrategies(settingsData.comboStrategies || {});
+      if (templatesData?.templates) setTemplates(templatesData.templates);
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  /**
+   * One-click create from a template.
+   *
+   * A template creates an ordinary combo: the members it picked, plus a
+   * strategy that matches what the template is FOR (smart and thrifty lean on
+   * the existing auto tiers, steady is plain ordered fallback). Nothing here is
+   * a special combo kind, so every later edit works as usual.
+   */
+  const handleCreateFromTemplate = async (template, { editAfter = false } = {}) => {
+    if (!template?.ready || !template.members?.length) return;
+    setCreatingTemplate(template.kind);
+    try {
+      const res = await fetch("/api/combos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: template.comboName,
+          models: template.members.map((member) => ({
+            model: member.model,
+            ...(member.autoTier ? { autoTier: member.autoTier } : {}),
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "创建组合失败");
+        return;
+      }
+      const created = await res.json();
+
+      const strategy = TEMPLATE_STRATEGY[template.kind];
+      if (strategy) {
+        await fetch("/api/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            comboStrategies: { ...comboStrategies, [created.id]: strategy },
+          }),
+        });
+      }
+
+      await fetchData();
+      if (created?.id != null) {
+        setActiveComboId(created.id);
+        // "Edit first" opens the ordinary edit dialog on the new combo, so the
+        // operator can change what the template proposed before it routes.
+        if (editAfter) setEditingCombo(created);
+      }
+    } catch (error) {
+      console.log("Error creating combo from template:", error);
+    } finally {
+      setCreatingTemplate(null);
     }
   };
 
@@ -366,10 +503,13 @@ export default function CombosPage() {
 
   // Persist routing decisions on each combo. This keeps the visible selection
   // and runtime behavior aligned without relying on a hidden global default.
-  const handleSetComboStrategy = async (comboName, patch) => {
+  //
+  // Keyed by the combo's id: a name is mutable, and a strategy left under the
+  // old name was silently dropped when the combo was renamed.
+  const handleSetComboStrategy = async (comboId, patch) => {
     try {
       const updated = { ...comboStrategies };
-      const next = { fallbackStrategy: "fallback", ...(updated[comboName] || {}), ...patch };
+      const next = { fallbackStrategy: "fallback", ...(updated[comboId] || {}), ...patch };
 
       if (patch.fallbackStrategy && patch.fallbackStrategy !== "round-robin") {
         delete next.stickyRoundRobinLimit;
@@ -380,8 +520,14 @@ export default function CombosPage() {
       if (patch.fallbackStrategy && patch.fallbackStrategy !== "auto") {
         delete next.autoRouting;
       }
+      // The pin only means something while the combo routes manually; leaving it
+      // behind on another strategy would silently resurrect an old pick if the
+      // operator switched back.
+      if (patch.fallbackStrategy && patch.fallbackStrategy !== "manual") {
+        delete next.pick;
+      }
 
-      updated[comboName] = next;
+      updated[comboId] = next;
 
       const response = await fetch("/api/settings", {
         method: "PATCH",
@@ -418,7 +564,7 @@ export default function CombosPage() {
   }
 
   const routedModelCount = combos.reduce((total, combo) => total + combo.models.length, 0);
-  const fusionCount = combos.filter((combo) => (comboStrategies[combo.name]?.fallbackStrategy || "fallback") === "fusion").length;
+  const fusionCount = combos.filter((combo) => (comboStrategies[combo.id]?.fallbackStrategy || "fallback") === "fusion").length;
   const groupOptions = [...new Set(combos.map((combo) => combo.groupName?.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
   const comboGroups = [];
   const groupIndex = new Map();
@@ -449,6 +595,67 @@ export default function CombosPage() {
         <Badge variant={fusionCount > 0 ? "info" : "default"} size="md" icon="account_tree">{fusionCount} 个融合策略</Badge>
       </DashboardHero>
 
+      {/* Templates: a working group for a common need, built from the models this
+          install can actually reach, in one click. Shown above the list so a new
+          install has somewhere to start, and kept afterwards for anyone who does
+          not want to reason about routing first. */}
+      {templates.length > 0 && (
+        <section aria-label="从模板开始" className="rounded-xl border border-border-subtle bg-surface/35 p-4">
+          <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
+            <span className="material-symbols-outlined text-[17px] text-[#7dd3fc]">auto_awesome</span>
+            <h2 className="text-xs font-semibold text-text-main">从模板开始</h2>
+            <span className="text-[11px] text-text-muted">用你自己已连接的模型组成，一键添加</span>
+          </div>
+          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {templates.map((template) => {
+              const needText = template.ready
+                ? ""
+                : (TEMPLATE_NEED_TEXT[template.need] || TEMPLATE_NEED_TEXT.any)(template.of);
+              return (
+                <div
+                  key={template.kind}
+                  className={`flex min-w-0 flex-col gap-1.5 rounded-lg border p-3 ${template.ready ? "border-white/[0.08] bg-black/[0.12]" : "border-white/[0.05] bg-black/[0.06] opacity-70"}`}
+                >
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-[11px] font-semibold text-text-main">{template.name}</span>
+                    {template.kind === "steady" && (
+                      <span className="shrink-0 rounded border border-emerald-400/20 bg-emerald-400/[0.07] px-1 py-0 text-[9px] text-emerald-200">跨供应商</span>
+                    )}
+                  </div>
+                  <p className="text-[10px] leading-4 text-text-muted">{template.summary}</p>
+                  <p className="truncate font-mono text-[10px] text-[#c5d4e2]" title={template.members.map((m) => m.model).join(" → ")}>
+                    {template.ready
+                      ? template.members.map((m) => getTemplateMemberLabel(m.model)).join(" → ")
+                      : needText}
+                  </p>
+                  <div className="mt-auto flex items-center gap-2 pt-1.5">
+                    <Button
+                      size="sm"
+                      icon="add"
+                      disabled={!template.ready || creatingTemplate !== null}
+                      onClick={() => handleCreateFromTemplate(template)}
+                    >
+                      {creatingTemplate === template.kind ? "添加中..." : "添加"}
+                    </Button>
+                    {template.ready && (
+                      <button
+                        type="button"
+                        onClick={() => handleCreateFromTemplate(template, { editAfter: true })}
+                        disabled={creatingTemplate !== null}
+                        className="text-[10px] font-medium text-text-muted transition-colors hover:text-[#7dd3fc] disabled:opacity-40"
+                        title="创建后立即打开编辑，可在开始路由前调整"
+                      >
+                        先编辑
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Routing mirrors the channel list: a combo rail on the left, the selected
           combo's full configuration on the right. */}
       {combos.length === 0 ? (
@@ -475,7 +682,7 @@ export default function CombosPage() {
                 <span className="material-symbols-outlined mt-0.5 text-[19px] text-[#7dd3fc]">route</span>
                 <div className="min-w-0">
                   <h2 className="text-sm font-semibold text-text-main">组合如何调度</h2>
-                  <p className="mt-1 text-xs leading-5 text-text-muted"><span className="font-medium text-text-main">回退</span> 按顺序切换；<span className="font-medium text-text-main">轮询</span> 均匀分摊负载；<span className="font-medium text-text-main">融合</span> 并行调用并交由裁判模型汇总，质量更高但会产生 N+1 次调用。</p>
+                  <p className="mt-1 text-xs leading-5 text-text-muted"><span className="font-medium text-text-main">回退</span> 按顺序切换；<span className="font-medium text-text-main">轮询</span> 均匀分摊负载；<span className="font-medium text-text-main">按权重</span> 按节点权重分配，比例精确；<span className="font-medium text-text-main">手动</span> 只发往指定节点，不做故障转移；<span className="font-medium text-text-main">融合</span> 并行调用并交由裁判模型汇总，质量更高但会产生 N+1 次调用。</p>
                 </div>
               </div>
 
@@ -488,8 +695,8 @@ export default function CombosPage() {
                 onToggleActive={(isActive) => handleToggleComboActive(activeCombo.id, isActive)}
                 onUpdateAccessTags={(accessTags) => handleUpdateComboAccessTags(activeCombo.id, accessTags)}
                 onUpdateModels={(models) => handleUpdateComboModels(activeCombo.id, models)}
-                strategy={comboStrategies[activeCombo.name] || {}}
-                onSetStrategy={(patch) => handleSetComboStrategy(activeCombo.name, patch)}
+                strategy={comboStrategies[activeCombo.id] || {}}
+                onSetStrategy={(patch) => handleSetComboStrategy(activeCombo.id, patch)}
                 modelAliases={modelAliases}
                 savingModels={savingModels}
               />
@@ -543,11 +750,47 @@ export default function CombosPage() {
 const STRATEGY_OPTIONS = [
   { value: "fallback", label: "回退", description: "按模型顺序尝试，失败后切换到下一个", icon: "arrow_right_alt" },
   { value: "round-robin", label: "轮询", description: "在模型之间轮换请求以分摊负载", icon: "sync" },
+  { value: "weighted", label: "按权重", description: "按每个节点的权重分配请求，比例精确", icon: "balance" },
+  { value: "manual", label: "手动", description: "全部请求发往指定节点，失败也不切换", icon: "push_pin" },
   { value: "fusion", label: "融合", description: "并行调用面板模型，并由裁判模型综合结果", icon: "merge_type" },
   { value: "auto", label: "自动", description: "先判断任务复杂度，再按模型层级选择", icon: "auto_awesome" },
 ];
 
 const STRATEGY_LABELS = Object.fromEntries(STRATEGY_OPTIONS.map((option) => [option.value, option.label]));
+
+// The strategy a freshly created template combo starts with. A template decides
+// WHICH models to put together; this decides how they take turns.
+//   smart/thrifty -> auto: the tiers the template assigned only matter under
+//                    automatic selection (otherwise it is just an ordered list).
+//   steady        -> fallback: "each one behind the other" is exactly in-order.
+const TEMPLATE_STRATEGY = {
+  smart: { fallbackStrategy: "auto" },
+  thrifty: { fallbackStrategy: "auto" },
+  steady: { fallbackStrategy: "fallback" },
+};
+
+// A template member as the operator recognises it: the model id without its
+// provider prefix, since the provider is often the same across a template.
+function getTemplateMemberLabel(modelId) {
+  const slash = String(modelId || "").lastIndexOf("/");
+  return slash > 0 ? modelId.slice(slash + 1) : modelId;
+}
+
+// Why a template cannot be built, in the operator's words.
+const TEMPLATE_NEED_TEXT = {
+  providers: (of) => `需要两个以上供应商的模型，当前只有 ${of || "一个"}`,
+  cheap: (of) => `需要比 ${of || "当前最强模型"} 更便宜的模型`,
+  any: () => "还没有可用的供应商，请先添加连接",
+};
+
+// What the node list means under each strategy, shown above it.
+const NODE_LIST_CAPTIONS = {
+  fallback: "按以下顺序依次尝试",
+  "round-robin": "请求在以下节点间轮换",
+  weighted: "按每个节点的权重分配请求",
+  manual: "只发往固定节点，其余节点不参与",
+  fusion: "以下节点将被并行调用",
+};
 
 // Left rail: mirrors the channel list's group rail — the page-level action lives in
 // the rail header and only the list scrolls. Combo groups keep their configured
@@ -580,7 +823,7 @@ function ComboGroupRail({ groups, strategies = {}, activeId, totalCombos, totalN
               {group.combos.map((combo) => {
                 const isActive = combo.id === activeId;
                 const isEnabled = combo.isActive !== false;
-                const strategyLabel = STRATEGY_LABELS[strategies[combo.name]?.fallbackStrategy || "fallback"] || "回退";
+                const strategyLabel = STRATEGY_LABELS[strategies[combo.id]?.fallbackStrategy || "fallback"] || "回退";
                 return (
                   <button
                     key={combo.id}
@@ -613,9 +856,13 @@ function ComboGroupRail({ groups, strategies = {}, activeId, totalCombos, totalN
 }
 
 function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActive, onUpdateAccessTags, onUpdateModels, strategy = {}, onSetStrategy, modelAliases = {}, savingModels = false }) {
-  const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const [showClassifierSelect, setShowClassifierSelect] = useState(false);
+  const [showJudgeSelect, setShowJudgeSelect] = useState(false);
+  const [showPickSelect, setShowPickSelect] = useState(false);
   const [showModelSelect, setShowModelSelect] = useState(false);
+  // Which tier section's "add" opened the drawer, so the picked models land
+  // there. Null means the plain "添加模型" button (no tier).
+  const [addingTier, setAddingTier] = useState(null);
   const [models, setModels] = useState(combo.models);
   const [scheduleError, setScheduleError] = useState(null);
   const [addingAccessTag, setAddingAccessTag] = useState(false);
@@ -628,7 +875,12 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   );
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
+  const pick = strategy.pick || "";
+  // Default on: capability auto-switch predates this switch, and turning it off
+  // by default would change how every existing combo routes images.
+  const autoSwitch = strategy.autoSwitch !== false;
   const classifierModel = strategy.autoRouting?.classifierModel || "";
+
   const isFusion = current === "fusion";
   const isActive = combo.isActive !== false;
   const roundRobinLimit = strategy.stickyRoundRobinLimit || 1;
@@ -712,6 +964,11 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
   const nodeRole = (index) => {
     if (current === "fusion") return "并行";
     if (current === "round-robin") return "轮询";
+    if (current === "weighted") return `${comboModelEntryParts(models[index]).weight} 份`;
+    if (current === "manual") {
+      const model = getComboModelValue(models[index]);
+      return model && model === pick ? "固定" : "不参与";
+    }
     return index === 0 ? "首选" : `备选 ${index}`;
   };
 
@@ -754,11 +1011,69 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
     persistModels(arrayMove(models, index, nextIndex));
   };
 
-  const addModel = (model) => {
+  /**
+   * Add a member, optionally into a tier section.
+   *
+   * Under automatic routing the tier is decided by WHERE the operator added the
+   * model from, not by a control on the node: each section's button opens this
+   * same drawer with its tier attached. Without it every node stored the
+   * default tier and all of them landed in 均衡.
+   */
+  const addModel = (model, tier = null) => {
     const modelValue = model?.value || "";
     if (!modelValue || models.some((entry) => getComboModelValue(entry) === modelValue)) return;
-    persistModels([...models, modelValue]);
+    persistModels([...models, tier ? buildComboModelEntry(modelValue, null, [], tier) : modelValue]);
   };
+
+  /**
+   * Models the current strategy consults besides the ones it answers with.
+   *
+   * These used to be small selects buried inside the strategy list on the
+   * right, which made them look like options OF the strategy rather than
+   * participants IN routing. They are now sections above the member list, the
+   * same shape as the tier sections, so the whole routing picture reads
+   * top-to-bottom in one column.
+   */
+  const roleGroups = [];
+  if (current === "auto") {
+    roleGroups.push({
+      key: "classifier",
+      icon: "psychology",
+      title: "分类模型",
+      hint: "判断任务复杂度，不负责回答",
+      value: classifierModel,
+      placeholder: "选择分类模型",
+      onPick: () => setShowClassifierSelect(true),
+      onClear: classifierModel ? () => updateClassifierModel("") : null,
+      tone: "amber",
+    });
+  }
+  if (current === "manual") {
+    roleGroups.push({
+      key: "pick",
+      icon: "push_pin",
+      title: "固定发往",
+      hint: "其余节点不参与，失败也不切换",
+      value: pick,
+      placeholder: "选择固定节点",
+      onPick: () => setShowPickSelect(true),
+      onClear: pick ? () => onSetStrategy({ pick: "" }) : null,
+      tone: "sky",
+    });
+  }
+  if (current === "fusion") {
+    roleGroups.push({
+      key: "judge",
+      icon: "gavel",
+      title: "裁判模型",
+      hint: "汇总各节点结果，写出最终回答",
+      value: judge,
+      placeholder: "自动选择（取首个节点）",
+      onPick: () => setShowJudgeSelect(true),
+      onClear: judge ? () => onSetStrategy({ judgeModel: "" }) : null,
+      tone: "violet",
+    });
+  }
 
   return (
     <section className={`overflow-hidden rounded-xl border bg-surface/40 transition-colors ${isActive ? "border-border-subtle" : "border-white/[0.055] opacity-75"}`}>
@@ -793,13 +1108,108 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <h3 className="text-xs font-semibold text-text-main">路由节点</h3>
-              <p className="mt-0.5 text-[11px] text-text-muted">{current === "fallback" ? "按以下顺序依次尝试" : current === "round-robin" ? "请求在以下节点间轮换" : "以下节点将被并行调用"}</p>
+              <p className="mt-0.5 text-[11px] text-text-muted">{NODE_LIST_CAPTIONS[current] || "以下节点将被并行调用"}</p>
             </div>
             <span className="rounded-full border border-white/[0.08] bg-black/[0.12] px-2 py-0.5 font-mono text-[10px] text-text-muted">{combo.models.length} 个</span>
           </div>
 
+          {/* The classifier is a node of this combo, not a setting of it: it is
+              asked on every turn and its answer picks which member serves. It
+              therefore sits at the head of the node list, in its own group, so
+              it is visible before the members it chooses between — and so its
+              different job (judging, not answering) is obvious. */}
+          {/* Role groups: the models a strategy consults BESIDES the members it
+              answers with. Each is a section at the head of the node list, in
+              the same shape as the tier sections below, so "which model does
+              what" is read from one place regardless of strategy. */}
+          {roleGroups.map((group) => (
+            <RoleGroup
+              key={group.key}
+              icon={group.icon}
+              title={group.title}
+              hint={group.hint}
+              value={group.value}
+              placeholder={group.placeholder}
+              onPick={group.onPick}
+              onClear={group.onClear}
+              tone={group.tone}
+            />
+          ))}
+
           {models.length === 0 ? (
             <div className="flex min-h-20 items-center justify-center rounded-lg border border-dashed border-white/[0.09] bg-black/[0.06] text-xs italic text-text-muted">尚未添加模型</div>
+          ) : current === "auto" ? (
+            /* Under automatic routing a member's tier IS its routing, not a
+               label on it: the classifier picks a level and every member in that
+               level is tried. Grouping the list by tier says that with the
+               layout, and removes the per-node tier control entirely — with the
+               list grouped, the control would only restate the group it sits in. */
+            <div className="flex min-w-0 flex-col gap-2">
+              {AUTO_TIER_GROUPS.map((tier) => {
+                const tierItems = modelItems
+                  .map(({ uid, entry }, index) => ({ uid, entry, index }))
+                  .filter(({ entry }) => getComboModelAutoTier(entry) === tier.value);
+                return (
+                  <div key={tier.value} className="min-w-0 overflow-hidden rounded-lg border border-white/[0.07] bg-black/[0.10]">
+                    <div className="flex min-w-0 items-center gap-1.5 border-b border-white/[0.06] px-2.5 py-1.5">
+                      <span className={`material-symbols-outlined shrink-0 text-[13px] ${tier.tone}`}>{tier.icon}</span>
+                      <span className={`shrink-0 text-[10px] font-semibold ${tier.titleTone}`}>{tier.label}</span>
+                      <span className="min-w-0 truncate text-[9px] text-text-muted">{tier.hint}</span>
+                      <span className="ml-auto shrink-0 rounded-full border border-white/[0.08] bg-black/[0.12] px-1.5 font-mono text-[9px] text-text-muted">{tierItems.length}</span>
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-1.5 p-1.5">
+                      {tierItems.length === 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => { setAddingTier(tier.value); setShowModelSelect(true); }}
+                          disabled={savingModels}
+                          className="flex w-full items-center justify-center gap-1 rounded-md border border-dashed border-white/[0.1] py-1.5 text-[10px] text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">add</span>
+                          添加{tier.label}模型
+                        </button>
+                      ) : tierItems.map(({ uid, entry, index }) => (
+                        <ModelItem
+                          key={uid}
+                          id={uid}
+                          index={index}
+                          entry={entry}
+                          isFirst={index === 0}
+                          isLast={index === modelItems.length - 1}
+                          disabled={savingModels}
+                          getCaps={getCaps}
+                          role={tier.label}
+                          showWeight={false}
+                          onEdit={(newVal) => {
+                            const updated = typeof entry === "object" && entry !== null
+                              ? { ...entry, model: newVal }
+                              : newVal;
+                            updateModelAt(index, updated);
+                          }}
+                          onScheduleChange={(schedule) => updateModelAt(index, rebuildComboModelEntry(entry, { schedule }))}
+                          onAccessTagsChange={(accessTags) => updateModelAt(index, rebuildComboModelEntry(entry, { accessTags }))}
+                          onEffortChange={(effort) => updateModelAt(index, rebuildComboModelEntry(entry, { effort }))}
+                          onMoveUp={() => moveModel(index, -1)}
+                          onMoveDown={() => moveModel(index, 1)}
+                          onRemove={() => removeModelAt(index)}
+                        />
+                      ))}
+                      {tierItems.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => { setAddingTier(tier.value); setShowModelSelect(true); }}
+                          disabled={savingModels}
+                          className="flex w-full items-center justify-center gap-1 rounded-md py-1 text-[10px] text-text-muted transition-colors hover:bg-white/[0.04] hover:text-primary"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">add</span>
+                          添加到{tier.label}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis, restrictToParentElement]}>
               <SortableContext items={modelItems.map((item) => item.uid)} strategy={verticalListSortingStrategy}>
@@ -815,7 +1225,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                       disabled={savingModels}
                       getCaps={getCaps}
                       role={nodeRole(index)}
-                      showAutoTier={current === "auto"}
+                      showWeight={current === "weighted"}
                       onEdit={(newVal) => {
                         const updated = typeof entry === "object" && entry !== null
                           ? { ...entry, model: newVal }
@@ -823,16 +1233,16 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                         updateModelAt(index, updated);
                       }}
                       onScheduleChange={(schedule) => {
-                        const model = getComboModelValue(entry);
-                        updateModelAt(index, buildComboModelEntry(model, schedule, getComboModelAccessTags(entry), getComboModelAutoTier(entry)));
+                        updateModelAt(index, rebuildComboModelEntry(entry, { schedule }));
                       }}
                       onAccessTagsChange={(accessTags) => {
-                        const model = getComboModelValue(entry);
-                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), accessTags, getComboModelAutoTier(entry)));
+                        updateModelAt(index, rebuildComboModelEntry(entry, { accessTags }));
                       }}
-                      onAutoTierChange={(autoTier) => {
-                        const model = getComboModelValue(entry);
-                        updateModelAt(index, buildComboModelEntry(model, getComboModelSchedule(entry), getComboModelAccessTags(entry), autoTier));
+                      onEffortChange={(effort) => {
+                        updateModelAt(index, rebuildComboModelEntry(entry, { effort }));
+                      }}
+                      onWeightChange={(weight) => {
+                        updateModelAt(index, rebuildComboModelEntry(entry, { weight }));
                       }}
                       onMoveUp={() => moveModel(index, -1)}
                       onMoveDown={() => moveModel(index, 1)}
@@ -855,6 +1265,30 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           </button>
           {savingModels && <p className="mt-1 text-right text-[10px] text-text-muted">正在保存节点配置...</p>}
           {scheduleError && <p className="mt-1 text-[10px] font-medium text-red-400">{scheduleError}</p>}
+
+          {/* Capability auto-switch floats a vision/pdf-capable member to the front
+              for a request that needs one. It is a convenience, not the operator's
+              intent: left on, a deliberately ordered first pick is silently
+              overridden, and the only trace is a log line. So it is a visible
+              per-combo choice rather than an implicit default. */}
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-white/[0.07] bg-black/[0.08] px-2.5 py-2">
+            <span className="material-symbols-outlined mt-0.5 text-[15px] text-[#7dd3fc]">swap_vert</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-medium text-text-main">按请求能力临时调序</span>
+                <Toggle
+                  checked={autoSwitch}
+                  onChange={(value) => onSetStrategy({ autoSwitch: value })}
+                  size="sm"
+                />
+              </div>
+              <p className="mt-0.5 text-[9px] leading-3 text-text-muted">
+                {autoSwitch
+                  ? "带图片或 PDF 的请求会临时把支持的节点提到最前；关闭后严格按上方顺序。"
+                  : "严格按上方顺序尝试，即使请求带图片或 PDF。"}
+              </p>
+            </div>
+          </div>
         </div>
 
         <aside className="border-t border-white/[0.065] bg-black/[0.045] px-3 py-3 lg:border-l lg:border-t-0">
@@ -929,47 +1363,6 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                     </div>
                   )}
 
-                  {selected && option.value === "fusion" && (
-                    <div className="border-t border-[#38bdf8]/15 px-2 py-1.5">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="shrink-0 text-[9px] text-text-muted">裁判模型</span>
-                        <button type="button" onClick={() => setShowJudgeSelect(true)} className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md border border-violet-400/20 bg-violet-400/[0.05] px-2 font-mono text-[9px] text-violet-200 transition-colors hover:border-violet-400/40 hover:bg-violet-400/[0.09]" title="选择用于汇总结果的裁判模型">
-                          <span className="material-symbols-outlined shrink-0 text-[12px]">gavel</span>
-                          <span className="truncate">{judge || "自动选择"}</span>
-                        </button>
-                        {judge && <button type="button" onClick={() => onSetStrategy({ judgeModel: "" })} className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400" title="恢复自动选择" aria-label="恢复自动选择"><span className="material-symbols-outlined text-[13px]">close</span></button>}
-                      </div>
-                    </div>
-                  )}
-
-                  {selected && option.value === "auto" && (
-                    <div className="border-t border-[#38bdf8]/15 px-2 py-1.5">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="shrink-0 text-[9px] text-text-muted">分类模型</span>
-                        <button
-                          type="button"
-                          onClick={() => setShowClassifierSelect(true)}
-                          className="flex h-6 min-w-0 flex-1 items-center gap-1 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-2 font-mono text-[9px] text-amber-200 transition-colors hover:border-amber-400/40 hover:bg-amber-400/[0.09]"
-                          title="选择用于判断任务复杂度的模型"
-                        >
-                          <span className="material-symbols-outlined shrink-0 text-[12px]">psychology</span>
-                          <span className="truncate">{classifierModel || "未配置，使用标准层级"}</span>
-                        </button>
-                        {classifierModel && (
-                          <button
-                            type="button"
-                            onClick={() => updateClassifierModel("")}
-                            className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
-                            title="清除分类模型"
-                            aria-label="清除分类模型"
-                          >
-                            <span className="material-symbols-outlined text-[13px]">close</span>
-                          </button>
-                        )}
-                      </div>
-                      <p className="mt-1 text-[8px] leading-3 text-text-muted">仅用于判断简单、普通或复杂任务，不负责生成最终回答。</p>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -1038,10 +1431,6 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
         </div>
       </footer>
 
-      {showJudgeSelect && (
-        <ModelSelectModal isOpen={showJudgeSelect} onClose={() => setShowJudgeSelect(false)} onSelect={(model) => { onSetStrategy({ judgeModel: model?.value || "" }); setShowJudgeSelect(false); }} activeProviders={activeProviders} title="选择裁判模型" addedModelValues={judge ? [judge] : []} closeOnSelect availableModelsOnly />
-      )}
-
       {showClassifierSelect && (
         <ModelSelectModal
           isOpen={showClassifierSelect}
@@ -1056,22 +1445,62 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
           addedModelValues={classifierModel ? [classifierModel] : []}
           availableModelsOnly
           closeOnSelect
+          presentation="drawer"
+          drawerWidth="xl"
         />
       )}
 
       {showModelSelect && (
         <ModelSelectModal
           isOpen={showModelSelect}
-          onClose={() => setShowModelSelect(false)}
-          onSelect={(model) => addModel(model)}
+          onClose={() => { setShowModelSelect(false); setAddingTier(null); }}
+          onSelect={(model) => addModel(model, addingTier)}
           activeProviders={activeProviders}
           modelAliases={modelAliases}
-          title="添加路由节点"
+          title={addingTier ? `添加${AUTO_TIER_GROUP_LABELS[addingTier] || ""}模型` : "添加路由节点"}
           addedModelValues={models.map(getComboModelValue)}
           availableModelsOnly
           closeOnSelect={false}
           presentation="drawer"
-          drawerWidth="lg"
+          drawerWidth="xl"
+        />
+      )}
+
+      {showJudgeSelect && (
+        <ModelSelectModal
+          isOpen={showJudgeSelect}
+          onClose={() => setShowJudgeSelect(false)}
+          onSelect={(model) => {
+            onSetStrategy({ judgeModel: model?.value || "" });
+            setShowJudgeSelect(false);
+          }}
+          activeProviders={activeProviders}
+          modelAliases={modelAliases}
+          title="选择裁判模型"
+          addedModelValues={judge ? [judge] : []}
+          availableModelsOnly
+          closeOnSelect
+          presentation="drawer"
+          drawerWidth="xl"
+        />
+      )}
+
+      {showPickSelect && (
+        <ModelSelectModal
+          isOpen={showPickSelect}
+          onClose={() => setShowPickSelect(false)}
+          onSelect={(model) => {
+            onSetStrategy({ pick: model?.value || "" });
+            setShowPickSelect(false);
+          }}
+          activeProviders={activeProviders}
+          modelAliases={modelAliases}
+          title="选择固定节点"
+          addedModelValues={pick ? [pick] : []}
+          availableModelsOnly
+          closeOnSelect
+          presentation="drawer"
+          drawerWidth="xl"
         />
       )}
     </section>
@@ -1095,80 +1524,90 @@ function ScheduleWindowSection({
 }) {
   const windows = getScheduleTimeWindows(schedule, field);
   const invalid = isScheduleFieldInvalid(schedule, field);
+  // A time input renders a native clock affordance, so it needs real width.
+  // Fixed-width + shrink-0 in a narrow column pushed the remove button onto a
+  // second line and left the "+" stranded under a gap; these sizes are chosen to
+  // fit one window row (two inputs + remove) inside the panel's inner width.
   const timeInputClass = (window) => [
-    "h-7 w-[4.5rem] shrink-0 rounded-md border bg-white px-1.5 py-0.5 font-mono text-[10px] text-text-main outline-none transition-colors focus:border-primary dark:bg-black/20",
-    isTimeWindowInvalid(window) ? "border-red-400/60" : "border-black/10 dark:border-white/10",
+    "h-7 w-[5.25rem] rounded-md border bg-white px-1.5 font-mono text-[10px] tabular-nums text-text-main outline-none transition-colors focus:border-primary dark:bg-black/25",
+    isTimeWindowInvalid(window) ? "border-red-400/60" : "border-white/[0.10] dark:border-white/[0.10]",
   ].join(" ");
 
   return (
-    <section className={`flex min-w-0 flex-col overflow-hidden rounded-md border ${toneBorder} bg-black/[0.012] dark:bg-white/[0.008]`}>
-      <div className="flex min-w-0 items-center justify-between gap-2 px-2 py-1">
+    <section className="flex min-w-0 flex-col">
+      {/* Header row: disclosure + label + count on the left, switch on the
+          right. One line, so the two schedule sections no longer each waste a
+          tall gap above their content. */}
+      <div className="flex min-w-0 items-center gap-1.5 py-1">
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="flex min-w-0 flex-1 items-center gap-1 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         >
-          <span className={`material-symbols-outlined shrink-0 text-[14px] transition-transform ${expanded ? "rotate-90" : ""}`}>
+          <span className={`material-symbols-outlined shrink-0 text-[14px] text-text-muted transition-transform ${expanded ? "rotate-90" : ""}`}>
             chevron_right
           </span>
+          {/* Level 2: coloured, and no deeper than the group containing it. */}
           <span className={`text-[10px] font-medium ${tone}`}>{label}</span>
-          {windows.length > 0 && (
-            <span className="rounded-full border border-white/10 bg-black/[0.08] px-1 py-0 text-[9px] text-text-muted dark:bg-white/[0.08]">
-              {windows.length}
-            </span>
-          )}
+          <span className="shrink-0 rounded bg-white/[0.06] px-1.5 text-[9px] tabular-nums leading-4 text-text-muted">
+            {windows.length}
+          </span>
+          {!enabled && <span className="shrink-0 text-[9px] text-text-muted/70">已停用</span>}
         </button>
         <Toggle checked={enabled} onChange={(next) => onSetEnabled(next)} size="sm" />
       </div>
 
       {expanded && enabled && (
-        <div className="flex min-w-0 flex-col gap-1 border-t border-black/5 px-2 pb-1.5 pt-1 dark:border-white/5">
-          {windows.length === 0 ? (
+        <div className="flex min-w-0 flex-col gap-1 pl-5 pb-1">
+          {windows.length === 0 && (
             <span className="text-[10px] text-text-muted">
               {field === "active" ? "未配置，表示全天可用" : "未配置失效时段"}
             </span>
-          ) : (
-            windows.map((window, index) => (
-              <div key={`${field}-${index}`} className="flex min-w-0 items-center gap-1.5">
-                <input
-                  type="time"
-                  value={window.start || ""}
-                  onChange={(e) => onPatch(index, { start: e.target.value })}
-                  className={timeInputClass(window)}
-                  aria-label={`${model} ${label}开始时间`}
-                />
-                <span className="shrink-0 text-[10px] text-text-muted">—</span>
-                <input
-                  type="time"
-                  value={window.end || ""}
-                  onChange={(e) => onPatch(index, { end: e.target.value })}
-                  className={timeInputClass(window)}
-                  aria-label={`${model} ${label}结束时间`}
-                />
-                <button
-                  type="button"
-                  onClick={() => onRemove(index)}
-                  className="ml-auto inline-flex size-5 shrink-0 items-center justify-center rounded-md border border-black/10 text-text-muted transition-colors hover:border-red-400/50 hover:bg-red-500/10 hover:text-red-500 dark:border-white/10"
-                  title={`移除${label}`}
-                  aria-label={`移除${label}`}
-                >
-                  <span className="material-symbols-outlined text-[13px]">close</span>
-                </button>
-              </div>
-            ))
           )}
-          {enabled && (
-            <button
-              type="button"
-              onClick={onAdd}
-              className="flex h-6 w-full shrink-0 items-center justify-center rounded-md border border-dashed border-primary/35 text-primary transition-colors hover:border-primary hover:bg-primary/5"
-              title={`添加${label}`}
-              aria-label={`添加${label}`}
-            >
-              <span className="material-symbols-outlined text-[15px]">add</span>
-            </button>
-          )}
+
+          {windows.map((window, index) => (
+            <div key={`${field}-${index}`} className="flex min-w-0 items-center gap-1.5">
+              <input
+                type="time"
+                value={window.start || ""}
+                onChange={(e) => onPatch(index, { start: e.target.value })}
+                className={timeInputClass(window)}
+                aria-label={`${model} ${label}开始时间`}
+              />
+              <span className="shrink-0 text-[10px] text-text-muted">–</span>
+              <input
+                type="time"
+                value={window.end || ""}
+                onChange={(e) => onPatch(index, { end: e.target.value })}
+                className={timeInputClass(window)}
+                aria-label={`${model} ${label}结束时间`}
+              />
+              <button
+                type="button"
+                onClick={() => onRemove(index)}
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-text-muted/70 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                title={`移除${label}`}
+                aria-label={`移除${label}`}
+              >
+                <span className="material-symbols-outlined text-[14px]">close</span>
+              </button>
+            </div>
+          ))}
+
+          {/* Inline with the rows above it, at the same left edge as a time
+              input: an add action that reads as part of the list, not a banner
+              under it. */}
+          <button
+            type="button"
+            onClick={onAdd}
+            className="mt-0.5 inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-text-muted transition-colors hover:bg-white/[0.04] hover:text-primary"
+            title={`添加${label}`}
+            aria-label={`添加${label}`}
+          >
+            <span className="material-symbols-outlined text-[13px]">add</span>
+            添加时段
+          </button>
           {invalid && (
             <span className="text-[10px] font-medium text-red-400">
               开始和结束时间必须不同，且不能重复添加相同时段
@@ -1188,7 +1627,7 @@ function ScheduleWindowSection({
   );
 }
 
-function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, showAutoTier = false, onEdit, onScheduleChange, onAccessTagsChange, onAutoTierChange, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, showWeight = false, onEdit, onScheduleChange, onAccessTagsChange, onEffortChange, onWeightChange, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1200,6 +1639,8 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
   const schedule = getComboModelSchedule(entry);
   const accessTags = getComboModelAccessTags(entry);
   const autoTier = getComboModelAutoTier(entry);
+  const effort = typeof entry === "object" && entry !== null ? (entry.effort || null) : null;
+  const weight = typeof entry === "object" && entry !== null && Number.isInteger(entry.weight) ? entry.weight : 1;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
   const commit = () => {
@@ -1216,6 +1657,24 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
 
   const [expanded, setExpanded] = useState(!!schedule || accessTags.length > 0);
   const [expandedSections, setExpandedSections] = useState({ active: true, inactive: false });
+
+  // Which advanced fields this node actually HAS, under the current strategy.
+  //
+  // The panel used to render every setting at once, so under "weighted" the
+  // weight input sat below access tags, the effort select and a full schedule
+  // editor — the one field that mattered was the hardest to find.
+  // Only genuinely per-node fields. The auto tier is absent on purpose: the
+  // list is grouped BY tier, so a control here would just restate its section.
+  const strategyFields = [
+    showWeight ? { key: "weight", summary: `权重 ${weight}` } : null,
+  ].filter(Boolean);
+
+  // Collapsed-state summary for the availability group: what is configured,
+  // without opening it. Kept short — it sits on one line beside the title.
+  const availabilitySummary = [
+    accessTags.length > 0 ? `${accessTags.length} 个权限标签` : null,
+    schedule ? (formatModelScheduleSummary(schedule) || "已配置时段") : null,
+  ].filter(Boolean).join(" · ");
 
   const patchSchedule = (patch) => onScheduleChange({ ...schedule, ...patch });
 
@@ -1276,7 +1735,7 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
           />
         ) : (
           <div
-            className="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-sm font-semibold text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+            className="min-w-[5rem] flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-sm font-semibold text-text-main hover:bg-black/5 dark:hover:bg-white/5"
             onClick={() => setEditing(true)}
             title="Click to edit"
           >
@@ -1286,17 +1745,8 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
 
         <CapacityBadges caps={getCaps?.(model)} />
 
-        {showAutoTier && (
-          <span
-            className="inline-flex shrink-0 items-center rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-amber-200"
-            title={`自动层级：${AUTO_TIER_LABELS[autoTier]}`}
-          >
-            {AUTO_TIER_LABELS[autoTier]}
-          </span>
-        )}
-
         {role && (
-          <span className="shrink-0 rounded-md bg-white/[0.045] px-2 py-1 text-[10px] font-medium text-text-muted">
+          <span className="min-w-0 shrink truncate rounded-md bg-white/[0.045] px-2 py-1 text-[10px] font-medium text-text-muted">
             {role}
           </span>
         )}
@@ -1352,93 +1802,270 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
         )}
       </div>
 
+      {/* One frame for the whole panel; the groups inside separate themselves
+          with indentation and a hairline, not with a box each. */}
       {expanded && (
-        <div className="ml-8 flex min-w-0 flex-col gap-2 rounded-lg border border-black/5 bg-black/[0.015] p-2.5 dark:border-white/5 dark:bg-white/[0.015]">
-          <AccessTagsEditor
-            value={accessTags}
-            onChange={onAccessTagsChange}
-            compact
-            label="路由节点权限标签"
-            hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
-          />
-          {showAutoTier && (
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex items-center gap-1 text-[10px] text-text-muted">
-                <span className="material-symbols-outlined text-[13px] text-[#fbbf24]">equalizer</span>
-                <span>自动层级</span>
-                <span className="text-[9px] text-text-muted/70">任务复杂度越高，优先级越高</span>
-              </div>
-              <SegmentedControl
-                options={AUTO_TIER_OPTIONS}
-                value={autoTier}
-                onChange={(value) => onAutoTierChange?.(value)}
-                size="xs"
-                className="w-fit border border-amber-400/15 bg-amber-400/[0.035]"
-              />
+        <div className="ml-8 flex min-w-0 flex-col gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.015] p-2.5">
+          {/* Effort always applies, so its group is always expanded. It is still
+              a GROUP, not a loose field: it was floating directly in the panel
+              while "可用性与权限" below it was a titled group, which made two
+              siblings look like different kinds of thing. */}
+          <div className="min-w-0">
+            <div className="flex w-full min-w-0 items-center gap-1.5 px-1 py-1.5">
+              <span className="material-symbols-outlined shrink-0 text-[14px] text-[#7dd3fc]">psychology</span>
+              <span className="shrink-0 text-[11px] font-semibold tracking-wide text-text-main">思考档位</span>
+              <span className="min-w-0 flex-1 truncate text-[9px] text-text-muted">
+                {effort ? "每次下发都用这一档" : "跟随请求方"}
+              </span>
             </div>
-          )}
-          <div className="border-t border-black/5 pt-2 dark:border-white/5">
-          {schedule ? (
-            <>
-              <ScheduleWindowSection
-                model={model}
-                schedule={schedule}
-                field="active"
-                label="生效时段"
-                tone="text-[#7dd3fc]"
-                toneBorder="border-[#38bdf8]/15"
-                expanded={expandedSections.active}
-                enabled={schedule.activeEnabled !== false}
-                onToggle={() => setExpandedSections((current) => ({ ...current, active: !current.active }))}
-                onSetEnabled={(enabled) => onScheduleChange({ ...schedule, activeEnabled: enabled })}
-                onAdd={() => addWindow("active")}
-                onPatch={(index, patch) => patchWindow("active", index, patch)}
-                onRemove={(index) => removeWindow("active", index)}
-              />
-              <ScheduleWindowSection
-                model={model}
-                schedule={schedule}
-                field="inactive"
-                label="失效时段"
-                tone="text-red-300"
-                toneBorder="border-red-400/15"
-                expanded={expandedSections.inactive}
-                enabled={schedule.inactiveEnabled === true}
-                onToggle={() => setExpandedSections((current) => ({ ...current, inactive: !current.inactive }))}
-                onSetEnabled={(enabled) => onScheduleChange({ ...schedule, inactiveEnabled: enabled })}
-                onAdd={() => addWindow("inactive")}
-                onPatch={(index, patch) => patchWindow("inactive", index, patch)}
-                onRemove={(index) => removeWindow("inactive", index)}
-              />
-              <div className="flex min-w-0 items-center justify-between">
-                <p className="text-[10px] leading-4 text-text-muted">
-                  生效时段为空表示全天可用；命中任意失效时段时不参与路由。支持跨午夜，例如 22:00-06:00。
-                </p>
+            <div className="flex min-w-0 flex-wrap items-center gap-1 pl-6 pr-1" role="radiogroup" aria-label={`${model} 思考档位`}>
+            {EFFORT_OPTIONS.map((option) => {
+              const active = (effort || "") === option.value;
+              return (
                 <button
+                  key={option.value || "inherit"}
                   type="button"
-                  onClick={() => onScheduleChange(null)}
-                  className="shrink-0 text-[10px] text-text-muted underline transition-colors hover:text-red-400"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => onEffortChange?.(option.value || null)}
+                  className={`h-6 shrink-0 rounded-md border px-1.5 text-[10px] transition-colors ${active
+                    ? "border-[#38bdf8]/45 bg-[#38bdf8]/[0.12] font-medium text-[#bae6fd]"
+                    : "border-white/[0.08] bg-black/[0.12] text-text-muted hover:border-white/20 hover:text-text-main"}`}
                 >
-                  清除时段配置
+                  {option.label}
                 </button>
-              </div>
-            </>
-          ) : (
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-[10px] text-text-muted">尚未配置时段，当前模型全天参与路由。</span>
-              <button
-                type="button"
-                onClick={() => onScheduleChange({ ...DEFAULT_MODEL_SCHEDULE })}
-                className="w-fit rounded-md border border-dashed border-primary/40 px-2 py-1 text-[10px] font-medium text-primary transition-colors hover:bg-primary/5"
-              >
-                添加默认时段
-              </button>
+              );
+            })}
             </div>
-          )}
           </div>
+
+          {/* Strategy-specific settings next: under the current strategy these
+              are the ones that actually change how this node behaves. Anything
+              that does not apply is not rendered at all, so the panel stays as
+              short as the strategy allows. */}
+          {strategyFields.length > 0 && (
+            <AdvancedSection
+              icon="tune"
+              tone="text-[#7dd3fc]"
+              title="调度相关"
+              summary={strategyFields.map((field) => field.summary).filter(Boolean).join(" · ")}
+              defaultOpen
+            >
+              <StrategyFields
+                model={model}
+                weight={weight}
+                showWeight={showWeight}
+                onWeightChange={onWeightChange}
+              />
+            </AdvancedSection>
+          )}
+
+          {/* Availability and access: when this node may be used and by whom.
+              Folded away because it is set once and then rarely touched. */}
+          <AdvancedSection
+            icon="event_available"
+            tone="text-[#94a3b8]"
+            title="可用性与权限"
+            summary={availabilitySummary || "全天可用 · 所有密钥"}
+            defaultOpen={false}
+          >
+            <div>
+              {schedule ? (
+                <>
+                  <ScheduleWindowSection
+                    model={model}
+                    schedule={schedule}
+                    field="active"
+                    label="生效时段"
+                    tone="text-[#7dd3fc]"
+                    toneBorder="border-[#38bdf8]/15"
+                    expanded={expandedSections.active}
+                    enabled={schedule.activeEnabled !== false}
+                    onToggle={() => setExpandedSections((current) => ({ ...current, active: !current.active }))}
+                    onSetEnabled={(enabled) => onScheduleChange({ ...schedule, activeEnabled: enabled })}
+                    onAdd={() => addWindow("active")}
+                    onPatch={(index, patch) => patchWindow("active", index, patch)}
+                    onRemove={(index) => removeWindow("active", index)}
+                  />
+                  <ScheduleWindowSection
+                    model={model}
+                    schedule={schedule}
+                    field="inactive"
+                    label="失效时段"
+                    tone="text-red-300"
+                    toneBorder="border-red-400/15"
+                    expanded={expandedSections.inactive}
+                    enabled={schedule.inactiveEnabled === true}
+                    onToggle={() => setExpandedSections((current) => ({ ...current, inactive: !current.inactive }))}
+                    onSetEnabled={(enabled) => onScheduleChange({ ...schedule, inactiveEnabled: enabled })}
+                    onAdd={() => addWindow("inactive")}
+                    onPatch={(index, patch) => patchWindow("inactive", index, patch)}
+                    onRemove={(index) => removeWindow("inactive", index)}
+                  />
+                  {/* Explanation on its own line, the destructive action below
+                      it. Side by side, the sentence wrapped and shoved the
+                      link into the middle of the text. */}
+                  <p className="text-[10px] leading-4 text-text-muted/80">
+                    生效时段为空表示全天可用；命中任意失效时段时不参与路由。支持跨午夜，例如 22:00-06:00。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onScheduleChange(null)}
+                    className="w-fit text-[10px] text-text-muted underline underline-offset-2 transition-colors hover:text-red-400"
+                  >
+                    清除时段配置
+                  </button>
+                </>
+              ) : (
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <span className="text-[10px] text-text-muted">尚未配置时段，当前模型全天参与路由。</span>
+                  <button
+                    type="button"
+                    onClick={() => onScheduleChange({ ...DEFAULT_MODEL_SCHEDULE })}
+                    className="w-fit rounded-md border border-dashed border-primary/40 px-2 py-1 text-[10px] font-medium text-primary transition-colors hover:bg-primary/5"
+                  >
+                    添加默认时段
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* Access tags last: they are a permission boundary set once per
+                node, not part of choosing how it routes, so they belong after
+                the availability settings rather than at the top of the panel. */}
+            <div className="border-t border-white/[0.05] pt-2.5">
+              {/* The editor's own label is 12px — larger than this section's own
+                  header — so it is blanked and a heading at the same level as
+                  生效时段 is rendered above it instead. */}
+              <div className="mb-1 flex min-w-0 items-center gap-1">
+                <span className="material-symbols-outlined shrink-0 text-[13px] text-violet-300">shield_lock</span>
+                <span className="text-[10px] font-medium text-violet-200">权限标签</span>
+              </div>
+              <AccessTagsEditor
+                value={accessTags}
+                onChange={onAccessTagsChange}
+                compact
+                label=""
+                hint="未设置表示所有用户可用；设置后，需拥有任一相同标签，并且仍受组合权限标签限制。"
+              />
+            </div>
+          </AdvancedSection>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A section for one of the models a strategy consults besides its members: the
+ * classifier under "auto", the pinned member under "manual", the judge under
+ * "fusion".
+ *
+ * Same shape as the tier sections below it — a titled card with the chosen
+ * model inside — so all three strategies present their routing the same way.
+ * The pick opens the normal model drawer, because choosing a model is the same
+ * job everywhere in this page.
+ */
+function RoleGroup({ icon, title, hint, value, placeholder, onPick, onClear, tone = "sky" }) {
+  const tones = {
+    amber: { card: "border-amber-400/20 bg-amber-400/[0.035]", head: "border-amber-400/15", icon: "text-amber-300", title: "text-amber-100", hint: "text-amber-200/60", btn: "border-amber-400/25 text-amber-100 hover:border-amber-400/45 hover:bg-amber-400/[0.07]", clear: "text-amber-200/60 hover:text-red-300 hover:bg-red-500/10" },
+    sky: { card: "border-[#38bdf8]/20 bg-[#38bdf8]/[0.035]", head: "border-[#38bdf8]/15", icon: "text-[#7dd3fc]", title: "text-[#bae6fd]", hint: "text-[#7dd3fc]/60", btn: "border-[#38bdf8]/25 text-[#bae6fd] hover:border-[#38bdf8]/45 hover:bg-[#38bdf8]/[0.07]", clear: "text-[#7dd3fc]/60 hover:text-red-300 hover:bg-red-500/10" },
+    violet: { card: "border-violet-400/20 bg-violet-400/[0.035]", head: "border-violet-400/15", icon: "text-violet-300", title: "text-violet-100", hint: "text-violet-200/60", btn: "border-violet-400/25 text-violet-100 hover:border-violet-400/45 hover:bg-violet-400/[0.07]", clear: "text-violet-200/60 hover:text-red-300 hover:bg-red-500/10" },
+  }[tone] || {};
+
+  return (
+    <div className={`mb-2 min-w-0 overflow-hidden rounded-lg border ${tones.card}`}>
+      <div className={`flex min-w-0 items-center gap-1.5 border-b px-2.5 py-1.5 ${tones.head}`}>
+        <span className={`material-symbols-outlined shrink-0 text-[13px] ${tones.icon}`}>{icon}</span>
+        <span className={`shrink-0 text-[10px] font-semibold ${tones.title}`}>{title}</span>
+        <span className={`min-w-0 truncate text-[9px] ${tones.hint}`}>{hint}</span>
+        {onClear && (
+          <button
+            type="button"
+            onClick={onClear}
+            className={`ml-auto flex size-5 shrink-0 items-center justify-center rounded transition-colors ${tones.clear}`}
+            title={`清除${title}`}
+            aria-label={`清除${title}`}
+          >
+            <span className="material-symbols-outlined text-[12px]">close</span>
+          </button>
+        )}
+      </div>
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={onPick}
+          className={`flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border bg-black/[0.12] px-2.5 text-left text-[12px] transition-colors ${tones.btn}`}
+        >
+          <span className="truncate font-mono">{value || placeholder}</span>
+          <span className="material-symbols-outlined ml-auto shrink-0 text-[16px] opacity-50">chevron_right</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One collapsible group inside a node's advanced panel.
+ *
+ * The panel used to render every setting at once — access tags, effort, weight,
+ * auto tier and the whole schedule editor — regardless of the combo's strategy,
+ * so the strategy-specific field an operator actually came for was buried among
+ * fields that did nothing under it.
+ */
+function AdvancedSection({ icon, tone, title, summary, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="min-w-0">
+      {/* Level 1 of the panel's hierarchy: larger and bolder than everything it
+          contains, with the whole row as its hit target. Field labels inside are
+          10px/regular; sub-groups are 10px/medium. Before this, header and field
+          label were both 10px/400 and only 100 weight apart, so the panel had no
+          readable levels and read as one flat list. */}
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
+      >
+        <span className={`material-symbols-outlined shrink-0 text-[14px] text-text-muted transition-transform ${open ? "rotate-90" : ""}`}>chevron_right</span>
+        <span className={`material-symbols-outlined shrink-0 text-[14px] ${tone}`}>{icon}</span>
+        <span className="shrink-0 text-[11px] font-semibold tracking-wide text-text-main">{title}</span>
+        {summary && <span className="min-w-0 flex-1 truncate text-[9px] text-text-muted">{summary}</span>}
+      </button>
+      {open && <div className="flex min-w-0 flex-col gap-2.5 pb-1.5 pl-6 pt-1">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * The strategy-specific fields a node offers right now.
+ *
+ * Rendered only when the strategy uses them: a weight input under "fallback"
+ * would set a value nothing reads, and an auto tier outside "auto" is dead
+ * configuration. Absent, not disabled — a greyed-out control still costs a row
+ * and still reads as "something I should configure".
+ */
+function StrategyFields({ model, weight, showWeight, onWeightChange }) {
+  return (
+    <>
+      {showWeight && (
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="material-symbols-outlined shrink-0 text-[13px] text-[#34d399]">balance</span>
+          <span className="shrink-0 text-[10px] text-text-muted">权重</span>
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            step={1}
+            value={weight}
+            onChange={(event) => onWeightChange?.(Number.parseInt(event.target.value, 10) || 1)}
+            className="h-7 w-20 rounded-md border border-white/[0.09] bg-black/[0.15] px-2 text-center font-mono text-[10px] text-text-main outline-none focus:border-emerald-400/50"
+            aria-label={`${model} 权重`}
+          />
+          <span className="min-w-0 text-[9px] leading-3 text-text-muted">权重 3 接 3 个请求，权重 1 接 1 个</span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1761,20 +2388,22 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                       }}
                       onScheduleChange={(schedule) => {
                         const updated = [...models];
-                        const model = getComboModelValue(updated[index]);
-                        updated[index] = buildComboModelEntry(model, schedule, getComboModelAccessTags(updated[index]), getComboModelAutoTier(updated[index]));
+                        updated[index] = rebuildComboModelEntry(updated[index], { schedule });
                         setModels(updated);
                       }}
                       onAccessTagsChange={(accessTags) => {
                         const updated = [...models];
-                        const model = getComboModelValue(updated[index]);
-                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), accessTags, getComboModelAutoTier(updated[index]));
+                        updated[index] = rebuildComboModelEntry(updated[index], { accessTags });
                         setModels(updated);
                       }}
-                      onAutoTierChange={(autoTier) => {
+                      onEffortChange={(effort) => {
                         const updated = [...models];
-                        const model = getComboModelValue(updated[index]);
-                        updated[index] = buildComboModelEntry(model, getComboModelSchedule(updated[index]), getComboModelAccessTags(updated[index]), autoTier);
+                        updated[index] = rebuildComboModelEntry(updated[index], { effort });
+                        setModels(updated);
+                      }}
+                      onWeightChange={(weight) => {
+                        const updated = [...models];
+                        updated[index] = rebuildComboModelEntry(updated[index], { weight });
                         setModels(updated);
                       }}
                       onMoveUp={() => handleMoveUp(index)}
@@ -1816,7 +2445,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
           addedModelValues={modelValues}
           closeOnSelect={false}
           presentation="drawer"
-          drawerWidth="lg"
+          drawerWidth="xl"
         />
       )}
     </>

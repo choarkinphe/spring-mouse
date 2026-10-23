@@ -130,6 +130,39 @@ describe("real chat combo search integration", () => {
     expect(second.modelInfo).toEqual(first.modelInfo);
   });
 
+  it.each([false, true])("exposes CORS on search-bound JSON/SSE through the real handler (stream=%s)", async (stream) => {
+    const response = await handleChat(request({ stream }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("content-type")).toBe(stream ? "text/event-stream" : "application/json");
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
+    expect(mocks.runGatewaySearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("correlates translated Responses item IDs through the real handler after search", async () => {
+    mocks.handleChatCore.mockImplementation(async ({ body }) => {
+      const continued = Array.isArray(body.input) && body.input.some((item) => item.type === "function_call_output");
+      return { success: true, response: Response.json({ id: "resp-probe", object: "response", status: "completed", output: continued ? [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "Evidence found" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "The release shipped today.", annotations: [] }] },
+        { type: "function_call", call_id: "client-call", name: "client_action", arguments: "{}" },
+      ] : [{ type: "function_call", call_id: "search-call", name: COMBO_SEARCH_FUNCTION, arguments: JSON.stringify({ query: "release today" }) }] }) };
+    });
+    const response = await handleChat(new Request("https://router.test/v1/responses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "route", input: "What changed today?", stream: true }) }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    const events = (await response.text()).trim().split("\n\n").map((frame) => JSON.parse(frame.split("\n").find((line) => line.startsWith("data: ")).slice(6)));
+    const output = events.at(-1).response.output;
+    expect(output.map((item) => item.id)).toEqual([expect.stringMatching(/^rs_/), expect.stringMatching(/^msg_/), expect.stringMatching(/^fc_/)]);
+    expect(output[2].call_id).toBe("client-call");
+    for (const event of events.filter((event) => event.output_index != null)) {
+      expect(event.item?.id ?? event.item_id).toBe(output[event.output_index].id);
+      if (event.type.startsWith("response.output_text.") || event.type.startsWith("response.content_part.")) expect(event.content_index).toBe(0);
+    }
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(2);
+    expect(mocks.runGatewaySearch).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves unbound requests, tools and streaming mode unchanged", async () => {
     setGraph([{ name: "route", models: ["probe/no-tools"] }]);
     const tools = [{ type: "function", function: { name: "client_lookup", parameters: { type: "object" } } }];

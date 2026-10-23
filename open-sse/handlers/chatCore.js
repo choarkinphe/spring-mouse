@@ -30,6 +30,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { buildOpenCodeGoHeaders } from "../utils/opencodeGoHeaders.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { createCompactionDiagnostics } from "../utils/compactionDiagnostics.js";
 
@@ -134,13 +135,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // route kimi to /messages.
   const modelSupportedFormats = getModelSupportedFormats(alias, model);
   const runtimeTransport = resolveTransport(provider, sourceFormat);
-  // Per-model guard: when a model declares supportedFormats, only use the
-  // sourceFormat-matched transport if that format is declared (opencode-go models
-  // differ — kimi/glm only do /chat/completions). Undeclared models keep the
-  // upstream default (use the transport), preserving behavior for glm/deepseek/...
-  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
+  // A newly discovered model does not establish non-default protocol support.
+  // Providers may explicitly constrain undeclared model protocols (Go is chat-only).
+  const supportedFormats = modelSupportedFormats || PROVIDERS[provider]?.unknownModelFormats;
+  const useTransport = (!supportedFormats || supportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
   const targetFormat = modelTargetFormat || useTransport?.format || getTargetFormat(provider, credentials);
-  if (useTransport && credentials) credentials.runtimeTransport = useTransport;
+  if (credentials) credentials.runtimeTransport = useTransport || null;
   const compactionDiag = createCompactionDiagnostics({
     headers: clientRawRequest?.headers, body, endpoint: clientRawRequest?.endpoint,
     requestId, trafficRequestId, connectionId, provider, model, sourceFormat, targetFormat, log, reqTag,
@@ -202,7 +202,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const passthrough = isNativePassthrough(clientTool, provider);
 
   // Expose raw client headers to translators/executors for session-id resolution
-  if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
+  if (credentials) {
+    credentials.rawHeaders = clientRawRequest?.headers || {};
+    // Capture before translation drops body metadata. Never use _clientSessionId:
+    // its generic resolver permits request IDs and account-scoped fallbacks.
+    if (provider === "opencode-go") {
+      credentials.opencodeGoHeaders = buildOpenCodeGoHeaders({ headers: credentials.rawHeaders, body });
+    }
+  }
 
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {

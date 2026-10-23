@@ -274,7 +274,8 @@ export async function POST(request) {
     // Dual-auth providers (e.g. codebuddy-cn, xai) live under category "oauth" but also
     // accept an API key via authModes — they aren't in APIKEY_PROVIDERS, so allow them here.
     const supportsApiKeyMode = !!AI_PROVIDERS[provider]?.authModes?.includes("apikey");
-    const isValidProvider = APIKEY_PROVIDERS[provider] ||
+    const isNoAuthProvider = AI_PROVIDERS[provider]?.noAuth === true;
+    const isValidProvider = isNoAuthProvider || APIKEY_PROVIDERS[provider] ||
       FREE_TIER_PROVIDERS[provider] ||
       supportsApiKeyMode ||
       isWebCookieProvider ||
@@ -285,7 +286,7 @@ export async function POST(request) {
     if (!provider || !isValidProvider) {
       return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
     }
-    if (!apiKey && provider !== "ollama-local") {
+    if (!isNoAuthProvider && !apiKey && provider !== "ollama-local") {
       return NextResponse.json({ error: `${isWebCookieProvider ? "Cookie value" : "API Key"} is required` }, { status: 400 });
     }
     const connectionName = name || displayName || AI_PROVIDERS[provider]?.name;
@@ -359,7 +360,7 @@ export async function POST(request) {
 
     const newConnection = await createProviderConnection({
       provider,
-      authType: isWebCookieProvider ? "cookie" : "apikey",
+      authType: isWebCookieProvider ? "cookie" : isNoAuthProvider ? "none" : "apikey",
       name: connectionName,
       apiKey: apiKey || "",
       priority: priority || 1,

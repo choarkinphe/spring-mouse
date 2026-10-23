@@ -16,7 +16,7 @@ assert.equal(saved.data.valid, true);
 const models = await call(`/api/providers/${connection.id}/models`);
 assert.equal(models.status, 200);
 assert.deepEqual(models.data.models.map((m) => [m.id, m.type]), [["jev-latest", "systemone"], ["jev-preview", "systemone"]]);
-const sync = await call("/api/providers/model-sync", { providerId: "jevapi", supportedModels: models.data.models, officialFetched: true });
+const sync = await call("/api/providers/model-sync", { providerId: "jevapi", connectionId: connection.id });
 assert.equal(sync.status, 200);
 assert.equal(sync.data.total, 2);
 const custom = await call("/api/models/custom");

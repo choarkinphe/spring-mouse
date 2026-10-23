@@ -5,6 +5,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
+import { buildOpenCodeGoHeaders } from "open-sse/utils/opencodeGoHeaders.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -758,13 +759,17 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         return { valid, error: valid ? null : "Session expired — re-paste cookie" };
       }
       case "opencode-go": {
-        const res = await fetchWithConnectionProxy("https://opencode.ai/zen/go/v1/chat/completions", {
+        const res = await fetchWithConnectionProxy("https://opencode.ai/inference/go/openai/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${connection.apiKey}` },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${connection.apiKey}`,
+            ...buildOpenCodeGoHeaders({ headers: { "x-opencode-session": "spring-mouse-connection-test" } }),
+          },
           body: JSON.stringify({ model: getDefaultModel("opencode-go"), messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
         }, effectiveProxy);
-        const valid = res.status !== 401 && res.status !== 403;
-        return { valid, error: valid ? null : "Invalid API key" };
+        const valid = res.ok;
+        return { valid, error: valid ? null : `OpenCode Go returned HTTP ${res.status}` };
       }
       case "xiaomi-mimo":
       case "xiaomi-tokenplan": {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getProviderCredentials } from "@/sse/services/auth.js";
 import { checkAndRefreshToken, updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
@@ -59,6 +60,9 @@ export async function executeCapabilityProbe(identity, probe, { signal, timeoutM
           modelInfo: { provider: identity.providerId, model: identity.modelId },
           credentials: refreshed, connectionId: credentials.connectionId || "noauth",
           log, clientSignal: controller.signal, sourceFormatOverride: probe.sourceFormat,
+          ...(identity.providerId === "opencode-go" ? {
+            clientRawRequest: { headers: { "x-opencode-session": `spring-mouse-capability-test-${randomUUID()}` } },
+          } : {}),
           internalRequest: true, capabilityProbe: true, requestLogFileDumpsEnabled: false,
           onProbeDispatch: ({ body }) => {
             dispatched = true;

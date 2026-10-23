@@ -18,18 +18,24 @@ export default {
     },
   },
   category: "apikey",
+  features: { usage: true, usageApikey: true },
   // The public Go /models directory is authoritative for discovery, not proof
   // of access for a particular subscription. Seeds below only retain metadata.
   modelListSource: "upstream",
   transport: {
-    baseUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+    baseUrl: "https://opencode.ai/inference/go/openai/v1/chat/completions",
     headers: {},
+    usage: {
+      url: "https://opencode.ai/zen/go/v1/usage",
+      windows: { rolling: "5-hour", weekly: "Weekly", monthly: "Monthly" },
+    },
+    // Public catalog additions do not establish Messages/Responses support.
+    unknownModelFormats: ["openai"],
   },
-  // Multi-endpoint: pick the transport matching the client sourceFormat to skip
-  // translation. Guarded per-model by `supportedFormats` (see chatCore) because
-  // opencode-go models differ in endpoint support.
+  // Keep known per-model protocol support, but use the currently documented
+  // OpenAI route for chat. Do not infer other protocols for newly synced IDs.
   transports: [
-    { format: "openai", baseUrl: "https://opencode.ai/zen/go/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+    { format: "openai", baseUrl: "https://opencode.ai/inference/go/openai/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
     { format: "claude", baseUrl: "https://opencode.ai/zen/go/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
     { format: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
   ],
@@ -38,6 +44,7 @@ export default {
     { id: "glm-5.1", name: "GLM 5.1", supportedFormats: ["openai"] },
     { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", supportedFormats: ["openai"] },
     { id: "kimi-k2.6", name: "Kimi K2.6", supportedFormats: ["openai"] },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", supportedFormats: ["openai"] },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", supportedFormats: ["openai", "claude", "openai-responses"] },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", supportedFormats: ["openai", "claude", "openai-responses"] },
     { id: "mimo-v2.5", name: "MiMo V2.5", supportedFormats: ["openai"] },

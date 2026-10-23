@@ -2,7 +2,7 @@ import { recordRoutingDuration } from "@/lib/system/concurrency.js";
 import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
-import { MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_RESET_MS } from "open-sse/config/errorConfig.js";
+import { CODEBUDDY_VERIFICATION, MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_RESET_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
 import { errorResponse, normalizeErrorStatus } from "open-sse/utils/error.js";
@@ -542,6 +542,17 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const scanBound = upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
     || upstreamError?.origin === SSE_ERROR_ORIGINS.SCAN_LIMIT;
 
+  // Match structured upstream evidence only; message substrings are not business codes.
+  // This is not an auth-refresh signal and does not change the upstream HTTP status.
+  let verificationRejected = false;
+  if (provider === CODEBUDDY_VERIFICATION.provider && Number(status) === 400
+    && upstreamError?.source === "http" && upstreamError.status === 400) {
+    try {
+      const code = JSON.parse(upstreamError.body)?.code;
+      verificationRejected = code === CODEBUDDY_VERIFICATION.code || code === String(CODEBUDDY_VERIFICATION.code);
+    } catch { /* Non-JSON errors retain the generic client-error policy. */ }
+  }
+
   let decision = { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   const applyFailure = (conn) => {
     const backoffLevel = conn?.backoffLevel || 0;
@@ -569,6 +580,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       // A local scan limit is not proof that the upstream model is overloaded.
       shouldFallback = true;
       cooldownMs = 0;
+    } else if (verificationRejected) {
+      shouldFallback = true;
+      cooldownMs = CODEBUDDY_VERIFICATION.cooldownMs;
     } else if (githubResetAtMs) {
       shouldFallback = true;
       cooldownMs = githubResetAtMs - Date.now();
@@ -641,7 +655,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // upstream, so there is no account fault to record.
     if (scanBound || modelLevelSignal || decision.transport) return { value: decision, update: evidence };
 
-    const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+    const lockUpdate = buildModelLockUpdate(githubResetAtMs || verificationRejected ? null : model, cooldownMs);
     const lockKey = Object.keys(lockUpdate)[0];
     const oldExpiry = conn?.[lockKey];
     if (oldExpiry && new Date(oldExpiry).getTime() > new Date(lockUpdate[lockKey]).getTime()) {

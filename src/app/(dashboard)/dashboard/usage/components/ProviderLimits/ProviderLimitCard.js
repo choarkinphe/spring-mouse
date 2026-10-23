@@ -159,9 +159,12 @@ export default function ProviderLimitCard({
             return (
               <QuotaProgressBar
                 key={`${quota.name}-${index}`}
-                label={quota.name}
+                label={quota.displayName || quota.name}
                 used={quota.used}
                 total={quota.total}
+                unit={quota.unit}
+                balance={quota.balance}
+                currency={quota.currency}
                 percentage={percentage}
                 unlimited={unlimited}
                 resetTime={quota.resetAt}

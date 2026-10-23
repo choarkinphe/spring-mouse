@@ -12,6 +12,8 @@ export default function Drawer({
   width = "md",
   className,
   bodyRef,
+  bodyClassName,
+  bodyScroll = true,
   zIndex = "z-50",
   lockScroll = true,
   closeOnOverlay = true,
@@ -93,7 +95,7 @@ export default function Drawer({
         </div>
 
         {/* Body */}
-        <div ref={bodyRef} className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div ref={bodyRef} className={cn("flex-1", bodyScroll ? "overflow-y-auto custom-scrollbar" : "overflow-hidden", bodyClassName ?? "p-6")}>
           {children}
         </div>
 

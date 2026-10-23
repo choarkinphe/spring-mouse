@@ -59,6 +59,12 @@ export async function purgeChannelModelRows(aliases) {
   const removed = { customModels: 0, modelAliases: 0, disabledModels: 0 };
 
   db.transaction(() => {
+    for (const row of db.all(`SELECT key, value FROM kv WHERE scope = 'modelSyncSnapshots'`)) {
+      const snapshot = parseJson(row.value, {});
+      if (list.includes(row.key) || list.includes(snapshot.providerAlias)) {
+        db.run(`DELETE FROM kv WHERE scope = 'modelSyncSnapshots' AND key = ?`, [row.key]);
+      }
+    }
     for (const alias of list) {
       // customModels key = `${alias}|${id}|${type}`
       const custom = db.run(

@@ -15,8 +15,7 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { useModelPricing } from "@/shared/hooks/useModelPricing";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
-import { describeModelSource, getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
-import { hasModelsDevCatalog } from "@/shared/utils/modelCatalog";
+import { describeModelSource, getProviderCustomModelRows, getModelDisplayCapabilities, shouldUseStaticModelCatalog } from "@/shared/utils/providerCustomModels";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -56,6 +55,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [modelAliases, setModelAliases] = useState({});
   const [customModels, setCustomModels] = useState([]);
   const [customModelsLoaded, setCustomModelsLoaded] = useState(false);
+  const [modelSyncSnapshots, setModelSyncSnapshots] = useState({});
   const [headerImgError, setHeaderImgError] = useState(false);
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
@@ -87,6 +87,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [confirmState, setConfirmState] = useState(null);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [syncingModels, setSyncingModels] = useState(false);
+  const [selectedSyncConnectionId, setSelectedSyncConnectionId] = useState("");
   const [modelSyncStatus, setModelSyncStatus] = useState(null);
   const [syncingPricing, setSyncingPricing] = useState(false);
   const [pricingSyncStatus, setPricingSyncStatus] = useState(null);
@@ -113,8 +114,14 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId]);
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const upstreamOnly = usesUpstreamModelList(providerId);
-  const staticModels = upstreamOnly ? [] : getModelsByProviderId(providerId);
-  const models = providerId === "cursor" && liveModels.length > 0
+  const officialSnapshot = modelSyncSnapshots[providerId];
+  const hasAuthoritativeSync = officialSnapshot?.status === "success"
+    && officialSnapshot?.source === "official"
+    && officialSnapshot?.providerId === providerId;
+  // Once the official directory has been synchronized, registry entries are
+  // protocol/runtime metadata only and must not be reinserted into the picker.
+  const staticModels = shouldUseStaticModelCatalog(providerId, modelSyncSnapshots) ? getModelsByProviderId(providerId) : [];
+  const models = !hasAuthoritativeSync && providerId === "cursor" && liveModels.length > 0
     ? liveModels
     : staticModels;
   const providerAlias = getProviderAlias(providerId);
@@ -135,10 +142,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   // that static list. Without the last case codebuddy-* and friends showed no
   // sync button at all, so their models never reached the strict combo picker.
   const supportsModelSync = Boolean(
-    providerInfo?.modelCatalog
-      || supportsLiveModelSync(providerId)
-      || hasModelsDevCatalog(providerId)
-      || staticModels.length > 0
+    supportsLiveModelSync(providerId)
   );
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
@@ -169,6 +173,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const modelGrid = (() => {
     if (isCompatible) {
       const rows = getProviderCustomModelRows({
+        snapshots: modelSyncSnapshots,
         customModels,
         modelAliases,
         providerAlias: providerStorageAlias,
@@ -181,11 +186,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     // Exclude non-llm models (embedding, tts, …) — they have dedicated pages under media-providers.
     const allModels = [
       ...models,
-      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+      ...(!hasAuthoritativeSync ? kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)) : []),
     ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
     const disabledSet = new Set(disabledModelIds);
     const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
     const customModelRows = getProviderCustomModelRows({
+        snapshots: modelSyncSnapshots,
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
@@ -277,31 +283,23 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     }
   }, []);
 
-  // /api/models/custom returns a global list, so the last response is cached on
-  // window and reused when the component remounts (for example after leaving and
-  // re-entering the page). Cached rows render immediately and are then refreshed
-  // in the background — previously the grid drew the static catalog first and
-  // visibly "filled in" the synced models a moment later.
-  const fetchCustomModels = useCallback(async () => {
-    const cacheKey = "__smCustomModelsCache";
-    const cached = typeof window !== "undefined" ? window[cacheKey] : null;
-    if (Array.isArray(cached)) {
-      setCustomModels(cached);
-      setCustomModelsLoaded(true);
-    }
-    try {
-      const res = await fetch("/api/models/custom", { cache: "no-store" });
-      const data = await res.json();
-      if (res.ok) {
-        const rows = data.models || [];
-        if (typeof window !== "undefined") window[cacheKey] = rows;
-        setCustomModels(rows);
+  const fetchCustomModels = useMemo(() => {
+    let latestRequest = 0;
+    return async () => {
+      const requestId = ++latestRequest;
+      try {
+        const res = await fetch("/api/models/custom", { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok && requestId === latestRequest) {
+          setCustomModels(data.models || []);
+          setModelSyncSnapshots(data.snapshots || {});
+        }
+      } catch (error) {
+        console.log("Error fetching custom models:", error);
+      } finally {
+        if (requestId === latestRequest) setCustomModelsLoaded(true);
       }
-    } catch (error) {
-      console.log("Error fetching custom models:", error);
-    } finally {
-      setCustomModelsLoaded(true);
-    }
+    };
   }, []);
 
   // Fetch free models from Kilo API for kilocode provider
@@ -600,6 +598,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const existingModelIds = (() => {
     const ids = new Set((models || []).map((model) => model.id));
     const rows = getProviderCustomModelRows({
+        snapshots: modelSyncSnapshots,
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
@@ -700,43 +699,20 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
 
   const handleSyncSupportedModels = async () => {
     if (syncingModels) return;
-    const activeConnection = connections.find((connection) => connection.isActive !== false);
-    if (!activeConnection) {
-      setModelSyncStatus({ type: "error", text: translate("Please add an active connection before syncing models") });
+    const activeConnections = connections.filter((connection) => connection.isActive !== false);
+    const activeConnection = activeConnections.find((connection) => connection.id === selectedSyncConnectionId)
+      || (activeConnections.length === 1 ? activeConnections[0] : null);
+    if (!activeConnection && !isFreeNoAuth) {
+      setModelSyncStatus({ type: "error", text: activeConnections.length > 1 ? "请选择用于官方模型目录同步的连接" : translate("Please add an active connection before syncing models") });
       return;
     }
     setSyncingModels(true);
     setModelSyncStatus(null);
     try {
-      // Upstream-only channels must not replace a live directory with a
-      // platform-wide seed when listing fails. Other channels keep union sync.
-      let officialModels = [];
-      let officialWarning = "";
-      let officialFetched = false;
-      let publicListing = false;
-      try {
-        const officialRes = await fetch(`/api/providers/${activeConnection.id}/models`, { cache: "no-store" });
-        const officialData = await officialRes.json().catch(() => ({}));
-        if (officialRes.ok && Array.isArray(officialData.models)) {
-          officialFetched = true;
-          officialModels = officialData.models;
-          publicListing = officialData.listingScope === "public";
-        } else {
-          officialWarning = officialData.error || `HTTP ${officialRes.status}`;
-        }
-      } catch (error) {
-        officialWarning = error.message;
-      }
-
-      if (upstreamOnly && !officialFetched) {
-        setModelSyncStatus({ type: "error", text: `上游模型列表获取失败（${officialWarning || "无有效模型列表"}），现有模型未更改` });
-        return;
-      }
-
       const res = await fetch("/api/providers/model-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, supportedModels: officialModels, officialFetched }),
+        body: JSON.stringify({ providerId, connectionId: activeConnection?.id }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -747,7 +723,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       await fetchCustomModels();
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
       const detail = [
-        `官方 ${data.officialCount ?? officialModels.length}`,
+        `官方 ${data.officialCount ?? 0}`,
         `目录 ${data.catalogCount ?? 0}`,
         ...(data.staticCount ? [`内置 ${data.staticCount}`] : []),
       ].join(" · ");
@@ -755,8 +731,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         type: "success",
         text: `${translate("Model synchronization complete")}: ${data.total} ${translate("models")} (${detail}), ${data.added} ${translate("added")}, ${data.updated} ${translate("updated")}`
           + (data.removed ? ` · 清理 ${data.removed} 个旧同步模型` : "")
-          + (publicListing ? " · 官方公开目录，不代表当前账号的模型权限" : "")
-          + (officialWarning ? ` · 官方接口不可用（${officialWarning}），已用能力目录补齐` : ""),
+          + (data.discovery?.scope === "public" ? " · 官方公开目录，不代表当前账号的模型权限" : "")
+          + (data.warning ? ` · ${data.warning}` : ""),
       });
     } catch (error) {
       setModelSyncStatus({ type: "error", text: `${translate("Failed to sync supported models")}: ${error.message}` });
@@ -862,6 +838,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       rows.push({ id, ...extra });
     };
     for (const row of getProviderCustomModelRows({
+        snapshots: modelSyncSnapshots,
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
@@ -1036,7 +1013,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
       <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
         {/* Custom models first */}
         {customModelRows.map((model) => {
-          const rowCaps = getCaps(`${providerStorageAlias}/${model.id}`) || model.capabilities || {};
+          const rowCaps = getModelDisplayCapabilities(model, getCaps(`${providerStorageAlias}/${model.id}`));
           const rowOverrideCaps = model.manualCapabilities || capabilityOverrides[`${providerStorageAlias}|${model.id}|llm`] || {};
           const rowBusyPrefix = `${providerStorageAlias}|${model.id}|`;
           const rowBusyCapabilityKey = togglingCapability?.startsWith(rowBusyPrefix)
@@ -1178,7 +1155,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           </button>
         )}
 
-        {/* Suggested models from provider API — show only models not yet added */}
+        {/* Suggested models are proposals only; they must never appear as verified directory entries. */}
         {suggestedModels.length > 0 && (() => {
           const addedFullModels = new Set([
             ...Object.values(modelAliases),
@@ -1314,7 +1291,8 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             Back to Providers
           </Link>
         )}
-        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+        <div data-testid="model-management-header" className="flex min-w-0 flex-wrap items-start gap-4">
+          <div data-testid="model-management-identity" className="flex min-w-0 flex-[1_1_24rem] items-start gap-3 sm:gap-4">
           {isCompatible ? (
             <button
               type="button"
@@ -1345,7 +1323,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                   href={providerInfo.notice?.apiKeyUrl || providerInfo.notice?.signupUrl || providerInfo.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
                 >
                   <span className="material-symbols-outlined text-sm">open_in_new</span>
                   {providerInfo.notice?.apiKeyUrl ? "Get API Key" : "Sign up / Learn more"}
@@ -1353,7 +1331,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               )}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-text-muted">
-              <p>
+              <p className="shrink-0 whitespace-nowrap">
                 {connections.length} 个账号 · {modelGrid.count} 个模型
               </p>
               {providerThinkingLevels && (
@@ -1374,7 +1352,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
                           role="radio"
                           aria-checked={active}
                           onClick={() => handleThinkingModeChange(opt)}
-                          className={`inline-flex h-7 items-center rounded-[8px] border px-2.5 text-xs transition-colors ${
+                          className={`inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-[8px] border px-2.5 text-xs transition-colors ${
                             active
                               ? "border-brand-500/45 bg-brand-500/10 font-medium text-brand-500"
                               : "border-border-subtle bg-surface-2 text-text-muted hover:border-border hover:text-text-main"
@@ -1394,7 +1372,14 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               </p>
             )}
           </div>
-          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          </div>
+          <div data-testid="model-management-actions" className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-start gap-2 sm:justify-end">
+            {supportsModelSync && connections.filter((connection) => connection.isActive !== false).length > 1 && (
+              <select aria-label="模型目录连接" value={selectedSyncConnectionId} onChange={(event) => setSelectedSyncConnectionId(event.target.value)} className="min-w-0 max-w-full rounded-lg border border-border bg-background px-2 py-2 text-sm">
+                <option value="">选择同步连接</option>
+                {connections.filter((connection) => connection.isActive !== false).map((connection) => <option key={connection.id} value={connection.id}>{connection.name || connection.email || connection.id}</option>)}
+              </select>
+            )}
             {supportsModelSync && (
               <Button
                 size="md"
@@ -1490,6 +1475,10 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               )}
             </div>
           </div>
+        </div>
+        <div data-testid="model-management-directory-status" className="mt-3 min-w-0 space-y-1 text-xs leading-5 text-text-muted">
+          <p>{hasAuthoritativeSync ? `官方目录同步于 ${new Date(officialSnapshot.syncedAt).toLocaleString()}` : supportsModelSync ? "尚未同步官方目录；内置模型未经当前账号验证" : "此渠道暂未提供已验证的官方目录获取方式；内置模型仅供手动配置"}</p>
+          {hasAuthoritativeSync && officialSnapshot.scope === "public" && <p>该公开目录不代表当前账号具有调用权限；逐个模型权限需由实际请求验证。</p>}
         </div>
 
         {batchMode && (

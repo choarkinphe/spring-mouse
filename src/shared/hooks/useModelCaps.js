@@ -1,47 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
 
-// Module cache: one /api/models fetch shared by every useModelCaps instance.
-let cache = null; // { byFull, byId } | null
-let inflight = null;
+import { createModelCapsCache } from "@/shared/utils/modelCapsCache";
 
-function buildMaps(models) {
-  const byFull = {};
-  const byId = {};
-  for (const m of models || []) {
-    if (!m.caps) continue;
-    if (m.fullModel) byFull[m.fullModel] = m.caps;
-    if (m.routedModel) byFull[m.routedModel] = m.caps;
-    if (m.model) byId[m.model] = m.caps;
-  }
-  return { byFull, byId };
-}
+const cache = createModelCapsCache();
 
 function loadModelCaps() {
-  if (cache) return Promise.resolve(cache);
-  if (inflight) return inflight;
-  inflight = fetch("/api/models")
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`models ${res.status}`);
-      const data = await res.json();
-      cache = buildMaps(data.models);
-      return cache;
-    })
-    .catch(() => {
-      // Keep null so a later mount can retry
-      return { byFull: {}, byId: {} };
-    })
-    .finally(() => { inflight = null; });
-  return inflight;
-}
-
-function clearModelCapsCache() {
-  cache = null;
-  inflight = null;
+  return cache.load(async () => {
+    const response = await fetch("/api/models", { cache: "no-store" });
+    if (!response.ok) throw new Error(`models ${response.status}`);
+    return (await response.json()).models;
+  }).catch(() => ({ byFull: {}, byId: {} }));
 }
 
 // Resolve caps from a "provider/model" string or a bare model id.
@@ -62,28 +35,32 @@ function resolveCaps(byFull, byId, input) {
 }
 
 export function useModelCaps(combos) {
-  const [byFull, setByFull] = useState(() => cache?.byFull || {});
-  const [byId, setById] = useState(() => cache?.byId || {});
+  const [byFull, setByFull] = useState(() => cache.peek()?.byFull || {});
+  const [byId, setById] = useState(() => cache.peek()?.byId || {});
+
+  const requestGeneration = useRef(0);
+  const refresh = useCallback(() => {
+    const request = ++requestGeneration.current;
+    loadModelCaps().then((maps) => {
+      if (request !== requestGeneration.current) return;
+      setByFull(maps.byFull);
+      setById(maps.byId);
+    });
+  }, []);
 
   useEffect(() => {
-    let alive = true;
-    Promise.resolve(cache || loadModelCaps()).then((maps) => {
-      if (alive) { setByFull(maps.byFull); setById(maps.byId); }
-    });
-    return () => { alive = false; };
-  }, []);
+    refresh();
+    return () => { requestGeneration.current += 1; };
+  }, [refresh]);
 
   useEffect(() => {
     const handleChange = () => {
-      clearModelCapsCache();
-      loadModelCaps().then((maps) => {
-        setByFull(maps.byFull);
-        setById(maps.byId);
-      });
+      cache.clear();
+      refresh();
     };
     window.addEventListener("customModelChanged", handleChange);
     return () => window.removeEventListener("customModelChanged", handleChange);
-  }, []);
+  }, [refresh]);
 
   const getModelCapabilities = useCallback((id) => resolveCaps(byFull, byId, id), [byFull, byId]);
   const resolver = useMemo(() => createComboCapabilityResolver({ combos, getModelCapabilities }), [combos, getModelCapabilities]);

@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { getApiKeys } from "@/lib/localDb";
-import { UPDATER_CONFIG } from "@/shared/constants/config";
+import { APP_CONFIG, UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -130,9 +131,15 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     return { ok: true, latencyMs, error: null, status: res.status };
   }
 
+  // A connectivity probe is its own one-turn conversation, not a user session.
+  const probeHeaders = {
+    ...headers,
+    "User-Agent": `Spring-Mouse/${APP_CONFIG.version}`,
+    "x-opencode-session": `spring-mouse-model-test-${randomUUID()}`,
+  };
   const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
     method: "POST",
-    headers,
+    headers: probeHeaders,
     body: JSON.stringify({
       model,
       // 1024 tokens: reasoning models (ClinePass/kimi-k3, deepseek-v4-pro, etc.) spend

@@ -3,7 +3,6 @@ import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS, getModelKind } from "@/shared/co
 import {
   AI_PROVIDERS,
   getProviderAlias,
-  usesUpstreamModelList,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
@@ -27,7 +26,8 @@ import { normalizeComboSearch } from "open-sse/services/comboSearch.js";
 import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
 import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKTOP_FALLBACK_CREATED_AT } from "@/shared/utils/claudeDesktopDiscovery.js";
 import { resolveHarnessProfiles } from "@/shared/utils/harnessRoute.js";
-import { isListedCustomModel } from "@/shared/utils/providerCustomModels";
+import { isVisibleModelCatalogRow, shouldUseStaticModelCatalog, hasOfficialModelSnapshot } from "@/shared/utils/providerCustomModels";
+import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -274,9 +274,11 @@ export async function buildModelsList(kindFilter, options = {}) {
     console.log("Could not fetch combos");
   }
 
+  let snapshots = {};
+  try { snapshots = await getModelSyncSnapshots(); } catch {}
   let customModels = [];
   try {
-    customModels = (await getCustomModels()).filter(isListedCustomModel);
+    customModels = (await getCustomModels()).filter((model) => isVisibleModelCatalogRow(model, snapshots));
   } catch (e) {
     console.log("Could not fetch custom models");
   }
@@ -357,7 +359,7 @@ export async function buildModelsList(kindFilter, options = {}) {
     );
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
-      if (!providerMatchesKinds(providerId, kindFilter) || usesUpstreamModelList(providerId)) continue;
+      if (!providerMatchesKinds(providerId, kindFilter) || !shouldUseStaticModelCatalog(providerId, snapshots)) continue;
       for (const model of providerModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
@@ -395,7 +397,8 @@ export async function buildModelsList(kindFilter, options = {}) {
         || getProviderAlias(providerId)
         || staticAlias
       ).trim();
-      const providerModels = usesUpstreamModelList(providerId) ? [] : PROVIDER_MODELS[staticAlias] || [];
+      const allProviderMetadata = PROVIDER_MODELS[staticAlias] || [];
+      const providerModels = shouldUseStaticModelCatalog(providerId, snapshots) ? allProviderMetadata : [];
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;
@@ -404,20 +407,18 @@ export async function buildModelsList(kindFilter, options = {}) {
 
       // Build kind lookup for static models so we can filter even when only IDs are exposed
       const staticModelKindById = new Map(
-        providerModels.map((m) => [m.id, modelKind(m)])
+        allProviderMetadata.map((m) => [m.id, modelKind(m)])
       );
       let liveModelKindById = new Map();
       let liveCapabilitiesById = new Map();
 
+      const snapshot = snapshots[providerId] || snapshots[staticAlias];
+      const snapshotModelIds = (snapshot?.modelIds || []).map((entry) => typeof entry === "string" ? entry : entry?.id).filter(Boolean);
       let rawModelIds = hasExplicitEnabledModels
-        ? Array.from(
-            new Set(
-              enabledModels.filter(
-                (modelId) => typeof modelId === "string" && modelId.trim() !== "",
-              ),
-            ),
-          )
-        : providerModels.map((model) => model.id);
+        ? Array.from(new Set(enabledModels.filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")))
+        : hasOfficialModelSnapshot(providerId, snapshots)
+          ? snapshotModelIds
+          : providerModels.map((model) => model.id);
 
       if (isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
         rawModelIds = await fetchCompatibleModelIds(conn);
@@ -427,7 +428,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       // -thinking/-agentic variants per account). On failure, fall back to
       // whatever rawModelIds already holds.
       const liveResolver = LIVE_MODEL_RESOLVERS[providerId];
-      if (liveResolver && !hasExplicitEnabledModels) {
+      if (liveResolver && !hasExplicitEnabledModels && !skipDynamicFetch && !hasOfficialModelSnapshot(providerId, snapshots)) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
@@ -448,6 +449,8 @@ export async function buildModelsList(kindFilter, options = {}) {
         }
       }
 
+      const runtimeVariants = allProviderMetadata.filter((model) => model.upstreamModelId && snapshotModelIds.includes(model.upstreamModelId)).map((model) => model.id);
+      if (hasOfficialModelSnapshot(providerId, snapshots) && !hasExplicitEnabledModels) rawModelIds = [...new Set([...rawModelIds, ...runtimeVariants])];
       const modelIds = rawModelIds
         .map((modelId) => {
           if (modelId.startsWith(`${outputAlias}/`)) {

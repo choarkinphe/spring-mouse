@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { getCustomModels, getModelAliases, setModelAlias } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
-import { getProviderAlias, usesUpstreamModelList } from "@/shared/constants/providers";
-import { isListedCustomModel } from "@/shared/utils/providerCustomModels";
+import { getProviderAlias } from "@/shared/constants/providers";
+import { isVisibleModelCatalogRow, shouldUseStaticModelCatalog, hasOfficialModelSnapshot } from "@/shared/utils/providerCustomModels";
+import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 import { getPricingForModels } from "@/lib/db/repos/pricingRepo.js";
@@ -17,11 +18,12 @@ export async function GET(request) {
     await refreshModelCapabilityOverrides();
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
-    const customModels = (await getCustomModels()).filter(isListedCustomModel);
+    const snapshots = await getModelSyncSnapshots();
+    const customModels = (await getCustomModels()).filter((model) => isVisibleModelCatalogRow(model, snapshots));
 
     const models = AI_MODELS
       .filter((m) => {
-        if (usesUpstreamModelList(m.provider)) return false;
+        if (!shouldUseStaticModelCatalog(m.provider, snapshots)) return false;
         const alias = getProviderAlias(m.provider) || m.provider;
         const list = disabled[alias] || disabled[m.provider] || [];
         return !list.includes(m.model);
@@ -36,6 +38,8 @@ export async function GET(request) {
           fullModel,
           routedModel,
           alias: modelAliases[fullModel] || m.model,
+          modelSource: "static",
+          verified: false,
           // Full capability set — the dashboard renders one badge per modality,
           // so trimming to vision/search/reasoning here would hide the rest.
           caps: pickModelCapabilities(c),
@@ -48,6 +52,8 @@ export async function GET(request) {
       const routedModel = `${custom.providerAlias}/${custom.id}`;
       if (seen.has(routedModel)) continue;
       const providerId = custom.providerId || custom.providerAlias;
+      const disabledIds = disabled[custom.providerAlias] || disabled[providerId] || [];
+      if (disabledIds.includes(custom.id)) continue;
       const c = getCapabilitiesForModel(providerId, custom.id);
       models.push({
         provider: providerId,
@@ -56,6 +62,8 @@ export async function GET(request) {
         fullModel: routedModel,
         routedModel,
         alias: modelAliases[routedModel] || custom.id,
+        modelSource: custom.source === "official" && !hasOfficialModelSnapshot(providerId, snapshots) ? "unverified" : custom.source || "manual",
+        verified: custom.source === "official" && hasOfficialModelSnapshot(providerId, snapshots),
         caps: pickModelCapabilities(c),
       });
       seen.add(routedModel);

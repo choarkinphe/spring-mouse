@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { classifyLoginError, sanitizeLoginDiagnostic } from "@/lib/auth/loginDiagnostics";
 import { getSettings } from "@/lib/localDb";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
@@ -10,6 +12,7 @@ const RESET_HINT = "Forgot password? Reset to default via Spring Mouse CLI → S
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
 
 export async function POST(request) {
+  let stage = "rate-limit";
   try {
     const ip = getClientIp(request);
     const lock = checkLock(ip);
@@ -20,8 +23,11 @@ export async function POST(request) {
       );
     }
 
+    stage = "parse-body";
     const { password } = await request.json();
+    stage = "settings";
     const settings = await getSettings();
+    stage = "verify-password";
 
     // Default password is '123456' if not set
     const storedHash = settings.password;
@@ -36,7 +42,9 @@ export async function POST(request) {
     }
 
     if (isValid) {
+      stage = "record-success";
       recordSuccess(ip);
+      stage = "local-policy";
 
       // Default password still in use on a remote client → force a password
       // change before the dashboard is exposed remotely (keeps local UX intact).
@@ -63,20 +71,27 @@ export async function POST(request) {
         );
       }
 
+      stage = "cookie-store";
       const cookieStore = await cookies();
       if (settings.totpEnabled === true && settings.totpSecretEncrypted) {
+        stage = "mfa-cookie";
         await setDashboardMfaChallengeCookie(cookieStore, request);
+        stage = "response";
         return NextResponse.json(
           { success: true, mustChangePassword: false, requiresTotp: true },
           { headers: NO_STORE_HEADERS },
         );
       }
 
+      stage = "clear-mfa-cookie";
       clearDashboardMfaChallengeCookie(cookieStore);
+      stage = "auth-cookie";
       await setDashboardAuthCookie(cookieStore, request);
+      stage = "response";
       return NextResponse.json({ success: true, mustChangePassword: false, requiresTotp: false }, { headers: NO_STORE_HEADERS });
     }
 
+    stage = "record-failure";
     const { remainingBeforeLock } = recordFail(ip);
     const postLock = checkLock(ip);
     if (postLock.locked) {
@@ -90,6 +105,13 @@ export async function POST(request) {
       { status: 401 }
     );
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const diagnostic = sanitizeLoginDiagnostic({
+      errorId: randomUUID(), stage, ...classifyLoginError(error, stage),
+    });
+    if (diagnostic.category !== "request-json") console.error(JSON.stringify(diagnostic));
+    return NextResponse.json(
+      { error: "Login failed", errorId: diagnostic.errorId },
+      { status: 500, headers: NO_STORE_HEADERS },
+    );
   }
 }

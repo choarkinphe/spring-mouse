@@ -20,12 +20,13 @@ import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelIcons";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
+import CodeBuddyCheckin from "./CodeBuddyCheckin";
 import { cn } from "@/shared/utils/cn";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
 import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
-import { parseQuotaData, formatQuotaBalance, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
+import { parseQuotaData, formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
 import AddApiKeyModal from "../[id]/AddApiKeyModal";
 import ProviderDetailClient from "../[id]/ProviderDetailClient";
@@ -227,20 +228,6 @@ function getResetCreditCount(resetCredits) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
-// Counted quotas (CodeBuddy credits, request budgets) read better as
-// "1,000 / 1,000 积分" than as a bare percentage — the percentage is already
-// carried by the progress bar below. Quotas that only expose a remaining
-// percentage (kimi / ollama / grok) have no usable used/total pair, so those
-// keep the % form.
-function getQuotaAmountLabel(quota) {
-  const used = Number(quota?.used);
-  const total = Number(quota?.total);
-  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
-
-  const unit = typeof quota?.unit === "string" ? quota.unit.trim() : "";
-  return `${used.toLocaleString()} / ${total.toLocaleString()}${unit ? ` ${unit}` : ""}`;
-}
-
 function ChannelQuota({ quotas, loading }) {
   if (loading) {
     return <div className="h-10 w-full max-w-[32rem] animate-pulse rounded-lg bg-white/[0.045]" />;
@@ -254,35 +241,31 @@ function ChannelQuota({ quotas, loading }) {
     <div className="w-full max-w-[38rem]">
       <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#647688]">
         <span>上游配额快照</span>
-        <Tooltip text="配额来自账号对应的提供商接口；数字为已用 / 总量，进度条长度为剩余占比，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
+        <Tooltip text="配额来自账号对应的提供商接口；主数值显示余量或余额，悬停数值可查看已用 / 总量。进度条长度为剩余占比，不是本地请求量推算。点击账号右侧刷新按钮可重新读取。">
           <span className="material-symbols-outlined text-[13px]! leading-none" aria-label="配额口径说明">info</span>
         </Tooltip>
       </div>
-      {/* Single column: a counted quota now carries name + "used / total unit"
-          + reset countdown, which no longer fits two columns without truncating
-          the quota name down to a couple of characters. */}
+      {/* Keep the remaining amount prominent; used/total stays in the tooltip. */}
       <div className="grid w-full grid-cols-1 gap-2">
         {quotas.slice(0, 4).map((quota) => {
           const remaining = getRemainingPercentage(quota);
-          const balance = formatQuotaBalance(quota);
-          const amount = getQuotaAmountLabel(quota);
+          const amount = formatQuotaAmount(quota);
           const reset = formatResetTime(quota.resetAt);
           return (
             <div key={quota.modelKey || quota.name} className="min-w-0">
               <div className="mb-1 flex items-center gap-2 text-[11px] leading-none">
-                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.name}</span>
+                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.displayName || quota.name}</span>
                 {quota.unlimited ? (
                   <span className="shrink-0 text-[#7dd3fc]">不限额</span>
                 ) : (
-                  <>
-                    {balance && <span className="shrink-0 font-mono text-[#e4edf5]">{balance}</span>}
-                    <span className="shrink-0 font-mono text-[#e4edf5]">{amount ?? `${remaining}%`}</span>
-                  </>
+                  <Tooltip text={quota.balance !== undefined ? `账户余额：${amount ?? "—"}` : `已用 / 总量：${amount ?? "—"}`}>
+                    <span tabIndex={0} className="shrink-0 font-mono text-[#e4edf5]">{formatQuotaRemainingLabel(quota)}</span>
+                  </Tooltip>
                 )}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>
               {!quota.unlimited && (
-                <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]">
+                <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]" role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${remaining}%`}>
                   <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />
                 </div>
               )}
@@ -299,12 +282,12 @@ const CHANNEL_DATA_SCOPE_ITEMS = [
   {
     icon: "account_balance_wallet",
     title: "配额与重置",
-    text: "来自账号对应的提供商接口快照；数字为已用 / 总量，进度条为剩余占比，重置时间以提供商返回值为准。",
+    text: "来自账号对应的提供商接口快照；主数值为余量或余额，悬停查看已用 / 总量。进度条为剩余占比，重置时间以提供商返回值为准。",
   },
   {
     icon: "schedule",
     title: "Codex 窗口",
-    text: "session / weekly 对应上游 primary / secondary 窗口，通常约为 5 小时 / 7 天；具体周期以返回的重置时间为准。",
+    text: "session / weekly 是上游 primary / secondary 窗口的内部标识，不代表固定周期；显示名称按上游实际返回的窗口时长标注，重置时间以提供商返回值为准。",
   },
   {
     icon: "route",
@@ -403,9 +386,10 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
   // through a Mouse node; only offer the picker when it would actually work.
   const mouseSupported = supportsMouseExecution(provider.id);
 
-  const handleApiKeySubmit = async (event) => {
+  const handleConnectionSubmit = async (event) => {
     event.preventDefault();
-    if (!apiKey.trim() && provider.id !== "ollama-local") {
+    if (submitting) return;
+    if (!provider.noAuth && !apiKey.trim() && provider.id !== "ollama-local") {
       setError("请输入 API Key");
       return;
     }
@@ -435,7 +419,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
         id: data.connection?.id ?? null,
         name: data.connection?.name || displayName.trim() || provider.name,
         provider: data.connection?.provider || provider.id,
-        authType: data.connection?.authType || "apikey",
+        authType: data.connection?.authType || (provider.noAuth ? "none" : "apikey"),
         mouseName: mouseSupported && mouseId ? mouses.find((mouse) => mouse.id === mouseId)?.name : undefined,
       });
       onClose();
@@ -480,6 +464,17 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
               <span className="block truncate text-base font-semibold text-text-main">{provider.name}</span>
               <span className="mt-0.5 block text-sm text-text-muted">选择认证方式并完成渠道接入</span>
             </span>
+            {provider.notice?.apiKeyUrl && (
+              <a
+                href={provider.notice.apiKeyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[#38bdf8]/25 px-2.5 py-2 text-xs font-medium text-[#7dd3fc] transition-colors hover:bg-[#38bdf8]/[0.08]"
+              >
+                <span className="material-symbols-outlined text-[15px]">open_in_new</span>
+                获取 API Key
+              </a>
+            )}
           </div>
 
           {methods.length > 1 && (
@@ -504,7 +499,7 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
           )}
 
           {authMethod === "apikey" && (
-            <form onSubmit={handleApiKeySubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
+            <form onSubmit={handleConnectionSubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
               <div className="grid gap-4">
                 <label className="grid gap-1.5 text-sm font-medium text-text-main">
                   渠道名称
@@ -557,14 +552,18 @@ function ProviderConfigurationDrawer({ isOpen, provider, category, mouses = [], 
           )}
 
           {authMethod === "none" && (
-            <div className="rounded-xl border border-border-subtle bg-bg/30 p-5">
+            <form onSubmit={handleConnectionSubmit} className="rounded-xl border border-border-subtle bg-bg/30 p-5">
               <h3 className="font-semibold text-text-main">无需密钥的渠道</h3>
-              <p className="mt-1 text-sm text-text-muted">该提供商无需填写密钥；如需调整更多参数，可在此抽屉中继续展开高级选项。</p>
+              <p className="mt-1 text-sm text-text-muted">该提供商无需填写密钥，点击“创建渠道”即可添加。创建成功不代表上游模型一定可用。</p>
               <button type="button" onClick={() => setShowAdvanced((value) => !value)} className="mt-4 flex items-center gap-1 text-sm font-medium text-[#7dd3fc] hover:text-[#bae6fd]">
                 高级配置 <span className="material-symbols-outlined text-[17px]">{showAdvanced ? "expand_less" : "expand_more"}</span>
               </button>
               {showAdvanced && <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-muted">当前提供商不需要额外的认证参数。</p>}
-            </div>
+              {error && <p role="alert" className="mt-4 rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-300">{error}</p>}
+              <div className="mt-5 flex justify-end">
+                <Button type="submit" loading={submitting} icon="add">创建渠道</Button>
+              </div>
+            </form>
           )}
         </div>
       </Drawer>
@@ -725,7 +724,9 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
     ? "OAuth 授权"
     : created.authType === "cookie"
       ? "Cookie 认证"
-      : "API 密钥";
+      : created.authType === "none"
+        ? "无需密钥"
+        : "API 密钥";
   const rows = [
     [isAccount ? "账号名称" : "渠道名称", channelLabel],
     ["提供商", providerLabel],
@@ -960,7 +961,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-text-muted">
             <span className="min-w-0 truncate">{providerName}</span>
             <span className="shrink-0 text-[#506070]">/</span>
-            <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : "API Key"}</span>
+            <span className="shrink-0 whitespace-nowrap">{connection.authType === "oauth" ? "OAuth" : connection.authType === "cookie" ? "Cookie" : connection.authType === "none" ? "无需密钥" : "API Key"}</span>
             {connection.email && <><span className="shrink-0 text-[#506070]">·</span><span className="min-w-0 truncate">{connection.email}</span></>}
           </span>
           {connection.accessTags?.length > 0 && (
@@ -973,6 +974,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="min-w-0 lg:border-l lg:border-white/[0.065] lg:pl-6">
         <ChannelQuota quotas={quotas} loading={quotaLoading} />
+        <CodeBuddyCheckin connection={connection} onRefreshQuota={onRefreshQuota} />
         <div className="mt-2 flex min-w-0 items-center text-xs">
           {errorEvidence && connection.isActive !== false ? (
             <div

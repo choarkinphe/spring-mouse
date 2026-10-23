@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { formatDate, formatTime, formatShortDateTime } from "@/shared/utils/datetime";
-import { formatResetTime, getRemainingPercentage } from "./utils";
+import { formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "./utils";
+import { reconcilePagination } from "./pagination";
 
 const PAGE_SIZE = 10;
+const EMPTY_QUOTAS = [];
 
 /**
  * Format reset time display (Today, 12:00 PM)
@@ -80,13 +82,13 @@ function sortQuotas(quotas, sortMode) {
  * Quota Table Component - Table-based display for quota data
  */
 export default function QuotaTable({
-  quotas = [],
+  quotas = EMPTY_QUOTAS,
   compact = false,
   sortMode = "default",
   showSortLabel = false,
   onHideQuota = null,
 }) {
-  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(() => ({ quotas, sortMode, page: 1 }));
 
   const normalizedQuotas = useMemo(
     () => quotas.map((quota, index) => ({
@@ -104,13 +106,19 @@ export default function QuotaTable({
 
   const totalPages = Math.max(1, Math.ceil(sortedQuotas.length / PAGE_SIZE));
 
-  useEffect(() => {
-    setPage(1);
-  }, [sortMode, quotas]);
+  const currentPagination = reconcilePagination(pagination, quotas, sortMode, totalPages);
+  // Reconcile before committing so a reset/clamp cannot revive an old page later.
+  if (currentPagination !== pagination) {
+    setPagination(currentPagination);
+  }
+  const { page } = currentPagination;
 
-  useEffect(() => {
-    setPage((currentPage) => Math.min(currentPage, totalPages));
-  }, [totalPages]);
+  function changePage(offset) {
+    setPagination((current) => {
+      const next = reconcilePagination(current, quotas, sortMode, totalPages);
+      return { ...next, page: Math.max(1, Math.min(totalPages, next.page + offset)) };
+    });
+  }
 
   if (!quotas || quotas.length === 0) {
     return null;
@@ -148,6 +156,8 @@ export default function QuotaTable({
           const colors = getColorClasses(quota.remaining);
           const countdown = formatResetTime(quota.resetAt);
           const resetDisplay = formatResetTimeDisplay(quota.resetAt);
+          const amountLabel = formatQuotaAmount(quota) ?? "—";
+          const remainingLabel = formatQuotaRemainingLabel(quota);
           // recurring defaults true: a missing flag means the quota
           // refreshes at resetAt. Bonus/one-shot packs set recurring:false
           // and their resetAt is a hard expiry, so word it as "expires".
@@ -162,14 +172,14 @@ export default function QuotaTable({
               {/* Name */}
               <div className="flex w-36 min-w-0 items-center gap-1.5">
                 <span className="text-[10px] shrink-0">{colors.emoji}</span>
-                <span className={`${nameText} font-medium text-text-primary truncate`}>
-                  {quota.name}
+                <span className={`${nameText} font-medium text-text-primary truncate`} title={quota.displayName || quota.name}>
+                  {quota.displayName || quota.name}
                 </span>
               </div>
 
-              {/* Progress + used/total */}
+              {/* Remaining progress + usage detail */}
               <div className={`min-w-0 flex-1 ${compact ? "space-y-1" : "space-y-1.5"}`}>
-                <div className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
+                <div role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(quota.remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${quota.remaining}%`} className={`${compact ? "h-1" : "h-1.5"} rounded-full overflow-hidden border ${colors.bgLight} ${
                   quota.remaining === 0 ? "border-black/10 dark:border-white/10" : "border-transparent"
                 }`}>
                   <div
@@ -179,14 +189,8 @@ export default function QuotaTable({
                 </div>
 
                 <div className={`flex items-center justify-between gap-1 min-w-0 ${compact ? "text-[10px]" : "text-xs"}`}>
-                  <span
-                    className="text-text-muted truncate"
-                    title={`${quota.used.toLocaleString()} / ${quota.total > 0 ? quota.total.toLocaleString() : "∞"}`}
-                  >
-                    {quota.used.toLocaleString()} / {quota.total > 0 ? quota.total.toLocaleString() : "∞"}
-                  </span>
-                  <span className={`font-medium ${colors.text} shrink-0`}>
-                    {quota.remaining}%
+                  <span className={`font-medium ${colors.text} truncate`} title={quota.balance !== undefined ? `账户余额：${amountLabel}` : `已用 / 总量：${amountLabel}`}>
+                    {remainingLabel}
                   </span>
                 </div>
               </div>
@@ -227,7 +231,7 @@ export default function QuotaTable({
                   onClick={() => onHideQuota(quota)}
                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-black/5 hover:text-text-primary dark:hover:bg-white/5"
                   title="Hide this quota row"
-                  aria-label={`Hide quota ${quota.name}`}
+                  aria-label={`Hide quota ${quota.displayName || quota.name}`}
                 >
                   <span className="material-symbols-outlined text-[15px]">
                     visibility_off
@@ -252,7 +256,7 @@ export default function QuotaTable({
           <div className="mt-1.5 flex items-center justify-end gap-1">
             <button
               type="button"
-              onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+              onClick={() => changePage(-1)}
               disabled={page === 1}
               className="flex h-6 items-center rounded-md border border-black/10 px-2 text-[10px] text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
             >
@@ -260,7 +264,7 @@ export default function QuotaTable({
             </button>
             <button
               type="button"
-              onClick={() => setPage((currentPage) => Math.min(totalPages, currentPage + 1))}
+              onClick={() => changePage(1)}
               disabled={page === totalPages}
               className="flex h-6 items-center rounded-md border border-black/10 px-2 text-[10px] text-text-primary transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
             >

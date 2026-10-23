@@ -122,6 +122,11 @@ async function runHeavyStartup() {
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
 
+  // Per-account opt-in; daily markers survive restarts and token refreshes.
+  import("@/shared/services/codebuddyAutoCheckin.js")
+    .then(({ startCodeBuddyAutoCheckin }) => startCodeBuddyAutoCheckin())
+    .catch(() => console.log("[CodeBuddyCheckin] scheduler start failed"));
+
   // Periodic pricing refresh. Opt-in via settings; the call is a no-op when the
   // setting is off, so it is safe to register unconditionally here.
   import("@/shared/services/pricingAutoSync.js")

@@ -6,6 +6,7 @@ import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
+import { buildOpenCodeGoHeaders } from "open-sse/utils/opencodeGoHeaders.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
@@ -412,9 +413,13 @@ export async function POST(request) {
         }
 
         case "opencode-go": {
-          const res = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
+          const res = await fetch("https://opencode.ai/inference/go/openai/v1/chat/completions", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`,
+              ...buildOpenCodeGoHeaders({ headers: { "x-opencode-session": "spring-mouse-connection-test" } }),
+            },
             body: JSON.stringify({
               model: getDefaultModel("opencode-go"),
               messages: [{ role: "user", content: "ping" }],
@@ -422,7 +427,8 @@ export async function POST(request) {
               stream: false,
             }),
           });
-          isValid = res.status !== 401 && res.status !== 403;
+          isValid = res.ok;
+          if (!isValid) error = `OpenCode Go returned HTTP ${res.status}`;
           break;
         }
 

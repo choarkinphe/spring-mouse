@@ -4,6 +4,7 @@ import { makeKv } from "../helpers/kvStore.js";
 import { deleteHotJson } from "@/lib/redis/hotCache.js";
 import { deleteModelCapabilityTests } from "./modelCapabilityTestsRepo.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
+import { recordModelSyncSnapshotInDb } from "./modelSyncRepo.js";
 
 const aliasKv = makeKv("modelAliases");
 const customKv = makeKv("customModels");
@@ -49,7 +50,7 @@ export async function addCustomModel({ providerAlias, id, type = "llm", name }) 
   return added;
 }
 
-export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
+export async function syncCustomModels(models, { replaceSyncedFor, syncSnapshot } = {}) {
   const db = await getAdapter();
   let added = 0;
   let updated = 0;
@@ -67,6 +68,7 @@ export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
         removed += 1;
       }
     }
+    if (syncSnapshot) recordModelSyncSnapshotInDb(db, syncSnapshot);
     for (const model of models || []) {
       const type = model.type || "llm";
       const k = customKey(model.providerAlias, model.id, type);
@@ -101,6 +103,7 @@ export async function syncCustomModels(models, { replaceSyncedFor } = {}) {
   });
   db.flush?.();
   if (added > 0 || updated > 0 || removed > 0) await deleteHotJson("kv:customModels").catch(() => {});
+  if (syncSnapshot) await deleteHotJson("kv:modelSyncSnapshots").catch(() => {});
 
   return { added, updated, unchanged, ...(replaceSyncedFor ? { removed } : {}) };
 }

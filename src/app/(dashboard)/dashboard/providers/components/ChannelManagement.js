@@ -21,6 +21,7 @@ import { normalizeCustomChannelIconSrc } from "@/shared/constants/customChannelI
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import MouseExecutorChip from "./MouseExecutorChip";
 import CodeBuddyCheckin from "./CodeBuddyCheckin";
+import { summarizeQuotaRows } from "./quotaSummary";
 import { cn } from "@/shared/utils/cn";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
@@ -247,21 +248,28 @@ function ChannelQuota({ quotas, loading }) {
       </div>
       {/* Keep the remaining amount prominent; used/total stays in the tooltip. */}
       <div className="grid w-full grid-cols-1 gap-2">
-        {quotas.slice(0, 4).map((quota) => {
+        {summarizeQuotaRows(quotas).map(({ quota, detail }) => {
           const remaining = getRemainingPercentage(quota);
           const amount = formatQuotaAmount(quota);
           const reset = formatResetTime(quota.resetAt);
+          const detailText = detail?.length
+            ? detail.map((q) => `${q.name}：${formatQuotaRemainingLabel(q)}${q.resetAt ? ` · ${formatResetTime(q.resetAt)}` : ""}`).join("\n")
+            : null;
+          const valueNode = quota.unlimited ? (
+            <span className="shrink-0 text-[#7dd3fc]">不限额</span>
+          ) : (
+            <Tooltip text={detailText || (quota.balance !== undefined ? `账户余额：${amount ?? "—"}` : `已用 / 总量：${amount ?? "—"}`)}>
+              <span tabIndex={0} className="shrink-0 font-mono text-[#e4edf5]">{formatQuotaRemainingLabel(quota)}</span>
+            </Tooltip>
+          );
           return (
             <div key={quota.modelKey || quota.name} className="min-w-0">
               <div className="mb-1 flex items-center gap-2 text-[11px] leading-none">
-                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">{quota.displayName || quota.name}</span>
-                {quota.unlimited ? (
-                  <span className="shrink-0 text-[#7dd3fc]">不限额</span>
-                ) : (
-                  <Tooltip text={quota.balance !== undefined ? `账户余额：${amount ?? "—"}` : `已用 / 总量：${amount ?? "—"}`}>
-                    <span tabIndex={0} className="shrink-0 font-mono text-[#e4edf5]">{formatQuotaRemainingLabel(quota)}</span>
-                  </Tooltip>
-                )}
+                <span className="min-w-0 flex-1 truncate text-[#b9c7d5]">
+                  {quota.displayName || quota.name}
+                  {detail?.length ? <span className="ml-1 text-[#647688]">（最早到期为准）</span> : null}
+                </span>
+                {valueNode}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>
               {!quota.unlimited && (
@@ -272,7 +280,6 @@ function ChannelQuota({ quotas, loading }) {
             </div>
           );
         })}
-        {quotas.length > 4 && <span className="text-[11px] text-[#647688]">+{quotas.length - 4} 项配额</span>}
       </div>
     </div>
   );

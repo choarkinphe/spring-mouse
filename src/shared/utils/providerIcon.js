@@ -6,6 +6,10 @@ const ICON_ALIASES = {
   "gitlab-duo": "gitlab",
   "vercel-ai-gateway": "vercel",
   "qianwen-token-plan": "qianwen",
+  // Both regions ship the same WorkBuddy product; the operator expects one brand
+  // mark, so the China channel reuses the official WorkBuddy AI artwork instead of
+  // the separate (blue) regional logo.
+  workbuddy: "workbuddy-ai",
 };
 
 // Runtime only — first 404 remembers id for the whole session

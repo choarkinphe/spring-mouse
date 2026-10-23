@@ -13,7 +13,21 @@ globalThis.fetch = function workbuddyFixtureFetch(input, init) {
   // Legacy refresh endpoints (both old hosts) — proves migrated accounts still refresh.
   if (url.pathname === "/v2/plugin/auth/token/refresh") return json({ accessToken: "refreshed-access-not-real", refreshToken: "refreshed-refresh-not-real", expiresIn: 3600 });
   if (url.pathname === "/v3/config") return json({ agents: [{ name: "cli", models: ["fixture-model"] }], models: [{ id: "fixture-model", name: "WorkBuddy fixture model", supportsImages: true }] });
-  if (url.pathname === "/v2/billing/meter/get-user-resource") return json({ Response: { Data: { Accounts: [{ PackageName: "Fixture", CapacitySize: 100, CapacityUsed: 10, CycleEndTime: Date.now() + 86400000 }] } } });
+  if (url.pathname === "/v2/billing/meter/get-user-resource") {
+    // Mirrors a real account: one recurring monthly allowance plus several
+    // one-shot bonus packs (the case that used to overflow the quota panel).
+    const day = 86400000;
+    const now = Date.now();
+    const monthly = { PackageName: "Fixture Pro", SubProductName: "Monthly",
+      CycleStartTime: new Date(now - 10 * day).toISOString(), CycleEndTime: new Date(now + 20 * day).toISOString(),
+      DeductionEndTime: now + 200 * day,
+      CycleCapacitySize: 500, CycleCapacityUsed: 200 };
+    const bonus = [1, 2, 3, 4, 5].map((n) => ({
+      PackageName: `Bonus Pack ${n}`, CapacitySize: 100, CapacityUsed: n === 2 ? 0 : 100,
+      CycleEndTime: new Date(now + n * day).toISOString(), DeductionEndTime: now + n * day,
+    }));
+    return json({ Response: { Data: { Accounts: [monthly, ...bonus] } } });
+  }
   if (url.pathname === "/v2/billing/meter/checkin-activity-status") return json({ CheckedIn: false });
   if (url.pathname === "/v2/chat/completions") return Promise.resolve(new Response(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: `fixture via ${url.hostname}` }, finish_reason: null }] })}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5}}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }));
   return Promise.reject(new Error(`fixture blocks ${url.pathname}`));

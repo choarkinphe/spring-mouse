@@ -1140,8 +1140,8 @@ export class CodexExecutor extends BaseExecutor {
           controller.enqueue(value);
         } catch (e) { controller.error(e); }
       },
-      cancel(reason) {
-        try { reader.cancel(reason); } catch { /* noop */ }
+      async cancel(reason) {
+        try { await reader.cancel(reason); } catch { /* best-effort cleanup, including rejected cancellation */ }
       },
     });
     return { matched: null, message: null, accountFallback: false, stoppedOnDeadline, replacementBody, scanDiagnostics };

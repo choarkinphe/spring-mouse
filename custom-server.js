@@ -144,6 +144,47 @@ function startBackgroundTokenRefreshFromCustomServer() {
     });
 }
 
+// Codex prefers a Responses WebSocket when the upstream advertises it. This
+// gateway relays Responses over HTTP/SSE only, so a silent socket close (what
+// Next's upgrade handler does for an unmatched app route) looks like a dead
+// upstream: clients retry the same request and never fall back. Answering 426
+// with the supported transport is the signal they use to switch immediately.
+const RESPONSES_HTTP_ONLY = "spring-mouse relays Responses over HTTP only: send POST /v1/responses (streamed as SSE)\n";
+let responsesUpgradeRejectionLogged = false;
+
+function isResponsesPath(rawUrl) {
+  let pathname;
+  try {
+    pathname = new URL(String(rawUrl || ""), "http://localhost").pathname;
+  } catch {
+    return false;
+  }
+  return /(^|\/)responses\/?$/.test(pathname);
+}
+
+function rejectResponsesUpgrade(req, socket) {
+  const path = String(req.url || "").split("?")[0];
+  if (!responsesUpgradeRejectionLogged) {
+    responsesUpgradeRejectionLogged = true;
+    console.warn(`[gateway] rejected Responses WebSocket upgrade on ${path}; clients must use HTTP POST`);
+  }
+  const headers = [
+    "HTTP/1.1 426 Upgrade Required",
+    "Connection: close",
+    "Content-Type: text/plain; charset=utf-8",
+    `Content-Length: ${Buffer.byteLength(RESPONSES_HTTP_ONLY)}`,
+    // RFC 9110 15.5.22: 426 must name the protocol(s) the server accepts.
+    "Upgrade: HTTP/1.1",
+    "",
+    RESPONSES_HTTP_ONLY,
+  ].join("\r\n");
+  try {
+    socket.end(headers);
+  } catch {
+    socket.destroy();
+  }
+}
+
 // Wrap Next standalone HTTP server: derive client IP from the TCP socket
 // (unspoofable) and strip client-supplied forwarding headers so downstream
 // rate-limiting keys on the real peer address instead of attacker-controlled XFF.
@@ -197,6 +238,11 @@ http.createServer = (...args) => {
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
   server.emit = function (event, ...eventArgs) {
     const [req, socket, head] = eventArgs;
+    const upgrade = event === "upgrade" ? String(req.headers.upgrade || "").toLowerCase() : "";
+    if (upgrade === "websocket" && isResponsesPath(req.url)) {
+      rejectResponsesUpgrade(req, socket);
+      return true;
+    }
     if (event !== "upgrade" || String(req.headers.upgrade || "").toLowerCase() !== "h2c") {
       return origEmit.call(this, event, ...eventArgs);
     }

@@ -20,6 +20,8 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+import { WORKBUDDY_SITES } from "open-sse/config/workbuddy.js";
+import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -92,7 +94,15 @@ const OAUTH_TEST_CONFIG = {
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "codebuddy-cn": { tokenExists: true },
+  // Replaced by workbuddy / workbuddy-ai (migration 027); the legacy ids stay for
+  // installs that have not migrated. Without an entry here, every per-account
+  // test returns "Provider test not supported" and the whole channel reads failed.
+  // The billing endpoint is a real, token-authenticated round trip that consumes
+  // no inference quota. `tokenExists` alone would report "valid" for an account
+  // whose credentials are already rejected upstream.
+  "codebuddy-cn": { quotaProbe: "codebuddy-cn" },
+  workbuddy: { quotaProbe: "workbuddy" },
+  "workbuddy-ai": { quotaProbe: "workbuddy-ai" },
   kimchi: {
     url: KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers",
     method: "GET",
@@ -319,6 +329,51 @@ function isTokenExpired(connection) {
   return shouldRefreshCredentials(connection.provider, connection);
 }
 
+/**
+ * Real connectivity probe for CodeBuddy / WorkBuddy accounts.
+ *
+ * Hits the account's own billing endpoint with its stored credential: a genuine
+ * token round trip that costs no inference quota. A migrated CodeBuddy credential
+ * is probed at the origin it was issued by, never at a host it was not issued for.
+ */
+async function probeWorkBuddyAccount(connection, providerId, effectiveProxy) {
+  if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
+  const metadata = connection.providerSpecificData || {};
+  const legacy = metadata.workbuddyLegacyCredential === true;
+  const origin = legacy
+    ? metadata.workbuddyEndpointOrigin
+    : WORKBUDDY_SITES[providerId]?.origin;
+  const pathname = WORKBUDDY_SITES[providerId]?.usageUrl;
+  if (!origin || !pathname) return { valid: false, error: "No trusted endpoint for this account", refreshed: false };
+
+  try {
+    const res = await proxyAwareFetch(`${origin}${new URL(pathname).pathname}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${connection.accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(15000),
+    }, effectiveProxy);
+    if (res.status === 401 || res.status === 403) {
+      return { valid: false, error: `Credential rejected (HTTP ${res.status})`, refreshed: false };
+    }
+    if (!res.ok) return { valid: false, error: `Endpoint HTTP ${res.status}`, refreshed: false };
+    const json = await res.json().catch(() => null);
+    if (json?.code !== 0) {
+      // Keep the business code: 11128/6004 mean different things to the operator.
+      const msg = json?.msg || "unknown";
+      const code = json?.code === undefined ? "" : ` (code ${json.code})`;
+      return { valid: false, error: `Endpoint error: ${msg}${code}`, refreshed: false };
+    }
+    return { valid: true, error: null, refreshed: false, newTokens: null };
+  } catch (error) {
+    return { valid: false, error: `Connectivity failed: ${error.message}`, refreshed: false };
+  }
+}
+
 async function testOAuthConnection(connection, effectiveProxy = null) {
   const config = OAUTH_TEST_CONFIG[connection.provider];
   if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
@@ -327,6 +382,10 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
   if (config.tokenExists) {
     return { valid: true, error: null, refreshed: false, newTokens: null };
+  }
+
+  if (config.quotaProbe) {
+    return probeWorkBuddyAccount(connection, config.quotaProbe, effectiveProxy);
   }
 
   let accessToken = connection.accessToken;

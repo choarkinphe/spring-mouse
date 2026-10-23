@@ -43,4 +43,9 @@ export default {
     refreshUrl: "https://www.workbuddy.ai/v2/plugin/auth/token/refresh",
     pollInterval: 2000,
   },
+  features: {
+    usage: true,
+    // The legacy API-key accounts authenticate the same billing endpoint.
+    usageApikey: true,
+  },
 };

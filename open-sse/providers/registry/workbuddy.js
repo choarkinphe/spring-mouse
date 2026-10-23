@@ -46,4 +46,9 @@ export default {
     refreshUrl: "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
     pollInterval: 2000,
   },
+  // Quota is the shared Tencent billing endpoint (see services/usage/codebuddy-cn.js).
+  // Omitting this flag hides the quota panel and its refresh button entirely.
+  features: {
+    usage: true,
+  },
 };

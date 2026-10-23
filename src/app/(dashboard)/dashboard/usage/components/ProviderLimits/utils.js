@@ -588,6 +588,10 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      // workbuddy* are the ids migration 027 writes; the codebuddy* ids remain
+      // for installs that have not migrated yet.
+      case "workbuddy":
+      case "workbuddy-ai":
       case "codebuddy-cn":
       case "codebuddy-intl":
         // CodeBuddy mixes recurring refill packs ("Monthly"/"Weekly"/...) with

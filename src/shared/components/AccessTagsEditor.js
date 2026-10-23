@@ -16,7 +16,11 @@ export default function AccessTagsEditor({ value, onChange, compact = false, lab
 
   return (
     <div>
-      <label className={`block font-medium text-text-main ${compact ? "mb-1 text-xs" : "mb-1.5 text-sm"}`}>{label}</label>
+      {/* An empty label renders nothing: callers that place their own heading
+          above the editor would otherwise get an empty 12px row and a gap. */}
+      {label ? (
+        <label className={`block font-medium text-text-main ${compact ? "mb-1 text-xs" : "mb-1.5 text-sm"}`}>{label}</label>
+      ) : null}
       <div className={`border border-border bg-bg/35 focus-within:border-[#38bdf8]/55 ${compact ? "w-full max-w-sm rounded-md px-2 py-1" : "rounded-lg p-2.5"}`}>
         <div className={`flex flex-wrap items-center gap-1.5 ${compact ? "min-h-6" : "min-h-7"}`}>
           {tags.map((tag) => (

@@ -79,16 +79,40 @@ export function normalizeAutoRoutingConfig(value, { strict = false } = {}) {
   return result;
 }
 
+/**
+ * Strategies that pick a different first member over time and therefore need a
+ * shared rotation counter. "fallback" is fixed-order and "manual" pins one
+ * member, so neither rotates.
+ */
+export const ROTATING_STRATEGIES = Object.freeze(new Set(["round-robin", "weighted"]));
+
+export const COMBO_STRATEGIES = Object.freeze(["fallback", "round-robin", "weighted", "manual", "fusion", "auto"]);
+
+/**
+ * Normalize per-combo strategies. Keys are combo ids; `comboStrategy.js`
+ * remaps legacy name keys before this runs.
+ */
 export function normalizeComboStrategies(value, { strict = false } = {}) {
   if (strict && !isObject(value)) invalid("comboStrategies must be an object");
-  return Object.fromEntries(Object.entries(isObject(value) ? value : {}).map(([name, entry]) => {
-    if (!isObject(entry)) invalid(`comboStrategies.${name}`);
+  return Object.fromEntries(Object.entries(isObject(value) ? value : {}).map(([key, entry]) => {
+    if (!isObject(entry)) invalid(`comboStrategies.${key}`);
     const strategy = entry.fallbackStrategy ?? "fallback";
-    if (!["fallback", "round-robin", "fusion", "auto"].includes(strategy)) invalid("fallbackStrategy");
+    if (!COMBO_STRATEGIES.includes(strategy)) invalid("fallbackStrategy");
+    if (strict && entry.autoSwitch !== undefined && typeof entry.autoSwitch !== "boolean") invalid("autoSwitch must be a boolean");
+    if (strict && entry.pick !== undefined && entry.pick !== null && typeof entry.pick !== "string") invalid("pick must be a model id");
     // Existing Fusion tuning and future unrelated fields must survive an Auto edit.
     const normalized = { ...entry, fallbackStrategy: strategy };
+    if (strategy === "manual") {
+      // A manual combo pinned to nothing would serve nothing; drop the pin so
+      // the runtime reports it as unconfigured instead of routing elsewhere.
+      const pick = typeof entry.pick === "string" ? entry.pick.trim() : "";
+      if (pick) normalized.pick = pick;
+      else delete normalized.pick;
+    } else {
+      delete normalized.pick;
+    }
     if (strategy === "auto" || entry.autoRouting !== undefined) normalized.autoRouting = normalizeAutoRoutingConfig(entry.autoRouting, { strict });
-    return [name, normalized];
+    return [key, normalized];
   }));
 }
 

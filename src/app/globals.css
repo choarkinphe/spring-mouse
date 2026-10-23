@@ -359,12 +359,27 @@ input, textarea {
 .traffic-light.yellow { background: #FFBD2E; }
 .traffic-light.green { background: #27C93F; }
 
-/* Material Symbols */
+/* Material Symbols
+   IMPORTANT: this rule is deliberately OUTSIDE every @layer.
+   `material-symbols/outlined.css` (imported in layout.js) ships its own
+   unlayered `.material-symbols-outlined { font-size: 24px }`. An unlayered rule
+   outranks everything inside a layer, so a base-layer copy of this — or a plain
+   `text-[13px]` utility in the utilities layer — loses to it. Every icon in the
+   app rendered at 24px; of 298 sized call sites only the 24 written with `!`
+   took effect.
+   The size therefore reads a custom property, and the "Bridge" block below
+   sets that property from the `text-[Npx]` class instead of fighting over
+   `font-size`.
+   The `html` ancestor adds one element of specificity without changing which
+   elements match, so this wins against the package's copy regardless of the
+   order the two stylesheets happen to load in. */
+html .material-symbols-outlined {
+  font-size: var(--sm-icon-size, 24px);
+}
 .material-symbols-outlined {
   font-family: 'Material Symbols Outlined', sans-serif;
   font-weight: normal;
   font-style: normal;
-  font-size: 24px;
   line-height: 1;
   letter-spacing: normal;
   text-transform: none;
@@ -380,6 +395,34 @@ input, textarea {
 .material-symbols-outlined.fill-1 {
   font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
 }
+
+/* Bridge the Tailwind sizing utilities to the icon.
+   `text-[13px]` compiles to `font-size: 13px` inside the utilities layer, which
+   loses to the unlayered 24px from the font package. Rather than fight that
+   rule on specificity, adapt the UTILITY: any `text-[Npx]` on an icon also sets
+   `--sm-icon-size`, and the icon's own font-size reads it. Authoring stays a
+   plain class, the 298 existing call sites need no change, and the package's
+   24px remains the fallback for unsized icons. */
+.material-symbols-outlined { --sm-icon-size: 24px; }
+.material-symbols-outlined.text-\[11px\] { --sm-icon-size: 11px; }
+.material-symbols-outlined.text-\[12px\] { --sm-icon-size: 12px; }
+.material-symbols-outlined.text-\[13px\] { --sm-icon-size: 13px; }
+.material-symbols-outlined.text-\[14px\] { --sm-icon-size: 14px; }
+.material-symbols-outlined.text-\[15px\] { --sm-icon-size: 15px; }
+.material-symbols-outlined.text-\[16px\] { --sm-icon-size: 16px; }
+.material-symbols-outlined.text-\[17px\] { --sm-icon-size: 17px; }
+.material-symbols-outlined.text-\[18px\] { --sm-icon-size: 18px; }
+.material-symbols-outlined.text-\[19px\] { --sm-icon-size: 19px; }
+.material-symbols-outlined.text-\[20px\] { --sm-icon-size: 20px; }
+.material-symbols-outlined.text-\[22px\] { --sm-icon-size: 22px; }
+.material-symbols-outlined.text-\[24px\] { --sm-icon-size: 24px; }
+.material-symbols-outlined.text-\[26px\] { --sm-icon-size: 26px; }
+.material-symbols-outlined.text-\[28px\] { --sm-icon-size: 28px; }
+.material-symbols-outlined.text-\[30px\] { --sm-icon-size: 30px; }
+.material-symbols-outlined.text-\[32px\] { --sm-icon-size: 32px; }
+.material-symbols-outlined.text-\[34px\] { --sm-icon-size: 34px; }
+.material-symbols-outlined.text-\[36px\] { --sm-icon-size: 36px; }
+.material-symbols-outlined.text-\[40px\] { --sm-icon-size: 40px; }
 
 /* Disable text selection on buttons */
 button {

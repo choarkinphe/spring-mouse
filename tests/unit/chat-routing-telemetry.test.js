@@ -65,6 +65,9 @@ vi.mock("open-sse/services/autoRouting.js", () => ({
   classifyAutoRequest: mocks.classifyAutoRequest,
   normalizeAutoRoutingConfig: mocks.normalizeAutoRoutingConfig,
   reorderByAutoLevel: mocks.reorderByAutoLevel,
+  // chat.js reads this to decide whether a strategy needs a shared rotation
+  // cursor. A mock that omits it makes the import throw at module load.
+  ROTATING_STRATEGIES: new Set(["round-robin", "weighted"]),
 }));
 vi.mock("../../src/sse/services/routeLease.js", () => ({
   withRouteLease: vi.fn(async (_release, _signal, execute) => execute()),

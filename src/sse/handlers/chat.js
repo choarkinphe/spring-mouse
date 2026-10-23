@@ -18,13 +18,15 @@ import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability, isComboModelActive } from "open-sse/services/combo.js";
-import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel } from "open-sse/services/autoRouting.js";
+import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel, ROTATING_STRATEGIES } from "open-sse/services/autoRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from "open-sse/config/runtimeConfig.js";
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
+import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
+import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
 import { runComboSearchLoop } from "../services/comboSearchLoop.js";
 import { runGatewaySearch } from "../services/gatewaySearch.js";
 import * as log from "../utils/logger.js";
@@ -285,8 +287,9 @@ export async function handleChat(request, clientRawRequest = null) {
       const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags, combo?.search);
       if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
 
-      const comboStrategies = settings.comboStrategies || {};
-      const comboConfig = comboStrategies[routedModelStr] || {};
+      // Strategies are keyed by the combo's stable id. getComboStrategy also
+      // reads the legacy name key, so an un-migrated settings row keeps working.
+      const comboConfig = getComboStrategy(settings.comboStrategies, combo, routedModelStr);
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       if (combo?.search && comboStrategy === "fusion") {
         return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing"), "unsupported_capability");
@@ -318,12 +321,17 @@ export async function handleChat(request, clientRawRequest = null) {
           },
           log,
           comboName: routedModelStr,
-          judgeModel: comboStrategies[routedModelStr]?.judgeModel,
-          tuning: comboStrategies[routedModelStr]?.fusionTuning,
+          judgeModel: comboConfig.judgeModel,
+          tuning: comboConfig.fusionTuning,
         });
       } else {
         const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
-        log.info("CHAT", `Combo \"${routedModelStr}\" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+        // Only a rotating combo needs a shared cursor; claiming one for every
+        // combo request would add a Redis round trip that buys nothing.
+        const rotationCount = ROTATING_STRATEGIES.has(comboStrategy)
+          ? await claimComboRotationCount(comboStrategyKey(combo))
+          : null;
+        log.info("CHAT", `Combo \"${routedModelStr}\" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit}${Number.isFinite(rotationCount) ? `, turn: ${rotationCount}` : ""})`);
         response = await handleComboChat({
           body,
           models: routedModels,
@@ -332,6 +340,10 @@ export async function handleChat(request, clientRawRequest = null) {
           comboName: routedModelStr,
           comboStrategy,
           comboStickyLimit,
+          rotationCount,
+          autoSwitch: comboConfig.autoSwitch !== false,
+          memberEntries: resolved.models,
+          pickModel: comboConfig.pick,
           deadlineMs: overloadDeadline,
           signal: request?.signal,
         });
@@ -499,8 +511,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         return response;
       }
 
-      const comboStrategies = chatSettings.comboStrategies || {};
-      const comboConfig = comboStrategies[modelStr] || {};
+      const comboConfig = getComboStrategy(chatSettings.comboStrategies, combo, modelStr);
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       if (effectiveSearch && comboStrategy === "fusion") {
         return errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing");
@@ -539,13 +550,16 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
           },
           log,
           comboName: modelStr,
-          judgeModel: comboStrategies[modelStr]?.judgeModel,
-          tuning: comboStrategies[modelStr]?.fusionTuning,
+          judgeModel: comboConfig.judgeModel,
+          tuning: comboConfig.fusionTuning,
         });
       }
 
       const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
-      log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      const rotationCount = ROTATING_STRATEGIES.has(comboStrategy)
+        ? await claimComboRotationCount(comboStrategyKey(combo))
+        : null;
+      log.info("CHAT", `Combo "${modelStr}" with ${routedModels.length} compatible models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit}${Number.isFinite(rotationCount) ? `, turn: ${rotationCount}` : ""})`);
       return handleComboChat({
         body,
         models: routedModels,
@@ -554,6 +568,10 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
+        rotationCount,
+        autoSwitch: comboConfig.autoSwitch !== false,
+        memberEntries: resolved.models,
+        pickModel: comboConfig.pick,
         comboPath,
         hasFallback,
         deadlineMs: overloadDeadline,

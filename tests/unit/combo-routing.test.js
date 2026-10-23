@@ -4,6 +4,8 @@ import {
   getActiveComboModels,
   getComboModelsFromData,
   getRotatedModels,
+  getRotatedModelsForCount,
+  rotatedIndexForCount,
   isComboModelActive,
   normalizeComboModelsForStorage,
   resetComboRotation,
@@ -60,6 +62,48 @@ describe("combo round-robin routing", () => {
     const models = ["provider/model-a", "provider/model-b"];
 
     expect(getRotatedModels(models, "code-xhigh", "fallback", 2)).toEqual(models);
+  });
+});
+
+// The shared-cursor path: the caller reads a request count from a store every
+// worker sees (Redis), so rotation is identical across workers and survives a
+// restart. These must agree with the in-process behaviour above, or switching a
+// deployment to the shared counter would silently change which model is first.
+describe("combo round-robin from a shared request count", () => {
+  const models = ["provider/model-a", "provider/model-b"];
+
+  it("matches the in-process rotation for the same sequence", () => {
+    resetComboRotation();
+    const local = Array.from({ length: 6 }, () => getRotatedModels(models, "shared", "round-robin")[0]);
+    const shared = Array.from({ length: 6 }, (_, i) => getRotatedModelsForCount(models, i + 1, "round-robin")[0]);
+    expect(shared).toEqual(local);
+  });
+
+  it("honours the sticky limit", () => {
+    const shared = Array.from({ length: 6 }, (_, i) => getRotatedModelsForCount(models, i + 1, "round-robin", 2)[0]);
+    expect(shared).toEqual([
+      "provider/model-a", "provider/model-a",
+      "provider/model-b", "provider/model-b",
+      "provider/model-a", "provider/model-a",
+    ]);
+  });
+
+  it("is a pure function of the count (no module state)", () => {
+    // Two independent callers asking for the same count get the same answer,
+    // which is what lets separate workers agree without coordination.
+    expect(getRotatedModelsForCount(models, 3, "round-robin")).toEqual(
+      getRotatedModelsForCount(models, 3, "round-robin"),
+    );
+  });
+
+  it("wraps and guards degenerate input", () => {
+    expect(rotatedIndexForCount(1, 3)).toBe(0);
+    expect(rotatedIndexForCount(3, 3)).toBe(2);
+    expect(rotatedIndexForCount(4, 3)).toBe(0);
+    expect(rotatedIndexForCount(0, 3)).toBe(0);
+    expect(rotatedIndexForCount(5, 0)).toBe(0);
+    expect(getRotatedModelsForCount(["only"], 9, "round-robin")).toEqual(["only"]);
+    expect(getRotatedModelsForCount(models, 9, "fallback")).toEqual(models);
   });
 });
 

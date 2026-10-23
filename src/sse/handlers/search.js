@@ -11,6 +11,9 @@ import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { recordIngressUsage } from "../services/ingressUsage.js";
 import { executeGatewaySearchResponse } from "../services/gatewaySearch.js";
 import { handleComboChat, getComboModelsFromData } from "open-sse/services/combo.js";
+import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
+import { ROTATING_STRATEGIES } from "open-sse/services/autoRouting.js";
+import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
 
 /**
  * Handle web search request for the SSE/Next.js server.
@@ -69,19 +72,24 @@ export async function handleSearch(request) {
       log.warn("AUTH", `${providerInput} | denied by combo access tags`);
       return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
     }
-    const comboStrategies = settings.comboStrategies || {};
-    const comboConfig = comboStrategies[providerInput] || {};
+    const comboConfig = getComboStrategy(settings.comboStrategies, combo, providerInput);
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
     const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
+    const rotationCount = ROTATING_STRATEGIES.has(comboStrategy)
+      ? await claimComboRotationCount(comboStrategyKey(combo))
+      : null;
     log.info("SEARCH", `Combo "${providerInput}" with ${comboModels.length} providers (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
       models: comboModels,
+      memberEntries: combo.models,
+      pickModel: comboConfig.pick,
       handleSingleModel: (b, m) => handleSingleProviderSearch(b, m, request, apiKey),
       log,
       comboName: providerInput,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      rotationCount,
     });
   }
 

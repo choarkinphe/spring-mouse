@@ -13,6 +13,17 @@ import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/
 
 const AUTO_TIERS = new Set(["fast", "balanced", "strong"]);
 
+// Reasoning levels a combo member may pin for itself. Matches the levels the
+// translator already understands in the "model(effort)" suffix (thinking.js
+// LEVEL_TO_BUDGET), so a stored effort never names a level nothing can apply.
+export const MEMBER_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+// Weighted rotation: a member weighing 3 takes three requests for every one a
+// member weighing 1 takes. Bounded so one entry cannot starve the rest.
+export const MEMBER_WEIGHT_MIN = 1;
+export const MEMBER_WEIGHT_MAX = 1000;
+export const DEFAULT_MEMBER_WEIGHT = 1;
+
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
@@ -90,7 +101,13 @@ export function reorderByCapabilities(models, required) {
 }
 
 /**
- * Track rotation state per combo (for round-robin strategy)
+ * In-process rotation state per combo, used when the caller supplies no shared
+ * cursor (standalone engine, tests, or Redis unavailable).
+ *
+ * This is a FALLBACK, not the source of truth: a process-local cursor means two
+ * workers each start at index 0 and a restart resets the rotation, so traffic
+ * does not actually spread. The app passes `rotationCount` into
+ * handleComboChat to make it shared.
  * @type {Map<string, { index: number, consecutiveUseCount: number }>}
  */
 const comboRotationState = new Map();
@@ -230,12 +247,19 @@ export function normalizeComboModelsForStorage(models) {
     if (schedule === null && entry.schedule != null) return null;
     const accessTags = normalizeAccessTags(entry.accessTags);
     const autoTier = AUTO_TIERS.has(entry.autoTier) ? entry.autoTier : null;
-    normalized.push(schedule || accessTags.length > 0 || autoTier
+    const effort = normalizeMemberEffort(entry.effort);
+    // An explicitly-given but unrecognized effort is a configuration error, not
+    // a silent downgrade to "whatever the agent asked for".
+    if (effort === null && entry.effort != null && entry.effort !== "") return null;
+    const weight = entry.weight == null ? null : normalizeMemberWeight(entry.weight);
+    normalized.push(schedule || accessTags.length > 0 || autoTier || effort || (weight && weight !== DEFAULT_MEMBER_WEIGHT)
       ? {
         model,
         ...(schedule ? { schedule } : {}),
         ...(accessTags.length > 0 ? { accessTags } : {}),
         ...(autoTier ? { autoTier } : {}),
+        ...(effort ? { effort } : {}),
+        ...(weight && weight !== DEFAULT_MEMBER_WEIGHT ? { weight } : {}),
       }
       : model);
   }
@@ -246,17 +270,56 @@ function comboModelIdentifier(entry) {
   return typeof entry === "string" ? entry : String(entry?.model || "");
 }
 
-function comboModelEntry(entry) {
-  if (typeof entry === "string") return { model: entry, schedule: null, accessTags: [], autoTier: "balanced" };
+export function comboModelEntry(entry) {
+  if (typeof entry === "string") {
+    return { model: entry, schedule: null, accessTags: [], autoTier: "balanced", effort: null, weight: DEFAULT_MEMBER_WEIGHT };
+  }
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     return {
       model: String(entry.model || ""),
       schedule: entry.schedule || null,
       accessTags: normalizeAccessTags(entry.accessTags),
       autoTier: AUTO_TIERS.has(entry.autoTier) ? entry.autoTier : "balanced",
+      effort: normalizeMemberEffort(entry.effort),
+      weight: normalizeMemberWeight(entry.weight),
     };
   }
-  return { model: "", schedule: null, accessTags: [] };
+  return { model: "", schedule: null, accessTags: [], effort: null, weight: DEFAULT_MEMBER_WEIGHT };
+}
+
+/**
+ * A member's own reasoning level.
+ *
+ * Stored on the member rather than baked into the model id, so the id stays a
+ * real provider/model (capability lookup, pricing, and the dashboard all match
+ * on it). The engine appends it as the existing "model(effort)" suffix at
+ * dispatch time — that syntax is already understood end to end, so this adds no
+ * new parsing path.
+ */
+export function normalizeMemberEffort(value) {
+  if (value == null || value === "") return null;
+  const level = String(value).trim().toLowerCase();
+  return MEMBER_EFFORTS.has(level) ? level : null;
+}
+
+export function normalizeMemberWeight(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_MEMBER_WEIGHT;
+  return Math.min(MEMBER_WEIGHT_MAX, Math.max(MEMBER_WEIGHT_MIN, parsed));
+}
+
+/**
+ * The effort a given model id pins, if any.
+ *
+ * `models` reaching the dispatch loop is a plain id list, so the configured
+ * entries have to be consulted by id. A member that shares an id at two efforts
+ * is not expressible here; `normalizeComboModelsForStorage` keeps the first, and
+ * the dashboard prevents adding the same id twice anyway.
+ */
+function memberEffortFor(memberEntries, modelStr) {
+  if (!Array.isArray(memberEntries) || !modelStr) return null;
+  const entry = memberEntries.find((candidate) => comboModelIdentifier(candidate) === modelStr);
+  return entry ? comboModelEntry(entry).effort : null;
 }
 
 export function isComboModelActive(entry, now = new Date()) {
@@ -316,6 +379,59 @@ function rotateModelsFromIndex(models, currentIndex) {
 }
 
 /**
+ * Which model a round-robin combo serves on request number `count`.
+ *
+ * Deriving the index from a monotonic counter (rather than mutating stored
+ * state) is what lets several workers share one rotation: each worker reads the
+ * next value from the shared counter and computes the same answer, with no
+ * read-modify-write race and nothing to resynchronise after a restart.
+ *
+ * `stickyLimit` is how many consecutive requests a model serves before the
+ * rotation advances, so request 1..N all land on index 0.
+ */
+export function rotatedIndexForCount(count, length, stickyLimit = 1) {
+  const size = Math.max(1, Math.floor(Number(length) || 1));
+  const n = Math.max(1, Math.floor(Number(count) || 1));
+  return Math.floor((n - 1) / normalizeStickyLimit(stickyLimit)) % size;
+}
+
+/**
+ * Which member a weighted combo serves on request number `count`.
+ *
+ * Weights promise proportions (a member weighing 3 takes three requests for
+ * every one a member weighing 1 takes) spread out rather than delivered in one
+ * burst. Each request walks a step of 1 across a repeating weighted round and
+ * takes whichever member's band the step lands in:
+ *
+ *   for weights [3, 1], W = 4, the round is a a a b repeating
+ *   request n lands at position (n-1) mod W
+ *
+ * Because the bands sit next to each other, the heaviest member is served in
+ * consecutive turns within a round — the proportion is exact, which is what the
+ * UI promises. It is also a pure function of `count`, so every worker agrees
+ * from one shared counter with no state to reconcile (same property as
+ * `rotatedIndexForCount`).
+ *
+ * @param {number} count - 1-based request number.
+ * @param {number[]} weights - One weight per member, in member order.
+ * @returns {number} Index into `weights`.
+ */
+export function weightedMemberIndexForCount(count, weights) {
+  const list = Array.isArray(weights) && weights.length ? weights : [1];
+  if (list.length === 1) return 0;
+  const normalized = list.map((w) => normalizeMemberWeight(w));
+  const total = normalized.reduce((sum, w) => sum + w, 0);
+  const position = (Math.max(1, Math.floor(Number(count) || 1)) - 1) % total;
+
+  let cursor = 0;
+  for (let i = 0; i < normalized.length; i++) {
+    cursor += normalized[i];
+    if (position < cursor) return i;
+  }
+  return normalized.length - 1;
+}
+
+/**
  * Get rotated model list based on strategy
  * @param {string[]} models - Array of model strings
  * @param {string} comboName - Name of the combo
@@ -352,6 +468,38 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
   }
 
   return rotatedModels;
+}
+
+/**
+ * Compute the weighted member order for a request.
+ *
+ * The chosen member goes first and the rest follow in their configured order as
+ * fallbacks, so a weighted combo still fails over exactly like an ordered one —
+ * only the first pick is decided by weight.
+ */
+export function getWeightedModelsForCount(models, count, weights) {
+  if (!Array.isArray(models) || models.length <= 1) return models;
+  const perMember = Array.isArray(weights) && weights.length
+    ? weights
+    : models.map((entry) => comboModelEntry(entry).weight);
+  return rotateModelsFromIndex(models, weightedMemberIndexForCount(count, perMember));
+}
+
+/**
+ * Rotate by an explicit request count instead of process-local state.
+ *
+ * This is the shared-cursor path: the caller reads `count` from a store every
+ * worker sees (Redis in the app), so rotation survives restarts and spreads
+ * across workers. Pure — no module state is read or written.
+ *
+ * Covers both count-driven strategies: "round-robin" (equal turns, honouring
+ * stickyLimit) and "weighted" (turns in the members' configured proportions).
+ */
+export function getRotatedModelsForCount(models, count, strategy, stickyLimit = 1, weights = null) {
+  if (!Array.isArray(models) || models.length <= 1) return models;
+  if (strategy === "weighted") return getWeightedModelsForCount(models, count, weights);
+  if (strategy !== "round-robin") return models;
+  return rotateModelsFromIndex(models, rotatedIndexForCount(count, models.length, stickyLimit));
 }
 
 /**
@@ -393,16 +541,51 @@ export function getComboModelsFromData(modelStr, combosData, now = new Date(), s
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {number|null} [options.rotationCount=null] - This request's 1-based position in a
+ *   shared rotation counter. When provided, rotation uses it instead of process-local
+ *   state, so every worker agrees and a restart does not reset the rotation.
+ * @param {boolean} [options.autoSwitch=true] - Float capability-compatible models to
+ *   the front. Callers pass false when the operator chose an explicit order, so a
+ *   deliberate first pick is not silently overridden.
+ * @param {Array<{model: string, weight?: number}>|null} [options.memberEntries=null] - The
+ *   configured member entries, used for per-member weights. `models` alone cannot
+ *   carry them: it is a plain string list after capability filtering.
+ * @param {string|null} [options.pickModel=null] - The member a "manual" combo sends
+ *   every request to.
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, comboPath = [], hasFallback = false, deadlineMs = null, signal = null }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, rotationCount = null, autoSwitch = true, memberEntries = null, pickModel = null, comboPath = [], hasFallback = false, deadlineMs = null, signal = null }) {
   if (comboName && comboPath.includes(comboName)) {
     return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `Cyclic combo route skipped: ${comboName}`);
   }
   // Keep ancestry local to this branch: a sibling may legitimately reuse a combo.
   const nextPath = comboName ? [...comboPath, comboName] : comboPath;
-  // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+
+  // Manual: every request goes to the one member the operator picked, and
+  // nothing takes over when it fails. Falling back here would silently undo the
+  // choice, so the failure is the answer.
+  if (comboStrategy === "manual") {
+    const target = pickModel && models.includes(pickModel) ? pickModel : null;
+    if (!target) {
+      return errorResponse(
+        HTTP_STATUS.SERVICE_UNAVAILABLE,
+        pickModel
+          ? `Manual combo "${comboName || "combo"}" pins ${pickModel}, which no active member can serve right now`
+          : `Manual combo "${comboName || "combo"}" has no member picked`,
+      );
+    }
+    log.info("COMBO", `Manual combo ${comboName || ""} → ${target}`);
+    return handleSingleModel(body, target, { comboPath: nextPath, hasFallback: false });
+  }
+
+  // Rotation. A shared count wins over local state; weights come from the
+  // configured entries so a weighted member keeps its share.
+  const weights = Array.isArray(memberEntries)
+    ? models.map((model) => comboModelEntry(memberEntries.find((entry) => comboModelIdentifier(entry) === model) || model).weight)
+    : null;
+  let rotatedModels = Number.isFinite(rotationCount)
+    ? getRotatedModelsForCount(models, rotationCount, comboStrategy, comboStickyLimit, weights)
+    : getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
@@ -415,7 +598,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       rotatedModels = reordered;
     }
   }
-  
+
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
@@ -426,10 +609,16 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
     }
     const modelStr = rotatedModels[i];
-    log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
+    // A member may pin its own reasoning level. It is applied as the existing
+    // "model(effort)" suffix so the whole downstream translator path — which
+    // already understands that form — does the work, and the stored id stays a
+    // real provider/model for capabilities, pricing and the dashboard.
+    const effort = memberEffortFor(memberEntries, modelStr);
+    const dispatchModel = effort ? `${modelStr}(${effort})` : modelStr;
+    log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${dispatchModel}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr, {
+      const result = await handleSingleModel(body, dispatchModel, {
         comboPath: nextPath,
         hasFallback: hasFallback || i < rotatedModels.length - 1,
       });

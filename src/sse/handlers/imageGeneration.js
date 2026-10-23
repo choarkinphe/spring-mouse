@@ -14,6 +14,9 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
+import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
+import { ROTATING_STRATEGIES } from "open-sse/services/autoRouting.js";
+import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
 import * as log from "../utils/logger.js";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
 import { recordIngressUsage } from "../services/ingressUsage.js";
@@ -58,19 +61,24 @@ export async function handleImageGeneration(request) {
       log.warn("AUTH", `${modelStr} | denied by combo access tags`);
       return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
     }
-    const comboStrategies = settings.comboStrategies || {};
-    const comboConfig = comboStrategies[modelStr] || {};
+    const comboConfig = getComboStrategy(settings.comboStrategies, combo);
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
     const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
+    const rotationCount = ROTATING_STRATEGIES.has(comboStrategy)
+      ? await claimComboRotationCount(comboStrategyKey(combo))
+      : null;
     log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
       body,
       models: comboModels,
+      memberEntries: combo.models,
+      pickModel: comboConfig.pick,
       handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, accessTags, requesterId: apiKey || "local" }),
       log,
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
+      rotationCount,
     });
   }
 

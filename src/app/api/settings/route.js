@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings, getComboByName } from "@/lib/localDb";
+import { getSettings, updateSettings, getComboByName, getCombos } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
+import { remapComboStrategyKeys } from "open-sse/services/comboStrategy.js";
 import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
@@ -352,6 +353,14 @@ export async function PATCH(request) {
         body.comboStrategies = normalizeComboStrategies(body.comboStrategies, { strict: true });
       } catch (error) {
         return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      // Strategies are keyed by combo id. A client that still sends name keys
+      // (an older dashboard tab, or a hand-written settings row) would
+      // otherwise create a second, competing entry for the same combo.
+      try {
+        body.comboStrategies = remapComboStrategyKeys(body.comboStrategies, await getCombos());
+      } catch (error) {
+        console.warn("[settings] combo strategy remap skipped:", error.message);
       }
     }
 

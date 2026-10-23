@@ -1,4 +1,5 @@
 import { CODEX_SCAN_DIAGNOSTICS, CODEX_SSE_OUTPUT_DELTA_TYPES } from "../config/runtimeConfig.js";
+import { completedCodexToolText } from "./codexToolOutput.js";
 
 // Only protocol labels are logged. Unknown upstream names are bucketed rather
 // than copied: even an event/type field can contain user content or credentials.
@@ -33,6 +34,7 @@ export function createCodexScanDiagnostics(startedAt = Date.now()) {
   let malformedFrames = 0;
   let oversizedFrames = 0;
   let candidateFrames = 0;
+  let completedToolOutputSeen = false;
   const eventCounts = {};
   const eventHeaderCounts = {};
 
@@ -62,7 +64,10 @@ export function createCodexScanDiagnostics(startedAt = Date.now()) {
     } else eventCounts.other = (eventCounts.other || 0) + 1;
     // Inspect only top-level protocol output fields, never response.created's
     // echoed instructions/tools or arbitrary nested strings.
+    const completedToolOutput = Boolean(completedCodexToolText(parsed));
+    if (completedToolOutput) completedToolOutputSeen = true;
     const candidate = hasText(parsed?.delta) || hasText(parsed?.text)
+      || completedToolOutput
       || hasText(parsed?.arguments) || hasText(parsed?.refusal)
       || (type === "response.output_item.done" && (hasText(parsed?.item?.arguments) || hasContent(parsed?.item?.content)))
       || (type === "response.content_part.done" && (hasText(parsed?.part?.text) || hasText(parsed?.part?.refusal)));
@@ -106,7 +111,7 @@ export function createCodexScanDiagnostics(startedAt = Date.now()) {
         eventCounts: { ...eventCounts }, eventHeaderCounts: { ...eventHeaderCounts },
         candidateWithoutDetection: candidateFrames > 0 && firstOutputAt === null,
         pendingFrameChars: frameChars,
-        recognizedEventSeen: [...RECOGNIZED_OUTPUT].some((type) => eventCounts[type] > 0),
+        recognizedEventSeen: completedToolOutputSeen || [...RECOGNIZED_OUTPUT].some((type) => eventCounts[type] > 0),
       };
     },
   };

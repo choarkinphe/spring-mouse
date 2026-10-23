@@ -11,7 +11,10 @@ const { rows, adapter } = vi.hoisted(() => {
 });
 vi.mock("../../src/lib/db/driver.js", () => ({ getAdapter: async () => adapter }));
 vi.mock("../../src/lib/db/repos/connectionsRepo.js", () => ({
-  getProviderConnectionById: async (id) => ({ provider: "codebuddy-cn", providerSpecificData: { codebuddyUid: id === "duplicate" ? "a" : id } }),
+  getProviderConnectionById: async (id) => ({
+    provider: String(id).startsWith("wb-") ? "workbuddy" : "codebuddy-cn",
+    providerSpecificData: { codebuddyUid: id === "duplicate" ? "a" : id },
+  }),
 }));
 const { getCheckinState, updateCheckinState } = await import("../../src/lib/db/repos/checkinRepo.js");
 beforeEach(() => { rows.clear(); vi.clearAllMocks(); });
@@ -36,6 +39,15 @@ describe("persistent checkin state", () => {
     expect((await getCheckinState("duplicate")).enabled).toBe(true);
     expect(adapter.flush).toHaveBeenCalled();
   });
+  it("keys workbuddy accounts by provider so markers never collide with codebuddy-cn", async () => {
+    await updateCheckinState("wb-a", () => ({ lastSuccessDate: "2026-10-22" }));
+    await updateCheckinState("a", () => ({ lastSuccessDate: "2026-10-21" }));
+    expect(rows.has("codebuddyCheckin:account:workbuddy:wb-a")).toBe(true);
+    expect(rows.has("codebuddyCheckin:account:codebuddy-cn:a")).toBe(true);
+    expect(await getCheckinState("wb-a")).toMatchObject({ lastSuccessDate: "2026-10-22" });
+    expect(await getCheckinState("a")).toMatchObject({ lastSuccessDate: "2026-10-21" });
+  });
+
   it("propagates flush failures instead of reporting a durable lease", async () => {
     adapter.flush.mockImplementationOnce(() => { throw new Error("disk unavailable"); });
     await expect(updateCheckinState("a", () => ({ leaseId: "owner" }))).rejects.toThrow("disk unavailable");

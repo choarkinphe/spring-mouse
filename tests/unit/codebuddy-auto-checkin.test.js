@@ -37,18 +37,37 @@ afterEach(() => {
 });
 
 describe("CodeBuddy automatic check-in tick", () => {
-  it("loads only active CN accounts and checks only OAuth connections automatically", async () => {
+  it("loads active accounts once and checks both China providers only", async () => {
     const loadConnections = vi.fn().mockResolvedValue([
-      eligible("cn"), eligible("international", { provider: "codebuddy" }),
+      eligible("cn"), eligible("workbuddy", { provider: "workbuddy" }),
+      eligible("intl", { provider: "codebuddy-intl" }), eligible("ai", { provider: "workbuddy-ai" }),
+      eligible("legacy-intl", { provider: "codebuddy" }),
       eligible("apikey", { authType: "apikey" }), eligible("disabled", { isActive: false }),
       eligible("no-active-field", { isActive: undefined }),
     ]);
     const checkin = vi.fn().mockResolvedValue({ ok: true });
-    expect(await scheduler.runCodeBuddyCheckinTick({ loadConnections, checkin })).toEqual({ attempted: 2, failed: 0 });
-    expect(loadConnections).toHaveBeenCalledWith({ provider: "codebuddy-cn", isActive: true });
-    expect(checkin.mock.calls).toEqual([["cn", { automatic: true }], ["no-active-field", { automatic: true }]]);
+    expect(await scheduler.runCodeBuddyCheckinTick({ loadConnections, checkin })).toEqual({ attempted: 3, failed: 0 });
+    expect(loadConnections).toHaveBeenCalledWith({ isActive: true });
+    expect(checkin.mock.calls).toEqual([
+      ["cn", { automatic: true }], ["workbuddy", { automatic: true }], ["no-active-field", { automatic: true }],
+    ]);
     expect(mocks.load).not.toHaveBeenCalled();
     expect(mocks.checkin).not.toHaveBeenCalled();
+  });
+
+  it("runs both providers when enabled and still skips opted-out accounts", async () => {
+    // `enabled` is per connection and enforced by the service (skipped:"disabled").
+    const loadConnections = vi.fn().mockResolvedValue([
+      eligible("cn-on"), eligible("wb-on", { provider: "workbuddy" }),
+      eligible("wb-off", { provider: "workbuddy" }), eligible("cn-off"),
+    ]);
+    const checkin = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: "success" })
+      .mockResolvedValueOnce({ ok: true, status: "success" })
+      .mockResolvedValueOnce({ ok: false, skipped: "disabled" })
+      .mockResolvedValueOnce({ ok: false, skipped: "disabled" });
+    expect(await scheduler.runCodeBuddyCheckinTick({ loadConnections, checkin })).toEqual({ attempted: 2, failed: 0 });
+    expect(checkin.mock.calls.map(([id]) => id)).toEqual(["cn-on", "wb-on", "wb-off", "cn-off"]);
   });
 
   it("isolates rejected accounts and failed results, continuing through later accounts", async () => {

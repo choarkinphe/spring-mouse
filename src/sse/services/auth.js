@@ -545,7 +545,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   // Match structured upstream evidence only; message substrings are not business codes.
   // This is not an auth-refresh signal and does not change the upstream HTTP status.
   let verificationRejected = false;
-  if (provider === CODEBUDDY_VERIFICATION.provider && Number(status) === 400
+  if (CODEBUDDY_VERIFICATION.providers.has(provider) && Number(status) === 400
     && upstreamError?.source === "http" && upstreamError.status === 400) {
     try {
       const code = JSON.parse(upstreamError.body)?.code;

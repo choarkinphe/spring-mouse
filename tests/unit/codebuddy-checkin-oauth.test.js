@@ -11,6 +11,8 @@ vi.mock("open-sse/services/tokenRefresh.js", () => ({
 }));
 
 import provider from "@/lib/oauth/providers/codebuddy-cn.js";
+import { createWorkBuddyOAuthHandler } from "@/lib/oauth/providers/workbuddy.js";
+import { CODEBUDDY_CHECKIN, supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
 
 const config = {
   stateUrl: "https://codebuddy.invalid/v2/plugin/auth/state",
@@ -132,5 +134,51 @@ describe("CodeBuddy WorkBuddy browser OAuth", () => {
   it("rejects failed state requests", async () => {
     fetchMock.mockResolvedValueOnce(response({}, false));
     await expect(provider.requestDeviceCode(config)).rejects.toThrow("CodeBuddy state request failed:");
+  });
+});
+
+describe("WorkBuddy (China) OAuth binding for check-in", () => {
+  const site = {
+    productId: "workbuddy", origin: "https://copilot.tencent.com", platform: "workbuddy",
+    stateUrl: "https://copilot.tencent.com/v2/plugin/auth/state",
+    tokenUrl: "https://copilot.tencent.com/v2/plugin/auth/token",
+    refreshUrl: "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+    authUrlAllowedHosts: ["copilot.tencent.com"],
+  };
+
+  it("persists the account UID and exact origin that the check-in service requires", async () => {
+    fetchMock
+      .mockResolvedValueOnce(response({ code: 0, data: { state: "s", authUrl: "https://copilot.tencent.com/authorize" } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { accessToken: "wb-access", refreshToken: "wb-refresh", expiresIn: 3600 } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { uid: "wb-uid-1" } }));
+    const handler = createWorkBuddyOAuthHandler(site);
+    const device = await handler.requestDeviceCode();
+    expect(device._isWorkBuddy).toBe(true);
+    const result = await handler.pollToken(site, device.device_code);
+    const saved = handler.mapTokens(result.data);
+    expect(saved.providerSpecificData).toMatchObject({
+      codebuddyUid: "wb-uid-1", workbuddyOrigin: "https://copilot.tencent.com", domain: "copilot.tencent.com",
+    });
+    // The saved row then satisfies the shared check-in gate.
+    expect(supportsCodeBuddyCheckin({ provider: "workbuddy", authType: "oauth", ...saved })).toBe(true);
+    expect(CODEBUDDY_CHECKIN.sites.workbuddy.origin).toBe(saved.providerSpecificData.workbuddyOrigin);
+  });
+
+  it("keeps the international handler out of the check-in gate", async () => {
+    fetchMock
+      .mockResolvedValueOnce(response({ code: 0, data: { state: "s", authUrl: "https://www.workbuddy.ai/authorize" } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { accessToken: "ai-access", refreshToken: "ai-refresh", expiresIn: 3600 } }))
+      .mockResolvedValueOnce(response({ code: 0, data: { uid: "ai-uid" } }));
+    const handler = createWorkBuddyOAuthHandler({
+      ...site, productId: "workbuddy-ai", origin: "https://www.workbuddy.ai", platform: "workbuddy-ai",
+      stateUrl: "https://www.workbuddy.ai/v2/plugin/auth/state",
+      tokenUrl: "https://www.workbuddy.ai/v2/plugin/auth/token",
+      refreshUrl: "https://www.workbuddy.ai/v2/plugin/auth/token/refresh",
+      authUrlAllowedHosts: ["www.workbuddy.ai"],
+    });
+    const device = await handler.requestDeviceCode();
+    const saved = handler.mapTokens((await handler.pollToken(null, device.device_code)).data);
+    expect(saved.providerSpecificData.codebuddyUid).toBe("ai-uid");
+    expect(supportsCodeBuddyCheckin({ provider: "workbuddy-ai", authType: "oauth", ...saved })).toBe(false);
   });
 });

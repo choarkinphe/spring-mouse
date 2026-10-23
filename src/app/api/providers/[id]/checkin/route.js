@@ -1,13 +1,14 @@
 import { getProviderConnectionById } from "@/lib/db/repos/connectionsRepo.js";
 import { getCheckinState } from "@/lib/db/repos/checkinRepo.js";
 import { publicCheckinState, runCodeBuddyCheckin, setCodeBuddyCheckinEnabled } from "@/lib/services/codebuddyCheckin.js";
-import { supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { CODEBUDDY_CHECKIN, supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
 
 async function validate(params) {
   const { id } = await params;
   const connection = await getProviderConnectionById(id);
   if (!connection) return { error: "账号不存在", status: 404 };
-  if (!supportsCodeBuddyCheckin(connection)) return { error: "仅支持 CodeBuddy 国内版 OAuth 账号签到", status: 400 };
+  // Both China ids are supported; the international sites have no check-in.
+  if (!supportsCodeBuddyCheckin(connection)) return { error: CODEBUDDY_CHECKIN.unsupportedMessage, status: 400 };
   return { id };
 }
 

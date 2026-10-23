@@ -1,5 +1,6 @@
 import { getProviderConnections } from "@/lib/db/repos/connectionsRepo.js";
 import { runCodeBuddyCheckin } from "@/lib/services/codebuddyCheckin.js";
+import { supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
 
 const INTERVAL_MS = 15 * 60 * 1000;
 const INITIAL_DELAY_MS = 30 * 1000;
@@ -11,9 +12,11 @@ export async function runCodeBuddyCheckinTick({ loadConnections = getProviderCon
   let attempted = 0;
   let failed = 0;
   try {
-    const connections = await loadConnections({ provider: "codebuddy-cn", isActive: true });
+    // One query, then the shared eligibility rule. The repository only filters
+    // by a single provider, so filtering here keeps both China ids covered.
+    const connections = await loadConnections({ isActive: true });
     for (const connection of connections) {
-      if (connection.provider !== "codebuddy-cn" || connection.authType !== "oauth" || connection.isActive === false) continue;
+      if (!supportsCodeBuddyCheckin(connection) || connection.isActive === false) continue;
       try {
         const result = await checkin(connection.id, { automatic: true });
         if (!result.skipped) attempted++;

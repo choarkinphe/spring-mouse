@@ -337,7 +337,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
               controller.enqueue(value);
             } catch (e) { controller.error(e); }
           },
-          cancel(reason) { try { r.cancel(reason); } catch { /* best-effort */ } },
+          async cancel(reason) { try { await r.cancel(reason); } catch { /* best-effort */ } },
         });
       })()
       : diagSource;

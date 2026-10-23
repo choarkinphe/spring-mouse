@@ -22,6 +22,8 @@ import clinepass from "./clinepass.js";
 import gitlab from "./gitlab.js";
 import codebuddyCn from "./codebuddy-cn.js";
 import codebuddyIntl from "./codebuddy-intl.js";
+import { createWorkBuddyOAuthHandler } from "./workbuddy.js";
+import { PROVIDER_OAUTH } from "open-sse/config/providers.js";
 import kimchi from "./kimchi.js";
 import trae from "./trae.js";
 import windsurf from "./windsurf.js";
@@ -47,6 +49,8 @@ const PROVIDERS = {
   gitlab,
   "codebuddy-cn": codebuddyCn,
   "codebuddy-intl": codebuddyIntl,
+  workbuddy: createWorkBuddyOAuthHandler(PROVIDER_OAUTH.workbuddy),
+  "workbuddy-ai": createWorkBuddyOAuthHandler(PROVIDER_OAUTH["workbuddy-ai"]),
   kimchi,
   trae,
   windsurf,

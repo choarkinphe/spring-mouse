@@ -4,8 +4,16 @@ import { getCheckinState, updateCheckinState } from "@/lib/db/repos/checkinRepo.
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
+import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
-import { CODEBUDDY_CHECKIN as config, supportsCodeBuddyCheckin, codeBuddyCheckinDate } from "@/shared/config/codebuddyCheckin.js";
+import { CODEBUDDY_CHECKIN as config, supportsCodeBuddyCheckin, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+
+// The refresh contract is per provider: the new `workbuddy` provider uses the
+// WorkBuddy rotating-token endpoint and binds its credentials to the site.
+const REFRESHERS = {
+  "codebuddy-cn": (connection, proxy) => refreshCodebuddyToken(connection.refreshToken, null, proxy),
+  workbuddy: (connection, proxy) => refreshWorkBuddyToken("workbuddy", connection, null, proxy),
+};
 
 const MESSAGES = {
   success: "签到成功",
@@ -13,8 +21,9 @@ const MESSAGES = {
   ineligible: "当前账号无签到资格",
   ended: "签到活动已结束",
   own_app: "请在 WorkBuddy 官方客户端签到（当前凭据不支持此活动）",
-  auth: "凭据已失效，请重新授权 CodeBuddy 账号",
-  identity: "无法获取账号 UID，请重新授权 CodeBuddy 账号",
+  auth: "凭据已失效，请重新授权 WorkBuddy 账号",
+  identity: "无法获取账号 UID，请重新授权 WorkBuddy 账号",
+  unsupported: config.unsupportedMessage,
   error: "签到请求失败，请稍后重试",
 };
 
@@ -47,12 +56,17 @@ export function createCodeBuddyCheckinService(deps = {}) {
   const updateState = deps.updateState || updateCheckinState;
   const updateConnection = deps.updateConnection || updateProviderConnectionHealth;
   const fetcher = deps.fetch || proxyAwareFetch;
-  const refresh = deps.refresh || refreshCodebuddyToken;
+  // One test hook for both providers; the default dispatches per connection.
+  const refresh = deps.refresh || ((connection, proxy) => {
+    const refresher = REFRESHERS[connection.provider];
+    return refresher ? refresher(connection, proxy) : null;
+  });
   const now = deps.now || Date.now;
 
   async function request(path, connection, proxy) {
     const uid = connection.providerSpecificData?.codebuddyUid;
-    const response = await fetcher(`${config.origin}${path}`, {
+    const site = checkinSite(connection.provider);
+    const response = await fetcher(`${site.origin}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -60,7 +74,7 @@ export function createCodeBuddyCheckinService(deps = {}) {
         "User-Agent": config.userAgent,
         Authorization: `Bearer ${connection.accessToken}`,
         ...(uid ? { "X-User-Id": String(uid) } : {}),
-        "X-Domain": "copilot.tencent.com",
+        "X-Domain": site.domain,
         "X-Product": "SaaS",
         "X-IDE-Type": "WorkBuddy",
         "X-IDE-Name": "WorkBuddy",
@@ -83,9 +97,13 @@ export function createCodeBuddyCheckinService(deps = {}) {
     if (!connection.refreshToken) return connection;
     // The shared provider refresh deduplicates rotating tokens with request-time
     // and background refresh. Its logger is intentionally omitted here.
-    const tokens = await refresh(connection.refreshToken, null, proxy);
+    const tokens = await refresh(connection, proxy);
     if (!tokens?.accessToken) return connection;
     const patch = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken || connection.refreshToken };
+    // The WorkBuddy refresh rotates site-bound metadata with the token.
+    const providerSpecificData = tokens.providerSpecificData
+      ? { ...connection.providerSpecificData, ...tokens.providerSpecificData } : null;
+    if (providerSpecificData) patch.providerSpecificData = providerSpecificData;
     if (Number.isFinite(tokens.expiresIn) && tokens.expiresIn > 0) {
       patch.expiresIn = tokens.expiresIn;
       patch.expiresAt = new Date(now() + tokens.expiresIn * 1000).toISOString();
@@ -151,7 +169,7 @@ export function createCodeBuddyCheckinService(deps = {}) {
   async function run(connectionId, { automatic = false } = {}) {
     const connection = await load(connectionId);
     if (!connection) return { ok: false, httpStatus: 404, message: "账号不存在" };
-    if (!supportsCodeBuddyCheckin(connection)) return { ok: false, httpStatus: 400, message: "仅支持 CodeBuddy 国内版 OAuth 账号签到" };
+    if (!supportsCodeBuddyCheckin(connection)) return { ok: false, httpStatus: 400, message: MESSAGES.unsupported };
     if (connection.isActive === false) return { ok: false, httpStatus: 400, message: "请先启用账号", checkin: publicCheckinState(await getState(connectionId)) };
 
     const startedAt = now();

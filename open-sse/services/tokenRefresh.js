@@ -1,4 +1,5 @@
 import { dedupRefresh } from "./tokenRefresh/dedup.js";
+import { refreshWorkBuddyToken } from "./tokenRefresh/workbuddy.js";
 import { PROVIDERS } from "../config/providers.js";
 import { OAUTH_ENDPOINTS, REFRESH_LEAD_MS } from "../config/appConstants.js";
 import {
@@ -149,6 +150,8 @@ const REFRESH_HANDLERS = {
   gcli: (c, log) => refreshXaiToken(c.refreshToken, log),
   "codebuddy-cn": (c, log) => refreshCodebuddyToken(c.refreshToken, log),
   "codebuddy-intl": (c, log) => refreshCodebuddyIntlToken(c.refreshToken, log),
+  workbuddy: (c, log) => refreshWorkBuddyToken("workbuddy", c, log, c.proxyOptions),
+  "workbuddy-ai": (c, log) => refreshWorkBuddyToken("workbuddy-ai", c, log, c.proxyOptions),
   trae: (c, log) => refreshTraeToken(c.refreshToken, c, log),
   zed: () => refreshZedToken(),
   windsurf: (c, log) => refreshWindsurfToken(c, log),

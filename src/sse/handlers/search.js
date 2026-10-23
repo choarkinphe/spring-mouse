@@ -72,7 +72,7 @@ export async function handleSearch(request) {
       log.warn("AUTH", `${providerInput} | denied by combo access tags`);
       return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
     }
-    const comboConfig = getComboStrategy(settings.comboStrategies, combo);
+    const comboConfig = getComboStrategy(settings.comboStrategies, combo, providerInput);
     const comboStrategy = comboConfig.fallbackStrategy || "fallback";
     const comboStickyLimit = comboConfig.stickyRoundRobinLimit || 1;
     const rotationCount = ROTATING_STRATEGIES.has(comboStrategy)

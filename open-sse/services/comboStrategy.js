@@ -16,14 +16,19 @@ const isPlainObject = (value) => value !== null && typeof value === "object" && 
 /**
  * @param {Object|null|undefined} strategies - settings.comboStrategies
  * @param {{ id?: string, name?: string }|null|undefined} combo
+ * @param {string} [requestedName] - The name the caller asked for. Used as a
+ *   last-resort key when the combo record itself carries no id or name: the
+ *   caller always knows the requested name, but a partial or mocked record may
+ *   not echo it back, and without this the strategy silently resolves to {}.
  * @returns {Object} The strategy object, or `{}` when the combo has none.
  */
-export function getComboStrategy(strategies, combo) {
-  if (!isPlainObject(strategies) || !combo) return {};
-  const byId = combo.id ? strategies[combo.id] : undefined;
+export function getComboStrategy(strategies, combo, requestedName) {
+  if (!isPlainObject(strategies)) return {};
+  const byId = combo?.id ? strategies[combo.id] : undefined;
   if (isPlainObject(byId)) return byId;
   // Legacy name key: read only, never written back.
-  const byName = combo.name ? strategies[combo.name] : undefined;
+  const name = combo?.name || requestedName;
+  const byName = name ? strategies[name] : undefined;
   return isPlainObject(byName) ? byName : {};
 }
 

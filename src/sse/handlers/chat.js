@@ -289,7 +289,7 @@ export async function handleChat(request, clientRawRequest = null) {
 
       // Strategies are keyed by the combo's stable id. getComboStrategy also
       // reads the legacy name key, so an un-migrated settings row keeps working.
-      const comboConfig = getComboStrategy(settings.comboStrategies, combo);
+      const comboConfig = getComboStrategy(settings.comboStrategies, combo, routedModelStr);
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       if (combo?.search && comboStrategy === "fusion") {
         return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing"), "unsupported_capability");
@@ -511,7 +511,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         return response;
       }
 
-      const comboConfig = getComboStrategy(chatSettings.comboStrategies, combo);
+      const comboConfig = getComboStrategy(chatSettings.comboStrategies, combo, modelStr);
       const comboStrategy = comboConfig.fallbackStrategy || "fallback";
       if (effectiveSearch && comboStrategy === "fusion") {
         return errorResponse(HTTP_STATUS.BAD_REQUEST, "Gateway search is not supported with fusion; choose fallback, round-robin or auto routing");

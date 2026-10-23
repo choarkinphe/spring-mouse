@@ -94,6 +94,8 @@ export const CUSTOM_EMBEDDING_PREFIX = "custom-embedding-";
 // A third-party capability catalog or a static registry is NOT listing support.
 // Newly implemented declarative directories live in OFFICIAL_MODEL_CATALOG.
 export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
+  "workbuddy",
+  "workbuddy-ai",
   "claude",
   "gemini",
   "codex",

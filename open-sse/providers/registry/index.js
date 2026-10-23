@@ -17,6 +17,12 @@ import p14 from "./claude.js";
 import p15 from "./cline.js";
 import p16 from "./clinepass.js";
 import p17 from "./cloudflare-ai.js";
+// CodeBuddy CN/international are replaced as *selectable channels* by workbuddy /
+// workbuddy-ai (see registry/workbuddy*.js and migration 027). They stay
+// registered but hidden: accounts migrated by 027 that keep their original
+// credentials must still execute and refresh through the exact CodeBuddy
+// implementation they used before, without a re-login. Their old aliases
+// (cbcn/cbai) now belong to the new entries, so they carry none.
 import p18 from "./codebuddy-cn.js";
 import p19 from "./codex.js";
 import p20 from "./cohere.js";
@@ -127,8 +133,12 @@ import p123 from "./qianwen.js";
 
 import p124 from "./jevapi.js";
 
+import p125 from "./workbuddy-ai.js";
+import p126 from "./workbuddy.js";
+
 export default [
   p0,
+  p18,
   p1,
   p2,
   p3,
@@ -146,7 +156,6 @@ export default [
   p15,
   p16,
   p17,
-  p18,
   p19,
   p20,
   p21,
@@ -227,7 +236,6 @@ export default [
   p97,
   p98,
   p99,
-  p100,
   // p102, // trae — hidden, no tool calling
   p103,
   p105,
@@ -251,4 +259,7 @@ export default [
   p122,
   p123,
   p124,
+  p125,
+  p126,
+  p100,
 ];

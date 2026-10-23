@@ -8,6 +8,7 @@ const boundaries = vi.hoisted(() => {
     load: forbidden("loadConnection"), get: forbidden("getState"),
     update: forbidden("updateState"), connection: forbidden("updateConnection"),
     fetch: forbidden("proxyAwareFetch"), refresh: forbidden("refreshCodebuddyToken"),
+    refreshWorkBuddy: forbidden("refreshWorkBuddyToken"),
   };
 });
 vi.mock("@/lib/db/repos/connectionsRepo.js", () => ({
@@ -19,6 +20,7 @@ vi.mock("@/lib/db/repos/checkinRepo.js", () => ({
 }));
 vi.mock("open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: boundaries.fetch }));
 vi.mock("open-sse/services/tokenRefresh.js", () => ({ refreshCodebuddyToken: boundaries.refresh }));
+vi.mock("open-sse/services/tokenRefresh/workbuddy.js", () => ({ refreshWorkBuddyToken: boundaries.refreshWorkBuddy }));
 vi.mock("open-sse/services/oauthCredentialManager.js", () => ({
   getCredentialExpiryMs: (connection) => connection.expiresAt ? Date.parse(connection.expiresAt) : null,
 }));
@@ -27,6 +29,8 @@ import { createCodeBuddyCheckinService, publicCheckinState } from "@/lib/service
 import { CODEBUDDY_CHECKIN as config, codeBuddyCheckinDate } from "@/shared/config/codebuddyCheckin.js";
 
 const ID = "cn-oauth-1";
+const CN = "codebuddy-cn";
+const WB = "workbuddy";
 const BASE_TIME = Date.parse("2026-10-22T04:00:00Z");
 const jsonResponse = (code = 0, data = {}, status = 200) => ({
   status, ok: status >= 200 && status < 300, json: vi.fn().mockResolvedValue({ code, data }),
@@ -41,7 +45,7 @@ const deferred = () => {
 function fixture({ connection = {}, state = {}, time = BASE_TIME } = {}) {
   let clock = time;
   let storedConnection = {
-    id: ID, provider: "codebuddy-cn", authType: "oauth", isActive: true,
+    id: ID, provider: CN, authType: "oauth", isActive: true,
     accessToken: "access-secret", refreshToken: "refresh-secret",
     providerSpecificData: { codebuddyUid: "uid-123" }, ...connection,
   };
@@ -102,14 +106,29 @@ describe("CodeBuddy check-in eligibility and opt-in", () => {
 
   it.each([
     { provider: "codebuddy", authType: "oauth" },
+    { provider: "codebuddy-intl", authType: "oauth" },
+    { provider: "workbuddy-ai", authType: "oauth" },
     { provider: "codebuddy-cn", authType: "apikey" },
+    { provider: "workbuddy", authType: "apikey" },
+    { provider: "workbuddy", authType: undefined },
     { provider: "other", authType: "oauth" },
     { provider: "codebuddy-cn", authType: undefined },
-  ])("limits check-in to CN OAuth: %j", async (connection) => {
+  ])("limits check-in to the China OAuth providers: %j", async (connection) => {
     const f = fixture({ connection });
     expect(await f.service.run(ID)).toMatchObject({ ok: false, httpStatus: 400, message: expect.stringContaining("国内版 OAuth") });
     expect(f.updateState).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([CN, WB])("accepts the China provider %s with OAuth and a UID", async (provider) => {
+    const f = fixture({ connection: { provider } });
+    expect(await f.service.run(ID)).toMatchObject({ ok: true, status: "success", reward: 25 });
+    expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([
+      `${config.sites[provider].origin}${config.statusPath}`, `${config.sites[provider].origin}${config.claimPath}`,
+    ]);
+    for (const [, options] of f.fetch.mock.calls) {
+      expect(options.headers["X-Domain"]).toBe(config.sites[provider].domain);
+    }
   });
 
   it("rejects inactive accounts and exposes only public state", async () => {
@@ -309,7 +328,7 @@ describe("activity, claim and business response validation", () => {
     const f = fixture();
     expect(await f.service.run(ID)).toMatchObject({ ok: true, status: "success", reward: 25 });
     expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([
-      `${config.origin}${config.statusPath}`, `${config.origin}${config.claimPath}`,
+      `${config.sites[CN].origin}${config.statusPath}`, `${config.sites[CN].origin}${config.claimPath}`,
     ]);
     for (const [, options] of f.fetch.mock.calls) {
       expect(options).toMatchObject({ method: "POST", body: "{}", redirect: "error", signal: expect.any(AbortSignal), headers: {
@@ -430,7 +449,7 @@ describe("authentication, identity and proxy handling", () => {
     if (phase === "claim") f.fetch.mockResolvedValueOnce(activity());
     f.fetch.mockResolvedValueOnce(jsonResponse(401, {}, 401)).mockResolvedValueOnce(jsonResponse(0));
     expect(await f.service.run(ID)).toMatchObject({ ok: false, status: "own_app", message: expect.stringContaining("官方客户端") });
-    expect(f.fetch.mock.calls.at(-1)[0]).toBe(`${config.origin}${config.summaryPath}`);
+    expect(f.fetch.mock.calls.at(-1)[0]).toBe(`${config.sites[CN].origin}${config.summaryPath}`);
     expect(f.refresh).not.toHaveBeenCalled();
     expect(f.updateConnection).not.toHaveBeenCalled();
     expect(f.state()).toMatchObject({ terminalDate: "2026-10-22", retryAfter: 0 });
@@ -448,8 +467,8 @@ describe("authentication, identity and proxy handling", () => {
     expect(f.updateConnection).toHaveBeenCalledTimes(1);
     expect(f.connection()).toMatchObject({ accessToken: "new-access", refreshToken: "new-refresh", expiresIn: 3600, expiresAt: "2026-10-22T05:00:00.000Z" });
     expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([
-      `${config.origin}${config.statusPath}`, `${config.origin}${config.summaryPath}`,
-      `${config.origin}${config.statusPath}`, `${config.origin}${config.claimPath}`,
+      `${config.sites[CN].origin}${config.statusPath}`, `${config.sites[CN].origin}${config.summaryPath}`,
+      `${config.sites[CN].origin}${config.statusPath}`, `${config.sites[CN].origin}${config.claimPath}`,
     ]);
     expect(f.fetch.mock.calls.slice(2).every(([, options]) => options.headers.Authorization === "Bearer new-access")).toBe(true);
   });
@@ -499,9 +518,49 @@ describe("authentication, identity and proxy handling", () => {
     f.refresh.mockResolvedValue({ accessToken: "new-access" });
     await f.service.run(ID);
     const proxy = { source: "connection", connectionProxyEnabled: true, connectionProxyUrl: "http://proxy.invalid:8888", connectionNoProxy: "localhost", strictProxy: false };
-    expect(f.refresh).toHaveBeenCalledWith("refresh-secret", null, proxy);
+    expect(f.refresh).toHaveBeenCalledWith(expect.objectContaining({ provider: CN, refreshToken: "refresh-secret" }), proxy);
     for (const [, , actualProxy] of f.fetch.mock.calls) expect(actualProxy).toEqual(proxy);
     expect(f.connection().refreshToken).toBe("refresh-secret");
+  });
+
+  it("defaults to the WorkBuddy refresh contract for the workbuddy provider only", async () => {
+    boundaries.refreshWorkBuddy.mockResolvedValue({
+      accessToken: "wb-access", refreshToken: "wb-refresh", expiresIn: 3600,
+      providerSpecificData: { workbuddyOrigin: "https://copilot.tencent.com", domain: "copilot.tencent.com" },
+    });
+    // No injected refresh: the module-level dispatcher must pick the provider.
+    let stored = {
+      id: ID, provider: WB, authType: "oauth", isActive: true,
+      accessToken: "old", refreshToken: "wb-refresh-old", expiresAt: new Date(BASE_TIME - 1).toISOString(),
+      providerSpecificData: { codebuddyUid: "uid-123", workbuddyOrigin: "https://copilot.tencent.com" },
+    };
+    const saves = [];
+    let checkinState = { enabled: false };
+    const service = createCodeBuddyCheckinService({
+      loadConnection: async () => structuredClone(stored),
+      getState: async () => structuredClone(checkinState),
+      updateState: async (_id, updater) => {
+        const patch = updater(structuredClone(checkinState));
+        if (patch) checkinState = { ...checkinState, ...patch };
+        return structuredClone(checkinState);
+      },
+      updateConnection: async (_id, updater) => {
+        const { update } = updater(structuredClone(stored));
+        if (update) { saves.push(update); stored = { ...stored, ...update }; }
+        return structuredClone(stored);
+      },
+      fetch: vi.fn(async (url) => url.endsWith(config.statusPath)
+        ? activity() : jsonResponse(0, { credit: 5 })),
+      now: () => BASE_TIME,
+    });
+    expect((await service.run(ID)).status).toBe("success");
+    expect(boundaries.refreshWorkBuddy).toHaveBeenCalledExactlyOnceWith(WB, expect.objectContaining({ refreshToken: "wb-refresh-old" }), null, expect.anything());
+    expect(boundaries.refresh).not.toHaveBeenCalled();
+    expect(saves[0]).toMatchObject({
+      accessToken: "wb-access",
+      providerSpecificData: expect.objectContaining({ domain: "copilot.tencent.com", codebuddyUid: "uid-123" }),
+    });
+    boundaries.refreshWorkBuddy.mockReset();
   });
 
   it("proactively refreshes near-expiry credentials before contacting the activity endpoint", async () => {
@@ -532,7 +591,7 @@ describe("authentication, identity and proxy handling", () => {
 
   it("explains a missing UID without guessing JWT claims or contacting upstream", async () => {
     const f = fixture({ connection: { providerSpecificData: {}, accessToken: "eyJhbGciOiJub25lIn0.eyJ1aWQiOiJmYWtlIn0." } });
-    expect(await f.service.run(ID)).toMatchObject({ ok: false, status: "error", message: "无法获取账号 UID，请重新授权 CodeBuddy 账号" });
+    expect(await f.service.run(ID)).toMatchObject({ ok: false, status: "error", message: "无法获取账号 UID，请重新授权 WorkBuddy 账号" });
     expect(f.fetch).not.toHaveBeenCalled();
     expect(f.refresh).not.toHaveBeenCalled();
     expect(f.state().lastSuccessDate).toBeUndefined();

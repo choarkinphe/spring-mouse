@@ -57,7 +57,9 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
 // Verification rejection: suppress only the affected account, then allow retry.
 export const CODEBUDDY_VERIFICATION = Object.freeze({
-  provider: "codebuddy-intl",
+  // Set of provider ids: the international product was renamed workbuddy-ai, but
+  // installs that have not run migration 027 still carry codebuddy-intl rows.
+  providers: Object.freeze(new Set(["codebuddy-intl", "workbuddy-ai"])),
   code: 11128,
   cooldownMs: 5 * 60 * 1000,
 });

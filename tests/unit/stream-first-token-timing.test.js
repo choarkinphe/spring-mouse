@@ -32,6 +32,9 @@ describe("stream first token timing", () => {
     ["openai", ': ping\n\ndata: {"choices":[{"delta":{"role":"assistant"}}]}\n\n', 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"Write","arguments":"{"}}]}}]}\n\n', 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'],
     ["claude", 'data: {"type":"message_start"}\n\n', 'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{"}}\n\n', 'data: {"type":"message_stop"}\n\n'],
     ["gemini", ': heartbeat\n\n', 'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n', 'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'],
+    ["openai-responses", 'data: {"type":"response.created"}\n\n', 'data: {"type":"response.function_call_arguments.done","arguments":"{}"}\n\n', 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'],
+    ["openai-responses", 'data: {"type":"response.created"}\n\n', 'data: {"type":"response.custom_tool_call_input.done","input":"pwd"}\n\n', 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'],
+    ["openai-responses", 'data: {"type":"response.created"}\n\n', 'data: {"type":"response.output_item.done","item":{"type":"function_call","arguments":"{}"}}\n\n', 'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'],
   ])("ignores %s framing and stamps actual model output", async (format, preamble, content, terminal) => {
     const { completed, onTerminal } = await measure({ format, preamble, content, terminal });
     expect(completed.mock.calls[0][2]).toBe(4500);

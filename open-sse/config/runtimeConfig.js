@@ -115,6 +115,12 @@ export const CODEX_SSE_OUTPUT_DELTA_TYPES = Object.freeze([
   "response.reasoning_text.delta",
 ]);
 
+export const CODEX_SSE_TOOL_OUTPUT_DONE_TYPES = Object.freeze({
+  FUNCTION_ARGUMENTS: "response.function_call_arguments.done",
+  CUSTOM_INPUT: "response.custom_tool_call_input.done",
+  ITEM: "response.output_item.done",
+});
+
 // Observation-only Codex SSE diagnostics. Bounds do not affect scan/retry policy.
 export const CODEX_SCAN_DIAGNOSTICS = Object.freeze({
   progressMs: 30_000,

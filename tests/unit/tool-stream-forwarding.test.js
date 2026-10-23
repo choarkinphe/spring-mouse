@@ -3,6 +3,7 @@ import "../translator/registerAll.js";
 import { createSSEStream } from "../../open-sse/utils/stream.js";
 import { createStreamController, pipeWithDisconnect } from "../../open-sse/utils/streamHandler.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
+import { CodexExecutor } from "../../open-sse/executors/codex.js";
 
 vi.mock("@/lib/usageDb.js", () => ({
   trackPendingRequest: vi.fn(), updatePendingRequestTokens: vi.fn(),
@@ -14,6 +15,45 @@ const chat = (tool, finish_reason = null) => ({ choices: [{ delta: tool ? { tool
 const parsedEvents = text => text.split("\n").filter(l => l.startsWith("data: {")).map(l => JSON.parse(l.slice(6)));
 
 afterEach(() => vi.useRealTimers());
+
+describe("Codex done-only tool output through the SSE bridge", () => {
+  it.each([FORMATS.OPENAI, FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES])("delivers arguments to %s before the turn finishes without duplication", async sourceFormat => {
+    vi.useFakeTimers();
+    const input = new TransformStream();
+    const writer = input.writable.getWriter();
+    const pending = new CodexExecutor()._peekSseTransientError(new Response(input.readable));
+    const item = { type: "function_call", id: "item_1", call_id: "call_1", name: "Write", arguments: "" };
+    await writer.write(frame({ type: "response.output_item.added", output_index: 0, item }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    const args = '{"file_path":"a.js","content":"hello"}';
+    await writer.write(frame({ type: "response.function_call_arguments.done", item_id: item.id, output_index: 0, arguments: args }));
+    await vi.advanceTimersByTimeAsync(2_001);
+    const peek = await pending;
+    const transform = createSSEStream({ targetFormat: FORMATS.OPENAI_RESPONSES, sourceFormat, provider: "codex", completedContentMaxChars: 0 });
+    let text = "";
+    const drain = (async () => {
+      const reader = peek.replacementBody.pipeThrough(transform).getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(0);
+    const deltas = value => parsedEvents(value).flatMap(event => sourceFormat === FORMATS.CLAUDE
+      ? [event.delta?.partial_json || ""]
+      : sourceFormat === FORMATS.OPENAI
+        ? (event.choices?.[0]?.delta?.tool_calls || []).map(tool => tool.function?.arguments || "")
+        : [event.type === "response.function_call_arguments.done" ? event.arguments : ""]);
+    expect(deltas(text).join("")).toBe(args);
+    await writer.write(frame({ type: "response.output_item.done", output_index: 0, item: { ...item, arguments: args } }));
+    await writer.write(frame({ type: "response.completed", response: { status: "completed" } }));
+    await writer.close(); await drain;
+    expect(deltas(text).join("")).toBe(args);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe("large tool calls remain streaming through the real Claude bridge", () => {
   it.each([FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES])("forwards %s arguments before finish and survives 270 seconds of healthy generation", async targetFormat => {

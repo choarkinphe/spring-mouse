@@ -1195,6 +1195,44 @@ exports[`GOLDEN buildHeaders (default executor providers) > poolside → headers
 }
 `;
 
+exports[`GOLDEN buildHeaders (default executor providers) > qianwen → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
+exports[`GOLDEN buildHeaders (default executor providers) > qianwen-token-plan → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
 exports[`GOLDEN buildHeaders (default executor providers) > sambanova → headers (apiKey / oauth) 1`] = `
 {
   "apiKey": {
@@ -1329,6 +1367,44 @@ exports[`GOLDEN buildHeaders (default executor providers) > vercel-ai-gateway �
 `;
 
 exports[`GOLDEN buildHeaders (default executor providers) > volcengine-ark → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
+exports[`GOLDEN buildHeaders (default executor providers) > workbuddy → headers (apiKey / oauth) 1`] = `
+{
+  "apiKey": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "nonStream": {
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+  "oauth": {
+    "Accept": "text/event-stream",
+    "Authorization": "Bearer <TOK>",
+    "Content-Type": "application/json",
+  },
+}
+`;
+
+exports[`GOLDEN buildHeaders (default executor providers) > workbuddy-ai → headers (apiKey / oauth) 1`] = `
 {
   "apiKey": {
     "Accept": "text/event-stream",
@@ -1771,6 +1847,20 @@ exports[`GOLDEN buildUrl (default executor providers) > poolside → url (stream
 }
 `;
 
+exports[`GOLDEN buildUrl (default executor providers) > qianwen → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://maas.qianwenaiapi.com/compatible-mode/v1/chat/completions",
+  "stream": "https://maas.qianwenaiapi.com/compatible-mode/v1/chat/completions",
+}
+`;
+
+exports[`GOLDEN buildUrl (default executor providers) > qianwen-token-plan → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1/chat/completions",
+  "stream": "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1/chat/completions",
+}
+`;
+
 exports[`GOLDEN buildUrl (default executor providers) > sambanova → url (stream + non-stream) 1`] = `
 {
   "nonStream": "https://api.sambanova.ai/v1/chat/completions",
@@ -1824,6 +1914,20 @@ exports[`GOLDEN buildUrl (default executor providers) > volcengine-ark → url (
 {
   "nonStream": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
   "stream": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+}
+`;
+
+exports[`GOLDEN buildUrl (default executor providers) > workbuddy → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://copilot.tencent.com/v2/chat/completions",
+  "stream": "https://copilot.tencent.com/v2/chat/completions",
+}
+`;
+
+exports[`GOLDEN buildUrl (default executor providers) > workbuddy-ai → url (stream + non-stream) 1`] = `
+{
+  "nonStream": "https://www.workbuddy.ai/v2/chat/completions",
+  "stream": "https://www.workbuddy.ai/v2/chat/completions",
 }
 `;
 

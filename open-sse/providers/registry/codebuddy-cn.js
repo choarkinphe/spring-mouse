@@ -1,10 +1,13 @@
 export default {
   id: "codebuddy-cn",
-  // Short model prefix (cbcn/glm-5.2). "cbcn" = CodeBuddy CN; reserve "cbai"
-  // for a future codebuddy-ai (intl) provider. The full id still resolves.
-  alias: "cbcn",
-  uiAlias: "cbcn",
-  hidden: false,
+  // Legacy compatibility entry. Replaced as a channel by workbuddy (which took
+  // over the `cbcn` alias); hidden so it never appears in the add-channel picker,
+  // but accounts migrated with their original CodeBuddy credentials still execute
+  // and refresh through this implementation.
+  hidden: true,
+  // Keep the old alias resolvable for any stored row/overlay that still says
+  // codebuddy-cn. The new workbuddy entry owns `cbcn`, so it is not repeated here.
+  aliases: ["codebuddy"],
   priority: 90,
   display: {
     name: "CodeBuddy CN",

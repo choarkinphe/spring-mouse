@@ -32,6 +32,28 @@ describe("CodeBuddy checkin management route", () => {
     expect((await PATCH(req({ enabled: true }), context())).status).toBe(400);
     expect(setCodeBuddyCheckinEnabled).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["codebuddy-cn", "oauth"], ["workbuddy", "oauth"],
+  ])("accepts the China provider %s (%s) for state and switch changes", async (provider, authType) => {
+    getProviderConnectionById.mockResolvedValue({ provider, authType });
+    expect((await GET(null, context())).status).toBe(200);
+    setCodeBuddyCheckinEnabled.mockResolvedValue({ enabled: true });
+    expect((await PATCH(req({ enabled: true }), context())).status).toBe(200);
+    expect(setCodeBuddyCheckinEnabled).toHaveBeenCalledWith("account", true);
+  });
+
+  it.each([
+    ["workbuddy-ai", "oauth"], ["codebuddy-intl", "oauth"],
+    ["workbuddy", "apikey"], ["codebuddy-cn", "apikey"], ["workbuddy", "cookie"],
+  ])("rejects %s (%s) without touching state", async (provider, authType) => {
+    getProviderConnectionById.mockResolvedValue({ provider, authType });
+    for (const response of [await GET(null, context()), await PATCH(req({ enabled: true }), context())]) {
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("WorkBuddy 国内版 OAuth");
+    }
+    expect(setCodeBuddyCheckinEnabled).not.toHaveBeenCalled();
+  });
   it.each([{}, { enabled: "true" }, { enabled: 1 }, null])("rejects invalid switches %j", async (body) => {
     expect((await PATCH(req(body), context())).status).toBe(400);
     expect(setCodeBuddyCheckinEnabled).not.toHaveBeenCalled();

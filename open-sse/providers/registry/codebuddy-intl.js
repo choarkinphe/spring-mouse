@@ -3,9 +3,9 @@
 // use the /v2/plugin prefix with platform=ide (CN uses platform=CLI).
 export default {
   id: "codebuddy-intl",
-  alias: "cbai",
-  uiAlias: "cbai",
-  hidden: false,
+  // Legacy compatibility entry (see codebuddy-cn.js): hidden from the picker, but
+  // migrated accounts that kept their CodeBuddy credentials still run through it.
+  hidden: true,
   priority: 90,
   display: {
     name: "CodeBuddy",

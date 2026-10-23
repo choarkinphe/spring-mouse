@@ -11,6 +11,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { QIANWEN_ENDPOINTS } from "open-sse/config/qianwen.js";
 import { JEVAPI_CONFIG, parseJevapiModels } from "open-sse/config/jevapi.js";
+import { discoverWorkBuddyModels } from "open-sse/services/workbuddyModels.js";
 import { OFFICIAL_MODEL_CATALOG } from "@/shared/config/officialModelCatalog";
 import { officialDiscovery, parseOfficialModelPayload, validateOfficialModels } from "@/shared/utils/officialModelDiscovery";
 import { parseOfficialCatalogModels, parseFalModelPage } from "@/shared/utils/officialModelCatalogShapes";
@@ -109,6 +110,8 @@ const buildOAuthResolver = ({ refreshFn, fetchFn, parseFn, errorLabel }) => asyn
 
 // Provider models endpoints configuration
 const PROVIDER_MODELS_CONFIG = {
+  workbuddy: { customResolver: async connection => discoverWorkBuddyModels(connection, await resolveConnectionProxyConfig(connection.providerSpecificData)) },
+  "workbuddy-ai": { customResolver: async connection => discoverWorkBuddyModels(connection, await resolveConnectionProxyConfig(connection.providerSpecificData)) },
   claude: {
     url: "https://api.anthropic.com/v1/models",
     method: "GET",

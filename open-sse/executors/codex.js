@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BaseExecutor } from "./base.js";
 import { createCodexScanDiagnostics } from "../utils/codexScanDiagnostics.js";
+import { completedCodexToolText } from "../utils/codexToolOutput.js";
 import { SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.js";
 import { PROVIDERS } from "../config/providers.js";
@@ -17,6 +18,7 @@ import {
   FETCH_CONNECT_TIMEOUT_MS,
   CODEX_SCAN_DIAGNOSTICS,
   CODEX_SSE_OUTPUT_DELTA_TYPES,
+  CODEX_SSE_TOOL_OUTPUT_DONE_TYPES,
   resolveOverloadDelayMs,
   resolveOverloadRetryConfig,
   reserveFirstOutputDeadline,
@@ -55,6 +57,7 @@ const CODEX_SSE_USER_OUTPUT_PATTERNS = [
   ...CODEX_SSE_OUTPUT_DELTA_TYPES.map(type => `event: ${type}`),
   ...CODEX_SSE_OUTPUT_DELTA_TYPES.map(type => `"type":"${type}"`),
 ];
+const CODEX_SSE_TOOL_DONE_PATTERNS = Object.values(CODEX_SSE_TOOL_OUTPUT_DONE_TYPES);
 // Frames that only announce the turn and echo the request back — Codex's
 // `response.created` replays the whole `tools` schema, so a single such frame can
 // exceed 170KB. On production an overload arrived at byte 354251 behind two such
@@ -381,14 +384,16 @@ function fmtDuration(ms) {
   return `${Number.isInteger(s) ? s : s.toFixed(1)}s`;
 }
 
-// Count the visible output text in an SSE buffer, from `from` onward. Only complete
+// Count delta/done output in an SSE buffer, from `from` onward. Only complete
 // lines are consumed so a half-received frame is not miscounted; the index of the
 // first incomplete line is returned as the new cursor. Used by the content-aware
 // post-output scan to tell "a healthy turn is streaming" (stop scanning) from "a
 // couple of deltas then a rejection" (keep scanning).
 function countOutputText(text, from = 0) {
   let count = 0;
+  let completedToolChars = 0;
   let cursor = from;
+  let firstToolOutputType = null;
   while (true) {
     const nl = text.indexOf("\n", cursor);
     if (nl === -1) break;
@@ -396,16 +401,22 @@ function countOutputText(text, from = 0) {
     cursor = nl + 1;
     if (!line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]" || !payload.includes('"delta"')) continue;
+    if (!payload || payload === "[DONE]"
+      || (!payload.includes('"delta"') && !CODEX_SSE_TOOL_DONE_PATTERNS.some(type => payload.includes(type)))) continue;
     try {
       const parsed = JSON.parse(payload);
       const delta = parsed?.delta;
       if (typeof delta === "string") count += delta.length;
+      const toolText = completedCodexToolText(parsed);
+      if (toolText) {
+        firstToolOutputType ||= parsed.type;
+        completedToolChars = Math.max(completedToolChars, toolText.length);
+      }
     } catch {
-      // Not a JSON delta — ignore.
+      // Incomplete or malformed output payload — ignore.
     }
   }
-  return { count, cursor };
+  return { count, cursor, firstToolOutputType, completedToolChars };
 }
 
 // Pull the human-readable message out of an SSE error payload. Only error frames are
@@ -1009,12 +1020,18 @@ export class CodexExecutor extends BaseExecutor {
           if (genericFailure) { matched = genericFailure.code || "sse_error"; break; }
         }
         const lowerText = text.toLowerCase();
+        const counted = countOutputText(text, countedUpTo);
+        // Done snapshots may repeat arguments already observed in deltas/items.
+        outputChars = Math.max(outputChars + counted.count, counted.completedToolChars);
+        countedUpTo = counted.cursor;
         const outputPattern = !outputStarted && CODEX_SSE_USER_OUTPUT_PATTERNS.find(p => lowerText.includes(p));
+        const outputType = !outputStarted && (counted.firstToolOutputType
+          || (outputPattern && (outputPattern.startsWith("event: ") ? outputPattern.slice(7) : outputPattern.slice(8, -1))));
         // A complete answer can arrive in one transport chunk. Record its first
         // output before returning on the terminal frame, without delaying release.
-        if (outputPattern) {
+        if (outputType) {
           outputStarted = true;
-          firstOutputType = outputPattern.startsWith("event: ") ? outputPattern.slice(7) : outputPattern.slice(8, -1);
+          firstOutputType = outputType;
           diagnostics.outputDetected();
         }
         if (CODEX_SSE_TERMINAL_PATTERNS.some(p => lowerText.includes(p))) { releaseReason = "terminal"; break; }
@@ -1024,15 +1041,12 @@ export class CodexExecutor extends BaseExecutor {
         // the scan alive long enough to catch the frame. The char count is updated
         // incrementally from the last complete line to keep this O(new bytes).
         if (graceDeadline > 0) {
-          const counted = countOutputText(text, countedUpTo);
-          outputChars += counted.count;
-          countedUpTo = counted.cursor;
           if (Date.now() >= graceDeadline
             || outputChars >= CODEX_SSE_OUTPUT_GRACE_CHARS
             || text.length - graceBytesAt >= CODEX_SSE_OUTPUT_GRACE_BYTES) break;
           continue;
         }
-        if (outputPattern) {
+        if (outputType) {
           // Output has started. Do not stop here: keep scanning so a same-turn
           // capacity/overload rejection still triggers fallback. The scan ends on the
           // first of: a terminal frame, enough output to prove the turn is healthy,
@@ -1042,9 +1056,6 @@ export class CodexExecutor extends BaseExecutor {
           if (!graceEnabled) break;
           graceDeadline = Date.now() + CODEX_SSE_OUTPUT_GRACE_MS;
           graceBytesAt = text.length;
-          const counted = countOutputText(text, countedUpTo);
-          outputChars += counted.count;
-          countedUpTo = counted.cursor;
           // The first output chunk can already satisfy the release threshold.
           // Do not wait for another read (or the grace timer) to notice it.
           if (outputChars >= CODEX_SSE_OUTPUT_GRACE_CHARS) break;

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Button from "@/shared/components/Button";
 import Toggle from "@/shared/components/Toggle";
+import { supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
 import { useNotificationStore } from "@/store/notificationStore";
 
 const STATUS_LABELS = {
@@ -193,7 +194,8 @@ function CheckinControls({ connection, onRefreshQuota }) {
 }
 
 export default function CodeBuddyCheckin({ connection, onRefreshQuota }) {
-  if (connection?.provider !== "codebuddy-cn" || connection?.authType !== "oauth") return null;
+  // Shared rule keeps both China ids visible and the international sites hidden.
+  if (!supportsCodeBuddyCheckin(connection)) return null;
   if (!connection.id) return null;
 
   // Remount on a refreshed connection: abort old work and never show/save another

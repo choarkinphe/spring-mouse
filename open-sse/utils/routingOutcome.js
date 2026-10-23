@@ -35,6 +35,7 @@
 // completion — the caller (chat.js) owns parent lifecycle.
 
 import { FORMATS } from "../translator/formats.js";
+import { completedCodexToolText } from "./codexToolOutput.js";
 import { canonicalizeUsage } from "./usageTracking.js";
 
 // Outcomes mirror the fixed enum the routing telemetry consumer accepts; an
@@ -354,7 +355,7 @@ export function hasContentForFormat(targetFormat, chunk) {
     case FORMATS.OPENAI_RESPONSES:
     case FORMATS.OPENAI_RESPONSE: {
       const type = chunk.type;
-      return typeof type === "string" && type.endsWith(".delta");
+      return (typeof type === "string" && type.endsWith(".delta")) || Boolean(completedCodexToolText(chunk));
     }
     case FORMATS.CLAUDE: {
       if (chunk.type !== "content_block_delta") return false;

@@ -1,8 +1,9 @@
 /**
- * CodeBuddy CN usage handler
+ * CodeBuddy / WorkBuddy quota handler
  *
- * Scoped to the "codebuddy-cn" provider specifically — a future "codebuddy-intl"
- * variant would get its own handler/endpoint, so keep this CN-only.
+ * The Tencent billing endpoint is shared by CodeBuddy CN and WorkBuddy, so both
+ * products are parsed here; the host follows the origin the credential was
+ * issued by (`getCodeBuddyUsageFor`), never a caller-supplied one.
  *
  * Quota lives behind a Tencent billing endpoint (POST, payload wrapped twice
  * under data.Response.Data). It mixes two credit types that must NOT be merged:
@@ -22,6 +23,7 @@
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { U, parseResetTime } from "./shared.js";
+import { WORKBUDDY_SITES } from "../../config/workbuddy.js";
 
 const PROVIDER_ID = "codebuddy-cn";
 
@@ -41,6 +43,35 @@ function refillCadence(acc) {
     if (days <= 10) return "Weekly";
   }
   return "Monthly";
+}
+
+// WorkBuddy ids introduced by migration 027 reuse this billing payload, but the
+// host must follow the origin the credential was actually issued by.
+export async function getCodeBuddyUsageFor(providerId, { accessToken, apiKey, providerSpecificData = {}, proxyOptions = null } = {}) {
+  const legacy = providerSpecificData.workbuddyLegacyCredential === true;
+  const origin = legacy ? providerSpecificData.workbuddyEndpointOrigin : WORKBUDDY_SITES[providerId]?.origin;
+  const site = WORKBUDDY_SITES[providerId];
+  if (!origin || !site) return { message: `WorkBuddy (${providerId}) has no trusted usage origin.` };
+  return getCodeBuddyUsageFrom(providerId, `${origin}${new URL(site.usageUrl).pathname}`, accessToken, apiKey, proxyOptions);
+}
+
+async function getCodeBuddyUsageFrom(providerId, url, accessToken, apiKey, proxyOptions = null) {
+  const token = accessToken || apiKey;
+  if (!token) return { message: `CodeBuddy (${providerId}) credential not available.` };
+  try {
+    const response = await proxyAwareFetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: "{}",
+    }, proxyOptions);
+    if (response.status === 401 || response.status === 403) return { message: "WorkBuddy credential invalid or expired." };
+    if (!response.ok) return { message: `WorkBuddy quota API error (${response.status}).` };
+    const json = await response.json();
+    if (json?.code !== 0) return { message: `WorkBuddy quota error: ${json?.msg || "unknown"}` };
+    return parseCodeBuddyAccounts(json?.data?.Response?.Data, providerId);
+  } catch (error) {
+    return { message: `CodeBuddy (${providerId}) error: ${error.message}` };
+  }
 }
 
 async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecificData, proxyOptions = null) {
@@ -73,12 +104,19 @@ async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecif
       return { message: `CodeBuddy CN quota error: ${json?.msg || "unknown"}` };
     }
 
-    const data = json?.data?.Response?.Data || {};
-    const accounts = Array.isArray(data.Accounts) ? data.Accounts : [];
-    if (accounts.length === 0) {
-      return { message: "CodeBuddy CN connected. No credit package found." };
-    }
+    return parseCodeBuddyAccounts(json?.data?.Response?.Data, providerId);
+  } catch (error) {
+    return { message: `CodeBuddy (${providerId}) error: ${error.message}` };
+  }
+}
 
+// Shared quota shaping for every product that speaks the Tencent billing payload.
+function parseCodeBuddyAccounts(data, providerId) {
+  const accounts = Array.isArray(data?.Accounts) ? data.Accounts : [];
+  if (accounts.length === 0) {
+    return { message: `CodeBuddy (${providerId}) connected. No credit package found.` };
+  }
+  {
     const cycleEndMs = (acc) => {
       const r = parseResetTime(acc.CycleEndTime);
       return r ? new Date(r).getTime() : Number.POSITIVE_INFINITY;
@@ -132,8 +170,6 @@ async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecif
     const plan = basePkg.PackageName || basePkg.SubProductName || "CodeBuddy";
 
     return { plan, quotas };
-  } catch (error) {
-    return { message: `CodeBuddy (${providerId}) error: ${error.message}` };
   }
 }
 

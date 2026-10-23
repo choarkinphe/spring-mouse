@@ -137,7 +137,7 @@ describe("Codex custom tool first output", () => {
     const diag = createCodexScanDiagnostics(0);
     const text = frame(type, { delta: "private arguments" }) + frame(doneType, { input: "private done input" });
     for (let i = 0; i < text.length; i += 7) diag.observe(text.slice(i, i + 7), 7, 100);
-    expect(diag.snapshot(200)).toMatchObject({ frames: 2, firstCandidateType: type, candidateFrames: 1, recognizedEventSeen: true, eventCounts: { [type]: 1, [doneType]: 1 }, eventHeaderCounts: { [type]: 1, [doneType]: 1 } });
+    expect(diag.snapshot(200)).toMatchObject({ frames: 2, firstCandidateType: type, candidateFrames: 2, recognizedEventSeen: true, eventCounts: { [type]: 1, [doneType]: 1 }, eventHeaderCounts: { [type]: 1, [doneType]: 1 } });
     expect(JSON.stringify(diag.snapshot(200))).not.toMatch(/private|arguments/);
   });
 });

@@ -4,7 +4,7 @@ const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => fetchMock(...args) }));
 vi.mock("../../src/lib/mouse/tunnel.js", () => ({ dispatchMouseTask: vi.fn() }));
 
-import { WorkBuddyExecutor } from "../../open-sse/executors/workbuddy.js";
+import { WorkBuddyExecutor, forgetRefusedWorkBuddySystems } from "../../open-sse/executors/workbuddy.js";
 import { CodeBuddyBaseExecutor } from "../../open-sse/executors/codebuddy-base.js";
 import { WORKBUDDY_SITES, getWorkBuddySite, buildWorkBuddyHeaders } from "../../open-sse/config/workbuddy.js";
 
@@ -20,7 +20,7 @@ function credentials(provider, metadata = {}) {
 }
 const providers = Object.keys(WORKBUDDY_SITES);
 const frame = delta => `data: ${JSON.stringify({ choices: [{ delta, finish_reason: null }] })}\n\n`;
-afterEach(() => { fetchMock.mockReset(); vi.useRealTimers(); });
+afterEach(() => { fetchMock.mockReset(); vi.useRealTimers(); forgetRefusedWorkBuddySystems(); });
 
 describe("trusted WorkBuddy sites and headers", () => {
   it("has separate domestic/international origins and platforms", () => {
@@ -173,16 +173,83 @@ describe.each(providers)("%s normal request transport", provider => {
     }
   });
 
-  it("preserves raw 11128 status/body and never retries with a changed prompt", async () => {
+  it("rewords the lines WorkBuddy's channel check refuses, keeping the instruction", () => {
+    const flagged = "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+      + "# Environment\n - Main branch (you will usually use this for PRs): main\n - Primary working directory: /repo";
+    const out = transform({ messages: [
+      { role: "system", content: flagged },
+      { role: "assistant", content: "You are Claude Code, Anthropic's official CLI for Claude." },
+      { role: "user", content: "keep this question" },
+    ] });
+    const [system, assistant, user] = out.messages;
+    expect(system.content).toBe("You are Claude Code, Anthropic's CLI for Claude.\n\n"
+      + "# Environment\n - Main branch (usually the base for PRs): main\n - Primary working directory: /repo");
+    expect(assistant.content).toBe("You are Claude Code, Anthropic's CLI for Claude.");
+    expect(user.content).toEqual([{ type: "text", text: "keep this question" }]);
+    expect(flagged).toContain("official CLI for Claude");
+  });
+
+  it("leaves text the channel check accepts exactly as sent", () => {
+    const content = "x-anthropic-billing-header: cc_version=2.1.308";
+    const out = transform({ messages: [{ role: "system", content }, { role: "user", content: "hello" }] });
+    expect(out.messages[0]).toEqual({ role: "system", content });
+    expect(out.messages[1].content).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  it("moves a refused system prompt into the user's turn and returns the second answer", async () => {
+    const refusal = JSON.stringify({ code: 11128, msg: "Illegal API invocation from an unapproved channel" });
+    const ok = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: null }] })}\n\n`;
+    fetchMock.mockResolvedValueOnce(new Response(refusal, { status: 400, headers: { "content-type": "application/json" } }));
+    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
+    const body = { messages: [
+      { role: "system", content: "An unreworded agent prompt WorkBuddy refuses." },
+      { role: "user", content: "Original question" },
+    ] };
+    const result = await executor.execute({ model: "test-model", body, stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
+    expect(result.response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(retried.messages[0]).toEqual({ role: "system", content: "You are a helpful assistant." });
+    expect(retried.messages[1].content).toEqual([{ type: "text", text: "<instructions>\nAn unreworded agent prompt WorkBuddy refuses.\n</instructions>\n\nOriginal question" }]);
+    expect(body.messages[0].content).toBe("An unreworded agent prompt WorkBuddy refuses.");
+    expect(fetchMock.mock.calls[1][1].headers["X-Request-ID"]).not.toBe(fetchMock.mock.calls[0][1].headers["X-Request-ID"]);
+  });
+
+  it("passes a second refusal back unchanged and retries it only once", async () => {
     const raw = JSON.stringify({ code: 11128, msg: "request rejected", details: { reason: "upstream evidence" } });
-    fetchMock.mockResolvedValue(new Response(raw, { status: 400, headers: { "content-type": "application/json" } }));
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(raw, { status: 400, headers: { "content-type": "application/json" } })));
     const body = { messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: "Original question" }] };
     const result = await executor.execute({ model: "test-model", body, stream: false, credentials: credentials(provider) });
     expect(result.response.status).toBe(400);
     expect(await result.response.text()).toBe(raw);
     expect(executor.parseError({ status: 400 }, raw)).toEqual({ status: 400, message: raw });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a 400 that is not the channel-verification refusal", async () => {
+    const raw = JSON.stringify({ code: 11101, msg: "Non-stream chat request is currently not supported" });
+    fetchMock.mockResolvedValue(new Response(raw, { status: 400, headers: { "content-type": "application/json" } }));
+    const body = { messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: "Original question" }] };
+    const result = await executor.execute({ model: "test-model", body, stream: false, credentials: credentials(provider) });
+    expect(result.response.status).toBe(400);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ stream: true, messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: [{ type: "text", text: "Original question" }] }] });
+  });
+
+  it("sends a system prompt already refused as the user's instructions up front", async () => {
+    const refusal = JSON.stringify({ code: 11128, msg: "Illegal API invocation from an unapproved channel" });
+    const ok = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: null }] })}\n\n`;
+    const system = "An agent prompt WorkBuddy refuses once.";
+    const body = () => ({ messages: [{ role: "system", content: system }, { role: "user", content: "next question" }] });
+    fetchMock.mockResolvedValueOnce(new Response(refusal, { status: 400, headers: { "content-type": "application/json" } }));
+    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
+    await executor.execute({ model: "test-model", body: body(), stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
+    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
+    await executor.execute({ model: "test-model", body: body(), stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const later = JSON.parse(fetchMock.mock.calls[2][1].body);
+    expect(later.messages[0]).toEqual({ role: "system", content: "You are a helpful assistant." });
+    expect(later.messages[1].content[0].text).toContain("<instructions>\nAn agent prompt WorkBuddy refuses once.\n</instructions>");
   });
 
   it("reactively refreshes the selected provider through its bound refresh service", async () => {

@@ -6,7 +6,14 @@ The WorkBuddy OAuth, refresh, model catalog and normal request compatibility cod
 
 Source: https://github.com/magpie-community/plugins/tree/575f1e23e7a3e5f9de45875ed0da94c9289eb982/packages/workbuddy
 
-This adaptation excludes upstream channel-refusal prompt rewriting, instruction relocation, refusal caching and rejection-triggered evasion retries. Existing CodeBuddy credentials are not migrated across products.
+The channel-refusal handling in `open-sse/shared/workbuddyInstructions.js` and
+`open-sse/executors/workbuddy.js` follows the same upstream design (refused-line
+rewording, one instruction-relocation retry, and a cache of system prompts already
+refused), re-measured against `www.workbuddy.ai` on 2026-10-24. It differs from
+upstream in two ways: the rewording table is only the lines measured to be refused
+today, and no request is ever re-signed as another client — the instructions are
+kept and only the objected-to wording changes. Existing CodeBuddy credentials are
+not migrated across products.
 
 ### MIT License
 

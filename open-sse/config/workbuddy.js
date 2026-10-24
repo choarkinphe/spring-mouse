@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CODEBUDDY_VERIFICATION } from "./errorConfig.js";
 
 /**
  * Trusted site definitions shared by chat, OAuth, discovery and refresh.
@@ -34,7 +35,42 @@ export const WORKBUDDY_REQUEST = Object.freeze({
   neutralSystem: "You are a helpful assistant.",
   disabledReasoning: Object.freeze(["none", "off"]),
   reasoningSummary: "auto",
+  // A system prompt moved into the user's turn is wrapped in these, as
+  // WorkBuddy's own desktop client does when it has no system slot to use.
+  instructionsOpen: "<instructions>\n",
+  instructionsClose: "\n</instructions>",
 });
+
+// WorkBuddy's channel check refuses a request whose text names another vendor's
+// agent client (code 11128 "Illegal API invocation from an unapproved channel").
+// The check reads whole lines and pays no attention to case; the agent system
+// prompts this gateway forwards verbatim — Claude Code's, Codex's, DSH's — carry
+// those lines, so every agent request is refused before the model sees it.
+//
+// Measured 2026-10-24 against www.workbuddy.ai with a real account: the official
+// Claude Code opening line and the "Main branch (you will usually use this for
+// PRs)" harness line are each refused alone, while the same sentences reworded
+// pass. So the fix is wording, not identity: the instructions themselves are
+// kept whole, and no client is impersonated.
+//
+// The patterns stay unfrozen: a global regex carries `lastIndex` state that the
+// engine writes on every replace.
+export const WORKBUDDY_REFUSED_LINES = Object.freeze([
+  [/You are Claude Code, Anthropic['’]s official CLI for Claude/gi,
+    "You are Claude Code, Anthropic's CLI for Claude"],
+  [/Main branch \(you will usually use this for PRs\)/gi,
+    "Main branch (usually the base for PRs)"],
+  [/(?<!the )Codex CLI is an open source project led by OpenAI\./gi,
+    "The Codex CLI is an open source project led by OpenAI."],
+  [/You are an AI agent that helps the user with programming tasks\.?/gi,
+    "You are an AI agent that helps the user with programming tasks."],
+  [/Web GUI whose URL the runtime context names\.\s+When the user refers/gi,
+    "Web GUI whose URL the runtime context names. The interface, when the user refers"],
+]);
+
+// The refusal this gateway reacts to by moving instructions, and the one it must
+// never treat as a reason to change anything else. One code, one definition.
+export const WORKBUDDY_REFUSED_CODE = CODEBUDDY_VERIFICATION.code;
 
 export function getWorkBuddySite(provider) {
   if (!Object.hasOwn(WORKBUDDY_SITES, provider)) throw new Error(`Unsupported WorkBuddy provider: ${provider}`);

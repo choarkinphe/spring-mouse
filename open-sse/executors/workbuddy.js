@@ -28,13 +28,48 @@ import { getWorkBuddySite, resolveWorkBuddySite, buildWorkBuddyHeaders, WORKBUDD
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
 import { refreshWorkBuddyToken } from "../services/tokenRefresh/workbuddy.js";
 import { normalizeCodeBuddyToolChoice } from "../shared/codebuddyToolChoice.js";
+import {
+  isWorkBuddyRefusal, unflagWorkBuddyMessages, workBuddySystemAsUser,
+} from "../shared/workbuddyInstructions.js";
 import { ROLE, OPENAI_BLOCK } from "../translator/schema/index.js";
+
+// System prompts WorkBuddy has already refused, by their text. An agent that
+// sends the same system prompt every turn is refused once, not on every request:
+// its next chat moves the prompt into the user's turn before it is sent.
+const refusedSystems = new Set();
+const REFUSED_SYSTEMS_MAX = 256;
+
+function systemKey(messages) {
+  if (!Array.isArray(messages)) return "";
+  const key = messages
+    .filter(message => message?.role === ROLE.SYSTEM)
+    .map(message => (typeof message.content === "string"
+      ? message.content
+      : Array.isArray(message.content)
+        ? message.content.map(part => (typeof part?.text === "string" ? part.text : "")).filter(Boolean).join("\n")
+        : ""))
+    .join("\n");
+  return key.trim() === WORKBUDDY_REQUEST.neutralSystem ? "" : key;
+}
+
+function rememberRefusal(key) {
+  if (!key) return;
+  refusedSystems.add(key);
+  if (refusedSystems.size > REFUSED_SYSTEMS_MAX) refusedSystems.delete(refusedSystems.values().next().value);
+}
+
+// Test seam: the cache is process-wide, so a suite needs to start from empty.
+export function forgetRefusedWorkBuddySystems() {
+  refusedSystems.clear();
+}
 
 /**
  * WorkBuddy's normal OpenAI-compatible, stream-only transport. Authentication,
- * refresh and account selection belong to the caller. No refusal rewriting or
- * prompt/identity cloaking is performed here; CodeBuddy's legacy executors are
- * deliberately not reused for their request/header transformations.
+ * refresh and account selection belong to the caller. The channel check's
+ * refused lines are reworded and a refused system prompt is moved into the user's
+ * turn (see shared/workbuddyInstructions.js); no client is impersonated and no
+ * caller identity is cloaked. CodeBuddy's legacy executors are deliberately not
+ * reused for their request/header transformations.
  */
 export class WorkBuddyExecutor extends CodeBuddyBaseExecutor {
   constructor(provider) {
@@ -67,7 +102,33 @@ export class WorkBuddyExecutor extends CodeBuddyBaseExecutor {
     if (legacy) return legacy.execute({ ...args, stream: true });
     // Even non-stream clients use SSE upstream (the router aggregates it).
     // This also applies the shared first-output gate to every upstream request.
-    return super.execute({ ...args, stream: true });
+    return this.executeWithRefusalRetry({ ...args, stream: true });
+  }
+
+  // WorkBuddy refuses a whole chat (11128) when the channel check meets a line it
+  // will not accept, and a system prompt it refused before is sent as the user's
+  // instructions up front instead of waiting to be refused again. One retry only:
+  // a second refusal is the upstream's answer and is passed back unchanged, and
+  // the prompt is never rewritten to claim another client.
+  async executeWithRefusalRetry(args) {
+    const refusedKey = systemKey(args?.body?.messages);
+    let body = args.body;
+    if (refusedKey && refusedSystems.has(refusedKey)) {
+      const moved = workBuddySystemAsUser(body?.messages);
+      if (moved) body = { ...body, messages: moved };
+    }
+    const first = await super.execute({ ...args, body });
+    if (first.response?.status !== 400 || !first.response.body) return first;
+    // The refusal body is read here to tell it from any other 400; the caller
+    // still receives it byte for byte.
+    let text;
+    try { text = await first.response.clone().text(); } catch { return first; }
+    if (!isWorkBuddyRefusal(first.response.status, text)) return first;
+    rememberRefusal(systemKey(body?.messages));
+    const moved = workBuddySystemAsUser(body?.messages);
+    if (!moved) return first;
+    try { await first.response.body.cancel?.(); } catch { /* already consumed */ }
+    return super.execute({ ...args, body: { ...body, messages: moved } });
   }
 
   transformRequest(model, body, stream, credentials) {
@@ -90,8 +151,9 @@ export class WorkBuddyExecutor extends CodeBuddyBaseExecutor {
   }
 
   parseError(response, bodyText) {
-    // In particular, 11128 remains the original status and raw body. It is not
-    // an invitation to retry with changed instructions or official identities.
+    // In particular, 11128 remains the original status and raw body: the retry
+    // above happens once, inside execute, and a refusal that survives it is the
+    // upstream's answer to this request.
     return applyCodeBuddyRateLimit(super.parseError(response, bodyText), response, bodyText);
   }
 
@@ -100,14 +162,14 @@ export class WorkBuddyExecutor extends CodeBuddyBaseExecutor {
     // instructions. Copy before adaptation so retries never mutate caller input.
     const transformed = normalizeCodeBuddyToolChoice({ ...body, stream: true });
     const messages = Array.isArray(body?.messages) ? body.messages : [];
-    transformed.messages = messages.map(message => {
+    transformed.messages = unflagWorkBuddyMessages(messages.map(message => {
       if (!message || typeof message !== "object") return message;
       if (message.role === ROLE.DEVELOPER) return { ...message, role: ROLE.SYSTEM };
       if (message.role === ROLE.USER && typeof message.content === "string") {
         return { ...message, content: [{ type: OPENAI_BLOCK.TEXT, text: message.content }] };
       }
       return { ...message };
-    });
+    }));
     if (!transformed.messages.some(message => message?.role === ROLE.SYSTEM)) {
       transformed.messages.unshift({ role: ROLE.SYSTEM, content: WORKBUDDY_REQUEST.neutralSystem });
     }

@@ -45,6 +45,12 @@ export const WORKBUDDY_SITES = Object.freeze({
 export const WORKBUDDY_CLIENT = Object.freeze({
   version: "5.5.6",
   userAgent: "WorkBuddy/5.5.6",
+  // The catalog endpoint picks which client profile to answer with by
+  // User-Agent: a bare "WorkBuddy/<v>" gets the IDE profile, whose agent list has
+  // no "cli" entry, and model discovery then fails. The CLI profile is the one
+  // that lists the models a CLI may call. Measured 2026-10-24 on copilot.tencent.com:
+  // bare UA → 14 agents, no cli; this UA → the cli agent with its model list.
+  catalogUserAgent: "CLI/2.0.0 WorkBuddy/5.5.6",
   ideType: "WorkBuddy",
   ideName: "WorkBuddy",
   agentIntent: "craft",
@@ -190,17 +196,20 @@ function turnKey(conversation) {
  *   The gateway uses the same enterprise id in both headers.
  * No boolean supplied in raw request headers establishes verification.
  */
-export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = false, conversation = null } = {}) {
+export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = false, conversation = null, catalog = false } = {}) {
   const metadata = credentials.providerSpecificData || {};
   const site = resolveWorkBuddySite(provider, metadata);
   if (metadata.workbuddyLegacyCredential === true) {
     // Legacy CodeBuddy credentials keep their original evidence; we cannot claim
     // the new WorkBuddy contract for them, so only the origin-bound headers are
     // built and the account keeps behaving exactly as it did before migration.
+    // The User-Agent is not part of the credential contract: upstream refuses a
+    // request that names no client at all (12403), so even a legacy row asks as
+    // the WorkBuddy client. Only the origin, product and uid stay as saved.
     const headers = {
       "Content-Type": "application/json",
       Accept: stream ? "text/event-stream" : "application/json",
-      "User-Agent": "Spring-Mouse",
+      "User-Agent": catalog ? WORKBUDDY_CLIENT.catalogUserAgent : WORKBUDDY_CLIENT.userAgent,
       "X-Product": "SaaS",
       "X-Domain": site.domain,
     };
@@ -225,7 +234,9 @@ export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = fal
   const headers = {
     "Content-Type": "application/json",
     Accept: stream ? "text/event-stream" : "application/json",
-    "User-Agent": WORKBUDDY_CLIENT.userAgent,
+    // Chat and discovery ask for different client profiles; see catalogUserAgent.
+    // Refresh keeps the plain WorkBuddy User-Agent.
+    "User-Agent": catalog ? WORKBUDDY_CLIENT.catalogUserAgent : WORKBUDDY_CLIENT.userAgent,
     "X-Product": site.headerProduct,
     "X-Domain": site.domain,
   };

@@ -28,7 +28,7 @@ export function parseWorkBuddyModels(payload) {
 export async function discoverWorkBuddyModels(connection, proxyOptions = null) {
   const site = getWorkBuddySite(connection.provider);
   const response = await proxyAwareFetch(`${site.origin}/v3/config`, {
-    method: "GET", headers: buildWorkBuddyHeaders(connection.provider, connection),
+    method: "GET", headers: buildWorkBuddyHeaders(connection.provider, connection, { catalog: true }),
     signal: AbortSignal.timeout(15000), cache: "no-store", redirect: "error",
   }, proxyOptions);
   if (!response.ok) return { error: `WorkBuddy model discovery returned HTTP ${response.status}`, status: response.status };

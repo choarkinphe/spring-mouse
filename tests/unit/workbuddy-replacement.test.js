@@ -88,6 +88,19 @@ describe("replacing the CodeBuddy channels keeps existing production accounts wo
     expect(resolveWorkBuddySite("workbuddy-ai", migratedIntl.providerSpecificData).origin).toBe("https://www.codebuddy.ai");
   });
 
+  it("asks upstream as the WorkBuddy client even for a migrated credential", () => {
+    // Upstream refuses a request that names no client at all (12403), and the
+    // catalog endpoint answers the CLI profile only for the CLI User-Agent. A
+    // legacy row keeps its saved origin and uid but must not keep a bare
+    // "Spring-Mouse" User-Agent: model discovery 400'd on every CN account.
+    const chat = buildWorkBuddyHeaders("workbuddy", migratedCn, { stream: true });
+    const catalog = buildWorkBuddyHeaders("workbuddy", migratedCn, { catalog: true });
+    expect(chat["User-Agent"]).toBe("WorkBuddy/5.5.6");
+    expect(catalog["User-Agent"]).toBe("CLI/2.0.0 WorkBuddy/5.5.6");
+    // The saved binding is still what goes out.
+    expect(chat).toMatchObject({ "X-Domain": "copilot.tencent.com", "X-Product": "SaaS", "X-User-Id": "cn-uid" });
+  });
+
   it("refreshes migrated accounts with their original refresh implementation", async () => {
     const providers = await import("../../open-sse/services/tokenRefresh/providers.js");
     await expect(refreshWorkBuddyToken("workbuddy", migratedCn, null)).resolves.toBe("REFRESHED_CN");

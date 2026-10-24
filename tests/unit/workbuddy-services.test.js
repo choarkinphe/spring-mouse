@@ -249,7 +249,9 @@ describe("WorkBuddy model discovery service", () => {
     expect(proxyAwareFetch).toHaveBeenCalledWith(`${origin}/v3/config`, {
       method: "GET", cache: "no-store", redirect: "error", signal: expect.any(AbortSignal),
       headers: {
-        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "WorkBuddy/5.5.6",
+        // The catalog endpoint answers the CLI profile only for this User-Agent;
+        // a bare WorkBuddy/<v> returns the IDE profile, which has no "cli" agent.
+        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "CLI/2.0.0 WorkBuddy/5.5.6",
         "X-Product": "SaaS", "X-Domain": new URL(origin).hostname,
         Authorization: "Bearer fixture-old-access", "X-User-Id": "fixture-uid",
       },

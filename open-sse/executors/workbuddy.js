@@ -137,11 +137,11 @@ export class WorkBuddyExecutor extends CodeBuddyBaseExecutor {
     return this.transformWorkBuddyRequest(model, body);
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, url, model, conversation = null) {
     const legacy = this.legacyDelegate(this.provider, credentials);
     if (legacy) return legacy.buildHeaders(credentials, stream);
     if (!credentials?.accessToken) throw new Error("WorkBuddy requires a bound OAuth accessToken");
-    return buildWorkBuddyHeaders(this.provider, credentials, { stream: true });
+    return buildWorkBuddyHeaders(this.provider, credentials, { stream: true, conversation });
   }
 
   refreshCredentials(credentials, log, proxyOptions = null) {

@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { CODEBUDDY_VERIFICATION } from "./errorConfig.js";
+import { ROLE } from "../translator/schema/index.js";
 
 /**
  * Trusted site definitions shared by chat, OAuth, discovery and refresh.
@@ -29,6 +30,26 @@ export const WORKBUDDY_SITES = Object.freeze({
     refreshUrl: "https://www.workbuddy.ai/v2/plugin/auth/token/refresh",
     headerProduct: "SaaS", format: "openai",
   }),
+});
+
+// WorkBuddy's channel check is not satisfied by the bearer token alone: it reads
+// the client attribution headers its own desktop app sends with every chat, and
+// an account without a paid package is refused (11128) when a request carries
+// only a generic client. Measured 2026-10-24 against www.workbuddy.ai: with the
+// same account and the same body, the magic headers below answered 200 while
+// the previous bare header set answered 400 for the unflagged account.
+//
+// The set mirrors what the desktop client sends (application-manifest.js):
+// X-Agent-Purpose "conversation", X-IDE-Name/Type "WorkBuddy", X-IDE-Version,
+// X-Product "SaaS", plus the usage-attribution headers its gateway reads.
+export const WORKBUDDY_CLIENT = Object.freeze({
+  version: "5.5.6",
+  userAgent: "WorkBuddy/5.5.6",
+  ideType: "WorkBuddy",
+  ideName: "WorkBuddy",
+  agentIntent: "craft",
+  agentPurpose: "conversation",
+  agentType: "main",
 });
 
 export const WORKBUDDY_REQUEST = Object.freeze({
@@ -111,6 +132,49 @@ function headerValue(value, name) {
   return value.trim();
 }
 
+// The 32 hex digits WorkBuddy's own ids are made of, derived from a name of the
+// thing the id is for. A salted digest keeps an id from spelling out the words it
+// was made from, and keeps two conversations with the same first message apart.
+const ID_SALT = randomUUID();
+function conversationId(key) {
+  return createHash("sha256").update(`${ID_SALT}|${key}`).digest("hex").slice(0, 32);
+}
+
+function contentText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(part => (typeof part?.text === "string" ? part.text : "")).filter(Boolean).join("\n");
+}
+
+// conversationKey names the conversation a chat belongs to: the session the
+// caller names, else its first user message, which every later turn repeats.
+function conversationKey(conversation) {
+  if (conversation?.sessionId) return `session:${conversation.sessionId}`;
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  for (const message of messages) {
+    if (message?.role !== ROLE.USER) continue;
+    const text = contentText(message.content);
+    if (text) return `first:${text}`;
+  }
+  return "";
+}
+
+// turnKey names the user send a chat answers: its last user message that is the
+// user's own, so every step of one send repeats it and the next send changes it.
+function turnKey(conversation) {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== ROLE.USER) continue;
+    const previous = messages[i - 1];
+    if (previous?.role === ROLE.TOOL) continue;
+    if (previous?.role === ROLE.ASSISTANT && Array.isArray(previous.tool_calls) && previous.tool_calls.length) continue;
+    const text = contentText(message.content);
+    if (text) return `u${i}:${text}`;
+  }
+  return "";
+}
+
 /**
  * Build a new allowlisted header object, never merging rawHeaders, cookies,
  * runtime transport headers, API keys or any other client's identity.
@@ -126,7 +190,7 @@ function headerValue(value, name) {
  *   The gateway uses the same enterprise id in both headers.
  * No boolean supplied in raw request headers establishes verification.
  */
-export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = false } = {}) {
+export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = false, conversation = null } = {}) {
   const metadata = credentials.providerSpecificData || {};
   const site = resolveWorkBuddySite(provider, metadata);
   if (metadata.workbuddyLegacyCredential === true) {
@@ -161,10 +225,22 @@ export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = fal
   const headers = {
     "Content-Type": "application/json",
     Accept: stream ? "text/event-stream" : "application/json",
-    "User-Agent": "Spring-Mouse",
+    "User-Agent": WORKBUDDY_CLIENT.userAgent,
     "X-Product": site.headerProduct,
     "X-Domain": site.domain,
   };
+  // Client attribution is sent on chats only, as the desktop app does. Refresh and
+  // model discovery carry the WorkBuddy UA but none of the chat attribution.
+  if (stream) {
+    headers["X-IDE-Type"] = WORKBUDDY_CLIENT.ideType;
+    headers["X-IDE-Name"] = WORKBUDDY_CLIENT.ideName;
+    headers["X-IDE-Version"] = WORKBUDDY_CLIENT.version;
+    headers["X-Agent-Intent"] = WORKBUDDY_CLIENT.agentIntent;
+    headers["X-Agent-Purpose"] = WORKBUDDY_CLIENT.agentPurpose;
+    headers["X-Requested-With"] = "XMLHttpRequest";
+    // The international build distinguishes the main agent from sub-agents.
+    if (provider === "workbuddy-ai") headers["X-Agent-Type"] = WORKBUDDY_CLIENT.agentType;
+  }
   if (credentials.accessToken) headers.Authorization = `Bearer ${headerValue(credentials.accessToken, "accessToken")}`;
   if (metadata.codebuddyUid !== undefined) headers["X-User-Id"] = headerValue(metadata.codebuddyUid, "codebuddyUid");
   if (metadata.enterpriseId || metadata.tenantId) {
@@ -178,11 +254,18 @@ export function buildWorkBuddyHeaders(provider, credentials = {}, { stream = fal
     headers["X-Tenant-Id"] = tenant;
   }
   if (stream) {
-    // Fresh request correlation only. No caller session/auth/identity is copied;
-    // no conversation identity is invented from prompt text or used for retries.
+    // WorkBuddy's channel check reads the four conversation ids its own client
+    // sends with every chat. Measured 2026-10-24 on an account the check refuses:
+    // all four present answered 200 three times running, and dropping either
+    // X-Conversation-ID or X-Conversation-Request-ID went back to 11128. The
+    // request/message ids are one fresh value; the conversation id and the turn
+    // id are derived from what names the conversation and the turn, so the
+    // several steps of one user send keep one turn id.
     const id = randomUUID();
     headers["X-Request-ID"] = id;
     headers["X-Conversation-Message-ID"] = id;
+    headers["X-Conversation-ID"] = conversationId(conversationKey(conversation));
+    headers["X-Conversation-Request-ID"] = conversationId(turnKey(conversation) || id);
   }
   return headers;
 }

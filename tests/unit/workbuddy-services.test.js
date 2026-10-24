@@ -69,7 +69,7 @@ describe("WorkBuddy refresh service", () => {
     expect(proxyAwareFetch).toHaveBeenCalledWith(`${origin}/v2/plugin/auth/token/refresh`, {
       method: "POST", body: "{}", signal: expect.any(AbortSignal), redirect: "error",
       headers: {
-        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "Spring-Mouse",
+        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "WorkBuddy/5.5.6",
         "X-Product": "SaaS", "X-Domain": new URL(origin).hostname, "X-User-Id": "fixture-uid",
         "X-Enterprise-Id": "tenant-42", "X-Tenant-Id": "tenant-42",
         "X-Refresh-Token": saved.refreshToken, "X-Auth-Refresh-Source": "plugin",
@@ -249,7 +249,7 @@ describe("WorkBuddy model discovery service", () => {
     expect(proxyAwareFetch).toHaveBeenCalledWith(`${origin}/v3/config`, {
       method: "GET", cache: "no-store", redirect: "error", signal: expect.any(AbortSignal),
       headers: {
-        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "Spring-Mouse",
+        "Content-Type": "application/json", Accept: "application/json", "User-Agent": "WorkBuddy/5.5.6",
         "X-Product": "SaaS", "X-Domain": new URL(origin).hostname,
         Authorization: "Bearer fixture-old-access", "X-User-Id": "fixture-uid",
       },

@@ -42,8 +42,20 @@ describe("trusted WorkBuddy sites and headers", () => {
       runtimeTransport: { headers: { Authorization: "Bearer runtime", "X-IDE-Name": "WorkBuddy" } },
     };
     const headers = buildWorkBuddyHeaders(provider, selected, { stream: true });
-    expect(headers).toMatchObject({ Authorization: `Bearer test-${provider}-token`, "X-User-Id": "test-user", "User-Agent": "Spring-Mouse", "X-Domain": getWorkBuddySite(provider).domain, "X-Product": "SaaS", Accept: "text/event-stream" });
-    for (const key of ["Cookie", "X-IDE-Name", "X-IDE-Type", "X-IDE-Version", "X-Agent-Type", "X-Agent-Intent", "X-Tenant-Id"]) expect(headers[key]).toBeUndefined();
+    // The client attribution headers are what the channel check reads: the same
+    // account answered 11128 without them and 200 with them (measured 2026-10-24).
+    expect(headers).toMatchObject({
+      Authorization: `Bearer test-${provider}-token`, "X-User-Id": "test-user",
+      "User-Agent": "WorkBuddy/5.5.6", "X-Domain": getWorkBuddySite(provider).domain,
+      "X-Product": "SaaS", Accept: "text/event-stream",
+      "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": "5.5.6",
+      "X-Agent-Intent": "craft", "X-Agent-Purpose": "conversation",
+      "X-Requested-With": "XMLHttpRequest",
+    });
+    // X-Agent-Type is the international build's main-agent marker.
+    expect(headers["X-Agent-Type"]).toBe(provider === "workbuddy-ai" ? "main" : undefined);
+    // Caller-supplied identity still never wins over the bound credential.
+    for (const key of ["Cookie", "X-Tenant-Id"]) expect(headers[key]).toBeUndefined();
     expect(Object.values(headers)).not.toContain("hostile");
     expect(headers["X-Request-ID"]).toMatch(/^[\da-f-]{36}$/);
     expect(headers["X-Conversation-Message-ID"]).toBe(headers["X-Request-ID"]);

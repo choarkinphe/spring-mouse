@@ -88,7 +88,7 @@ export class BaseExecutor {
     return baseUrls[urlIndex] || baseUrls[0] || this.config.baseUrl;
   }
 
-  buildHeaders(credentials, stream = true) {
+  buildHeaders(credentials, stream = true, url = null, model = null, conversation = null) {
     const headers = {
       "Content-Type": "application/json",
       ...this.config.headers
@@ -268,7 +268,7 @@ export class BaseExecutor {
       tTimer.unref?.();
       const transformedBody = this.transformRequest(model, body, stream, credentials);
       clearTimeout(tTimer);
-      const headers = this.buildHeaders(credentials, stream, url, model);
+      const headers = this.buildHeaders(credentials, stream, url, model, body);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 

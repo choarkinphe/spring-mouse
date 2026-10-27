@@ -21,6 +21,7 @@ export const MOUSE_UNSUPPORTED_PROVIDERS = Object.freeze([
   "vertex", // VertexExecutor
   "vertex-partner", // alias of vertex
   "qoder", // QoderExecutor
+  "qoder-cn", // QoderExecutor
   "trae", // TraeExecutor
   "windsurf", // WindsurfExecutor — talks to server.codeium.com directly
   "zed", // ZedExecutor

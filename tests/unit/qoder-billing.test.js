@@ -1,147 +1,82 @@
-/**
- * Unit tests for qoder billing error detection.
- *
- * Ensures that billing blocks (code 112, 10605, pricingUrl) are detected
- * on the first SSE frame and returned as 403 responses so chatCore can
- * mark the connection unavailable and trigger combo failover.
- */
-
 import { describe, it, expect } from "vitest";
-import { __test__ as qoderExecutorInternals } from "../../open-sse/executors/qoder.js";
+import { __test__ } from "../../open-sse/executors/qoder.js";
 
-describe("isBillingBlock", () => {
-  const { isBillingBlock } = qoderExecutorInternals;
+const { wrapQoderSSE, isBillingBlock } = __test__;
+const frame = (statusCodeValue, body) => `data: ${JSON.stringify({ statusCodeValue, body: typeof body === "string" ? body : JSON.stringify(body) })}\n\n`;
+const output = frame(200, { choices: [{ delta: { content: "hello" } }] });
+const queue = frame(403, { code: 10605, message: "Queue limit", retry_after: 17 });
+function response(chunks, onCancel) {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(c) { for (const chunk of chunks) c.enqueue(encoder.encode(chunk)); if (!onCancel) c.close(); },
+    cancel: onCancel,
+  }), { headers: { "content-type": "text/event-stream" } });
+}
 
-  it("detects code 112 (quota exhausted)", () => {
-    const msg = '{"code":"112","message":"Quota exhausted","pricingUrl":"..."}';
-    expect(isBillingBlock(msg)).toBe(true);
+describe("Qoder SSE errors", () => {
+  it("recognizes numeric and string billing codes", () => {
+    expect(isBillingBlock('{"code":10605}')).toBe(true);
+    expect(isBillingBlock('{"code":"112"}')).toBe(true);
+    expect(isBillingBlock('{"pricingUrl":"x"}')).toBe(true);
+    expect(isBillingBlock('{"code":500}')).toBe(false);
   });
-
-  it("detects code 10605 (queue throttle)", () => {
-    const msg = '{"code":"10605","message":"Queue limit"}';
-    expect(isBillingBlock(msg)).toBe(true);
+  it("scans heartbeats and split frames and preserves HTTP evidence and retry", async () => {
+    let cancelled = false;
+    const input = `: ping\n\n${frame(200, { choices: [{ delta: { role: "assistant" } }] })}${queue}`;
+    const result = await wrapQoderSSE(response([input.slice(0, 19), input.slice(19, 70), input.slice(70)], () => { cancelled = true; }), "qoder/auto");
+    expect(result.status).toBe(429);
+    expect((await result.json()).error.code).toBe(10605);
+    expect(result.__smUpstreamError).toMatchObject({ source: "sse", status: 200, retryAfterMs: 17000 });
+    expect(cancelled).toBe(true);
   });
-
-  it("detects pricingUrl field", () => {
-    const msg = '{"message":"Upgrade required","pricingUrl":"https://..."}';
-    expect(isBillingBlock(msg)).toBe(true);
+  it("returns other pre-output errors for fallback", async () => {
+    const result = await wrapQoderSSE(response([frame(500, "broken")]), "qoder/auto");
+    expect(result.status).toBe(500);
+    expect(result.__smUpstreamError.status).toBe(200);
   });
-
-  it("returns false for normal errors without billing markers", () => {
-    const msg = '{"code":"500","message":"Internal error"}';
-    expect(isBillingBlock(msg)).toBe(false);
+  it("exposes a structured post-output failure without success sentinel", async () => {
+    const result = await wrapQoderSSE(response([output, queue]), "qoder/auto");
+    expect(result.status).toBe(200);
+    expect(result.__smGetStreamError()).toBeNull();
+    const text = await result.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text).toContain('"code":10605');
+    expect(text).not.toContain('finish_reason');
+    expect(text).not.toContain('[DONE]');
+    expect(result.__smGetStreamError()).toMatchObject({ status: 429, upstreamError: { status: 200, retryAfterMs: 17000 } });
   });
-
-  it("returns false for empty or non-string input", () => {
-    expect(isBillingBlock("")).toBe(false);
-    expect(isBillingBlock(null)).toBe(false);
-    expect(isBillingBlock(undefined)).toBe(false);
+  it("keeps successful completion and cancels upstream", async () => {
+    let cancelled = false;
+    const result = await wrapQoderSSE(response([output + frame(200, "[DONE]")], () => { cancelled = true; }), "qoder/auto");
+    expect(await result.text()).toContain('data: [DONE]');
+    expect(cancelled).toBe(true);
   });
-});
-
-describe("wrapQoderSSE billing detection", () => {
-  const { wrapQoderSSE } = qoderExecutorInternals;
-
-  function makeResponse(lines, { status = 200 } = {}) {
-    const body = new ReadableStream({
-      start(controller) {
-        const encoder = new TextEncoder();
-        for (const line of lines) controller.enqueue(encoder.encode(line));
-        controller.close();
-      },
-    });
-    return new Response(body, { status });
-  }
-
-  it("returns 403 response when first frame is billing block (code 112)", async () => {
-    const billingEnv = JSON.stringify({
-      statusCodeValue: 403,
-      body: '{"code":"112","message":"Quota exhausted","pricingUrl":"https://qoder.sh/pricing"}',
-    });
-    const upstream = `data: ${billingEnv}\n\n`;
-
-    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/ultimate");
-
-    expect(wrapped.status).toBe(403);
-    expect(wrapped.ok).toBe(false);
-    const json = await wrapped.json();
-    expect(json.error).toBeDefined();
-    expect(json.error.message).toContain("112");
+  it("propagates cancellation while waiting for first output", async () => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const promise = wrapQoderSSE(response([": ping\n\n"], () => { cancelled = true; }), "qoder/auto", { signal: controller.signal, deadlineMs: Date.now() + 10000 });
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancelled).toBe(true);
   });
-
-  it("returns 403 response when first frame is billing block (code 10605)", async () => {
-    const billingEnv = JSON.stringify({
-      statusCodeValue: 429,
-      body: '{"code":"10605","message":"Queue limit"}',
-    });
-    const upstream = `data: ${billingEnv}\n\n`;
-
-    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/ultimate");
-
-    expect(wrapped.status).toBe(403);
-    expect(wrapped.ok).toBe(false);
+  it("converts a stream exception after output to structured failure", async () => {
+    const encoder = new TextEncoder();
+    let count = 0;
+    const upstream = new Response(new ReadableStream({ pull(c) { if (!count++) c.enqueue(encoder.encode(output)); else c.error(new Error("socket failure")); } }, { highWaterMark: 0 }));
+    const result = await wrapQoderSSE(upstream, "qoder/auto");
+    const text = await result.text();
+    expect(text).toContain("socket failure");
+    expect(text).not.toContain("[DONE]");
+    expect(result.__smGetStreamError()).toMatchObject({ status: 502, upstreamError: { status: 200 } });
   });
-
-  it("returns 403 response when first frame has pricingUrl", async () => {
-    const billingEnv = JSON.stringify({
-      statusCodeValue: 402,
-      body: '{"message":"Payment required","pricingUrl":"https://..."}',
-    });
-    const upstream = `data: ${billingEnv}\n\n`;
-
-    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/ultimate");
-
-    expect(wrapped.status).toBe(403);
+  it("bounds a preamble with no model output", async () => {
+    const result = await wrapQoderSSE(response([Array(6000).fill(`: ${"x".repeat(100)}\n\n`).join("")]), "qoder/auto");
+    expect(result.status).toBe(503);
   });
-
-  it("passes through normal errors (non-billing) as wrapped SSE", async () => {
-    const errorEnv = JSON.stringify({
-      statusCodeValue: 500,
-      body: "Internal server error",
-    });
-    const upstream = `data: ${errorEnv}\n\n`;
-
-    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/ultimate");
-
-    // Normal error: still 200 response, error text in SSE body
-    expect(wrapped.status).toBe(200);
-    expect(wrapped.ok).toBe(true);
-
-    const reader = wrapped.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-    }
-    buf += decoder.decode();
-
-    expect(buf).toContain("[qoder error 500");
-    expect(buf).toContain("data: [DONE]");
-  });
-
-  it("passes through successful responses unchanged", async () => {
-    const inner = JSON.stringify({ choices: [{ delta: { content: "hello" } }] });
-    const successEnv = JSON.stringify({ statusCodeValue: 200, body: inner });
-    const upstream = `data: ${successEnv}\n\n`;
-
-    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/ultimate");
-
-    expect(wrapped.status).toBe(200);
-    expect(wrapped.ok).toBe(true);
-
-    const reader = wrapped.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-    }
-    buf += decoder.decode();
-
-    expect(buf).toContain(`data: ${inner}`);
-    expect(buf).toContain("data: [DONE]");
+  it("times out when only heartbeats arrive", async () => {
+    let cancelled = false;
+    const result = await wrapQoderSSE(response([": ping\n\n"], () => { cancelled = true; }), "qoder/auto", { deadlineMs: Date.now() + 30 });
+    expect(result.status).toBe(503);
+    expect(cancelled).toBe(true);
   });
 });

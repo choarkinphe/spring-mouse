@@ -1,8 +1,4 @@
-import {
-  QODER_DEVICE_TOKEN_URL,
-  QODER_LOGIN_URL,
-  QODER_USERINFO_URL,
-} from "../../qoder/constants.js";
+import { getQoderEndpoints } from "../../../../open-sse/shared/qoder/constants.js";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 
@@ -45,13 +41,16 @@ async function fetchWithTimeout(url, init = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, redirect: "error", signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
 export class QoderService {
+  constructor(region = "global") {
+    this.endpoints = getQoderEndpoints(region);
+  }
   /**
    * Generate a PKCE verifier + S256 challenge pair.
    * Uses 32 random bytes (matches qodercli/Veria).
@@ -78,8 +77,9 @@ export class QoderService {
       nonce,
     });
 
+    if (this.endpoints.region === "cn") params.set("client_id", this.endpoints.clientId);
     return {
-      verificationUriComplete: `${QODER_LOGIN_URL}?${params.toString()}`,
+      verificationUriComplete: `${this.endpoints.login}?${params.toString()}`,
       codeVerifier: verifier,
       nonce,
       machineId,
@@ -98,7 +98,7 @@ export class QoderService {
     if (!nonce || !codeVerifier) {
       throw new Error("pollDeviceToken: missing nonce or code verifier");
     }
-    const url = `${QODER_DEVICE_TOKEN_URL}?nonce=${encodeURIComponent(nonce)}&verifier=${encodeURIComponent(codeVerifier)}&challenge_method=S256`;
+    const url = `${this.endpoints.deviceToken}?nonce=${encodeURIComponent(nonce)}&verifier=${encodeURIComponent(codeVerifier)}&challenge_method=S256`;
 
     const response = await fetchWithTimeout(url, {
       method: "GET",
@@ -155,7 +155,7 @@ export class QoderService {
    */
   async fetchUserInfo(accessToken) {
     try {
-      const response = await fetchWithTimeout(QODER_USERINFO_URL, {
+      const response = await fetchWithTimeout(this.endpoints.userInfo, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${accessToken}`,

@@ -51,6 +51,28 @@ describe("stream usage follows the actual protocol terminal", () => {
     await drive(text, { format });
     expect(saveRequestUsage.mock.calls[0][0].status).toBe("error");
   });
+  it("records a late provider error without retrying or marking success", async () => {
+    const evidence = { status: 429, upstreamError: { source: "sse", status: 200, message: "queue full" } };
+    const onStreamUpstreamError = vi.fn();
+    const onRequestSuccess = vi.fn();
+    const response = new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {"error":{"message":"queue full"}}\n\n', { headers: { "content-type": "text/event-stream" } });
+    response.__smGetStreamError = () => evidence;
+    const ctx = {
+      provider: "qoder", model: "dfmodel", requestId: "late-error", requestStartTime: Date.now(),
+      body: {}, stream: true, clientRawRequest: {}, observabilityEnabled: true,
+      observabilityMaxJsonChars: 1024, sourceFormat: "openai", targetFormat: "openai",
+      onRequestSuccess, onStreamUpstreamError, log: {}, providerResponse: response,
+      streamController: createStreamController({}),
+    };
+    const result = await handleStreamingResponse({ ...ctx, ...buildOnStreamComplete(ctx) });
+    const output = await result.response.text();
+    await Promise.resolve();
+    expect(output).toContain('"error"');
+    expect(onStreamUpstreamError).toHaveBeenCalledOnce();
+    expect(onStreamUpstreamError).toHaveBeenCalledWith(evidence);
+    expect(onRequestSuccess).not.toHaveBeenCalled();
+    expect(saveRequestUsage.mock.calls[0][0].status).toBe("error");
+  });
   it("records bare EOF as incomplete instead of success", async () => {
     await drive('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', { format: "openai" });
     expect(saveRequestUsage.mock.calls[0][0].status).toBe("error");

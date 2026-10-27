@@ -5,6 +5,7 @@ import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, resolveXiaomiTokenplanBaseUrl, PROVIDERS } from "open-sse/config/providers.js";
 import { openaiToCommandCodeRequest } from "open-sse/translator/request/openai-to-commandcode.js";
 import { resolveQoderCredentials, resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import { JEVAPI_CONFIG } from "open-sse/config/jevapi.js";
 import { buildOpenCodeGoHeaders } from "open-sse/utils/opencodeGoHeaders.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
@@ -604,11 +605,13 @@ export async function POST(request) {
           break;
         }
 
-        case "qoder": {
+        case "qoder":
+        case "qoder-cn": {
           // PAT (pt-...) needs the job-token exchange before it can sign
           // anything — the generic OpenAI-compat probe below can't validate it.
           try {
-            const resolved = await resolveQoderCredentials({ apiKey, providerSpecificData }, null, AbortSignal.timeout(8000));
+            const data = withQoderProviderRegion(provider, providerSpecificData);
+            const resolved = await resolveQoderCredentials({ apiKey, providerSpecificData: data }, null, AbortSignal.timeout(8000));
             const result = await resolveQoderModels(resolved, { forceRefresh: true });
             isValid = !!result?.models?.length;
           } catch (err) {

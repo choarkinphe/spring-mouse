@@ -233,7 +233,11 @@ export function formatResetTime(date) {
     const now = new Date();
     const diffMs = resetDate - now;
 
-    if (diffMs <= 0) return "-";
+    if (!Number.isFinite(diffMs) || diffMs <= 0) return "-";
+    // Distant timestamps are more useful as neutral absolute dates than huge countdowns.
+    if (diffMs > 365 * 24 * 60 * 60 * 1000) {
+      return resetDate.toISOString().slice(0, 10);
+    }
 
     const totalMinutes = Math.ceil(diffMs / (1000 * 60));
     
@@ -368,7 +372,7 @@ export function formatQuotaAmount(quota) {
   if (used === null || (total === null && !quota?.unlimited)) return null;
 
   const unit = getQuotaUnit(quota);
-  const unlimited = quota?.unlimited || total === 0;
+  const unlimited = quota?.unlimited ?? (total === 0);
   const usedLabel = used.toLocaleString();
   const totalLabel = unlimited ? "∞" : total.toLocaleString();
   // Only explicit metadata identifies percentages; a count can also total 100.
@@ -388,6 +392,10 @@ export function formatRemainingQuota(quota) {
   const used = getQuotaNumber(quota?.used);
   const total = getQuotaNumber(quota?.total);
   const unit = getQuotaUnit(quota);
+  const absoluteRemaining = getQuotaNumber(quota?.absoluteRemaining);
+  if (absoluteRemaining !== null && unit && unit !== "%") {
+    return `${Math.max(0, absoluteRemaining).toLocaleString()} ${unit}`;
+  }
   if (((unit && unit !== "%") || quota?.currency) && used !== null && total > 0) {
     const remaining = Math.max(0, total - used);
     return quota?.currency
@@ -523,14 +531,12 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "qoder":
+      case "qoder-cn":
         // Qoder ships a `user` quota and (optionally) an `organization`
         // quota, both with same shape: {total, used, remaining, unit, resetAt}.
         // Skip an organization bucket when its total is 0 — most personal
         // Qoder accounts won't have one and rendering "0/0" is misleading.
-        // Don't forward Qoder's `remaining` field: it's an absolute credit
-        // count, but getRemainingPercentage / QuotaTable interpret
-        // `remaining` as a 0-100 percentage and would render 348 credits
-        // as "348%". The percentage is computed from used/total instead.
+        // Keep absolute credits separate from the percentage consumed by the UI.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
             if (quotaType === "organization" && (!quota || (Number(quota.total) || 0) === 0)) {
@@ -538,8 +544,11 @@ export function parseQuotaData(provider, data) {
             }
             normalizedQuotas.push({
               name: quotaType === "user" ? "Personal" : quotaType === "organization" ? "Organization" : quotaType,
-              used: quota.used || 0,
-              total: quota.total || 0,
+              used: quota.used,
+              total: quota.total,
+              absoluteRemaining: quota.remaining,
+              unlimited: false,
+              isQuotaExceeded: data.isQuotaExceeded,
               unit: quota.unit,
               resetAt: quota.resetAt || null,
             });

@@ -51,7 +51,7 @@ function estimateInputTokensFromHeaders(headers) {
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true, onStreamAbortReady = null }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true, onStreamAbortReady = null }) {
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -95,6 +95,12 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
       routing.streamTransport = transportDiag.snapshot?.("protocol_terminal");
     }
     onStreamComplete?.(content, usage, ttftAt, terminal);
+    const streamError = providerResponse.__smGetStreamError?.();
+    if (terminal?.outcome === "failed" && streamError && onStreamUpstreamError) {
+      Promise.resolve().then(() => onStreamUpstreamError(streamError)).catch(err => {
+        console.error("[ChatCore] onStreamUpstreamError failed:", err?.message || err);
+      });
+    }
     if (terminal?.outcome === "valid_terminal" && onRequestSuccess) {
       Promise.resolve().then(onRequestSuccess).catch(err => {
         console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);

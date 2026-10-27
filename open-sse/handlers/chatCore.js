@@ -61,7 +61,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, hasFallback = false, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onStreamUpstreamError, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, hasFallback = false, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
   const coreStartedAt = Date.now();
   const requestStartTime = Number.isFinite(ingressStartedAt) && ingressStartedAt > 0 ? Math.min(ingressStartedAt, coreStartedAt) : coreStartedAt;
@@ -637,7 +637,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
   const captureRequestDetails = !internalRequest;
-  const sharedCtx = { provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, routingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
+  const sharedCtx = { provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, routingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 

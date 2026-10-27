@@ -289,13 +289,13 @@ export async function getVercelAiGatewayUsage(apiKey, proxyOptions = null) {
   }
 }
 
-export async function getQoderUsage(accessToken, proxyOptions = null) {
+export async function getQoderUsage(accessToken, proxyOptions = null, provider = "qoder") {
   if (!accessToken) {
     return { message: "Qoder usage unavailable: no access token" };
   }
   try {
     const response = await proxyAwareFetch(
-      U("qoder").url,
+      U(provider).url,
       {
         method: "GET",
         headers: {
@@ -312,30 +312,58 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
     if (!body) {
       return { message: "Qoder connected. Usage response was not JSON." };
     }
+    if (provider === "qoder-cn") {
+      const usage = body.qoderUsage ?? body.qoder_usage;
+      if (!usage || typeof usage !== "object") {
+        return { message: body.displayMode === "enterprise" ? "Qoder CN Enterprise: quota details unavailable" : "Qoder CN usage response has no quota details" };
+      }
+      const number = (v) => v == null || (typeof v === "string" && !v.trim()) || !Number.isFinite(Number(v)) ? null : Number(v);
+      const expiry = usage.expiresAt ?? usage.expires_at;
+      const date = expiry ? new Date(expiry) : null;
+      const resetAt = date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+      const quotas = {};
+      const add = (key, item) => {
+        if (!item || typeof item !== "object") return;
+        const total = number(item.total ?? item.cap);
+        const remaining = number(item.remaining);
+        const used = number(item.used) ?? (total !== null && remaining !== null ? total - remaining : null);
+        if (total === null && remaining === null && used === null) return;
+        quotas[key] = { total, used, remaining, unit: item.unit || "credits", resetAt };
+      };
+      add("user", usage.userQuota ?? usage.user_quota);
+      add("addOn", usage.addOnQuota ?? usage.add_on_quota);
+      add("organization", usage.orgResourcePackage ?? usage.org_resource_package);
+      const dedicated = usage.dedicatedResourcePackages ?? usage.dedicated_resource_packages;
+      if (Array.isArray(dedicated)) dedicated.forEach((item, i) => add(item?.name || `Dedicated ${i + 1}`, item));
+      return { quotas, isQuotaExceeded: typeof usage.isQuotaExceeded === "boolean" ? usage.isQuotaExceeded : null };
+    }
     // Quota records live under `quotas`; scalar metadata
     // (totalUsagePercentage, isQuotaExceeded, expiresAt) are surfaced as
     // siblings so the dashboard parser doesn't try to render them as rows.
     const userQuota = body.userQuota || {};
     const orgQuota = body.orgResourcePackage || {};
+    const numberOrNull = (value) => value == null || (typeof value === "string" && !value.trim()) || !Number.isFinite(Number(value))
+      ? null : Number(value);
     // Qoder publishes a single absolute reset timestamp (`expiresAt` in ms);
     // surface it on every quota record as ISO so the table can render
     // "resets at" alongside used/total.
     const expiresAtMs = Number.isFinite(Number(body.expiresAt)) && Number(body.expiresAt) > 0
       ? Number(body.expiresAt)
       : null;
-    const resetAt = expiresAtMs ? new Date(expiresAtMs).toISOString() : null;
+    const resetDate = expiresAtMs ? new Date(expiresAtMs) : null;
+    const resetAt = resetDate && Number.isFinite(resetDate.getTime()) ? resetDate.toISOString() : null;
     const quotas = {
       user: {
-        total: Number(userQuota.total) || 0,
-        used: Number(userQuota.used) || 0,
-        remaining: Number(userQuota.remaining) || 0,
+        total: numberOrNull(userQuota.total),
+        used: numberOrNull(userQuota.used),
+        remaining: numberOrNull(userQuota.remaining),
         unit: userQuota.unit || "credits",
         resetAt,
       },
       organization: {
-        total: Number(orgQuota.total) || 0,
-        used: Number(orgQuota.used) || 0,
-        remaining: Number(orgQuota.remaining) || 0,
+        total: numberOrNull(orgQuota.total),
+        used: numberOrNull(orgQuota.used),
+        remaining: numberOrNull(orgQuota.remaining),
         unit: orgQuota.unit || "credits",
         resetAt,
       },
@@ -343,7 +371,7 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
     return {
       quotas,
       totalUsagePercentage: Number(body.totalUsagePercentage) || 0,
-      isQuotaExceeded: !!body.isQuotaExceeded,
+      isQuotaExceeded: typeof body.isQuotaExceeded === "boolean" ? body.isQuotaExceeded : null,
       expiresAt: expiresAtMs,
     };
   } catch (error) {

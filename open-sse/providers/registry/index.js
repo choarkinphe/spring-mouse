@@ -136,6 +136,8 @@ import p124 from "./jevapi.js";
 import p125 from "./workbuddy-ai.js";
 import p126 from "./workbuddy.js";
 
+import p127 from "./qoder-cn.js";
+
 export default [
   p0,
   p18,
@@ -262,4 +264,5 @@ export default [
   p125,
   p126,
   p100,
+  p127,
 ];

@@ -821,6 +821,11 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
             testStatus: "active"
           });
         },
+        // The response has already started: record the upstream failure, but
+        // never retry the request after content or a tool call reached the client.
+        onStreamUpstreamError: async ({ status, upstreamError }) => {
+          await markAccountUnavailable(credentials.connectionId, status, upstreamError.message, provider, model, null, upstreamError);
+        },
         onRequestSuccess: async () => {
           await Promise.all([
             clearAccountError(credentials.connectionId, credentials, model),

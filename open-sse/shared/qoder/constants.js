@@ -17,6 +17,37 @@ export const QODER_CHAT_BASE_ALT = "https://api2.qoder.sh";
 
 export const QODER_LOGIN_URL = "https://qoder.com/device/selectAccounts";
 
+// Only fixed, trusted origins are accepted; never derive hosts from credentials.
+export function getQoderRegion(region = "global") {
+  if (region !== "global" && region !== "cn") throw new Error(`Invalid Qoder region: ${region}`);
+  return region;
+}
+
+export function getQoderProviderRegion(provider, region) {
+  if (provider !== "qoder" && provider !== "qoder-cn") throw new Error(`Invalid Qoder provider: ${provider}`);
+  const expected = provider === "qoder-cn" ? "cn" : "global";
+  if (region !== undefined && region !== expected) throw new Error(`Qoder credential region does not match provider ${provider}`);
+  return expected;
+}
+
+export function withQoderProviderRegion(provider, data) {
+  return { ...data, region: getQoderProviderRegion(provider, data?.region) };
+}
+
+export function getQoderEndpoints(region = "global") {
+  region = getQoderRegion(region);
+  const openapi = region === "cn" ? "https://openapi.qoder.com.cn" : QODER_OPENAPI_BASE;
+  const gateway = region === "cn" ? "https://gateway.qoder.com.cn" : QODER_CHAT_BASE;
+  return {
+    region, openapi, gateway,
+    login: region === "cn" ? "https://qoder.cn/device/selectAccounts" : QODER_LOGIN_URL,
+    clientId: region === "cn" ? "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb" : "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa",
+    deviceToken: `${openapi}/api/v1/deviceToken/poll`,
+    userInfo: `${openapi}/api/v1/userinfo`,
+    jobExchange: `${openapi}/api/v1/jobToken/exchange`,
+  };
+}
+
 // Device flow endpoints
 export const QODER_DEVICE_TOKEN_URL = `${QODER_OPENAPI_BASE}/api/v1/deviceToken/poll`;
 export const QODER_USERINFO_URL = `${QODER_OPENAPI_BASE}/api/v1/userinfo`;

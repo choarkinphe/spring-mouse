@@ -6,6 +6,7 @@ import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
@@ -376,10 +377,11 @@ const PROVIDER_MODELS_CONFIG = {
         refreshToken: connection.refreshToken,
         email: connection.email,
         displayName: connection.displayName,
-        providerSpecificData: connection.providerSpecificData || {},
+        providerSpecificData: connection.providerSpecificData,
       };
       let warning;
       try {
+        credentials.providerSpecificData = withQoderProviderRegion("qoder", credentials.providerSpecificData);
         const result = await resolveQoderModels(credentials, { forceRefresh: true });
         if (result?.models?.length) {
           return {
@@ -402,6 +404,27 @@ const PROVIDER_MODELS_CONFIG = {
         console.log("Failed to fetch Qoder official models:", error.message);
       }
       return { error: warning || "Official model discovery failed", status: 502 };
+    },
+  },
+  "qoder-cn": {
+    customResolver: async (connection) => {
+      try {
+        const result = await resolveQoderModels({
+          accessToken: connection.accessToken,
+          apiKey: connection.apiKey,
+          refreshToken: connection.refreshToken,
+          email: connection.email,
+          displayName: connection.displayName,
+          providerSpecificData: withQoderProviderRegion("qoder-cn", connection.providerSpecificData),
+        }, { forceRefresh: true });
+        if (result?.models?.length) return { models: result.models.map((m) => ({
+          id: m.id, name: m.name, contextLength: m.contextLength, isVL: m.isVL,
+          isReasoning: m.isReasoning, maxOutputTokens: m.maxOutputTokens, description: m.description,
+        })) };
+        return { error: "Qoder CN official directory was unavailable or invalid.", status: 502 };
+      } catch (error) {
+        return { error: `Failed to fetch Qoder CN models: ${error.message}`, status: 502 };
+      }
     },
   },
   "gemini-cli": {

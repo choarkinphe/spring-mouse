@@ -25,10 +25,9 @@ import { buildCosyHeaders } from "../shared/qoder/cosy.js";
 import {
   QODER_MODEL_LIST_URL,
   QODER_CHAT_BASE_ALT,
-  QODER_JOB_TOKEN_EXCHANGE_URL,
-  QODER_USERINFO_URL,
   QODER_IDE_VERSION,
   QODER_CLIENT_TYPE,
+  getQoderEndpoints,
 } from "../shared/qoder/constants.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -63,11 +62,12 @@ const inflight = new Map();
  * Exchange a Qoder PAT (pt-...) for a short-lived job token (jt-...).
  * This endpoint is plain JSON POST — NOT COSY-signed.
  */
-async function exchangeJobToken(pat, proxyOptions = null, signal = null) {
+async function exchangeJobToken(pat, region, proxyOptions = null, signal = null) {
   const res = await proxyAwareFetch(
-    QODER_JOB_TOKEN_EXCHANGE_URL,
+    getQoderEndpoints(region).jobExchange,
     {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -85,28 +85,30 @@ async function exchangeJobToken(pat, proxyOptions = null, signal = null) {
     throw new Error(`qoder PAT exchange failed: ${res.status} ${text.slice(0, 200)}`);
   }
   const data = await res.json();
-  if (!data.token) throw new Error("qoder PAT exchange returned no job token");
+  const token = data.token || data.device_token || data.access_token;
+  if (!token) throw new Error("qoder PAT exchange returned no job token");
 
   let expiresAt = Date.now() + PAT_DEFAULT_TTL_MS;
-  if (data.expires_at) {
-    const parsed = Date.parse(data.expires_at);
+  if (data.expire_time || data.expires_at) {
+    const parsed = Date.parse(data.expire_time || data.expires_at);
     if (!Number.isNaN(parsed)) expiresAt = parsed;
   } else if (typeof data.expires_in === "number" && data.expires_in > 0) {
     expiresAt = Date.now() + data.expires_in;
   }
-  return { jobToken: data.token, jobRefreshToken: data.refresh_token || "", expiresAt };
+  return { jobToken: token, jobRefreshToken: data.refresh_token || data.refreshToken || "", expiresAt };
 }
 
 /**
  * Resolve the Qoder userId for a job token (needed for COSY signing).
  * Returns "" on any failure — callers fall back to the stored userId.
  */
-async function fetchUserIdForJobToken(jobToken, proxyOptions = null, signal = null) {
+async function fetchUserIdForJobToken(jobToken, region, proxyOptions = null, signal = null) {
   try {
     const res = await proxyAwareFetch(
-      QODER_USERINFO_URL,
+      getQoderEndpoints(region).userInfo,
       {
         method: "GET",
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${jobToken}`,
           Accept: "application/json",
@@ -127,14 +129,15 @@ async function fetchUserIdForJobToken(jobToken, proxyOptions = null, signal = nu
 /**
  * Resolve a PAT to a job-token credential, cached per-PAT.
  */
-async function resolvePatCredential(pat, proxyOptions = null, signal = null) {
-  const cached = patJobCache.get(pat);
+async function resolvePatCredential(pat, region, proxyOptions = null, signal = null) {
+  const key = createHash("sha256").update(`${region}\0${pat}`).digest("hex");
+  const cached = patJobCache.get(key);
   if (cached && cached.expiresAt - Date.now() > PAT_REFRESH_BUFFER_MS) return cached;
 
-  const { jobToken, expiresAt } = await exchangeJobToken(pat, proxyOptions, signal);
-  const userId = await fetchUserIdForJobToken(jobToken, proxyOptions, signal);
+  const { jobToken, expiresAt } = await exchangeJobToken(pat, region, proxyOptions, signal);
+  const userId = await fetchUserIdForJobToken(jobToken, region, proxyOptions, signal);
   const resolved = { accessToken: jobToken, userId, expiresAt };
-  patJobCache.set(pat, resolved);
+  patJobCache.set(key, resolved);
   return resolved;
 }
 
@@ -143,10 +146,28 @@ async function resolvePatCredential(pat, proxyOptions = null, signal = null) {
  *   - PAT (pt-...) connections → exchanged to a job token (jt-...) + userId
  *   - everything else → passed through unchanged
  */
+export async function refreshQoderToken(credentials, proxyOptions = null, signal = null) {
+  const region = getQoderEndpoints(credentials?.providerSpecificData?.region);
+  const refreshToken = credentials?.refreshToken;
+  if (!refreshToken) throw new Error("Qoder refresh token is missing");
+  const isJob = String(credentials?.accessToken || "").startsWith("jt-");
+  const path = isJob ? "jobToken" : "deviceToken";
+  const response = await proxyAwareFetch(`${region.openapi}/api/v1/${path}/refresh`, {
+    method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }), signal,
+  }, proxyOptions);
+  if (!response.ok) throw new Error(`Qoder ${path} refresh failed: HTTP ${response.status}`);
+  const data = await response.json();
+  const accessToken = data.token || data.device_token || data.access_token;
+  if (!accessToken || !data.refresh_token) throw new Error(`Qoder ${path} refresh returned incomplete token pair`);
+  return { accessToken, refreshToken: data.refresh_token, expiresIn: typeof data.expires_in === "number" ? data.expires_in / 1000 : undefined };
+}
+
 export async function resolveQoderCredentials(credentials, proxyOptions = null, signal = null) {
+  const region = getQoderEndpoints(credentials?.providerSpecificData?.region).region;
   const raw = credentials?.apiKey || credentials?.accessToken;
   if (isQoderPat(raw)) {
-    const resolved = await resolvePatCredential(raw, proxyOptions, signal);
+    const resolved = await resolvePatCredential(raw, region, proxyOptions, signal);
     return {
       ...credentials,
       accessToken: resolved.accessToken,
@@ -154,6 +175,7 @@ export async function resolveQoderCredentials(credentials, proxyOptions = null, 
       providerSpecificData: {
         authMethod: "pat",
         ...(credentials?.providerSpecificData || {}),
+        region,
         userId: resolved.userId || credentials?.providerSpecificData?.userId || "",
         machineId: credentials?.providerSpecificData?.machineId || "",
       },
@@ -168,8 +190,9 @@ export async function resolveQoderCredentials(credentials, proxyOptions = null, 
  */
 function cacheKey(credentials) {
   const psd = credentials?.providerSpecificData || {};
-  const seed = psd.userId || credentials?.refreshToken || credentials?.accessToken || "anonymous";
-  return createHash("sha256").update(`qoder:${seed}`).digest("hex");
+  const region = getQoderEndpoints(psd.region).region;
+  const seed = credentials?.refreshToken || credentials?.apiKey || credentials?.accessToken || psd.userId || "anonymous";
+  return createHash("sha256").update(`qoder:${region}:${seed}`).digest("hex");
 }
 
 /**
@@ -198,9 +221,12 @@ async function fetchQoderCatalogRaw(credentials, signal, proxyOptions = null) {
 
   // Job-token traffic is rejected by api3 ("Login expired" 403) — the
   // official qodercli serves it from api2 instead.
-  const modelListUrl = String(creds.authToken).startsWith("jt-")
-    ? `${QODER_CHAT_BASE_ALT}/algo/api/v2/model/list`
-    : QODER_MODEL_LIST_URL;
+  const region = getQoderEndpoints(credentials?.providerSpecificData?.region);
+  const modelListUrl = region.region === "cn"
+    ? `${region.gateway}/algo/api/v2/model/list`
+    : String(creds.authToken).startsWith("jt-")
+      ? `${QODER_CHAT_BASE_ALT}/algo/api/v2/model/list`
+      : QODER_MODEL_LIST_URL;
 
   const headers = {
     Accept: "application/json",
@@ -229,6 +255,7 @@ async function fetchQoderCatalogRaw(credentials, signal, proxyOptions = null) {
       modelListUrl,
       {
         method: "GET",
+        redirect: "error",
         headers,
         signal: controller.signal,
       },
@@ -302,7 +329,7 @@ export async function resolveQoderModels(credentials, options = {}) {
   }
   if (!resolved?.accessToken || !(resolved.providerSpecificData || {}).userId) return null;
 
-  const key = cacheKey(resolved);
+  const key = cacheKey(credentials);
   const now = Date.now();
   if (!options.forceRefresh) {
     const cached = catalogCache.get(key);

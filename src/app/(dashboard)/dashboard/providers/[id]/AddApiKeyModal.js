@@ -13,10 +13,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
-  const credentialLabel = isCookie ? "Cookie Value" : provider === "qoder" ? "Personal Access Token (PAT)" : "API Key";
+  const credentialLabel = isCookie ? "Cookie Value" : (provider === "qoder" || provider === "qoder-cn") ? "Personal Access Token (PAT)" : "API Key";
   const credentialPlaceholder = isCookie
     ? (provider === "grok-web" ? "sso=xxxxx... or just the raw value" : "eyJhbGciOi...")
-    : (isXaiApiKey ? "xai-..." : provider === "qoder" ? "pt-..." : "");
+    : (isXaiApiKey ? "xai-..." : (provider === "qoder" || provider === "qoder-cn") ? "pt-..." : "");
 
   const isAzure = provider === "azure";
   const isCloudflareAi = provider === "cloudflare-ai";
@@ -47,7 +47,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [saving, setSaving] = useState(false);
   const bulkPlaceholder = isCloudflareAi
     ? `name1|sk-key1|acc123456\nname2|sk-key2|def789012\nsk-key-only-auto-named`
-    : provider === "qoder"
+    : (provider === "qoder" || provider === "qoder-cn")
       ? `name1|pt-xxxxx\nname2|pt-yyyyy\npt-only-auto-named`
       : BULK_PLACEHOLDER;
 
@@ -56,6 +56,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [bulkResult, setBulkResult] = useState(null); // { success, failed }
 
   const buildProviderSpecificData = () => {
+    if (provider === "qoder-cn") return { region: "cn" };
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
       return { baseUrl: formData.ollamaHostUrl.trim() };
     }
@@ -175,7 +176,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             priority: 1,
             testStatus: isValid ? "active" : "unknown",
             mouseId: formData.mouseId || null,
-            ...(entry.providerSpecificData ? { providerSpecificData: entry.providerSpecificData } : {}),
+            ...((entry.providerSpecificData || provider === "qoder-cn") ? {
+              providerSpecificData: { ...(provider === "qoder-cn" ? { region: "cn" } : {}), ...entry.providerSpecificData },
+            } : {}),
           }),
         });
         if (res.ok) success++;
@@ -205,7 +208,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             <p className="text-xs text-text-muted">
               {isCloudflareAi
                 ? <>One key per line. Format: <code>name|apiKey|accountId</code> or just <code>apiKey</code> (auto-named by index).</>
-                : provider === "qoder"
+                : (provider === "qoder" || provider === "qoder-cn")
                   ? <>One PAT per line. Format: <code>name|pt-...</code> or just <code>pt-...</code> (auto-named by index).</>
                   : <>One key per line. Format: <code>name|apiKey</code> or just <code>apiKey</code> (auto-named by index).</>
               }

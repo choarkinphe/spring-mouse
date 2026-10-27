@@ -672,7 +672,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         if (!modelId) continue;
 
         // Qoder model ID format may be "qoder/auto" or "auto", need to remove prefix
-        const cleanModelId = modelId.replace(/^qoder\//, "");
+        const cleanModelId = modelId.replace(/^qoder(?:-cn)?\//, "");
         const alreadyExists = customModels.some(
           (entry) => entry.providerAlias === providerStorageAlias && entry.id === cleanModelId && (entry.kind || entry.type || "llm") === "llm"
         ) || Object.values(modelAliases).includes(`${providerStorageAlias}/${cleanModelId}`);
@@ -1141,7 +1141,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         </button>
 
         {/* Import Qoder models button — only show for qoder provider */}
-        {providerId === "qoder" && connections.some((conn) => conn.isActive !== false) && (
+        {(providerId === "qoder" || providerId === "qoder-cn") && connections.some((conn) => conn.isActive !== false) && (
           <button
             type="button"
             onClick={handleImportQoderModels}

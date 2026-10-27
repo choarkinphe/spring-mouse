@@ -131,6 +131,7 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "cursor",
   "kiro",
   "qoder",
+  "qoder-cn",
   "gemini-cli",
   "grok-cli",
   "ollama-local",

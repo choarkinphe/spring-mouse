@@ -246,6 +246,9 @@ function ChannelQuota({ quotas, loading }) {
           <span className="material-symbols-outlined text-[13px]! leading-none" aria-label="配额口径说明">info</span>
         </Tooltip>
       </div>
+      {quotas.some((quota) => quota.isQuotaExceeded === true) && (
+        <div className="mb-2 text-xs text-rose-300">上游报告此账户配额已超额</div>
+      )}
       {/* Keep the remaining amount prominent; used/total stays in the tooltip. */}
       <div className="grid w-full grid-cols-1 gap-2">
         {summarizeQuotaRows(quotas).map(({ quota, detail }) => {

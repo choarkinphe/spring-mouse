@@ -74,6 +74,14 @@ afterAll(() => {
   else process.env.DATA_DIR = originalDataDir;
 });
 
+describe.each([["qoder", "cn"], ["qoder-cn", "global"]])("regional live catalog %s", (provider, region) => {
+  it("never sends a mismatched credential to the network", async () => {
+    await createProviderConnection({ provider, authType: "apikey", name: "Region isolation", apiKey: "pt-fixture", providerSpecificData: { region } });
+    await buildModelsList(["llm"], { includeProviderModels: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 async function seedSyncedProvider(providerId, providerAlias) {
   const connection = await createProviderConnection({
     provider: providerId, authType: "apikey", name: "Isolated consumer test", apiKey: "test-only-model-key",

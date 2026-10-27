@@ -22,6 +22,7 @@ import {
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 import { WORKBUDDY_SITES } from "open-sse/config/workbuddy.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
+import { getQoderProviderRegion, getQoderEndpoints } from "open-sse/shared/qoder/constants.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -72,6 +73,13 @@ const OAUTH_TEST_CONFIG = {
     // 403 for our flow (users re-login when expired). No checkExpiry —
     // we want the actual URL probe to run so revoked tokens surface.
     url: "https://openapi.qoder.sh/api/v1/userinfo",
+    method: "GET",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    refreshable: false,
+  },
+  "qoder-cn": {
+    url: "https://openapi.qoder.com.cn/api/v1/userinfo",
     method: "GET",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
@@ -845,12 +853,13 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
-      case "qoder": {
+      case "qoder":
+      case "qoder-cn": {
         // PAT (pt-...) exchange → job token. A successful exchange proves the PAT.
         const raw = connection.apiKey || "";
         const pat = raw.startsWith("pt-") ? raw : `pt-${raw}`;
         const exRes = await fetchWithConnectionProxy(
-          "https://openapi.qoder.sh/api/v1/jobToken/exchange",
+          getQoderEndpoints(getQoderProviderRegion(connection.provider, connection.providerSpecificData?.region)).jobExchange,
           {
             method: "POST",
             headers: {
@@ -901,6 +910,13 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
+  if (connection.provider === "qoder" || connection.provider === "qoder-cn") {
+    try {
+      getQoderProviderRegion(connection.provider, connection.providerSpecificData?.region);
+    } catch (error) {
+      return { valid: false, error: error.message, latencyMs: 0, testedAt: new Date().toISOString() };
+    }
+  }
   const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl) {

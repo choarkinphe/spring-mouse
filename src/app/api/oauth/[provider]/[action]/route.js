@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import {
   getProvider,
   generateAuthData,
@@ -202,8 +203,10 @@ export async function GET(request, { params }) {
             ...(region ? { region } : {}),
             ...(authMethod ? { authMethod } : {}),
           }
-        : undefined;
-      
+        : (provider === "qoder" || provider === "qoder-cn") && region !== null
+          ? { region }
+          : undefined;
+
       // Providers that don't use PKCE for device code (Grok CLI HAR: plain device_code, no challenge)
       const noPkceDeviceProviders = [
         "github",
@@ -216,6 +219,7 @@ export async function GET(request, { params }) {
         "workbuddy",
         "workbuddy-ai",
         "qoder",
+        "qoder-cn",
         "grok-cli",
       ];
       let deviceData;
@@ -377,6 +381,10 @@ export async function POST(request, { params }) {
 
     if (action === "poll") {
       const { deviceCode, codeVerifier, extraData } = body;
+      if (provider === "qoder" || provider === "qoder-cn") {
+        getQoderProviderRegion(provider, body.region);
+        getQoderProviderRegion(provider, body.providerSpecificData?.region);
+      }
 
       if (!deviceCode) {
         return NextResponse.json({ error: "Missing device code" }, { status: 400 });
@@ -391,7 +399,7 @@ export async function POST(request, { params }) {
       } else if (provider === "kiro") {
         // Kiro needs extraData (clientId, clientSecret) from device code response
         result = await pollForToken(provider, deviceCode, null, extraData);
-      } else if (provider === "qoder") {
+      } else if (provider === "qoder" || provider === "qoder-cn") {
         // Qoder needs both the PKCE verifier (codeVerifier) and the machineId
         // captured at device-code time (extraData._qoderMachineId) so
         // mapTokens can persist it for COSY signing.

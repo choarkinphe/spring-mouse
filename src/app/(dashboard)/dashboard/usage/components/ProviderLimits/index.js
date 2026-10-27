@@ -1246,6 +1246,9 @@ export default function ProviderLimits() {
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
                   />
                 )}
+                {quota?.quotas?.some((row) => row.isQuotaExceeded === true) && (
+                  <div className="mt-1 text-xs text-red-500">上游报告此账户配额已超额</div>
+                )}
                 {hiddenQuotaRows.length > 0 && (
                   <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
                     <span className="material-symbols-outlined shrink-0 text-[14px]">

@@ -24,6 +24,7 @@ import codebuddyCn from "./codebuddy-cn.js";
 import codebuddyIntl from "./codebuddy-intl.js";
 import { createWorkBuddyOAuthHandler } from "./workbuddy.js";
 import { PROVIDER_OAUTH } from "open-sse/config/providers.js";
+import { getQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import kimchi from "./kimchi.js";
 import trae from "./trae.js";
 import windsurf from "./windsurf.js";
@@ -39,6 +40,7 @@ const PROVIDERS = {
   antigravity,
   iflow,
   qoder,
+  "qoder-cn": { ...qoder, config: PROVIDER_OAUTH["qoder-cn"] },
   github,
   kiro,
   cursor,
@@ -147,6 +149,10 @@ export async function requestDeviceCode(providerName, codeChallenge, options) {
   if (provider.flowType !== "device_code") {
     throw new Error(`Provider ${providerName} does not support device code flow`);
   }
+  if (providerName === "qoder" || providerName === "qoder-cn") {
+    getQoderProviderRegion(providerName, options?.region);
+    getQoderProviderRegion(providerName, provider.config.region);
+  }
   return await provider.requestDeviceCode(provider.config, codeChallenge, options || {});
 }
 
@@ -163,6 +169,11 @@ export async function pollForToken(providerName, deviceCode, codeVerifier, extra
     throw new Error(`Provider ${providerName} does not support device code flow`);
   }
 
+  if (providerName === "qoder" || providerName === "qoder-cn") {
+    getQoderProviderRegion(providerName, provider.config.region);
+    getQoderProviderRegion(providerName, extraData?.region);
+    getQoderProviderRegion(providerName, extraData?._qoderRegion);
+  }
   const result = await provider.pollToken(provider.config, deviceCode, codeVerifier, extraData);
 
   if (result.ok) {

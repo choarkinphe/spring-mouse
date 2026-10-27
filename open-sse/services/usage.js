@@ -41,10 +41,21 @@ const USAGE_HANDLERS = {
   }),
   kiro: (c) => getKiroUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   qoder: async (c) => {
-    // PAT (pt-...) connections must be exchanged to a job token before the
-    // quota endpoint accepts them.
+    if (c.providerSpecificData?.region != null && c.providerSpecificData.region !== "global") {
+      return { message: "Qoder credential region mismatch" };
+    }
+    // PAT connections must be exchanged before requesting quota.
     const resolved = await resolveQoderCredentials(c, c.proxyOptions).catch(() => null);
+    if (!resolved && (c.apiKey || c.accessToken)?.startsWith("pt-")) return { message: "Qoder credential exchange failed" };
     return getQoderUsage(resolved?.accessToken || c.accessToken, c.proxyOptions);
+  },
+  "qoder-cn": async (c) => {
+    const region = c.providerSpecificData?.region;
+    if (region != null && region !== "cn") return { message: "Qoder CN credential region mismatch" };
+    const credentials = { ...c, providerSpecificData: { ...c.providerSpecificData, region: "cn" } };
+    const resolved = await resolveQoderCredentials(credentials, c.proxyOptions).catch(() => null);
+    if (!resolved && (c.apiKey || c.accessToken)?.startsWith("pt-")) return { message: "Qoder CN credential exchange failed" };
+    return getQoderUsage(resolved?.accessToken || c.accessToken, c.proxyOptions, "qoder-cn");
   },
   iflow: (c) => getIflowUsage(c.accessToken),
   ollama: (c) => getOllamaUsage(c.apiKey, c.providerSpecificData, c.proxyOptions),

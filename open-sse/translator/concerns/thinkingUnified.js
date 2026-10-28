@@ -101,6 +101,96 @@ export function extractThinking(body) {
   return null;
 }
 
+// Clamp recognized thinking suffixes when the routing model is held separately.
+export function capThinkingModel(model, ceiling) {
+  const limit = ceilingBudget(ceiling);
+  const { cleanModel, override } = parseSuffix(model);
+  if (!override) return model;
+  if (override.mode === "none") return model;
+  if (limit === 0) return `${cleanModel}(none)`;
+  if (override.mode === "budget") {
+    return override.budget > limit ? `${cleanModel}(${limit})` : model;
+  }
+  if (override.mode === "auto" || levelExceeds(override.level, limit)) {
+    return `${cleanModel}(${ceiling.toLowerCase()})`;
+  }
+  return model;
+}
+
+function ceilingBudget(ceiling) {
+  const level = typeof ceiling === "string" ? ceiling.toLowerCase() : "";
+  const budget = LEVEL_TO_BUDGET[level];
+  if (!Object.hasOwn(LEVEL_TO_BUDGET, level) || !Number.isFinite(budget) || budget < 0) {
+    throw new RangeError("Thinking ceiling must be a supported effort level");
+  }
+  return budget;
+}
+
+function levelExceeds(level, limit) {
+  if (typeof level !== "string") return false;
+  const normalized = level.toLowerCase();
+  // Ultra is supported by some models but has no numeric mapping in thinking.js.
+  if (normalized === "off") return false;
+  return !Object.hasOwn(LEVEL_TO_BUDGET, normalized) || LEVEL_TO_BUDGET[normalized] > limit;
+}
+
+// Return a deep clone with only existing thinking intent capped. This deliberately
+// does not translate formats or introduce thinking when the request has no intent.
+// Pass the routing model when it differs from body.model; cap that routing model
+// with capThinkingModel too, because a suffix overrides body fields downstream.
+export function capThinking(body, ceiling, model = body?.model) {
+  const limit = ceilingBudget(ceiling);
+  const level = ceiling.toLowerCase();
+  const out = structuredClone(body);
+  if (!out || typeof out !== "object" || Array.isArray(out)) return out;
+
+  const capLevel = (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.toLowerCase();
+    return normalized === "auto" || levelExceeds(normalized, limit) ? level : value;
+  };
+  const isBudget = (value) => (typeof value === "number" || (typeof value === "string" && value.trim() !== "")) && Number.isFinite(Number(value));
+  const capBudget = (value) => isBudget(value) && (Number(value) < 0 || Number(value) > limit) ? limit : value;
+
+  if (typeof out.model === "string") out.model = capThinkingModel(out.model, ceiling);
+  const suffix = parseSuffix(model).override;
+  // An explicit disabled suffix overrides the body, so leave its intent untouched.
+  if (suffix?.mode === "none" || (suffix?.mode === "budget" && suffix.budget === 0)) return out;
+
+  if (out.output_config && typeof out.output_config === "object") {
+    out.output_config.effort = capLevel(out.output_config.effort);
+    if (out.output_config.effort === undefined) delete out.output_config.effort;
+  }
+  if (typeof out.reasoning_effort === "string") out.reasoning_effort = capLevel(out.reasoning_effort);
+  if (out.reasoning && typeof out.reasoning === "object" && typeof out.reasoning.effort === "string") {
+    out.reasoning.effort = capLevel(out.reasoning.effort);
+  }
+  const thinking = out.thinking;
+  if (thinking && typeof thinking === "object" && thinking.type !== "disabled") {
+    if (limit === 0 && (thinking.type === "adaptive" || thinking.type === "enabled")) {
+      thinking.type = "disabled";
+      delete thinking.budget_tokens;
+      if (out.output_config && typeof out.output_config === "object") delete out.output_config.effort;
+    } else if (isBudget(thinking.budget_tokens)) thinking.budget_tokens = capBudget(thinking.budget_tokens);
+    else if (thinking.type === "adaptive") {
+      out.output_config = { ...out.output_config, effort: capLevel(out.output_config?.effort ?? "auto") };
+    } else if (thinking.type === "enabled" && !out.reasoning_effort && !out.reasoning?.effort && !out.output_config?.effort) {
+      thinking.budget_tokens = limit;
+    }
+  }
+  for (const tc of [out.thinkingConfig, out.generationConfig?.thinkingConfig, out.request?.generationConfig?.thinkingConfig]) {
+    if (!tc || typeof tc !== "object") continue;
+    if (typeof tc.thinkingLevel === "string") tc.thinkingLevel = capLevel(tc.thinkingLevel);
+    if (isBudget(tc.thinkingBudget)) tc.thinkingBudget = capBudget(tc.thinkingBudget);
+  }
+  if (out.enable_thinking === true) {
+    if (limit === 0) out.enable_thinking = false;
+    if (isBudget(out.thinking_budget)) out.thinking_budget = capBudget(out.thinking_budget);
+    else out.thinking_budget = limit;
+  }
+  return out;
+}
+
 // Capture thinking intent from a body. Alias of extractThinking, named for clarity
 // at the call-site where intent is snapshotted before format translation.
 export const captureThinking = extractThinking;

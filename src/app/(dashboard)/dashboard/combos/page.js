@@ -105,7 +105,7 @@ function getComboModelAutoTier(entry) {
 }
 
 const EFFORT_OPTIONS = [
-  { value: "", label: "跟随请求" },
+  { value: "", label: "不限制" },
   { value: "none", label: "关闭" },
   { value: "minimal", label: "最少" },
   { value: "low", label: "低" },
@@ -1813,12 +1813,12 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
           <div className="min-w-0">
             <div className="flex w-full min-w-0 items-center gap-1.5 px-1 py-1.5">
               <span className="material-symbols-outlined shrink-0 text-[14px] text-[#7dd3fc]">psychology</span>
-              <span className="shrink-0 text-[11px] font-semibold tracking-wide text-text-main">思考档位</span>
+              <span className="shrink-0 text-[11px] font-semibold tracking-wide text-text-main">最大思考档位</span>
               <span className="min-w-0 flex-1 truncate text-[9px] text-text-muted">
-                {effort ? "每次下发都用这一档" : "跟随请求方"}
+                {effort ? "限制请求的最高档位" : "不限制请求档位"}
               </span>
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-1 pl-6 pr-1" role="radiogroup" aria-label={`${model} 思考档位`}>
+            <div className="flex min-w-0 flex-wrap items-center gap-1 pl-6 pr-1" role="radiogroup" aria-label={`${model} 最大思考档位`}>
             {EFFORT_OPTIONS.map((option) => {
               const active = (effort || "") === option.value;
               return (
@@ -1837,6 +1837,9 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
               );
             })}
             </div>
+            <p className="pl-6 pr-1 pt-1 text-[10px] text-text-muted">
+              请求档位低于上限时保持不变；请求未指定档位时不修改。上游可能只能尽力遵循此限制。
+            </p>
           </div>
 
           {/* Strategy-specific settings next: under the current strategy these

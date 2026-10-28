@@ -16,7 +16,7 @@
  */
 
 import { extractThinking, parseSuffix } from "../translator/concerns/thinkingUnified.js";
-import { effortToBudget } from "../translator/concerns/thinking.js";
+import { effortToBudget, LEVEL_TO_BUDGET } from "../translator/concerns/thinking.js";
 
 export const KIRO_AGENTIC_SUFFIX = "-agentic";
 export const KIRO_THINKING_SUFFIX = "-thinking";
@@ -144,31 +144,27 @@ REMEMBER: When in doubt, write LESS per operation. Multiple small operations > o
  * @param {string} [model] Model id the caller asked for
  * @returns {number|null} budget to inject, or null when thinking is disabled
  */
-export function resolveKiroThinkingBudget(body, headers, model) {
+export function resolveKiroThinkingBudget(body, headers, model, maxThinkingEffort) {
+  const level = typeof maxThinkingEffort === "string" ? maxThinkingEffort.toLowerCase() : "";
+  const ceiling = Object.hasOwn(LEVEL_TO_BUDGET, level) ? LEVEL_TO_BUDGET[level] : Infinity;
+  const capBudget = (budget) => ceiling === 0 ? null : Math.min(budget, ceiling);
+
   const cfg = extractThinking(body);
   if (cfg) {
     if (cfg.mode === "none") return null;
     if (cfg.mode === "level" && cfg.level === "disabled") return null;
-    if (cfg.mode === "budget") return cfg.budget;
-    if (cfg.mode === "level") return effortToBudget(cfg.level) ?? KIRO_THINKING_BUDGET_DEFAULT;
-    return KIRO_THINKING_BUDGET_DEFAULT;
+    if (cfg.mode === "budget") return capBudget(cfg.budget);
+    if (cfg.mode === "level") return capBudget(effortToBudget(cfg.level) ?? KIRO_THINKING_BUDGET_DEFAULT);
+    return capBudget(KIRO_THINKING_BUDGET_DEFAULT);
   }
 
-  if (headers) {
-    const beta = pickHeader(headers, "anthropic-beta");
-    if (typeof beta === "string" && beta.toLowerCase().includes("interleaved-thinking")) {
-      return KIRO_THINKING_BUDGET_DEFAULT;
-    }
-  }
+  const beta = pickHeader(headers, "anthropic-beta");
+  const implicitTrigger = (typeof beta === "string" && beta.toLowerCase().includes("interleaved-thinking"))
+    || containsThinkingModeTag(body)
+    || (typeof model === "string" && /thinking|-reason/i.test(model));
+  if (!implicitTrigger) return null;
 
-  if (containsThinkingModeTag(body)) return KIRO_THINKING_BUDGET_DEFAULT;
-
-  if (typeof model === "string" && model) {
-    const m = model.toLowerCase();
-    if (m.includes("thinking") || m.includes("-reason")) return KIRO_THINKING_BUDGET_DEFAULT;
-  }
-
-  return null;
+  return capBudget(KIRO_THINKING_BUDGET_DEFAULT);
 }
 
 export function extractKiroEffortLevel(body) {
@@ -193,16 +189,23 @@ function extractKiroGptEffortLevel(body) {
   const normalized = effort.toLowerCase();
   if (normalized === "max") return "xhigh";
   // Kiro CLI does not advertise an explicit GPT "none" wire value; omit it.
-  if (["low", "medium", "high", "xhigh"].includes(normalized)) {
-    return normalized;
-  }
+  if (["low", "medium", "high", "xhigh"].includes(normalized)) return normalized;
   return null;
 }
 
-export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config") {
+function capKiroEffort(effort, maxThinkingEffort, candidates) {
+  if (!effort || typeof maxThinkingEffort !== "string") return effort;
+  const level = maxThinkingEffort.toLowerCase();
+  const limit = Object.hasOwn(LEVEL_TO_BUDGET, level) ? LEVEL_TO_BUDGET[level] : undefined;
+  if (limit === undefined || LEVEL_TO_BUDGET[effort] <= limit) return effort;
+  // No supported native effort at or below minimal/none: omit the native field.
+  return candidates.find((candidate) => LEVEL_TO_BUDGET[candidate] <= limit) || null;
+}
+
+export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config", maxThinkingEffort) {
   const effort = effortPath === "reasoning"
-    ? extractKiroGptEffortLevel(body)
-    : extractKiroEffortLevel(body);
+    ? capKiroEffort(extractKiroGptEffortLevel(body), maxThinkingEffort, ["xhigh", "high", "medium", "low"])
+    : capKiroEffort(extractKiroEffortLevel(body), maxThinkingEffort, ["high", "medium", "low"]);
   if (!effort) return undefined;
   if (effortPath === "reasoning") {
     // Mirrors Kiro CLI/KAS buildEffortRequestFields("reasoning") for GPT.
@@ -240,15 +243,15 @@ export function supportsKiroAdditionalModelRequestFields(model) {
   return resolveKiroEffortPath(model) !== null;
 }
 
-export function usesKiroNativeGptEffort(body, model) {
+export function usesKiroNativeGptEffort(body, model, maxThinkingEffort) {
   return resolveKiroEffortPath(model) === "reasoning"
-    && extractKiroGptEffortLevel(body) !== null;
+    && capKiroEffort(extractKiroGptEffortLevel(body), maxThinkingEffort, ["xhigh", "high", "medium", "low"]) !== null;
 }
 
-export function buildKiroAdditionalModelRequestFieldsForModel(body, model) {
+export function buildKiroAdditionalModelRequestFieldsForModel(body, model, maxThinkingEffort) {
   const effortPath = resolveKiroEffortPath(model);
   if (!effortPath) return undefined;
-  return buildKiroAdditionalModelRequestFields(body, effortPath);
+  return buildKiroAdditionalModelRequestFields(body, effortPath, maxThinkingEffort);
 }
 
 /**

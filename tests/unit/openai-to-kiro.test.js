@@ -286,6 +286,33 @@ describe("openaiToKiroRequest", () => {
   });
 
   describe("thinking budget", () => {
+    it.each([
+      ["claude-sonnet-4.5-thinking", {}, "low", 1024],
+      ["claude-sonnet-4.5", { "anthropic-beta": "interleaved-thinking-2025" }, "medium", 8192],
+      ["claude-sonnet-4.5-thinking", {}, "high", 16000],
+    ])("caps implicit thinking for %s at %s", (model, rawHeaders, ceiling, budget) => {
+      const result = openaiToKiroRequest(model, { messages: [{ role: "user", content: "hi" }] }, true, { rawHeaders, maxThinkingEffort: ceiling });
+      expect(systemPromptOf(result)).toContain(`<max_thinking_length>${budget}</max_thinking_length>`);
+    });
+
+    it("does not introduce thinking without a trigger or when ceiling is none", () => {
+      const body = { messages: [{ role: "user", content: "hi" }] };
+      for (const [model, maxThinkingEffort] of [["claude-sonnet-4.5", "low"], ["claude-sonnet-4.5-thinking", "none"]]) {
+        const result = openaiToKiroRequest(model, body, true, { maxThinkingEffort });
+        expect(systemPromptOf(result)).not.toContain("<thinking_mode>");
+      }
+    });
+
+    it.each([["medium", "medium"], ["minimal", null], ["none", null]])(
+      "caps native GPT effort at %s", (ceiling, effort) => {
+        const result = openaiToKiroRequest("gpt-5.6-sol", {
+          reasoning: { effort: "xhigh" }, messages: [{ role: "user", content: "hi" }],
+        }, true, { maxThinkingEffort: ceiling });
+        expect(result.additionalModelRequestFields).toEqual(effort ? { reasoning: { effort } } : undefined);
+        if (ceiling === "minimal") expect(systemPromptOf(result)).toContain("<max_thinking_length>512</max_thinking_length>");
+        if (ceiling === "none") expect(systemPromptOf(result)).not.toContain("<thinking_mode>");
+      }
+    );
     it("maps reasoning_effort low to max_thinking_length 1024", () => {
       const body = {
         reasoning_effort: "low",

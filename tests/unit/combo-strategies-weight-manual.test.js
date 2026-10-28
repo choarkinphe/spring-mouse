@@ -100,36 +100,59 @@ describe("manual routing", () => {
 });
 
 describe("member effort", () => {
-  it("dispatches a member at its own effort via the existing suffix", async () => {
-    const seen = [];
-    await handleComboChat({
-      body: { messages: [] },
-      models: ["a", "b"],
-      handleSingleModel: async (_body, model) => { seen.push(model); return okResponse(); },
+  it("passes each fallback member's ceiling in context without mutating the request or entries", async () => {
+    const body = { messages: [{ role: "user", content: "hello" }], reasoning_effort: "high" };
+    const memberEntries = [{ model: "a", effort: "low" }, { model: "b", effort: "xhigh" }, { model: "c" }];
+    const originalBody = structuredClone(body);
+    const originalEntries = structuredClone(memberEntries);
+    const handleSingleModel = vi.fn(async (_body, model) =>
+      model === "c" ? okResponse() : new Response("unavailable", { status: 503 }));
+
+    const response = await handleComboChat({
+      body,
+      models: ["a", "b", "c"],
+      handleSingleModel,
       log: quietLog,
       comboName: "effort",
       comboStrategy: "fallback",
       autoSwitch: false,
-      memberEntries: [{ model: "a", effort: "high" }, { model: "b" }],
+      memberEntries,
     });
 
-    expect(seen).toEqual(["a(high)"]);
+    expect(response.status).toBe(200);
+    expect(handleSingleModel.mock.calls).toEqual([
+      [body, "a", { comboPath: ["effort"], hasFallback: true, maxEffort: "low" }],
+      [body, "b", { comboPath: ["effort"], hasFallback: true, maxEffort: "xhigh" }],
+      [body, "c", { comboPath: ["effort"], hasFallback: false, maxEffort: null }],
+    ]);
+    expect(body).toEqual(originalBody);
+    expect(memberEntries).toEqual(originalEntries);
   });
 
-  it("leaves a member without an effort untouched", async () => {
-    const seen = [];
-    await handleComboChat({
-      body: { messages: [] },
-      models: ["a"],
-      handleSingleModel: async (_body, model) => { seen.push(model); return okResponse(); },
+  it("uses the pinned manual member's ceiling without mutating the request or entries", async () => {
+    const body = { messages: [{ role: "user", content: "hello" }], reasoning_effort: "high" };
+    const memberEntries = [{ model: "a", effort: "low" }, { model: "b", effort: "xhigh" }];
+    const originalBody = structuredClone(body);
+    const originalEntries = structuredClone(memberEntries);
+    const handleSingleModel = vi.fn(async () => okResponse());
+
+    const response = await handleComboChat({
+      body,
+      models: ["a", "b"],
+      handleSingleModel,
       log: quietLog,
-      comboName: "plain",
-      comboStrategy: "fallback",
-      autoSwitch: false,
-      memberEntries: [{ model: "a" }],
+      comboName: "manual-effort",
+      comboStrategy: "manual",
+      pickModel: "b",
+      memberEntries,
     });
 
-    expect(seen).toEqual(["a"]);
+    expect(response.status).toBe(200);
+    expect(handleSingleModel).toHaveBeenCalledExactlyOnceWith(body, "b", {
+      comboPath: ["manual-effort"], hasFallback: false, maxEffort: "xhigh",
+    });
+    expect(body).toEqual(originalBody);
+    expect(memberEntries).toEqual(originalEntries);
   });
 });
 

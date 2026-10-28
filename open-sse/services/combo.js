@@ -13,9 +13,7 @@ import { isScheduleActive, normalizeScheduleForStorage } from "../../src/shared/
 
 const AUTO_TIERS = new Set(["fast", "balanced", "strong"]);
 
-// Reasoning levels a combo member may pin for itself. Matches the levels the
-// translator already understands in the "model(effort)" suffix (thinking.js
-// LEVEL_TO_BUDGET), so a stored effort never names a level nothing can apply.
+// Reasoning ceilings accepted for combo members.
 export const MEMBER_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 // Weighted rotation: a member weighing 3 takes three requests for every one a
@@ -309,14 +307,14 @@ export function normalizeMemberWeight(value) {
 }
 
 /**
- * The effort a given model id pins, if any.
+ * The effort ceiling for a given model id, if any.
  *
  * `models` reaching the dispatch loop is a plain id list, so the configured
  * entries have to be consulted by id. A member that shares an id at two efforts
  * is not expressible here; `normalizeComboModelsForStorage` keeps the first, and
  * the dashboard prevents adding the same id twice anyway.
  */
-function memberEffortFor(memberEntries, modelStr) {
+export function memberEffortFor(memberEntries, modelStr) {
   if (!Array.isArray(memberEntries) || !modelStr) return null;
   const entry = memberEntries.find((candidate) => comboModelIdentifier(candidate) === modelStr);
   return entry ? comboModelEntry(entry).effort : null;
@@ -575,7 +573,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       );
     }
     log.info("COMBO", `Manual combo ${comboName || ""} → ${target}`);
-    return handleSingleModel(body, target, { comboPath: nextPath, hasFallback: false });
+    return handleSingleModel(body, target, { comboPath: nextPath, hasFallback: false, maxEffort: memberEffortFor(memberEntries, target) });
   }
 
   // Rotation. A shared count wins over local state; weights come from the
@@ -609,18 +607,14 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
     }
     const modelStr = rotatedModels[i];
-    // A member may pin its own reasoning level. It is applied as the existing
-    // "model(effort)" suffix so the whole downstream translator path — which
-    // already understands that form — does the work, and the stored id stays a
-    // real provider/model for capabilities, pricing and the dashboard.
-    const effort = memberEffortFor(memberEntries, modelStr);
-    const dispatchModel = effort ? `${modelStr}(${effort})` : modelStr;
-    log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${dispatchModel}`);
+    const maxEffort = memberEffortFor(memberEntries, modelStr);
+    log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, dispatchModel, {
+      const result = await handleSingleModel(body, modelStr, {
         comboPath: nextPath,
         hasFallback: hasFallback || i < rotatedModels.length - 1,
+        maxEffort,
       });
       
       // Success (2xx) - return response

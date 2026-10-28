@@ -28,6 +28,7 @@ vi.mock("@/lib/usageDb.js", () => ({
   updatePendingRequestTokens: vi.fn(),
   appendRequestLog: vi.fn(async () => {}),
   saveRequestDetail: vi.fn(async () => {}),
+  saveRequestUsage: vi.fn(async () => {}),
 }));
 
 vi.mock("../../open-sse/handlers/chatCore/sseToJsonHandler.js", () => ({
@@ -36,17 +37,15 @@ vi.mock("../../open-sse/handlers/chatCore/sseToJsonHandler.js", () => ({
 
 const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
 
-async function runNativeCodexRequest(model, reasoning) {
-  const body = {
-    model,
-    input: "hello",
-    stream: false,
-    ...(reasoning ? { reasoning } : {}),
-  };
+async function runNativeCodexRequest(model, reasoning, maxEffort, translated = false) {
+  const body = translated
+    ? { model, messages: [{ role: "user", content: "hello" }], stream: false, reasoning_effort: reasoning?.effort }
+    : { model, input: "hello", stream: false, ...(reasoning ? { reasoning } : {}) };
 
   await handleChatCore({
     body,
     modelInfo: { provider: "codex", model },
+    maxEffort,
     credentials: { accessToken: "test-token", providerSpecificData: {} },
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
     connectionId: "test-connection",
@@ -55,13 +54,13 @@ async function runNativeCodexRequest(model, reasoning) {
     cavemanEnabled: false,
     ponytailEnabled: false,
     pxpipeEnabled: false,
-    sourceFormatOverride: "openai-responses",
+    sourceFormatOverride: translated ? "openai" : "openai-responses",
     clientRawRequest: {
-      endpoint: "/v1/responses",
+      endpoint: translated ? "/v1/chat/completions" : "/v1/responses",
       body,
       headers: {
         accept: "application/json",
-        "user-agent": "codex-cli/0.144.1",
+        "user-agent": translated ? "test-client" : "codex-cli/0.144.1",
       },
     },
   });
@@ -82,6 +81,60 @@ describe("native Codex passthrough thinking suffixes", () => {
       success: true,
       response: new Response("{}", { status: 200 }),
     });
+  });
+
+  it("caps native reasoning effort while preserving metadata", async () => {
+    const body = await runNativeCodexRequest("gpt-5.6-sol", { effort: "high", summary: "detailed" }, "low");
+
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(body.reasoning).toEqual({ effort: "low", summary: "detailed" });
+  });
+
+  it("preserves native reasoning effort below the cap", async () => {
+    const body = await runNativeCodexRequest("gpt-5.6-sol", { effort: "low" }, "high");
+
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(body.reasoning).toEqual({ effort: "low" });
+  });
+
+  it("does not add native reasoning when it is absent", async () => {
+    const body = await runNativeCodexRequest("gpt-5.6-sol", undefined, "low");
+
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(body).not.toHaveProperty("reasoning");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("does not convert a numeric model suffix to effort when the ceiling is none", async () => {
+    const body = await runNativeCodexRequest("gpt-5.6-sol(2048)", undefined, "none");
+
+    expect(body.model).toBe("gpt-5.6-sol");
+    expect(body.reasoning?.effort).toBe("none");
+  });
+
+  it("caps Claude adaptive passthrough after normalization", async () => {
+    const body = { model: "claude-haiku-4-5", messages: [{ role: "user", content: "hello" }], stream: false, thinking: { type: "adaptive" }, max_tokens: 4096 };
+    await handleChatCore({
+      body,
+      modelInfo: { provider: "claude", model: "claude-haiku-4-5" },
+      maxEffort: "low",
+      credentials: { accessToken: "test-token", providerSpecificData: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+      connectionId: "test-connection",
+      sourceFormatOverride: "claude",
+      clientRawRequest: { endpoint: "/v1/messages", body, headers: { "user-agent": "claude-cli/2.0.0", accept: "application/json" } },
+    });
+    const sent = executeMock.mock.calls.at(-1)[0].body;
+    expect(sent.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+  });
+
+  it("caps effort on a translated chat completions request", async () => {
+    const body = await runNativeCodexRequest("gpt-5.6-sol", { effort: "high" }, "low", true);
+
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(body).toHaveProperty("input");
+    expect(body).not.toHaveProperty("messages");
+    expect(body.reasoning_effort).toBe("low");
   });
 
   it("forwards Ultra for Sol", async () => {

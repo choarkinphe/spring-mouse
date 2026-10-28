@@ -5,6 +5,8 @@ import {
   parseSuffix,
   extractThinking,
   applyThinking,
+  capThinking,
+  capThinkingModel,
 } from "../../open-sse/translator/concerns/thinkingUnified.js";
 import { extractReasoningText } from "../../open-sse/translator/concerns/reasoning.js";
 
@@ -181,6 +183,71 @@ describe("applyThinking per provider format", () => {
   it("keeps Codex-only GPT-5.6 levels out of Kiro translation", () => {
     const out = apply("openai", "gpt-5.6-sol", { reasoning_effort: "max" }, "kiro");
     expect(out.reasoning_effort).toBe("xhigh");
+  });
+});
+
+describe("thinking ceiling on original requests", () => {
+  it("clones without adding thinking when no intent is present", () => {
+    const body = { model: "m", messages: [{ content: "hello" }] };
+    const result = capThinking(body, "medium");
+    expect(result).toEqual(body);
+    expect(result).not.toBe(body);
+    expect(result.messages).not.toBe(body.messages);
+  });
+
+  it.each([
+    [{ reasoning_effort: "high" }, { reasoning_effort: "medium" }],
+    [{ reasoning: { effort: "auto", summary: "detailed" } }, { reasoning: { effort: "medium", summary: "detailed" } }],
+    [{ thinking: { type: "enabled", budget_tokens: 30000, other: true } }, { thinking: { type: "enabled", budget_tokens: 8192, other: true } }],
+    [{ thinking: { type: "adaptive" }, output_config: { format: "json" } }, { thinking: { type: "adaptive" }, output_config: { format: "json", effort: "medium" } }],
+    [{ thinking: { type: "enabled" } }, { thinking: { type: "enabled", budget_tokens: 8192 } }],
+    [{ generationConfig: { thinkingConfig: { thinkingBudget: -1, includeThoughts: true }, temperature: 0.5 } }, { generationConfig: { thinkingConfig: { thinkingBudget: 8192, includeThoughts: true }, temperature: 0.5 } }],
+    [{ generationConfig: { thinkingConfig: { thinkingBudget: "24576", includeThoughts: true } } }, { generationConfig: { thinkingConfig: { thinkingBudget: 8192, includeThoughts: true } } }],
+    [{ thinking: { type: "enabled", budget_tokens: "30000" } }, { thinking: { type: "enabled", budget_tokens: 8192 } }],
+    [{ enable_thinking: true, thinking_budget: "30000" }, { enable_thinking: true, thinking_budget: 8192 }],
+    [{ request: { generationConfig: { thinkingConfig: { thinkingLevel: "high" } } } }, { request: { generationConfig: { thinkingConfig: { thinkingLevel: "medium" } } } }],
+    [{ enable_thinking: true }, { enable_thinking: true, thinking_budget: 8192 }],
+    [{ enable_thinking: true, thinking_budget: 1000 }, { enable_thinking: true, thinking_budget: 1000 }],
+    [{ thinkingConfig: { thinkingBudget: 0 } }, { thinkingConfig: { thinkingBudget: 0 } }],
+    [{ thinking: { type: "disabled" } }, { thinking: { type: "disabled" } }],
+    [{ reasoning_effort: "low" }, { reasoning_effort: "low" }],
+  ])("caps native shape %# without mutation", (body, expected) => {
+    const original = structuredClone(body);
+    expect(capThinking(body, "medium")).toEqual(expected);
+    expect(body).toEqual(original);
+  });
+
+  it("caps model suffixes including separate routing models", () => {
+    expect(capThinking({ model: "m(high)", reasoning_effort: "high" }, "low"))
+      .toEqual({ model: "m(low)", reasoning_effort: "low" });
+    expect(capThinkingModel("m(9000)", "low")).toBe("m(1024)");
+    expect(capThinkingModel("m(auto)", "low")).toBe("m(low)");
+    expect(capThinkingModel("m(none)", "low")).toBe("m(none)");
+    expect(capThinking({ reasoning_effort: "high" }, "low", "m(none)"))
+      .toEqual({ reasoning_effort: "high" });
+  });
+
+  it.each([
+    [{ reasoning_effort: "AUTO" }, { reasoning_effort: "none" }],
+    [{ reasoning: { effort: "HIGH", summary: "auto" } }, { reasoning: { effort: "none", summary: "auto" } }],
+    [{ thinking: { type: "enabled", budget_tokens: 4096, other: true } }, { thinking: { type: "disabled", other: true } }],
+    [{ thinking: { type: "adaptive" }, output_config: { effort: "high", format: "json" } }, { thinking: { type: "disabled" }, output_config: { format: "json" } }],
+    [{ thinkingConfig: { thinkingBudget: -1 } }, { thinkingConfig: { thinkingBudget: 0 } }],
+    [{ enable_thinking: true, thinking_budget: 4000 }, { enable_thinking: false, thinking_budget: 0 }],
+  ])("caps intent to none %#", (body, expected) => {
+    expect(capThinking(body, "NONE")).toEqual(expected);
+  });
+
+  it("bounds unknown and mixed-case levels including suffixes", () => {
+    expect(capThinking({ reasoning_effort: "FUTURE" }, "LoW")).toEqual({ reasoning_effort: "low" });
+    expect(capThinking({ reasoning_effort: "LOW" }, "HIGH")).toEqual({ reasoning_effort: "LOW" });
+    expect(capThinkingModel("m(ULTRA)", "NONE")).toBe("m(none)");
+    expect(capThinkingModel("m(FUTURE)", "low")).toBe("m(FUTURE)");
+    expect(capThinkingModel("m(2048)", "none")).toBe("m(none)");
+  });
+
+  it("rejects invalid ceilings", () => {
+    expect(() => capThinking({}, "auto")).toThrow(RangeError);
   });
 });
 

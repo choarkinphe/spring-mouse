@@ -71,6 +71,16 @@ describe("Claude → Kiro (direct route)", () => {
     expect(cur.userInputMessageContext?.toolResults?.length ?? 0).toBe(0);
   });
 
+  it("caps implicit Claude thinking at the credential effort ceiling", () => {
+    const out = C2K({ messages: [{ role: "user", content: "hi" }] }, { maxThinkingEffort: "low" }, "claude-sonnet-4.5-thinking");
+    expect(out.systemPrompt).toContain("<max_thinking_length>1024</max_thinking_length>");
+  });
+
+  it("does not enable implicit thinking when the ceiling is none", () => {
+    const out = C2K({ messages: [{ role: "user", content: "hi" }] }, { maxThinkingEffort: "none" }, "claude-sonnet-4.5-thinking");
+    expect(out.systemPrompt || "").not.toContain("<thinking_mode>");
+  });
+
   it("injects thinking_mode tag when model implies thinking", () => {
     const out = translateRequest(
       FORMATS.CLAUDE,

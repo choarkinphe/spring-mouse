@@ -17,7 +17,8 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability, isComboModelActive } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, memberEffortFor, detectRequiredCapabilities, getComboModelsForRequest, getUnsupportedComboRequestCapability, isComboModelActive } from "open-sse/services/combo.js";
+import { LEVEL_TO_BUDGET } from "open-sse/translator/concerns/thinking.js";
 import { classifyAutoRequest, normalizeAutoRoutingConfig, reorderByAutoLevel, ROTATING_STRATEGIES } from "open-sse/services/autoRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from "open-sse/config/runtimeConfig.js";
@@ -317,6 +318,7 @@ export async function handleChat(request, clientRawRequest = null) {
               routeKind: comboRouteKind,
               routed: true,
               comboPath: [routedModelStr],
+              maxEffort: memberEffortFor(resolved.models, m),
             });
           },
           log,
@@ -373,6 +375,12 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
+function combineEffortCeilings(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return LEVEL_TO_BUDGET[a] <= LEVEL_TO_BUDGET[b] ? a : b;
+}
+
 async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, options = {}) {
   // A combo may bind a gateway search provider. The loop lives here — outside
   // the single-attempt transport and inside the combo's model routing — so each
@@ -407,7 +415,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   return handleSingleModelChatInner(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, options);
 }
 
-async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null } = {}) {
+async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null } = {}) {
   if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
   if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
     return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
@@ -546,6 +554,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
               routed: true,
               internalRequest, clientSignal, autoRoutingDepth, hasFallback,
               comboPath: [...comboPath, modelStr],
+              maxEffort: combineEffortCeilings(maxEffort, memberEffortFor(resolved.models, m)),
             });
           },
           log,
@@ -563,7 +572,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true, search: effectiveSearch }),
+        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, maxEffort: combineEffortCeilings(maxEffort, context.maxEffort), internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true, search: effectiveSearch }),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -771,6 +780,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       return await handleChatCore({
         body: { ...body, model: `${provider}/${model}` },
         modelInfo: { provider, model, routeKind: effectiveRouteKind, routed: effectiveRouted },
+        maxEffort,
         credentials: refreshedCredentials,
         log,
         clientRawRequest,

@@ -1296,7 +1296,7 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             {quotaCount > 0 && (
               <>
                 <span className="text-[#3f4a56]" aria-hidden="true">·</span>
-                <span className="whitespace-nowrap text-[#bae6fd]">{quotaCount} 个有配额</span>
+                <span className="whitespace-nowrap text-[#bae6fd]">{quotaCount} 个有配额数据</span>
               </>
             )}
             <span className="text-[#3f4a56]" aria-hidden="true">·</span>

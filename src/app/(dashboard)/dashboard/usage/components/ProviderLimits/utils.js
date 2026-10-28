@@ -550,7 +550,9 @@ export function parseQuotaData(provider, data) {
               unlimited: false,
               isQuotaExceeded: data.isQuotaExceeded,
               unit: quota.unit,
-              resetAt: quota.resetAt || null,
+              // Qoder returns year 9999 without a confirmed expiry meaning.
+              // Keep it in the raw response, but do not present it as a reset date.
+              resetAt: quota.resetAt && new Date(quota.resetAt).getUTCFullYear() !== 9999 ? quota.resetAt : null,
             });
           });
         }

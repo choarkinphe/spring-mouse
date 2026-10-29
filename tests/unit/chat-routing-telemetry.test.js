@@ -55,6 +55,7 @@ vi.mock("open-sse/services/projectId.js", () => ({ getProjectIdForConnection: vi
 vi.mock("open-sse/services/combo.js", () => ({
   handleComboChat: mocks.handleComboChat,
   handleFusionChat: mocks.handleFusionChat,
+  memberEffortFor: vi.fn((entries, model) => entries?.find((entry) => entry?.model === model)?.effort || null),
   detectRequiredCapabilities: vi.fn(() => new Set()),
   getComboModelsForRequest: vi.fn((models) => (Array.isArray(models) ? models : [])),
   getUnsupportedComboRequestCapability: vi.fn(() => null),

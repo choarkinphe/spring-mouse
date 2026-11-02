@@ -6,6 +6,7 @@ import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
 import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
+import { requiresWorkBuddyAuthorization, WORKBUDDY_LEGACY } from "open-sse/config/workbuddy.js";
 import { CODEBUDDY_CHECKIN as config, supportsCodeBuddyCheckin, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
 
 // The refresh contract is per provider: the new `workbuddy` provider uses the
@@ -169,6 +170,7 @@ export function createCodeBuddyCheckinService(deps = {}) {
   async function run(connectionId, { automatic = false } = {}) {
     const connection = await load(connectionId);
     if (!connection) return { ok: false, httpStatus: 404, message: "账号不存在" };
+    if (requiresWorkBuddyAuthorization(connection.provider, connection)) return { ok: false, httpStatus: WORKBUDDY_LEGACY.status, message: WORKBUDDY_LEGACY.message };
     if (!supportsCodeBuddyCheckin(connection)) return { ok: false, httpStatus: 400, message: MESSAGES.unsupported };
     if (connection.isActive === false) return { ok: false, httpStatus: 400, message: "请先启用账号", checkin: publicCheckinState(await getState(connectionId)) };
 

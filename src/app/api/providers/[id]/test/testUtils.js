@@ -1,4 +1,6 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { hasWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
+import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
@@ -909,6 +911,12 @@ case "llm7": {
 export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
+  if (requiresWorkBuddyAuthorization(connection.provider, connection)) {
+    return { valid: false, error: "Legacy CodeBuddy credentials require explicit authorization for the correct product", latencyMs: 0, testedAt: new Date().toISOString() };
+  }
+  if (hasWorkBuddyRestriction(connection.provider, connection) || (connection.isActive === false && ["workbuddy", "workbuddy-ai", "codebuddy-cn", "codebuddy-intl"].includes(connection.provider))) {
+    return { valid: false, error: "WorkBuddy account is inactive or restricted; upstream tests are paused", latencyMs: 0, testedAt: new Date().toISOString() };
+  }
 
   if (connection.provider === "qoder" || connection.provider === "qoder-cn") {
     try {

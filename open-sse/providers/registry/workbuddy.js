@@ -11,7 +11,7 @@ export default {
   display: {
     name: "WorkBuddy (China)", icon: "smart_toy", color: "#5B5BD6", textIcon: "WB",
     website: "https://copilot.tencent.com",
-    notice: { text: "WorkBuddy 国内版（CodeBuddy 套餐）。原 CodeBuddy 国内版账号已原地迁移。", signupUrl: "https://copilot.tencent.com" },
+    notice: { text: "WorkBuddy 国内版。旧 CodeBuddy 凭据不再静默兼容，须按正确产品重新授权。第三方接入不保证受支持；受限账号请先申诉。", signupUrl: "https://copilot.tencent.com" },
   },
   category: "oauth", hasOAuth: true, authModes: ["oauth"],
   modelListSource: "upstream",

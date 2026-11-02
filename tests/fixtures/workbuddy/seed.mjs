@@ -23,5 +23,13 @@ await updateSettings({ requireLogin: false, requireApiKey: false, rtkEnabled: fa
 const { getAdapter } = await import("../../../src/lib/db/driver.js");
 const migration = (await import("../../../src/lib/db/migrations/027-codebuddy-to-workbuddy.js")).default;
 migration.up(await getAdapter());
+// A separately authorized synthetic row exercises the new contract without
+// mutating either migrated credential or contacting an authorization server.
+await createProviderConnection({
+  provider: "workbuddy-ai", authType: "oauth", name: "新授权合成账号",
+  accessToken: "fresh-access-not-real", refreshToken: "fresh-refresh-not-real", isActive: true,
+  expiresAt: new Date(Date.now() + 86400000).toISOString(),
+  providerSpecificData: { workbuddyLegacyCredential: false, workbuddyProduct: "workbuddy-ai", workbuddyPlatform: "workbuddy-ai", workbuddyContract: "0.1.30", workbuddyOrigin: "https://www.workbuddy.ai", domain: "www.workbuddy.ai", codebuddyUid: "fresh-fixture-user", tokenType: "Bearer" },
+});
 const after = await getProviderConnections();
 console.log(JSON.stringify({ migrated: after.map((c) => ({ provider: c.provider, name: c.name, legacy: c.providerSpecificData?.workbuddyLegacyCredential === true })) }));

@@ -216,6 +216,7 @@ export function createWorkBuddyOAuthHandler(input) {
         ...(text(tokens.display_name) ? { displayName: text(tokens.display_name) } : {}),
         ...(email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? { email } : {}),
         providerSpecificData: {
+          workbuddyLegacyCredential: false,
           workbuddyProduct: config.productId,
           workbuddyOrigin: config.origin,
           workbuddyPlatform: config.platform,

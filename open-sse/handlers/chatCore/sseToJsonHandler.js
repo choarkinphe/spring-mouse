@@ -1,5 +1,6 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { createErrorResult } from "../../utils/error.js";
+import { isWorkBuddyRestriction, workBuddyRestrictionResponse } from "../../shared/workbuddyRestriction.js";
 import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { FORMATS } from "../../translator/formats.js";
@@ -494,10 +495,16 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     }
     if (parsed.error) {
       if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
-      return createErrorResult(
-        HTTP_STATUS.BAD_GATEWAY,
-        parsed.error.message || "Upstream SSE stream failed"
+      const streamError = providerResponse.__smGetStreamError?.();
+      const result = createErrorResult(
+        streamError?.status || HTTP_STATUS.BAD_GATEWAY,
+        parsed.error.message || "Upstream SSE stream failed",
+        undefined, streamError?.upstreamError,
       );
+      if (isWorkBuddyRestriction(provider, streamError?.upstreamError?.body)) {
+        result.response = workBuddyRestrictionResponse(result.error);
+      }
+      return result;
     }
 
     if (onRequestSuccess) await onRequestSuccess();

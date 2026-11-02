@@ -64,6 +64,13 @@ export const CODEBUDDY_VERIFICATION = Object.freeze({
   cooldownMs: 5 * 60 * 1000,
 });
 
+// Account restriction is not token expiry or a timed rate limit. Only an
+// operator may restore an account after the upstream lifts the restriction.
+export const WORKBUDDY_RESTRICTION = Object.freeze({
+  providers: Object.freeze(new Set(["workbuddy", "workbuddy-ai", "codebuddy-cn", "codebuddy-intl"])),
+  code: 11140,
+});
+
 // CodeBuddy 14003 explicitly advises waiting about one minute.
 export const CODEBUDDY_RATE_LIMIT = Object.freeze({
   quotaCode: 6004,

@@ -5,6 +5,7 @@ import {
   getMouseById,
   getAvailableMouseById,
   updateProviderConnection,
+  updateProviderConnectionHealth,
   deleteProviderConnection,
 } from "@/models";
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
@@ -209,7 +210,20 @@ export async function PUT(request, { params }) {
       delete updateData.providerSpecificData.proxyPoolId;
     }
 
+    // Recovery is separate from a normal/bulk enable. The operator must confirm
+    // the upstream lifted the restriction; a successful billing probe is not proof.
+    if (body.recoverRestriction === true && isActive !== true) {
+      return NextResponse.json({ error: "Restriction recovery requires explicit isActive: true" }, { status: 400 });
+    }
     let updated = await updateProviderConnection(id, updateData);
+    if (body.recoverRestriction === true) {
+      updated = await updateProviderConnectionHealth(id, (current) => ({ update: {
+        isActive: true, accountRestriction: null,
+        testStatus: "active", testStatusUntil: null,
+        lastError: null, lastErrorAt: null, errorCode: null,
+        healthRevision: (current.healthRevision || 0) + 1,
+      } }));
+    }
 
     // Slot moves run after the field updates, so their renumbering cannot be
     // undone by another priority write from this same request.

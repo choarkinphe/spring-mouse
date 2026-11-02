@@ -9,7 +9,7 @@ export default {
   display: {
     name: "WorkBuddy AI", icon: "smart_toy", color: "#00B98A", textIcon: "WB",
     website: "https://www.workbuddy.ai",
-    notice: { text: "WorkBuddy 国际版。原 CodeBuddy 国际版账号保留原凭据继续可用，建议在方便时重新授权。", signupUrl: "https://www.workbuddy.ai" },
+    notice: { text: "WorkBuddy 国际版。旧 CodeBuddy 凭据不再静默兼容，须按正确产品重新授权。第三方接入不保证受支持；受限账号请先申诉。", signupUrl: "https://www.workbuddy.ai" },
   },
   category: "oauth", hasOAuth: true, authModes: ["oauth"],
   modelListSource: "upstream",

@@ -4,6 +4,7 @@ export {
   getProviderConnectionById,
   createProviderConnection,
   updateProviderConnection,
+  updateProviderConnectionHealth,
   deleteProviderConnection,
   getMouses,
   getMouseById,

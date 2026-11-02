@@ -76,6 +76,15 @@ describe("Codex usage reset credits", () => {
     );
   });
 
+  it.each([{ isActive: false }, { accountRestriction: { code: 11140 } }])("pauses WorkBuddy quota and forced refresh requests for %j", async fields => {
+    mocks.getProviderConnectionById.mockResolvedValue({ id: "wb", provider: "workbuddy", authType: "oauth", ...fields });
+    const { GET, refreshAndUpdateCredentials } = await import("../../src/app/api/usage/[connectionId]/route.js");
+    expect((await GET(new Request("http://localhost/api/usage/wb?force=1"), { params: Promise.resolve({ connectionId: "wb" }) })).status).toBe(409);
+    await refreshAndUpdateCredentials({ provider: "workbuddy", ...fields }, true);
+    expect(mocks.getUsageForProvider).not.toHaveBeenCalled();
+    expect(mocks.getExecutor).not.toHaveBeenCalled();
+  });
+
   it("keeps the usage response when reset credit lookup fails", async () => {
     const connection = {
       id: "conn_1",

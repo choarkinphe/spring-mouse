@@ -4,6 +4,8 @@ import "open-sse/index.js";
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { getCodexRateLimitResetCredits, getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
+import { hasWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
+import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 
@@ -21,6 +23,9 @@ function isAuthExpiredMessage(usage) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  if (connection.isActive === false || hasWorkBuddyRestriction(connection.provider, connection) || requiresWorkBuddyAuthorization(connection.provider, connection)) {
+    return { connection, refreshed: false };
+  }
   const executor = getExecutor(connection.provider);
 
   // Build credentials object from connection
@@ -130,6 +135,10 @@ export async function GET(request, { params }) {
     connection = await getProviderConnectionById(connectionId);
     if (!connection) {
       return Response.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    if (connection.isActive === false || hasWorkBuddyRestriction(connection.provider, connection) || requiresWorkBuddyAuthorization(connection.provider, connection)) {
+      return Response.json({ message: "Connection is inactive or restricted; usage requests are paused" }, { status: 409 });
     }
 
     // Allow OAuth connections, plus whitelisted apikey providers (glm/minimax/kiro/...)

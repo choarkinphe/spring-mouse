@@ -648,6 +648,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   const modelLevelExcluded = new Set();
   let lastError = null;
   let lastStatus = null;
+  let lastRestrictionResponse = null;
   // Counts accounts that reported a *model-level* problem (the upstream model is
   // busy). Fanning out to the whole pool on such a signal multiplies the errors
   // we send at an upstream that is already saturated, so it is capped.
@@ -686,6 +687,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       );
     }
 
+    if (credentials?.reauthorizationRequired) return lastRestrictionResponse || errorResponse(409, credentials.error);
     if (credentials?.capabilityUnavailable) return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, credentials.error);
     if (credentials?.aborted) return errorResponse(499, "Request aborted");
 
@@ -746,7 +748,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       // attributed to the upstream status it ended on rather than to local policy.
       log.warn("CHAT", `${reqPrefix}No more accounts available`, { provider });
       saveOutcome(lastStatus ? `upstream:${lastStatus}` : "blocked:accounts_exhausted");
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return lastRestrictionResponse || errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
     if (clientSignal?.aborted || request?.signal?.aborted) {
@@ -869,7 +871,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
     }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
-    const { shouldFallback, modelLevel, transport, accountScoped } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
+    const { shouldFallback, modelLevel, transport, accountScoped, restricted } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
       const scanBound = result.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
@@ -950,6 +952,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       if (modelLevel) modelLevelExcluded.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
+      lastRestrictionResponse = restricted ? result.response : null;
 
       if (modelLevel) {
         modelLevelFailures += 1;

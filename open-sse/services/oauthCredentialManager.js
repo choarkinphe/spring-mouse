@@ -4,6 +4,8 @@ import {
   refreshTokenByProvider,
 } from "./tokenRefresh.js";
 import { PROVIDER_OAUTH } from "../providers/index.js";
+import { hasWorkBuddyRestriction } from "../shared/workbuddyRestriction.js";
+import { requiresWorkBuddyAuthorization } from "../config/workbuddy.js";
 
 // Single source: codex.oauth.maxRefreshAgeMs (8 days) — proactive refresh window
 export const CODEX_MAX_REFRESH_AGE_MS = PROVIDER_OAUTH["codex"]?.maxRefreshAgeMs;
@@ -78,7 +80,7 @@ export function isRefreshFailureCoolingDown(credentials, nowMs = Date.now()) {
 }
 
 export function shouldRefreshCredentials(provider, credentials, nowMs = Date.now()) {
-  if (!credentials) return false;
+  if (!credentials || credentials.isActive === false || hasWorkBuddyRestriction(provider, credentials) || requiresWorkBuddyAuthorization(provider, credentials)) return false;
 
   // A refresh the upstream already rejected as permanently dead must not be
   // retried on every request. The current access token is still usable until it
@@ -221,7 +223,7 @@ export async function withCredentialRefreshLock(provider, credentials, refreshFn
 }
 
 export async function refreshProviderCredentials(provider, credentials, log) {
-  if (!credentials) return null;
+  if (!credentials || credentials.isActive === false || hasWorkBuddyRestriction(provider, credentials) || requiresWorkBuddyAuthorization(provider, credentials)) return null;
 
   return withCredentialRefreshLock(provider, credentials, async () => {
     const refreshed = await refreshTokenByProvider(provider, credentials, log);

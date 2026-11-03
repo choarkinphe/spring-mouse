@@ -35,6 +35,7 @@ import { buildOpenCodeGoHeaders } from "../utils/opencodeGoHeaders.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { createCompactionDiagnostics } from "../utils/compactionDiagnostics.js";
 import { hasWorkBuddyRestriction, isWorkBuddyRestriction, workBuddyRestrictionResponse } from "../shared/workbuddyRestriction.js";
+import { getResponsesStateError } from "../shared/responsesState.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -65,6 +66,8 @@ export function stripContinuityFields(body) {
 
 export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onStreamUpstreamError, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, maxEffort = null, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, hasFallback = false, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
+  const stateError = getResponsesStateError(body, sourceFormatOverride);
+  if (stateError) return createErrorResult(HTTP_STATUS.BAD_REQUEST, stateError);
   if (hasWorkBuddyRestriction(provider, credentials)) {
     const message = "WorkBuddy account is restricted; submit feedback and manually recover only after the restriction is lifted";
     return { ...createErrorResult(HTTP_STATUS.FORBIDDEN, message), response: workBuddyRestrictionResponse(message) };
@@ -173,8 +176,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (maxEffort) body = capThinking(body, maxEffort, resolvedUpstreamModel);
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
-  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
-  let stream = providerRequiresStreaming ? true : (body.stream !== false);
+  const providerRequiresStreaming = (useTransport?.forceStream ?? PROVIDERS[provider]?.forceStream) === true;
+  let stream = providerRequiresStreaming ? true
+    : useTransport?.forceStream === false ? body.stream === true : (body.stream !== false);
 
   // Image generation models require non-streaming (Google v1internal:generateContent)
   const modelType = getModelType(alias, model);
@@ -272,6 +276,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
   }
+
+  // Native multi-endpoint transports must send the same streaming mode that the
+  // response handlers expect (Responses defaults to JSON, unlike forced Chat).
+  if (useTransport?.forceStream !== undefined) translatedBody.stream = stream;
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
   if (clientTool === "claude" && Array.isArray(translatedBody.tools)) {

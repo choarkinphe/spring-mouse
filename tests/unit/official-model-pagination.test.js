@@ -171,6 +171,43 @@ describe("incomplete directory failure boundaries", () => {
   });
 });
 
+describe("xAI model discovery errors", () => {
+  it.each([402, 403])("explains the spending limit on HTTP %s without echoing upstream diagnostics", async (status) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      code: "personal-team-blocked:spending-limit",
+      error: `You have run out of credits. Private diagnostic: ${API_KEY}`,
+    }, status));
+    const result = await discoverConnectionModels(connection("xai"));
+    expect(result.status).toBe(status);
+    expect(result.error).toContain(`HTTP ${status}`);
+    expect(result.error).toContain("Grok 额度不足或需要有效订阅");
+    expect(result.error).toContain("https://grok.com/?_s=usage");
+    expect(JSON.stringify(result)).not.toContain(API_KEY);
+    expectNoPartialSuccess(result);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unknown error", () => jsonResponse({ code: "access-denied", error: API_KEY }, 403)],
+    ["HTML error page", () => new Response(`<html>${API_KEY}</html>`, { status: 403 })],
+    ["unreadable body", () => ({ ok: false, status: 403, json: async () => { throw new Error(API_KEY); } })],
+    ["unrelated status", () => jsonResponse({ code: "personal-team-blocked:spending-limit", error: API_KEY }, 401)],
+  ])("keeps the status-only fallback for %s", async (_label, response) => {
+    const upstream = response();
+    fetchMock.mockResolvedValueOnce(upstream);
+    expect(await discoverConnectionModels(connection("xai"))).toEqual({
+      error: `Failed to fetch models: ${upstream.status}`, status: upstream.status,
+    });
+  });
+
+  it("does not classify another provider's error as a Grok spending limit", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ code: "personal-team-blocked:spending-limit" }, 403));
+    expect(await discoverConnectionModels(connection("openai"))).toEqual({
+      error: "Failed to fetch models: 403", status: 403,
+    });
+  });
+});
+
 describe("media provider discovery authentication", () => {
   it("uses Deepgram Token auth and canonical STT/TTS model IDs", async () => {
     fetchMock.mockResolvedValue(jsonResponse({

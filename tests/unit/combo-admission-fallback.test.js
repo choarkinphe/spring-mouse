@@ -112,6 +112,17 @@ afterEach(async () => {
 });
 
 describe("real combo routing and account admission", () => {
+  it.each([{ previous_response_id: "resp_external" }, { conversation: "conv_external" }])("rejects server state before combo/account fallback: %j", async state => {
+    const response = await handleChat(new Request("https://router.test/v1/responses", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-flash", input: "continue", ...state }),
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("complete conversation history");
+    expect(mocks.getComboModelEntries).not.toHaveBeenCalled();
+    expect(mocks.getModelInfo).not.toHaveBeenCalled();
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
   const headerTimeout = (id, model = "flash") => markAccountUnavailable(id, 503, "Header timeout", "codebuddy-intl", model, null,
     { origin: "upstream_header_timeout", source: "dispatch", layer: "gateway" });
   it("backs off repeated silent recovery rounds without amplifying one concurrent failure wave", async () => {

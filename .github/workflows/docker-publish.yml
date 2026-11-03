@@ -106,6 +106,10 @@ jobs:
           unit/codex-custom-tool-output.test.js
           unit/codex-tool-normalization.test.js
           unit/responses-tool-strictness.test.js
+          unit/openai-native-responses.test.js
+          unit/responses-instruction-preservation.test.js
+          unit/official-model-pagination.test.js
+          unit/model-sync-static-catalog.test.js
           unit/codex-scan-diagnostics.test.js
           unit/codebuddy-rate-limit.test.js
           unit/codebuddy-tool-choice.test.js

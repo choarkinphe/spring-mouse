@@ -186,6 +186,35 @@ describe("provider model sync", () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([modelsUrl, CATALOG_URL, modelsUrl]);
   });
 
+  it("surfaces the Grok spending limit through discovery and sync without changing saved models", async () => {
+    const { POST } = await import("@/app/api/providers/model-sync/route.js");
+    const { GET } = await import("@/app/api/providers/[id]/models/route.js");
+    const connection = await createConnection("xai");
+    await seed(connection);
+    const before = await storedState();
+    const blocked = () => jsonResponse({
+      code: "personal-team-blocked:spending-limit",
+      error: "You have run out of credits or need a Grok subscription.",
+    }, 403);
+    fetchMock.mockImplementation(async () => blocked());
+
+    const responses = [
+      await GET(new Request(`http://localhost/api/providers/${connection.id}/models`), { params: Promise.resolve({ id: connection.id }) }),
+      await post(POST, { providerId: "xai", connectionId: connection.id }),
+    ];
+    for (const response of responses) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("Grok 额度不足或需要有效订阅"),
+        discovery: { status: "failed", source: "official" },
+      });
+    }
+    expect(await storedState()).toEqual(before);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.x.ai/v1/models", "https://api.x.ai/v1/models",
+    ]);
+  });
+
   it("leaves stored Qianwen models and snapshots untouched on upstream HTTP or malformed-list failure", async () => {
     const { POST } = await import("@/app/api/providers/model-sync/route.js");
     const { QIANWEN_ENDPOINTS } = await import("open-sse/config/qianwen.js");

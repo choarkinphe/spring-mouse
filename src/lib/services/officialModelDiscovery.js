@@ -510,6 +510,24 @@ function catalogConfig(providerId) {
   };
 }
 
+async function modelDiscoveryHttpError(response, provider) {
+  const status = response.status;
+  // Only expose a known, actionable error. Raw upstream diagnostics can contain
+  // credentials or HTML, so unknown responses keep the status-only fallback.
+  if (provider === "xai" && (status === 402 || status === 403)) {
+    try {
+      const data = await response.json();
+      if (data?.code === "personal-team-blocked:spending-limit") {
+        return {
+          error: `同步模型失败（HTTP ${status}）：Grok 额度不足或需要有效订阅。请前往 https://grok.com/?_s=usage 检查用量、充值或升级订阅。`,
+          status,
+        };
+      }
+    } catch { /* Keep the safe fallback for non-JSON upstream responses. */ }
+  }
+  return { error: `Failed to fetch models: ${status}`, status };
+}
+
 // Called by both GET and synchronization, so the write path never trusts a
 // client-supplied "officialFetched" flag or a hand-constructed model array.
 export async function discoverConnectionModels(connection) {
@@ -551,7 +569,7 @@ export async function discoverConnectionModels(connection) {
         if (seenPages.has(pageUrl)) throw new Error("Official directory pagination did not advance");
         seenPages.add(pageUrl);
         const response = await fetch(pageUrl, options);
-        if (!response.ok) return { error: `Failed to fetch models: ${response.status}`, status: response.status };
+        if (!response.ok) return await modelDiscoveryHttpError(response, provider);
         let data;
         try { data = await response.json(); } catch { return { error: "Upstream returned an invalid model list", status: 502 }; }
         if (data?.error || data?.warning || data?.success === false || (data?.code !== undefined && ![0, 200, "0", "200"].includes(data.code))) {

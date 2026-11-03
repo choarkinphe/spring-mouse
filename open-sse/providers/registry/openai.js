@@ -29,6 +29,10 @@ export default {
     // Chat Completions streams only send authoritative usage when requested.
     streamUsage: true,
   },
+  transports: [
+    { format: "openai", baseUrl: "https://api.openai.com/v1/chat/completions", forceStream: true },
+    { format: "openai-responses", baseUrl: "https://api.openai.com/v1/responses", forceStream: false },
+  ],
   models: [
     { id: "gpt-5.4", name: "GPT-5.4" },
     { id: "gpt-5.4-mini", name: "GPT-5.4 Mini" },

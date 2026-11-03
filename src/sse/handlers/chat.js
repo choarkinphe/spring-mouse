@@ -25,6 +25,7 @@ import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
+import { getResponsesStateError } from "open-sse/shared/responsesState.js";
 import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
 import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
 import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
@@ -195,6 +196,9 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("CHAT", "Missing model");
       return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model"), "missing_model");
     }
+
+    const stateError = getResponsesStateError(body, detectFormatByEndpoint(clientRawRequest?.endpoint || "", body) || detectFormat(body));
+    if (stateError) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, stateError), "unsupported_response_state");
 
     await refreshModelCapabilityOverrides().catch((error) => {
       log.warn("CAPABILITIES", `Failed to load synchronized model capabilities: ${error.message}`);

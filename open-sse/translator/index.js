@@ -73,6 +73,8 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Capture thinking intent from the original (pre-translation) body, before any
   // format conversion strips/renames the fields. Applied after translation.
   const thinkingIntent = captureThinking(result);
+  const responseReasoning = targetFormat === FORMATS.OPENAI_RESPONSES && result.reasoning
+    ? { ...result.reasoning } : null;
 
   // Capture session id from the original body (envelope still intact, e.g. antigravity request.sessionId)
   const clientSessionId = captureSessionId(result, credentials, connectionId, targetFormat);
@@ -117,6 +119,15 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     (sourceFormat === FORMATS.OPENAI || sourceFormat === FORMATS.CLAUDE);
   if (!kiroThinkingMappedByTranslator) {
     applyThinking(targetFormat, model, result, provider, thinkingIntent);
+  }
+  // The unified OpenAI thinking adapter emits the Chat spelling. Responses uses
+  // reasoning.effort, and summary/generate_summary must survive normalization.
+  if (targetFormat === FORMATS.OPENAI_RESPONSES && provider === "openai") {
+    const effort = result.reasoning_effort ?? result.reasoning?.effort;
+    if (responseReasoning || result.reasoning || effort !== undefined) {
+      result.reasoning = { ...responseReasoning, ...result.reasoning, ...(effort !== undefined ? { effort } : {}) };
+    }
+    delete result.reasoning_effort;
   }
 
   // Always normalize to clean OpenAI format when target is OpenAI

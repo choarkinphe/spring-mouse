@@ -47,6 +47,15 @@ export function supportsDailyCheckin(connection) {
     && ["oauth", "apikey"].includes(connection?.authType));
 }
 
+// Before campaign discovery was attempted, global Qoder failures were stored
+// as terminal for the day. Invalidate only that obsolete local precheck result;
+// preserve all real claims, leases, opt-in switches and official refusals.
+export function currentDailyCheckinState(state = {}, provider) {
+  if (provider !== "qoder" || state.status !== "own_app"
+    || !state.message?.startsWith("Qoder 国际版签到需要官方设备身份")) return state;
+  return { ...state, status: "recheck", message: "旧版设备预检查结果已过期，待重新查询官方活动", terminalDate: null, retryAfter: 0, lastAttemptAt: null };
+}
+
 export const DAILY_CHECKIN_UNSUPPORTED = "仅支持 WorkBuddy 国内版 OAuth 或 Qoder / Qoder CN OAuth、PAT 账号签到";
 
 export function codeBuddyCheckinDate(now = Date.now()) {

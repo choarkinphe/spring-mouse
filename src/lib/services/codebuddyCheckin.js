@@ -7,7 +7,7 @@ import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
 import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
 import { requiresWorkBuddyAuthorization, WORKBUDDY_LEGACY } from "open-sse/config/workbuddy.js";
-import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, currentDailyCheckinState, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
 import { performQoderCheckin, qoderCheckinDate } from "./qoderCheckin.js";
 import { refreshQoderToken } from "open-sse/services/qoderModels.js";
 import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
@@ -189,7 +189,8 @@ export function createCodeBuddyCheckinService(deps = {}) {
       if (automatic && state.enabled !== true) { skipped = "disabled"; return null; }
       if (state.lastSuccessDate === date) { skipped = "today"; return null; }
       if (state.leaseUntil > startedAt) { skipped = "running"; return null; }
-      if (automatic && (state.terminalDate === date || state.retryAfter > startedAt)) { skipped = "cooldown"; return null; }
+      const effective = currentDailyCheckinState(state, connection.provider);
+      if (automatic && (effective.terminalDate === date || effective.retryAfter > startedAt)) { skipped = "cooldown"; return null; }
       acquired = true;
       return { leaseId, leaseUntil: startedAt + config.leaseMs, lastAttemptAt: new Date(startedAt).toISOString() };
     });

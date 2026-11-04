@@ -169,6 +169,15 @@ describe("CodeBuddy check-in eligibility and opt-in", () => {
 });
 
 describe("Qoder shared check-in persistence", () => {
+  it("rechecks obsolete device precheck once despite today's terminal marker", async () => {
+    const f = fixture({ connection: { provider: "qoder" }, state: { enabled: true, status: "own_app", message: "Qoder 国际版签到需要官方设备身份，请在当前主机安装并登录", terminalDate: "2026-10-22", retryAfter: BASE_TIME + 999999 } });
+    performQoderCheckin.mockResolvedValue({ ok: false, status: "own_app", message: "Qoder 官方未向当前请求提供可领取积分活动" });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ status: "own_app" });
+    expect(performQoderCheckin).toHaveBeenCalledOnce();
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ skipped: "cooldown" });
+    expect(performQoderCheckin).toHaveBeenCalledOnce();
+  });
+
   it.each(["qoder", "qoder-cn"])("persists %s success and follows the 10am boundary", async provider => {
     const start = Date.parse("2026-10-28T01:59:00Z");
     const f = fixture({ connection: { provider, accessToken: "dt-fixture", providerSpecificData: { userId: "fixture-user" } }, state: { enabled: true }, time: start });

@@ -27,6 +27,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useNotificationStore } from "@/store/notificationStore";
 import { formatDateTime, formatMonthDay } from "@/shared/utils/datetime";
 import { getAccountStatusInfo } from "@/shared/utils/connectionStatus";
+import { summarizeQoderError } from "@/shared/utils/qoderErrorSummary";
 import { parseQuotaData, formatQuotaAmount, formatQuotaRemainingLabel, formatResetTime, getRemainingPercentage } from "../../usage/components/ProviderLimits/utils";
 import AddCompatibleModal from "./AddCompatibleModal";
 import AddApiKeyModal from "../[id]/AddApiKeyModal";
@@ -175,10 +176,12 @@ function getErrorEvidenceLayerLabel(evidence) {
   return `模型 HTTP ${evidence.status ?? ""}`.trim();
 }
 
-function getErrorEvidenceTitle(evidence) {
+function getErrorEvidenceTitle(evidence, summary) {
   if (!evidence) return "";
   const raw = evidence.raw && evidence.raw !== evidence.text ? `\n${evidence.raw}` : "";
-  return `${getErrorEvidenceLayerLabel(evidence)} · HTTP ${evidence.status ?? ""}\n${evidence.text}${raw}`;
+  const transportNote = evidence.source === "sse" && Number(evidence.status) === 200
+    ? "（SSE 连接成功，模型调用失败）" : "";
+  return `${summary ? `原因：${summary}\n` : ""}${getErrorEvidenceLayerLabel(evidence)} · HTTP ${evidence.status ?? ""}${transportNote}\n原始错误：\n${evidence.text}${raw}`;
 }
 
 function formatRelativeTime(isoString) {
@@ -802,6 +805,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
   // Two failure records can coexist (a tunnel timeout followed by an upstream
   // 503); only the fresher one is worth the single line this row can spare.
   const errorEvidence = getConnectionErrorEvidence(connection);
+  const errorSummary = summarizeQoderError(connection.provider, errorEvidence);
   const errorEvidenceAt = formatRelativeTime(errorEvidence?.iso);
   // A healthy badge means the account has recovered. Any error kept in the
   // record is history, so demote it to a muted hint instead of a red alert.
@@ -857,7 +861,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
       `渠道：${getProviderName(connection.provider)}`,
       connection.mouseId ? `Mouse：${connection.mouseId}` : null,
       errorEvidence?.iso ? `时间：${formatDateTime(errorEvidence.iso)}` : null,
-      getErrorEvidenceTitle(errorEvidence),
+      getErrorEvidenceTitle(errorEvidence, errorSummary),
     ].filter(Boolean).join("\n");
     // Shared hook keeps the copied→check feedback and the 2s reset in one place;
     // the id is the connection so two account rows never share copied state.
@@ -989,7 +993,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
           {errorEvidence && connection.isActive !== false ? (
             <div
               className={cn("group/copy flex min-w-0 flex-1 items-center gap-1.5", errorEvidenceStale ? "text-[#647688]" : "text-rose-400")}
-              title={`${errorEvidenceAt ? `记录于 ${errorEvidenceAt}\n` : ""}${getErrorEvidenceTitle(errorEvidence)}\n点击右侧按钮复制完整错误详情`}
+              title={`${errorEvidenceAt ? `记录于 ${errorEvidenceAt}\n` : ""}${getErrorEvidenceTitle(errorEvidence, errorSummary)}\n点击右侧按钮复制完整错误详情`}
               onDoubleClick={copyErrorEvidence}
               role="button"
               tabIndex={0}
@@ -997,7 +1001,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
               <span className="material-symbols-outlined shrink-0 text-[14px]! leading-none">{errorEvidenceStale ? "history" : "error"}</span>
               <span className="min-w-0 flex-1 truncate">
                 {errorEvidenceStale ? "上次错误 · " : `${getErrorEvidenceLayerLabel(errorEvidence)} · `}
-                {errorEvidence.text}
+                {errorSummary || errorEvidence.text}
               </span>
               {errorEvidenceAt && <span className="shrink-0 tabular-nums">{errorEvidenceAt}</span>}
               <Tooltip text="复制完整错误详情">

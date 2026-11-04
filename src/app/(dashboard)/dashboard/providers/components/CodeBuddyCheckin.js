@@ -11,7 +11,8 @@ const STATUS_LABELS = {
   already_checked_in: "今日已签到",
   ineligible: "不满足签到条件",
   ended: "签到活动已结束",
-  own_app: "请在官方应用签到",
+  own_app: "当前环境未获签到资格",
+  recheck: "需重新查询官方活动",
   error: "签到失败",
 };
 
@@ -190,7 +191,7 @@ function CheckinControls({ connection, onRefreshQuota }) {
         )}
       </div>
       {error && <p role="alert" className="break-words text-red-400">{error}</p>}
-      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.provider === "qoder" && "国际版领取需要本机已安装的官方 Qoder 原生运行时；缺少时会提示在官方应用签到。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
+      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.provider === "qoder" && "国际版会先查询官方活动；是否可领取由官方按账号和设备资格决定。缺少设备组件不等于已确认无资格。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
     </div>
   );
 }

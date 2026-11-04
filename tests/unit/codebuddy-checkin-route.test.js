@@ -21,6 +21,14 @@ beforeEach(() => {
 });
 
 describe("CodeBuddy checkin management route", () => {
+  it("GET displays obsolete global precheck as recheck without triggering a claim", async () => {
+    getProviderConnectionById.mockResolvedValue({ provider: "qoder", authType: "oauth" });
+    getCheckinState.mockResolvedValue({ enabled: true, status: "own_app", message: "Qoder 国际版签到需要官方设备身份，请在当前主机安装", terminalDate: "2026-11-04" });
+    await GET(null, context());
+    const { publicCheckinState } = await import("@/lib/services/codebuddyCheckin.js");
+    expect(publicCheckinState).toHaveBeenCalledWith(expect.objectContaining({ status: "recheck", terminalDate: null }));
+    expect(runCodeBuddyCheckin).not.toHaveBeenCalled();
+  });
   it("reads a sanitized state", async () => {
     const response = await GET(null, context());
     expect(await response.json()).toEqual({ checkin: { enabled: false } });

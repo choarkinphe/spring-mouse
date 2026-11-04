@@ -1,21 +1,21 @@
 import { getProviderConnectionById } from "@/lib/db/repos/connectionsRepo.js";
 import { getCheckinState } from "@/lib/db/repos/checkinRepo.js";
 import { publicCheckinState, runCodeBuddyCheckin, setCodeBuddyCheckinEnabled } from "@/lib/services/codebuddyCheckin.js";
-import { DAILY_CHECKIN_UNSUPPORTED, supportsDailyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { DAILY_CHECKIN_UNSUPPORTED, supportsDailyCheckin, currentDailyCheckinState } from "@/shared/config/codebuddyCheckin.js";
 
 async function validate(params) {
   const { id } = await params;
   const connection = await getProviderConnectionById(id);
   if (!connection) return { error: "账号不存在", status: 404 };
   if (!supportsDailyCheckin(connection)) return { error: DAILY_CHECKIN_UNSUPPORTED, status: 400 };
-  return { id };
+  return { id, provider: connection.provider };
 }
 
 export async function GET(request, { params }) {
   try {
     const target = await validate(params);
     if (target.error) return Response.json({ error: target.error }, { status: target.status });
-    return Response.json({ checkin: publicCheckinState(await getCheckinState(target.id)) });
+    return Response.json({ checkin: publicCheckinState(currentDailyCheckinState(await getCheckinState(target.id), target.provider)) });
   } catch {
     return Response.json({ error: "读取签到状态失败" }, { status: 500 });
   }

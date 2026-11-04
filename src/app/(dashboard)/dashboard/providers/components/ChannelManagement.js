@@ -77,7 +77,7 @@ function canTrackQuota(connection) {
 }
 
 function getConnectionName(connection) {
-  return connection.displayName?.trim() || connection.name?.trim() || connection.email?.trim() || "未命名配置";
+  return connection.name?.trim() || connection.displayName?.trim() || connection.email?.trim() || "未命名配置";
 }
 
 function getProviderName(providerId) {

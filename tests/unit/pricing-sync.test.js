@@ -95,14 +95,15 @@ describe("buildPricingFromCatalog", () => {
   });
 
   it("falls back to the global index when the provider mapping has no entry", async () => {
-    // codebuddy-intl has no models.dev mapping; the model id exists globally.
+    // A compatible token-priced channel has no mapping; the id exists globally.
+    // Credit subscriptions must not inherit this monetary fallback.
     const { pricing } = await buildPricingFromCatalog(
       CATALOG,
-      [{ provider: "codebuddy-intl", model: "deepseek-flash" }],
+      [{ provider: "openai-compatible-fixture", model: "deepseek-flash" }],
       { resolveCurrent: makeResolver() },
     );
 
-    expect(pricing["codebuddy-intl"]["deepseek-flash"].input).toBe(0.15);
+    expect(pricing["openai-compatible-fixture"]["deepseek-flash"].input).toBe(0.15);
   });
 
   it("takes the median price when one model id appears under many providers", async () => {

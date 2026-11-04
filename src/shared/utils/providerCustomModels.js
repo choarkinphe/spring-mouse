@@ -98,6 +98,8 @@ export function getProviderCustomModelRows({
     rows.push({
       id: model.id,
       name: model.name || model.id,
+      ...(model.rateMultiplier !== undefined ? { rateMultiplier: model.rateMultiplier } : {}),
+      ...(model.originalRateMultiplier !== undefined ? { originalRateMultiplier: model.originalRateMultiplier } : {}),
       fullModel,
       source: "custom",
       type: rowType,

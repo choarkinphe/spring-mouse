@@ -390,6 +390,9 @@ const PROVIDER_MODELS_CONFIG = {
               // model picker, not baked into the upstream directory ID.
               id: m.id,
               name: m.name,
+              rateMultiplier: m.rateMultiplier,
+              originalRateMultiplier: m.originalRateMultiplier,
+              isFree: m.isFree,
               contextLength: m.contextLength,
               isVL: m.isVL,
               isReasoning: m.isReasoning,
@@ -418,7 +421,9 @@ const PROVIDER_MODELS_CONFIG = {
           providerSpecificData: withQoderProviderRegion("qoder-cn", connection.providerSpecificData),
         }, { forceRefresh: true });
         if (result?.models?.length) return { models: result.models.map((m) => ({
-          id: m.id, name: m.name, contextLength: m.contextLength, isVL: m.isVL,
+          id: m.id, name: m.name, rateMultiplier: m.rateMultiplier,
+          originalRateMultiplier: m.originalRateMultiplier, isFree: m.isFree,
+          contextLength: m.contextLength, isVL: m.isVL,
           isReasoning: m.isReasoning, maxOutputTokens: m.maxOutputTokens, description: m.description,
         })) };
         return { error: "Qoder CN official directory was unavailable or invalid.", status: 502 };

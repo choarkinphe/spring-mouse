@@ -35,6 +35,7 @@ describe("CodeBuddy checkin management route", () => {
 
   it.each([
     ["codebuddy-cn", "oauth"], ["workbuddy", "oauth"],
+    ["qoder", "oauth"], ["qoder-cn", "oauth"], ["qoder", "apikey"], ["qoder-cn", "apikey"],
   ])("accepts the China provider %s (%s) for state and switch changes", async (provider, authType) => {
     getProviderConnectionById.mockResolvedValue({ provider, authType });
     expect((await GET(null, context())).status).toBe(200);

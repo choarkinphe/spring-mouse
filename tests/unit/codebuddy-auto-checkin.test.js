@@ -55,6 +55,17 @@ describe("CodeBuddy automatic check-in tick", () => {
     expect(mocks.checkin).not.toHaveBeenCalled();
   });
 
+  it("dispatches Qoder OAuth and PAT accounts in both regions, excluding unsupported auth", async () => {
+    const loadConnections = vi.fn().mockResolvedValue([
+      eligible("qd-oauth", { provider: "qoder" }), eligible("cn-pat", { provider: "qoder-cn", authType: "apikey" }),
+      eligible("cn-oauth", { provider: "qoder-cn" }), eligible("qd-pat", { provider: "qoder", authType: "apikey" }),
+      eligible("cookie", { provider: "qoder", authType: "cookie" }), eligible("off", { provider: "qoder-cn", isActive: false }),
+    ]);
+    const checkin = vi.fn().mockResolvedValue({ ok: true });
+    expect(await scheduler.runCodeBuddyCheckinTick({ loadConnections, checkin })).toEqual({ attempted: 4, failed: 0 });
+    expect(checkin.mock.calls.map(([id]) => id)).toEqual(["qd-oauth", "cn-pat", "cn-oauth", "qd-pat"]);
+  });
+
   it("runs both providers when enabled and still skips opted-out accounts", async () => {
     // `enabled` is per connection and enforced by the service (skipped:"disabled").
     const loadConnections = vi.fn().mockResolvedValue([

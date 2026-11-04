@@ -52,7 +52,9 @@ function resolvePricing(byFull, byId, input) {
     : (input && typeof input.model === "string" ? input.model : null);
   if (!key) return null;
   if (key in byFull) return byFull[key];
-  const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
+  // A qualified provider/model must never inherit a different channel's price.
+  if (key.includes("/")) return null;
+  const bare = key;
   if (bare in byId) return byId[bare];
   return null;
 }

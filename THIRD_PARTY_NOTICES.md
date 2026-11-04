@@ -15,6 +15,17 @@ today, and no request is ever re-signed as another client — the instructions a
 kept and only the objected-to wording changes. Existing CodeBuddy credentials are
 not migrated across products.
 
+## Qoder catalog and campaign protocol
+
+Qoder / Qoder CN model scene merging, credit multipliers/promotions and daily
+campaign check-in protocol are adapted from `magpie-community/plugins` commit
+`270b228a964dc4f7fb55b211e23f7a2c7b7329f6` (`packages/qoder`, MIT).
+WorkBuddy's `credits: "x…"` catalog metadata is documented by the same revision's
+`packages/workbuddy/testdata/config-561.json`. No third-party native binary is
+bundled or downloaded; check-in uses an existing official installation if available.
+
+Source: https://github.com/magpie-community/plugins/tree/270b228a964dc4f7fb55b211e23f7a2c7b7329f6/packages/qoder
+
 ### MIT License
 
 Copyright (c) 2026 magpie-community contributors

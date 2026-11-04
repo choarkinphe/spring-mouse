@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Button from "@/shared/components/Button";
 import Toggle from "@/shared/components/Toggle";
-import { supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { supportsDailyCheckin } from "@/shared/config/codebuddyCheckin.js";
 import { useNotificationStore } from "@/store/notificationStore";
 
 const STATUS_LABELS = {
@@ -55,6 +55,8 @@ async function requestCheckin(endpoint, method, signal, enabled) {
 
 function CheckinControls({ connection, onRefreshQuota }) {
   const endpoint = `/api/providers/${encodeURIComponent(connection.id)}/checkin`;
+  const isQoder = connection.provider === "qoder" || connection.provider === "qoder-cn";
+  const providerName = isQoder ? (connection.provider === "qoder-cn" ? "Qoder CN" : "Qoder") : "WorkBuddy";
   const [checkin, setCheckin] = useState(null);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState(null);
@@ -151,14 +153,14 @@ function CheckinControls({ connection, onRefreshQuota }) {
   const reward = typeof checkin?.reward === "number" && Number.isFinite(checkin.reward) ? checkin.reward : null;
 
   return (
-    <div className="mt-2 min-w-0 space-y-1 text-xs text-text-muted" aria-label="WorkBuddy 每日签到" aria-busy={busy}>
+    <div className="mt-2 min-w-0 space-y-1 text-xs text-text-muted" aria-label={`${providerName} 每日签到`} aria-busy={busy}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="shrink-0">自动签到</span>
         <Toggle
           size="sm"
           checked={checkin?.enabled === true}
           disabled={busy || !checkin}
-          ariaLabel="WorkBuddy 自动签到"
+          ariaLabel={`${providerName} 自动签到`}
           onChange={(enabled) => mutate("PATCH", enabled)}
         />
         <Button
@@ -167,7 +169,7 @@ function CheckinControls({ connection, onRefreshQuota }) {
           size="sm"
           disabled={busy || !checkin || connection.isActive === false}
           loading={operation === "POST"}
-          title={connection.isActive === false ? "账号已停用，请先启用账号" : "立即执行 WorkBuddy 今日签到，无需开启自动签到"}
+          title={connection.isActive === false ? "账号已停用，请先启用账号" : `立即执行 ${providerName} 今日签到，无需开启自动签到`}
           onClick={() => mutate("POST")}
         >
           {operation === "POST" ? "签到中…" : "立即签到"}
@@ -188,14 +190,14 @@ function CheckinControls({ connection, onRefreshQuota }) {
         )}
       </div>
       {error && <p role="alert" className="break-words text-red-400">{error}</p>}
-      <p className="text-[11px]">按北京时间每日签到；仅在服务运行且账号启用时自动执行。{!connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
+      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.provider === "qoder" && "国际版领取需要本机已安装的官方 Qoder 原生运行时；缺少时会提示在官方应用签到。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
     </div>
   );
 }
 
 export default function CodeBuddyCheckin({ connection, onRefreshQuota }) {
-  // Shared rule keeps both China ids visible and the international sites hidden.
-  if (!supportsCodeBuddyCheckin(connection)) return null;
+  // Shared rule includes Qoder in both regions but excludes WorkBuddy AI.
+  if (!supportsDailyCheckin(connection)) return null;
   if (!connection.id) return null;
 
   // Remount on a refreshed connection: abort old work and never show/save another

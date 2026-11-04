@@ -10,6 +10,7 @@ import { AccessTagsEditor, Button, Drawer, CardSkeleton, ConfirmModal, ModelCapa
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, usesUpstreamModelList, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
+import { usesCreditBilling } from "open-sse/config/creditBilling.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { useModelPricing } from "@/shared/hooks/useModelPricing";
@@ -1022,7 +1023,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           return (
             <ModelRow
               key={`${model.source}-${model.fullModel}`}
-              model={{ id: model.id, name: model.name }}
+              model={model}
               fullModel={`${providerDisplayAlias}/${model.id}`}
               alias={model.alias}
               copied={copied}
@@ -1398,11 +1399,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               size="md"
               variant="secondary"
               icon="paid"
-              onClick={handleSyncPricing}
-              disabled={syncingPricing}
-              loading={syncingPricing}
+              onClick={usesCreditBilling(providerId) ? handleSyncSupportedModels : handleSyncPricing}
+              disabled={usesCreditBilling(providerId) ? syncingModels : syncingPricing}
+              loading={usesCreditBilling(providerId) ? syncingModels : syncingPricing}
+              title={usesCreditBilling(providerId) ? "积分倍率随官方模型目录同步，不使用美元/token 定价" : undefined}
             >
-              {syncingPricing ? translate("Syncing pricing...") : translate("Sync Model Pricing")}
+              {usesCreditBilling(providerId) ? "同步积分倍率" : syncingPricing ? translate("Syncing pricing...") : translate("Sync Model Pricing")}
             </Button>
             {/* Batch entry: every action here works for both channel kinds. */}
             <div className="relative">

@@ -9,6 +9,7 @@ import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { pickModelCapabilities } from "@/shared/utils/modelCatalog";
 import { getPricingForModels } from "@/lib/db/repos/pricingRepo.js";
 import { toCompactPricing } from "@/shared/utils/pricingSync";
+import { modelCreditBilling } from "open-sse/config/creditBilling.js";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 
@@ -59,6 +60,8 @@ export async function GET(request) {
         provider: providerId,
         model: custom.id,
         name: custom.name || custom.id,
+        rateMultiplier: custom.rateMultiplier,
+        originalRateMultiplier: custom.originalRateMultiplier,
         fullModel: routedModel,
         routedModel,
         alias: modelAliases[routedModel] || custom.id,
@@ -76,7 +79,8 @@ export async function GET(request) {
       models.map((m) => ({ provider: m.provider, model: m.model })),
     );
     for (const m of models) {
-      m.pricing = toCompactPricing(pricingByKey.get(`${m.provider}/${m.model}`));
+      m.creditBilling = modelCreditBilling(m.provider, m);
+      m.pricing = m.creditBilling ? null : toCompactPricing(pricingByKey.get(`${m.provider}/${m.model}`));
     }
 
     // Compressed: this is the largest dashboard read (≈890KB uncompressed, ≈50KB

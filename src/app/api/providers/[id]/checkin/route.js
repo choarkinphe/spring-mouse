@@ -1,14 +1,13 @@
 import { getProviderConnectionById } from "@/lib/db/repos/connectionsRepo.js";
 import { getCheckinState } from "@/lib/db/repos/checkinRepo.js";
 import { publicCheckinState, runCodeBuddyCheckin, setCodeBuddyCheckinEnabled } from "@/lib/services/codebuddyCheckin.js";
-import { CODEBUDDY_CHECKIN, supportsCodeBuddyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { DAILY_CHECKIN_UNSUPPORTED, supportsDailyCheckin } from "@/shared/config/codebuddyCheckin.js";
 
 async function validate(params) {
   const { id } = await params;
   const connection = await getProviderConnectionById(id);
   if (!connection) return { error: "账号不存在", status: 404 };
-  // Both China ids are supported; the international sites have no check-in.
-  if (!supportsCodeBuddyCheckin(connection)) return { error: CODEBUDDY_CHECKIN.unsupportedMessage, status: 400 };
+  if (!supportsDailyCheckin(connection)) return { error: DAILY_CHECKIN_UNSUPPORTED, status: 400 };
   return { id };
 }
 

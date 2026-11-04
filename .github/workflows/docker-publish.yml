@@ -160,6 +160,16 @@ jobs:
           unit/backup-restore.test.js
           unit/backup-stage-restore.test.js
           unit/backup-litestream-lifecycle.test.js
+          unit/credit-model-catalog.test.js
+          unit/qoder-checkin.test.js
+          unit/qoder-refresh-dedup.test.js
+          unit/qoder-cn-core.test.js
+          unit/codebuddy-checkin.test.js
+          unit/codebuddy-auto-checkin.test.js
+          unit/codebuddy-checkin-route.test.js
+          unit/codebuddy-checkin-repo.test.js
+          unit/workbuddy-services.test.js
+          unit/pricing-sync.test.js
 
       - name: Verify admission against isolated Redis
         run: |

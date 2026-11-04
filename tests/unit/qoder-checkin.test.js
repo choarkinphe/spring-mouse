@@ -70,12 +70,32 @@ describe("Qoder campaign check-in", () => {
     expect(identity).not.toHaveBeenCalled();
   });
 
-  it("requires real device identity globally; a chat UUID is not an SDK token", async () => {
-    const fetch = vi.fn();
+  it("queries global campaigns before reporting missing identity; never manufactures SDK headers", async () => {
+    const fetch = server([{ actionType: "VIEW_DETAILS" }]);
     const output = await run(account({ provider: "qoder", providerSpecificData: { userId: "u", machineId: "uuid" } }), { fetch });
     expect(output).toMatchObject({ ok: false, status: "own_app" });
-    expect(output.message).toContain("官方");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(output.message).toContain("官方未向当前请求提供");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1].method).toBe("GET");
+    expect(fetch.mock.calls[0][1].headers["Cosy-MachineToken"]).toBeUndefined();
+  });
+
+  it("accepts an explicitly offered global claim without a helper", async () => {
+    const fetch = server();
+    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch }))
+      .toMatchObject({ ok: true, status: "success" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][1].headers["Cosy-MachineToken"]).toBeUndefined();
+  });
+
+  it("trusts global already-claimed and future campaigns without a helper", async () => {
+    const connection = account({ provider: "qoder", providerSpecificData: { userId: "u" } });
+    const done = server([campaign({ claimStatus: "CLAIMED" })]);
+    expect(await run(connection, { fetch: done })).toMatchObject({ status: "already_checked_in", ok: true });
+    expect(done).toHaveBeenCalledOnce();
+    const future = server([campaign({ startAt: (NOW + 3600000) / 1000 })]);
+    expect(await run(connection, { fetch: future })).toMatchObject({ status: "error", nextAttemptAt: NOW + 3600000 + 60000 });
+    expect(future).toHaveBeenCalledOnce();
   });
 
   it("sends native identity only to the correct international host", async () => {

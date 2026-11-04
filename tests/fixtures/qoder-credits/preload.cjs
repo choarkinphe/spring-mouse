@@ -8,6 +8,10 @@ globalThis.fetch = function creditsFixtureFetch(input, init) {
   const qoder = ['api3.qoder.sh', 'api2.qoder.sh', 'gateway.qoder.com.cn', 'openapi.qoder.sh', 'openapi.qoder.com.cn'].includes(url.hostname);
   const wb = ['copilot.tencent.com', 'www.workbuddy.ai'].includes(url.hostname);
   if (!qoder && !wb) return guardedFetch(input, init);
+  if (url.pathname === '/api/v2/quota/usage' || url.pathname === '/sash/api/v2/me/usage') {
+    const usage = { userQuota: { total: 300, used: 0, remaining: 300, unit: 'credits' }, addOnQuota: { total: 100, used: 0, remaining: 100, unit: 'credits' }, isQuotaExceeded: false };
+    return Promise.resolve(Response.json(url.pathname.startsWith('/sash/') ? { displayMode: 'qoder', qoderUsage: usage } : usage));
+  }
   if (url.pathname.endsWith('/model/list')) return Promise.resolve(Response.json({
     app: [
       { key: 'fast', display_name: 'Fast', price_factor: 0.8, enable: true },

@@ -198,7 +198,8 @@ export async function performQoderCheckin(connection, {
       const read = await readMachineIdentity(region, credentials.providerSpecificData.userId);
       identity = validateIdentity({ machineToken: read?.["Cosy-MachineToken"], machineType: read?.["Cosy-MachineType"] });
     } catch {
-      if (region !== "cn") return result("own_app", "Qoder 国际版签到需要官方设备身份，请在当前主机安装并登录 Qoder 官方客户端或 CLI，或在官方客户端签到");
+      // A missing native helper is not an upstream eligibility decision.
+      // Query read-only first; only claim a campaign explicitly offered by Qoder.
     }
     const listed = await request(base, "GET");
     if ([401, 403].includes(listed.status)) return authError();
@@ -224,6 +225,9 @@ export async function performQoderCheckin(connection, {
       if (campaigns.length) return result("error", "当前暂无可领取的 Qoder 每日积分，请等待活动开放", {
         ...(future.length ? { nextAttemptAt: Math.min(...future) } : {}),
       });
+      if (region !== "cn" && !identity["Cosy-MachineToken"]) {
+        return result("own_app", "Qoder 官方未向当前请求提供可领取积分活动；网关缺少官方设备身份组件，请在官方客户端确认活动资格");
+      }
       return result("ineligible", "Qoder 当前未向此账号或设备提供每日积分活动，请在官方客户端确认资格");
     }
     if (typeof campaign.campaignId !== "string" || !campaign.campaignId.trim() || campaign.campaignId.length > 256) {

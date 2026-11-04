@@ -368,6 +368,18 @@ export async function getQoderUsage(accessToken, proxyOptions = null, provider =
         resetAt,
       },
     };
+    // Personal plan credits and add-on credits are independent balances. The
+    // international API returns both (e.g. 300 plan + 100 bonus); do not drop
+    // the latter or add dedicated package detail to its aggregate a second time.
+    const addOn = body.addOnQuota ?? body.add_on_quota;
+    if (addOn && typeof addOn === "object" && !Array.isArray(addOn)) {
+      const total = numberOrNull(addOn.total ?? addOn.cap);
+      const remaining = numberOrNull(addOn.remaining);
+      const used = numberOrNull(addOn.used) ?? (total !== null && remaining !== null ? total - remaining : null);
+      if (total !== null || used !== null || remaining !== null) {
+        quotas.addOn = { total, used, remaining, unit: addOn.unit || "credits", resetAt: null };
+      }
+    }
     return {
       quotas,
       totalUsagePercentage: Number(body.totalUsagePercentage) || 0,

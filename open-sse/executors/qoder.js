@@ -219,12 +219,30 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   };
 }
 
+// Qoder sometimes JSON-encodes the queue payload in message, and may wrap
+// that business error in another 403 object. Bound parsing of untrusted input.
+function qoderErrorLayers(input) {
+  const layers = [];
+  const pending = [input];
+  for (let i = 0; i < pending.length && i < 8; i++) {
+    let item = pending[i];
+    if (typeof item === "string") {
+      try { item = JSON.parse(item); } catch { continue; }
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    layers.push(item);
+    for (const key of ["error", "message", "body"]) {
+      const next = item[key];
+      if (pending.length < 8 && (typeof next === "object" && next !== null
+        || typeof next === "string" && next.trimStart().startsWith("{"))) pending.push(next);
+    }
+  }
+  return layers;
+}
+
 // Qoder uses both numeric and string business codes.
 function isBillingBlock(inner) {
-  try {
-    const item = typeof inner === "string" ? JSON.parse(inner) : inner;
-    return [112, 10605].includes(Number(item?.code)) || !!item?.pricingUrl;
-  } catch { return false; }
+  return qoderErrorLayers(inner).some(item => [112, 10605].includes(Number(item.code)) || !!item.pricingUrl);
 }
 
 function qoderError(envelope) {
@@ -233,7 +251,8 @@ function qoderError(envelope) {
     try { body = JSON.parse(body); } catch { body = { message: body }; }
   }
   if (!body || typeof body !== "object") body = {};
-  const code = body.code ?? body.error?.code;
+  const business = qoderErrorLayers(body).find(item => [112, 10605].includes(Number(item.code)));
+  const code = business?.code ?? body.code ?? body.error?.code;
   const status = [112, 10605].includes(Number(code)) || Number(envelope.statusCodeValue) === 429
     ? 429 : normalizeErrorStatus(envelope.statusCodeValue);
   const message = String(body.error?.message || body.message || body.msg || `Qoder upstream error (${envelope.statusCodeValue})`);
@@ -255,11 +274,16 @@ async function wrapQoderSSE(response, model, { deadlineMs = Date.now() + STREAM_
     const raw = typeof envelope.body === "string" ? envelope.body : JSON.stringify(envelope.body || {});
     streamError = buildUpstreamError(response, raw, payload.error.message, "sse", { layer: "provider" });
     // Support explicit hints in seconds or milliseconds without inventing a cooldown.
-    let original;
-    try { original = JSON.parse(raw); } catch { original = {}; }
-    const ms = Number(original.retryAfterMs ?? original.retry_after_ms);
-    const seconds = Number(original.retryAfter ?? original.retry_after);
-    const hint = Number.isFinite(ms) && ms > 0 ? ms : Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
+    let hint = 0;
+    for (const item of qoderErrorLayers(raw)) {
+      for (const key of ["retryAfterMs", "retry_after_ms", "retryAfter", "retry_after", "retryAfterSeconds"]) {
+        const value = Number(item[key]);
+        if (Number.isFinite(value) && value > 0) {
+          const milliseconds = key === "retryAfterMs" || key === "retry_after_ms" ? value : value * 1000;
+          hint = Math.max(hint, Math.min(MAX_RATE_LIMIT_COOLDOWN_MS, milliseconds));
+        }
+      }
+    }
     streamError.retryAfterMs = Math.min(MAX_RATE_LIMIT_COOLDOWN_MS, Math.max(streamError.retryAfterMs || 0, hint)) || null;
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
     terminal = true;
@@ -280,7 +304,7 @@ async function wrapQoderSSE(response, model, { deadlineMs = Date.now() + STREAM_
       return;
     }
     const status = Number(envelope.statusCodeValue ?? 200);
-    if (status !== 200) { emitError(controller, envelope); return; }
+    if (status !== 200 || isBillingBlock(envelope.body)) { emitError(controller, envelope); return; }
     const inner = typeof envelope.body === "string" ? envelope.body : envelope.body ? JSON.stringify(envelope.body) : "";
     if (inner === "[DONE]") { controller.enqueue(encoder.encode(SSE_DONE)); terminal = true; cancel(); return; }
     if (inner) controller.enqueue(encoder.encode(`data: ${inner.replace(/\r?\n/g, "")}\n\n`));

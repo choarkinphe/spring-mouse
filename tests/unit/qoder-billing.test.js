@@ -29,6 +29,22 @@ describe("Qoder SSE errors", () => {
     expect(result.__smUpstreamError).toMatchObject({ source: "sse", status: 200, retryAfterMs: 17000 });
     expect(cancelled).toBe(true);
   });
+  it.each([200, 403])("reads a nested RESOURCE_LIMIT and 30 second retry from envelope %s", async status => {
+    const details = { isQueued: true, modelKey: "dfmodel", queueCount: 0, queueType: "p3", retryAfterSeconds: 30, serviceAvailable: false, subCode: "RESOURCE_LIMIT", waitTime: 30 };
+    const business = { code: "10605", message: JSON.stringify(details), subCode: "RESOURCE_LIMIT" };
+    const wrapped = { code: "403", message: JSON.stringify(business) };
+    const result = await wrapQoderSSE(response([frame(status, wrapped)]), "qoder-cn/dfmodel");
+    expect(result.status).toBe(429);
+    expect((await result.json()).error.code).toBe("10605");
+    expect(result.__smUpstreamError).toMatchObject({ source: "sse", status: 200, retryAfterMs: 30000 });
+  });
+  it("keeps post-output nested queue failures terminal rather than successful", async () => {
+    const body = { code: "10605", message: JSON.stringify({ retryAfterSeconds: 30, subCode: "RESOURCE_LIMIT" }) };
+    const result = await wrapQoderSSE(response([output, frame(200, body)]), "qoder-cn/dfmodel");
+    const text = await result.text();
+    expect(text).not.toContain("[DONE]");
+    expect(result.__smGetStreamError()).toMatchObject({ status: 429, upstreamError: { retryAfterMs: 30000 } });
+  });
   it("returns other pre-output errors for fallback", async () => {
     const result = await wrapQoderSSE(response([frame(500, "broken")]), "qoder/auto");
     expect(result.status).toBe(500);

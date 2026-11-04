@@ -34,6 +34,35 @@ describe("Qoder quota snapshot", () => {
     expect(getRemainingPercentage(row)).toBe(90);
   });
 
+  it("keeps international plan and add-on balances: 300 + 100 = 400 credits", async () => {
+    const result = await usage({ userQuota: { total: 300, used: 0, remaining: 300 },
+      addOnQuota: { total: 100, used: 0, remaining: 100 }, expiresAt: 1794972137632 });
+    expect(result.quotas.addOn).toMatchObject({ total: 100, used: 0, remaining: 100, unit: "credits", resetAt: null });
+    const rows = parseQuotaData("qoder", result);
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((sum, row) => sum + row.total, 0)).toBe(400);
+    expect(rows.reduce((sum, row) => sum + row.absoluteRemaining, 0)).toBe(400);
+    expect(rows[1].name).toBe("附加积分");
+    expect(formatQuotaRemainingLabel(rows[1])).toBe("余量 100 credits");
+  });
+
+  it("preserves zero add-on balances and infers consumption without sharing plan expiry", async () => {
+    const result = await usage({ userQuota: { total: 300, used: 25, remaining: 275 },
+      add_on_quota: { cap: "100", remaining: "0" }, expiresAt: 1794972137632 });
+    expect(result.quotas.addOn).toEqual({ total: 100, remaining: 0, used: 100, unit: "credits", resetAt: null });
+    const rows = parseQuotaData("qoder", result);
+    expect(rows.reduce((sum, row) => sum + row.absoluteRemaining, 0)).toBe(275);
+  });
+
+  it("does not invent missing add-on amounts or duplicate its package detail", async () => {
+    const result = await usage({ userQuota: { total: 300 }, addOnQuota: { total: 100 },
+      dedicatedResourcePackages: [{ total: 100 }] });
+    expect(result.quotas.addOn).toMatchObject({ total: 100, used: null, remaining: null });
+    expect(Object.keys(result.quotas)).toEqual(["user", "organization", "addOn"]);
+    const absent = await usage({ userQuota: { total: 300 }, addOnQuota: {} });
+    expect(absent.quotas.addOn).toBeUndefined();
+  });
+
   it("reads CN usage from the regional endpoint and keeps credit amounts", async () => {
     proxyAwareFetch.mockResolvedValueOnce(new Response(JSON.stringify({ displayMode: "qoder", qoderUsage: {
       userQuota: { total: 100, remaining: 25 }, addOnQuota: { cap: 50, used: 5 },

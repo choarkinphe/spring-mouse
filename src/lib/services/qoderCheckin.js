@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveQoderCredentials } from "open-sse/services/qoderModels.js";
 import { getQoderEndpoints, withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
+import { QODER_GLOBAL_REWARDS } from "@/shared/config/codebuddyCheckin.js";
 
 // Protocol reference (MIT): magpie-community/plugins, revision
 // 270b228a964dc4f7fb55b211e23f7a2c7b7329f6, packages/qoder/index.mjs
@@ -194,12 +195,13 @@ export async function performQoderCheckin(connection, {
     const expiry = credentials.expiresAt ? new Date(credentials.expiresAt).getTime() : NaN;
     if (Number.isFinite(expiry) && expiry - currentTime() < 5 * 60 * 1000 && credentials.refreshToken) await refresh();
     await resolve();
-    try {
-      const read = await readMachineIdentity(region, credentials.providerSpecificData.userId);
-      identity = validateIdentity({ machineToken: read?.["Cosy-MachineToken"], machineType: read?.["Cosy-MachineType"] });
-    } catch {
-      // A missing native helper is not an upstream eligibility decision.
-      // Query read-only first; only claim a campaign explicitly offered by Qoder.
+    if (region === "cn") {
+      try {
+        const read = await readMachineIdentity(region, credentials.providerSpecificData.userId);
+        identity = validateIdentity({ machineToken: read?.["Cosy-MachineToken"], machineType: read?.["Cosy-MachineType"] });
+      } catch {
+        // CN can offer a campaign without the optional native helper.
+      }
     }
     const listed = await request(base, "GET");
     if ([401, 403].includes(listed.status)) return authError();
@@ -212,6 +214,17 @@ export async function performQoderCheckin(connection, {
       const start = timestamp(c.startAt), end = timestamp(c.endAt);
       return start !== null && end !== null && start < end && start <= time && time < end;
     };
+    // Enforce the desktop-only contract here as well as at the scheduler/UI:
+    // even a CLAIMABLE campaign and a valid native identity must not trigger POST.
+    if (region === "global") {
+      const done = campaigns.find((c) => c.claimStatus === "CLAIMED" && active(c));
+      if (done) return result("already_checked_in", "官方已确认本轮积分已领取；本次仅查询，未发起领取", {
+        reward: rewardOf(done.benefit?.amount), successDate: qoderCheckinDate(time),
+      });
+      return { ok: true, status: "desktop_required", message: campaigns.some((c) => c.claimStatus === "CLAIMABLE" && active(c))
+        ? `官方显示本轮有可领取活动。${QODER_GLOBAL_REWARDS.message}`
+        : `当前查询未确认本轮已领取，不代表账号无资格。${QODER_GLOBAL_REWARDS.message}` };
+    }
     const campaign = campaigns.find((c) => c.claimStatus === "CLAIMABLE" && active(c));
     if (!campaign) {
       const done = campaigns.find((c) => c.claimStatus === "CLAIMED" && active(c));
@@ -225,9 +238,6 @@ export async function performQoderCheckin(connection, {
       if (campaigns.length) return result("error", "当前暂无可领取的 Qoder 每日积分，请等待活动开放", {
         ...(future.length ? { nextAttemptAt: Math.min(...future) } : {}),
       });
-      if (region !== "cn" && !identity["Cosy-MachineToken"]) {
-        return result("own_app", "Qoder 官方未向当前请求提供可领取积分活动；网关缺少官方设备身份组件，请在官方客户端确认活动资格");
-      }
       return result("ineligible", "Qoder 当前未向此账号或设备提供每日积分活动，请在官方客户端确认资格");
     }
     if (typeof campaign.campaignId !== "string" || !campaign.campaignId.trim() || campaign.campaignId.length > 256) {

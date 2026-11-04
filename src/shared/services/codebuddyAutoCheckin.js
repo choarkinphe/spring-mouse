@@ -1,6 +1,6 @@
 import { getProviderConnections } from "@/lib/db/repos/connectionsRepo.js";
 import { runCodeBuddyCheckin } from "@/lib/services/codebuddyCheckin.js";
-import { supportsDailyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { supportsAutomaticCheckin } from "@/shared/config/codebuddyCheckin.js";
 
 const INTERVAL_MS = 15 * 60 * 1000;
 const INITIAL_DELAY_MS = 30 * 1000;
@@ -12,11 +12,11 @@ export async function runCodeBuddyCheckinTick({ loadConnections = getProviderCon
   let attempted = 0;
   let failed = 0;
   try {
-    // One query, then the shared eligibility rule for WorkBuddy CN and both
-    // Qoder regions. Each service enforces its own opt-in and daily boundary.
+    // International Qoder is desktop-only. Even persisted legacy opt-ins must
+    // never enqueue a claim or a background status request for those accounts.
     const connections = await loadConnections({ isActive: true });
     for (const connection of connections) {
-      if (!supportsDailyCheckin(connection) || connection.isActive === false) continue;
+      if (!supportsAutomaticCheckin(connection) || connection.isActive === false) continue;
       try {
         const result = await checkin(connection.id, { automatic: true });
         if (!result.skipped) attempted++;

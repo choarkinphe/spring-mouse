@@ -22,12 +22,8 @@ describe("Qoder error explanation", () => {
 
 describe("obsolete Qoder precheck", () => {
   const old = { enabled: true, status: "own_app", message: "Qoder 国际版签到需要官方设备身份，请在当前主机安装并登录 Qoder 官方客户端或 CLI，或在官方客户端签到", terminalDate: "2026-11-04", lastAttemptAt: "2026-11-04T05:06:00Z", leaseId: "preserve", lastSuccessDate: "2026-11-03" };
-  it("expires only obsolete local failure without erasing claims or leases", () => {
-    expect(currentDailyCheckinState(old, "qoder")).toMatchObject({ status: "recheck", terminalDate: null, retryAfter: 0, enabled: true, leaseId: "preserve", lastSuccessDate: "2026-11-03", lastAttemptAt: null });
+  it("forces global Qoder legacy state into desktop-only status without changing China state", () => {
+    expect(currentDailyCheckinState(old, "qoder")).toMatchObject({ status: "desktop_required", enabled: false, terminalDate: null, retryAfter: 0, leaseId: "preserve", lastSuccessDate: "2026-11-03", lastAttemptAt: null, reward: null });
     expect(currentDailyCheckinState(old, "qoder-cn")).toBe(old);
-    const official = { ...old, message: "Qoder 官方未向当前请求提供可领取积分活动" };
-    expect(currentDailyCheckinState(official, "qoder")).toBe(official);
-    const success = { ...old, status: "success" };
-    expect(currentDailyCheckinState(success, "qoder")).toBe(success);
   });
 });

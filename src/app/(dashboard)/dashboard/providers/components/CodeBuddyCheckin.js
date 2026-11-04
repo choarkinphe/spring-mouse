@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Button from "@/shared/components/Button";
 import Toggle from "@/shared/components/Toggle";
-import { supportsDailyCheckin } from "@/shared/config/codebuddyCheckin.js";
+import { supportsDailyCheckin, QODER_GLOBAL_REWARDS } from "@/shared/config/codebuddyCheckin.js";
 import { useNotificationStore } from "@/store/notificationStore";
 
 const STATUS_LABELS = {
@@ -56,7 +56,8 @@ async function requestCheckin(endpoint, method, signal, enabled) {
 
 function CheckinControls({ connection, onRefreshQuota }) {
   const endpoint = `/api/providers/${encodeURIComponent(connection.id)}/checkin`;
-  const isQoder = connection.provider === "qoder" || connection.provider === "qoder-cn";
+  const isGlobalQoder = connection.provider === "qoder";
+  const isQoder = isGlobalQoder || connection.provider === "qoder-cn";
   const providerName = isQoder ? (connection.provider === "qoder-cn" ? "Qoder CN" : "Qoder") : "WorkBuddy";
   const [checkin, setCheckin] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -147,11 +148,57 @@ function CheckinControls({ connection, onRefreshQuota }) {
     }
   }
 
+  async function queryGlobalStatus() {
+    const context = requestContext.current;
+    if (!context?.active || context.busy || connection.isActive === false) return;
+    context.busy = true;
+    setOperation("GET");
+    setError("");
+    try {
+      const { response, data } = await requestCheckin(`${endpoint}?refresh=1`, "GET", context.controller.signal);
+      if (!context.active) return;
+      if (!response.ok || !data.ok || !hasCheckin(data)) throw new Error(responseMessage(data, "查询领取状态失败，请重试"));
+      setCheckin(data.checkin);
+      try { await onRefreshQuota?.(connection); } catch {
+        if (context.active) notifyWarning("状态已查询，但余额刷新失败，请手动刷新配额");
+      }
+    } catch (err) {
+      if (context.active) setError(err instanceof SyntaxError ? "领取状态响应无效，请重试" : err.message || "查询领取状态失败，请重试");
+    } finally {
+      if (context.active) { context.busy = false; setOperation(null); }
+    }
+  }
+
   const busy = loading || operation !== null;
   const attemptTime = formatAttempt(checkin?.lastAttemptAt);
   const statusLabel = STATUS_LABELS[checkin?.status] || "尚未签到";
   const message = typeof checkin?.message === "string" ? checkin.message : "";
   const reward = typeof checkin?.reward === "number" && Number.isFinite(checkin.reward) ? checkin.reward : null;
+
+  if (isGlobalQoder) return (
+    <div className="mt-2 min-w-0 space-y-1 text-xs text-text-muted" aria-label="Qoder 海外积分领取" aria-busy={busy}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span>官方桌面应用手动领取</span>
+        <a href={QODER_GLOBAL_REWARDS.guideUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">领取指引</a>
+        <Button type="button" variant="ghost" size="sm" disabled={busy || !checkin || connection.isActive === false}
+          loading={operation === "GET"} onClick={queryGlobalStatus} title="只查询官方领取状态并刷新余额，不会领取积分">
+          {operation === "GET" ? "查询中…" : "查询领取状态"}
+        </Button>
+        {!loading && !checkin && <Button type="button" variant="ghost" size="sm" onClick={retryLoad}>重新加载</Button>}
+      </div>
+      <p role="status" aria-live="polite" className="break-words">
+        {loading ? "加载领取状态…" : checkin ? <>
+          {checkin.status === "already_checked_in" ? "官方确认本轮已领取" : checkin.status === "error" ? "查询失败" : "请在官方桌面应用领取；网关未确认本轮领取状态"}
+          {attemptTime && <span> · 最近查询 {attemptTime}（北京时间）</span>}
+          {checkin.lastSuccessDate && <span> · 历史最近确认领取日 {checkin.lastSuccessDate}</span>}
+          {reward !== null && <span> · 官方奖励 {reward}</span>}
+          {message && <span> · {message}</span>}
+        </> : "领取状态未加载"}
+      </p>
+      {error && <p role="alert" className="break-words text-red-400">{error}</p>}
+      <p className="text-[11px]">海外版每日 100 积分仅限 Qoder 桌面应用内手动领取，不是登录即送；在 Usage 面板点击礼物图标。北京时间 10:00 开启新一轮，领取后进入附加积分、30 天有效，可在 CLI 等产品使用。网关不代领，也不自动签到。{connection.isActive === false && "账号已停用，状态查询已暂停。"}</p>
+    </div>
+  );
 
   return (
     <div className="mt-2 min-w-0 space-y-1 text-xs text-text-muted" aria-label={`${providerName} 每日签到`} aria-busy={busy}>
@@ -191,7 +238,7 @@ function CheckinControls({ connection, onRefreshQuota }) {
         )}
       </div>
       {error && <p role="alert" className="break-words text-red-400">{error}</p>}
-      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.provider === "qoder" && "国际版会先查询官方活动；是否可领取由官方按账号和设备资格决定。缺少设备组件不等于已确认无资格。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
+      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
     </div>
   );
 }

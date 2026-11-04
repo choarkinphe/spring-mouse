@@ -70,22 +70,39 @@ describe("Qoder campaign check-in", () => {
     expect(identity).not.toHaveBeenCalled();
   });
 
+  it("global campaign query is status-only even for claimable VIEW_DETAILS promotions", async () => {
+    const fetch = server([{ actionType: "VIEW_DETAILS", claimStatus: "CLAIMABLE" }]);
+    const output = await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch });
+    expect(output).toMatchObject({ ok: true, status: "desktop_required" });
+    expect(output.message).toContain("未确认本轮已领取");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1].method).toBe("GET");
+  });
+
+  it("global status query recognizes a claimed campaign without claiming again", async () => {
+    const fetch = server([campaign({ claimStatus: "CLAIMED" })]);
+    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch }))
+      .toMatchObject({ ok: true, status: "already_checked_in", reward: 100 });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1].method).toBe("GET");
+  });
+
   it("queries global campaigns before reporting missing identity; never manufactures SDK headers", async () => {
     const fetch = server([{ actionType: "VIEW_DETAILS" }]);
     const output = await run(account({ provider: "qoder", providerSpecificData: { userId: "u", machineId: "uuid" } }), { fetch });
-    expect(output).toMatchObject({ ok: false, status: "own_app" });
-    expect(output.message).toContain("官方未向当前请求提供");
+    expect(output).toMatchObject({ ok: true, status: "desktop_required" });
+    expect(output.message).toContain("未确认本轮已领取");
     expect(fetch).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0][1].method).toBe("GET");
     expect(fetch.mock.calls[0][1].headers["Cosy-MachineToken"]).toBeUndefined();
   });
 
-  it("accepts an explicitly offered global claim without a helper", async () => {
+  it("never claims an explicitly offered global campaign", async () => {
     const fetch = server();
     expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch }))
-      .toMatchObject({ ok: true, status: "success" });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls[1][1].headers["Cosy-MachineToken"]).toBeUndefined();
+      .toMatchObject({ ok: true, status: "desktop_required" });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1].method).toBe("GET");
   });
 
   it("trusts global already-claimed and future campaigns without a helper", async () => {
@@ -94,17 +111,20 @@ describe("Qoder campaign check-in", () => {
     expect(await run(connection, { fetch: done })).toMatchObject({ status: "already_checked_in", ok: true });
     expect(done).toHaveBeenCalledOnce();
     const future = server([campaign({ startAt: (NOW + 3600000) / 1000 })]);
-    expect(await run(connection, { fetch: future })).toMatchObject({ status: "error", nextAttemptAt: NOW + 3600000 + 60000 });
+    expect(await run(connection, { fetch: future })).toMatchObject({ ok: true, status: "desktop_required" });
     expect(future).toHaveBeenCalledOnce();
   });
 
-  it("sends native identity only to the correct international host", async () => {
+  it("does not invoke native identity or claim global campaigns even when a helper exists", async () => {
     const fetch = server();
+    const readMachineIdentity = vi.fn(async () => IDENTITY);
     expect((await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), {
-      fetch, readMachineIdentity: async () => IDENTITY,
-    })).status).toBe("success");
+      fetch, readMachineIdentity,
+    })).status).toBe("desktop_required");
+    expect(readMachineIdentity).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0][0]).toBe("https://openapi.qoder.sh/sash/api/v1/me/campaigns");
-    expect(fetch.mock.calls[0][1].headers).toMatchObject(IDENTITY);
+    expect(fetch.mock.calls[0][1].headers["Cosy-MachineToken"]).toBeUndefined();
   });
 
   it("does not claim a campaign already claimed in this window", async () => {

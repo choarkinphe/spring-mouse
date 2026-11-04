@@ -13,6 +13,9 @@ Repeat for Qoder, WorkBuddy and WorkBuddy AI; WorkBuddy reads `credits: x…`.
 
 Qoder CN's **立即签到** claims a synthetic 50-credit campaign. A second click is
 idempotent. The auto-check-in switch persists but the scheduler is intentionally
-disabled in the fixture. Qoder international returns an actionable `own_app`
-message without an installed official runtime identity. No real tokens or claims
-are used; fixture HOME also isolates official runtime discovery.
+disabled in the fixture. Qoder international instead shows the official desktop
+claim guide and **查询领取状态**. Its status query uses GET only, including when a
+synthetic campaign is CLAIMABLE; it must never claim, expose an automatic toggle,
+or label query success as reward success. No real tokens or claims are used;
+fixture HOME also isolates official runtime discovery. Set PORT to use an available
+preview port (default 8087).

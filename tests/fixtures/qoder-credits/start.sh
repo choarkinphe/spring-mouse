@@ -3,7 +3,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 cd "$REPO"
-PORT=8087
+PORT="${PORT:-8087}"
 if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   printf 'Credit fixture port %s is occupied; no process was stopped.\n' "$PORT" >&2
   exit 1

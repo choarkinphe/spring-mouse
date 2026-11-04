@@ -21,8 +21,17 @@ Qoder / Qoder CN model scene merging, credit multipliers/promotions and daily
 campaign check-in protocol are adapted from `magpie-community/plugins` commit
 `270b228a964dc4f7fb55b211e23f7a2c7b7329f6` (`packages/qoder`, MIT).
 WorkBuddy's `credits: "x…"` catalog metadata is documented by the same revision's
-`packages/workbuddy/testdata/config-561.json`. No third-party native binary is
-bundled or downloaded; check-in uses an existing official installation if available.
+`packages/workbuddy/testdata/config-561.json`.
+
+The optional `Dockerfile.qoder-identity` companion prepares the official
+`@qoder-ai/qodercli` **1.1.82** embedded native helper. The downloaded bundle is
+never imported or executed: its full SHA-256 and the extracted helper's SHA-256
+are pinned in `runtime/qoder-native-identity.mjs`. No native executable is checked
+into this repository. This is proprietary official software, not covered by the
+MIT license below; use is subject to the publisher's applicable terms.
+The helper generates the host/container's real identity; VM flags are not altered
+and identities from other devices are not imported. Official activity eligibility
+and claim restrictions remain authoritative.
 
 Source: https://github.com/magpie-community/plugins/tree/270b228a964dc4f7fb55b211e23f7a2c7b7329f6/packages/qoder
 

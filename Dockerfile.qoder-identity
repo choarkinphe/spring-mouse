@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+# Official Qoder UMID binaries require glibc >=2.28; never execute them in
+# Alpine or patch away their VM/device checks.
+FROM node:22-bookworm-slim AS prepare
+WORKDIR /build
+COPY runtime/qoder-native-identity.mjs ./runtime/
+COPY scripts/prepare-qoder-native.mjs ./scripts/
+RUN node scripts/prepare-qoder-native.mjs /opt/qoder
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/qoder /var/lib/qoder-native /run/qoder-identity \
+    && chown -R node:node /opt/qoder /var/lib/qoder-native /run/qoder-identity
+COPY --from=prepare --chown=node:node /opt/qoder/ /opt/qoder/
+COPY --chown=node:node runtime/qoder-native-identity.mjs runtime/qoder-identity-server.mjs /opt/qoder/
+USER node
+WORKDIR /var/lib/qoder-native
+ENV HOME=/var/lib/qoder-native QODER_NATIVE_STATE_DIR=/var/lib/qoder-native QODER_IDENTITY_SOCKET=/run/qoder-identity/identity.sock
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD node -e "require('http').get({socketPath:process.env.QODER_IDENTITY_SOCKET,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+CMD ["node", "/opt/qoder/qoder-identity-server.mjs"]

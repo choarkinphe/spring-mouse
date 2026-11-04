@@ -1,0 +1,27 @@
+# Opt-in companion for the official Qoder native identity runtime.
+# docker compose -f docker-compose.yml -f compose.qoder-identity.yml up -d --build
+# Identity is generated locally by the official helper, not copied from a user PC.
+services:
+  spring-mouse:
+    environment:
+      QODER_IDENTITY_SOCKET: /run/qoder-identity/identity.sock
+    volumes:
+      - qoder-identity-socket:/run/qoder-identity:ro
+    depends_on:
+      qoder-identity:
+        condition: service_healthy
+  qoder-identity:
+    build:
+      context: .
+      dockerfile: Dockerfile.qoder-identity
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - qoder-identity-socket:/run/qoder-identity
+      - qoder-native-state:/var/lib/qoder-native
+volumes:
+  qoder-identity-socket:
+  qoder-native-state:

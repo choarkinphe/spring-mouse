@@ -70,61 +70,37 @@ describe("Qoder campaign check-in", () => {
     expect(identity).not.toHaveBeenCalled();
   });
 
-  it("global campaign query is status-only even for claimable VIEW_DETAILS promotions", async () => {
-    const fetch = server([{ actionType: "VIEW_DETAILS", claimStatus: "CLAIMABLE" }]);
-    const output = await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch });
-    expect(output).toMatchObject({ ok: true, status: "desktop_required" });
-    expect(output.message).toContain("未确认本轮已领取");
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0][1].method).toBe("GET");
+  it("global claims require real native identity, never a chat UUID", async () => {
+    const fetch = vi.fn();
+    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u", machineId: "uuid" } }), { fetch }))
+      .toMatchObject({ ok: false, status: "runtime_missing" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("global status query recognizes a claimed campaign without claiming again", async () => {
-    const fetch = server([campaign({ claimStatus: "CLAIMED" })]);
-    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch }))
-      .toMatchObject({ ok: true, status: "already_checked_in", reward: 100 });
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0][1].method).toBe("GET");
-  });
-
-  it("queries global campaigns before reporting missing identity; never manufactures SDK headers", async () => {
-    const fetch = server([{ actionType: "VIEW_DETAILS" }]);
-    const output = await run(account({ provider: "qoder", providerSpecificData: { userId: "u", machineId: "uuid" } }), { fetch });
-    expect(output).toMatchObject({ ok: true, status: "desktop_required" });
-    expect(output.message).toContain("未确认本轮已领取");
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0][1].method).toBe("GET");
-    expect(fetch.mock.calls[0][1].headers["Cosy-MachineToken"]).toBeUndefined();
-  });
-
-  it("never claims an explicitly offered global campaign", async () => {
+  it("uses official native identity to claim an eligible global campaign", async () => {
     const fetch = server();
-    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch }))
-      .toMatchObject({ ok: true, status: "desktop_required" });
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0][1].method).toBe("GET");
-  });
-
-  it("trusts global already-claimed and future campaigns without a helper", async () => {
-    const connection = account({ provider: "qoder", providerSpecificData: { userId: "u" } });
-    const done = server([campaign({ claimStatus: "CLAIMED" })]);
-    expect(await run(connection, { fetch: done })).toMatchObject({ status: "already_checked_in", ok: true });
-    expect(done).toHaveBeenCalledOnce();
-    const future = server([campaign({ startAt: (NOW + 3600000) / 1000 })]);
-    expect(await run(connection, { fetch: future })).toMatchObject({ ok: true, status: "desktop_required" });
-    expect(future).toHaveBeenCalledOnce();
-  });
-
-  it("does not invoke native identity or claim global campaigns even when a helper exists", async () => {
-    const fetch = server();
-    const readMachineIdentity = vi.fn(async () => IDENTITY);
-    expect((await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), {
-      fetch, readMachineIdentity,
-    })).status).toBe("desktop_required");
-    expect(readMachineIdentity).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledOnce();
+    const readMachineIdentity = vi.fn(async () => ({ ...IDENTITY, "Cosy-MachineCode": "native-code", "Cosy-MachineId": "stable-local-id" }));
+    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch, readMachineIdentity }))
+      .toMatchObject({ ok: true, status: "success", reward: 100 });
+    expect(readMachineIdentity).toHaveBeenCalledWith("global", "u");
     expect(fetch.mock.calls[0][0]).toBe("https://openapi.qoder.sh/sash/api/v1/me/campaigns");
-    expect(fetch.mock.calls[0][1].headers["Cosy-MachineToken"]).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][1].method).toBe("POST");
+    expect(fetch.mock.calls[1][1].headers).toMatchObject({ ...IDENTITY, "Cosy-MachineCode": "native-code", "Cosy-MachineId": "stable-local-id" });
+  });
+
+  it("does not fabricate eligibility if native identity gets only VIEW_DETAILS", async () => {
+    const fetch = server([{ actionType: "VIEW_DETAILS", claimStatus: "CLAIMABLE" }]);
+    expect(await run(account({ provider: "qoder", providerSpecificData: { region: "global", userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY }))
+      .toMatchObject({ ok: false, status: "ineligible" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not replay an already claimed global campaign", async () => {
+    const fetch = server([campaign({ claimStatus: "CLAIMED" })]);
+    expect(await run(account({ provider: "qoder", providerSpecificData: { region: "global", userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY }))
+      .toMatchObject({ ok: true, status: "already_checked_in" });
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("does not claim a campaign already claimed in this window", async () => {

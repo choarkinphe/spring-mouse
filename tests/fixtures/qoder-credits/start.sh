@@ -18,13 +18,17 @@ export NEXT_PUBLIC_BASE_URL="http://127.0.0.1:$PORT" PORT
 export SPRING_MOUSE_REDIS_URL="" SPRING_MOUSE_REDIS_REQUIRED=false
 export NODE_OPTIONS="--require \"$HERE/preload.cjs\""
 pid=''
+identity_pid=''
+export QODER_IDENTITY_SOCKET="$HOME/identity.sock"
+"$NODE_BIN" "$HERE/mock-identity.mjs" &
+identity_pid=$!
 stop_child_tree() {
   local target="$1" child
   kill -0 "$target" 2>/dev/null || return 0
   for child in $(pgrep -P "$target" 2>/dev/null || true); do stop_child_tree "$child"; done
   kill "$target" 2>/dev/null || true
 }
-cleanup() { if [ -n "$pid" ]; then stop_child_tree "$pid"; wait "$pid" 2>/dev/null || true; fi; }
+cleanup() { for child in "$pid" "$identity_pid"; do if [ -n "$child" ]; then stop_child_tree "$child"; wait "$child" 2>/dev/null || true; fi; done; }
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 "$NODE_BIN" --import "$REPO/tests/fixtures/claude-desktop-smoke/register.mjs" "$HERE/seed.mjs"

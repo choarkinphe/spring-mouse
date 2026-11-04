@@ -7,7 +7,7 @@ import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
 import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
 import { requiresWorkBuddyAuthorization, WORKBUDDY_LEGACY } from "open-sse/config/workbuddy.js";
-import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, currentDailyCheckinState, QODER_GLOBAL_REWARDS, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, currentDailyCheckinState, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
 import { performQoderCheckin, qoderCheckinDate } from "./qoderCheckin.js";
 import { refreshQoderToken } from "open-sse/services/qoderModels.js";
 import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
@@ -177,24 +177,9 @@ export function createCodeBuddyCheckinService(deps = {}) {
     if (!connection) return { ok: false, httpStatus: 404, message: "账号不存在" };
     if (requiresWorkBuddyAuthorization(connection.provider, connection)) return { ok: false, httpStatus: WORKBUDDY_LEGACY.status, message: WORKBUDDY_LEGACY.message };
     if (!supportsDailyCheckin(connection)) return { ok: false, httpStatus: 400, message: DAILY_CHECKIN_UNSUPPORTED };
-    if (connection.provider === "qoder" && automatic) return { ok: false, skipped: "desktop_only", message: QODER_GLOBAL_REWARDS.message };
     if (connection.isActive === false) return { ok: false, httpStatus: 400, message: "请先启用账号", checkin: publicCheckinState(await getState(connectionId)) };
 
     const startedAt = now();
-    if (connection.provider === "qoder") {
-      // A manual status query does not acquire a claim lease, honor legacy
-      // success/cooldown shortcuts, or overwrite historical claim records.
-      const previous = await getState(connectionId);
-      let result;
-      try {
-        result = await performQoderCheckin(connection, { fetch: fetcher, refreshConnection, now,
-          proxy: await resolveConnectionProxyConfig(connection.providerSpecificData) });
-      } catch { result = outcome("error", { message: "查询领取状态失败，请稍后重试" }); }
-      return { ...result, checkin: publicCheckinState({ ...previous, enabled: false,
-        status: result.status, message: result.message, reward: result.reward ?? null,
-        lastAttemptAt: new Date(startedAt).toISOString(),
-        lastSuccessDate: result.successDate || previous.lastSuccessDate }) };
-    }
     const isQoder = isQoderCheckinProvider(connection.provider);
     const date = isQoder ? qoderCheckinDate(startedAt) : codeBuddyCheckinDate(startedAt);
     const leaseId = randomUUID();
@@ -239,15 +224,13 @@ export function createCodeBuddyCheckinService(deps = {}) {
         status: result.status, message: result.message, reward: result.reward ?? null,
         ...(result.ok ? { lastSuccessDate: result.successDate || date } : {}),
         terminalDate: !result.nextAttemptAt && ["ineligible", "ended", "own_app"].includes(result.status) ? date : null,
-        retryAfter: Number.isFinite(result.nextAttemptAt) ? result.nextAttemptAt : result.status === "error" ? now() + config.retryMs : 0,
+        retryAfter: Number.isFinite(result.nextAttemptAt) ? result.nextAttemptAt : ["error", "runtime_missing"].includes(result.status) ? now() + config.retryMs : 0,
       };
     });
     return { ...result, checkin: publicCheckinState(finished) };
   }
 
   async function setEnabled(connectionId, enabled) {
-    const connection = await load(connectionId);
-    if (connection?.provider === "qoder" && enabled) throw new Error("International Qoder is desktop-only");
     return publicCheckinState(await updateState(connectionId, () => ({ enabled })));
   }
 

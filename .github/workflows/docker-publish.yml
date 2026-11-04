@@ -167,6 +167,8 @@ jobs:
           unit/qoder-billing.test.js
           unit/qoder-usage.test.js
           unit/qoder-error-summary.test.js
+          unit/qoder-native-identity.test.js
+          unit/qoder-socket-identity.test.js
           unit/codebuddy-checkin.test.js
           unit/codebuddy-auto-checkin.test.js
           unit/codebuddy-checkin-route.test.js

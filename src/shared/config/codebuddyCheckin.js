@@ -47,21 +47,24 @@ export function supportsDailyCheckin(connection) {
     && ["oauth", "apikey"].includes(connection?.authType));
 }
 
-// International rewards are manually claimed in the official desktop app.
-// Keep historical success dates, but never present saved attempts as today's live status.
+// International rewards use the official native device identity. Eligibility
+// remains the server's decision; no client identity or VM status is spoofed.
 export const QODER_GLOBAL_REWARDS = {
   guideUrl: "https://docs.qoder.com/events/100credits",
-  message: "海外版每日积分仅限 Qoder 桌面应用内手动领取；网关只能查询领取状态，不会代领或自动签到。",
+  message: "通过官方原生组件提供当前设备身份，按官方活动资格领取；不会伪造设备或绕过领取限制。",
 };
 
 export function supportsAutomaticCheckin(connection) {
-  return supportsDailyCheckin(connection) && connection.provider !== "qoder";
+  return supportsDailyCheckin(connection);
 }
 
 export function currentDailyCheckinState(state = {}, provider) {
   if (provider !== "qoder") return state;
-  return { ...state, enabled: false, status: "desktop_required", message: QODER_GLOBAL_REWARDS.message,
-    terminalDate: null, retryAfter: 0, lastAttemptAt: null, reward: null };
+  if (state.status === "desktop_required" || state.status === "own_app"
+    && typeof state.message === "string" && (state.message.startsWith("Qoder 国际版签到需要官方设备身份"))) {
+    return { ...state, status: "recheck", message: "原生领取流程已更新，待重新查询官方活动", terminalDate: null, retryAfter: 0, lastAttemptAt: null };
+  }
+  return state;
 }
 
 export const DAILY_CHECKIN_UNSUPPORTED = "仅支持 WorkBuddy 国内版 OAuth 或 Qoder / Qoder CN OAuth、PAT 账号签到";

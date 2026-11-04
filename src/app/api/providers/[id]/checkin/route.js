@@ -1,7 +1,7 @@
 import { getProviderConnectionById } from "@/lib/db/repos/connectionsRepo.js";
 import { getCheckinState } from "@/lib/db/repos/checkinRepo.js";
 import { publicCheckinState, runCodeBuddyCheckin, setCodeBuddyCheckinEnabled } from "@/lib/services/codebuddyCheckin.js";
-import { DAILY_CHECKIN_UNSUPPORTED, supportsDailyCheckin, currentDailyCheckinState, QODER_GLOBAL_REWARDS } from "@/shared/config/codebuddyCheckin.js";
+import { DAILY_CHECKIN_UNSUPPORTED, supportsDailyCheckin, currentDailyCheckinState } from "@/shared/config/codebuddyCheckin.js";
 
 async function validate(params) {
   const { id } = await params;
@@ -15,10 +15,6 @@ export async function GET(request, { params }) {
   try {
     const target = await validate(params);
     if (target.error) return Response.json({ error: target.error }, { status: target.status });
-    if (target.provider === "qoder" && request && new URL(request.url).searchParams.get("refresh") === "1") {
-      const result = await runCodeBuddyCheckin(target.id);
-      return Response.json(result, { status: result.httpStatus || (result.ok ? 200 : 502), headers: { "Cache-Control": "no-store" } });
-    }
     return Response.json({ checkin: publicCheckinState(currentDailyCheckinState(await getCheckinState(target.id), target.provider)) });
   } catch {
     return Response.json({ error: "读取签到状态失败" }, { status: 500 });
@@ -31,7 +27,6 @@ export async function PATCH(request, { params }) {
     if (target.error) return Response.json({ error: target.error }, { status: target.status });
     const body = await request.json().catch(() => null);
     if (typeof body?.enabled !== "boolean") return Response.json({ error: "enabled 必须为布尔值" }, { status: 400 });
-    if (target.provider === "qoder" && body.enabled) return Response.json({ error: QODER_GLOBAL_REWARDS.message }, { status: 400 });
     return Response.json({ checkin: await setCodeBuddyCheckinEnabled(target.id, body.enabled) });
   } catch {
     return Response.json({ error: "保存自动签到设置失败" }, { status: 500 });

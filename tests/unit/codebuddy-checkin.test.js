@@ -169,26 +169,16 @@ describe("CodeBuddy check-in eligibility and opt-in", () => {
 });
 
 describe("Qoder shared check-in persistence", () => {
-  it("never runs international automatic check-in despite a persisted opt-in", async () => {
-    const f = fixture({ connection: { provider: "qoder" }, state: { enabled: true, status: "own_app", terminalDate: "2026-10-22" } });
-    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ skipped: "desktop_only" });
-    expect(performQoderCheckin).not.toHaveBeenCalled();
-    expect(f.updateState).not.toHaveBeenCalled();
-  });
-
-  it("queries international status without writing state, leases or honoring old daily shortcuts", async () => {
-    const f = fixture({ connection: { provider: "qoder" }, state: { enabled: true, lastSuccessDate: "2026-10-22", terminalDate: "2026-10-22", retryAfter: BASE_TIME + 999999 } });
-    performQoderCheckin.mockResolvedValue({ ok: true, status: "desktop_required", message: "query only" });
-    expect(await f.service.run(ID)).toMatchObject({ ok: true, checkin: { enabled: false, status: "desktop_required", lastSuccessDate: "2026-10-22" } });
+  it("rechecks obsolete device precheck once despite today's terminal marker", async () => {
+    const f = fixture({ connection: { provider: "qoder" }, state: { enabled: true, status: "own_app", message: "Qoder 国际版签到需要官方设备身份，请在当前主机安装并登录", terminalDate: "2026-10-22", retryAfter: BASE_TIME + 999999 } });
+    performQoderCheckin.mockResolvedValue({ ok: false, status: "own_app", message: "Qoder 官方未向当前请求提供可领取积分活动" });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ status: "own_app" });
     expect(performQoderCheckin).toHaveBeenCalledOnce();
-    expect(f.updateState).not.toHaveBeenCalled();
-    expect(f.state().enabled).toBe(true);
-    await expect(f.service.setEnabled(ID, true)).rejects.toThrow("desktop-only");
-    expect(f.updateState).not.toHaveBeenCalled();
-    expect(await f.service.setEnabled(ID, false)).toMatchObject({ enabled: false });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ skipped: "cooldown" });
+    expect(performQoderCheckin).toHaveBeenCalledOnce();
   });
 
-  it.each(["qoder-cn"])("persists %s success and follows the 10am boundary", async provider => {
+  it.each(["qoder", "qoder-cn"])("persists %s success and follows the 10am boundary", async provider => {
     const start = Date.parse("2026-10-28T01:59:00Z");
     const f = fixture({ connection: { provider, accessToken: "dt-fixture", providerSpecificData: { userId: "fixture-user" } }, state: { enabled: true }, time: start });
     performQoderCheckin.mockImplementation(async (_connection, { renewLease }) => {

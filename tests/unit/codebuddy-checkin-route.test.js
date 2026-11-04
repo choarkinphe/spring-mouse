@@ -21,29 +21,13 @@ beforeEach(() => {
 });
 
 describe("CodeBuddy checkin management route", () => {
-  it("GET shows global Qoder desktop-only guidance without stale enabled state", async () => {
+  it("GET displays obsolete global precheck as recheck without triggering a claim", async () => {
     getProviderConnectionById.mockResolvedValue({ provider: "qoder", authType: "oauth" });
-    getCheckinState.mockResolvedValue({ enabled: true, status: "success", reward: 100, lastSuccessDate: "2026-11-03" });
+    getCheckinState.mockResolvedValue({ enabled: true, status: "own_app", message: "Qoder 国际版签到需要官方设备身份，请在当前主机安装", terminalDate: "2026-11-04" });
     await GET(null, context());
     const { publicCheckinState } = await import("@/lib/services/codebuddyCheckin.js");
-    expect(publicCheckinState).toHaveBeenCalledWith(expect.objectContaining({ status: "desktop_required", enabled: false, reward: null, lastSuccessDate: "2026-11-03" }));
+    expect(publicCheckinState).toHaveBeenCalledWith(expect.objectContaining({ status: "recheck", terminalDate: null }));
     expect(runCodeBuddyCheckin).not.toHaveBeenCalled();
-  });
-
-  it("refresh GET queries global status but never posts a claim", async () => {
-    getProviderConnectionById.mockResolvedValue({ provider: "qoder", authType: "oauth" });
-    runCodeBuddyCheckin.mockResolvedValue({ ok: true, status: "desktop_required", checkin: { enabled: false, status: "desktop_required" } });
-    const response = await GET(new Request("http://localhost/api/providers/account/checkin?refresh=1"), context());
-    expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(runCodeBuddyCheckin).toHaveBeenCalledWith("account");
-  });
-
-  it("blocks legacy auto-check-in opt-in for global Qoder", async () => {
-    getProviderConnectionById.mockResolvedValue({ provider: "qoder", authType: "oauth" });
-    const response = await PATCH(req({ enabled: true }), context());
-    expect(response.status).toBe(400);
-    expect(setCodeBuddyCheckinEnabled).not.toHaveBeenCalled();
   });
   it("reads a sanitized state", async () => {
     const response = await GET(null, context());
@@ -59,7 +43,7 @@ describe("CodeBuddy checkin management route", () => {
 
   it.each([
     ["codebuddy-cn", "oauth"], ["workbuddy", "oauth"],
-    ["qoder-cn", "oauth"], ["qoder-cn", "apikey"],
+    ["qoder", "oauth"], ["qoder-cn", "oauth"], ["qoder", "apikey"], ["qoder-cn", "apikey"],
   ])("accepts the China provider %s (%s) for state and switch changes", async (provider, authType) => {
     getProviderConnectionById.mockResolvedValue({ provider, authType });
     expect((await GET(null, context())).status).toBe(200);

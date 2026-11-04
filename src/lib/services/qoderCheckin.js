@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { resolveQoderCredentials } from "open-sse/services/qoderModels.js";
 import { getQoderEndpoints, withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
-import { QODER_GLOBAL_REWARDS } from "@/shared/config/codebuddyCheckin.js";
+import { readQoderSocketIdentity } from "./qoderNativeIdentity.js";
+import { hostname } from "node:os";
 
 // Protocol reference (MIT): magpie-community/plugins, revision
 // 270b228a964dc4f7fb55b211e23f7a2c7b7329f6, packages/qoder/index.mjs
@@ -62,6 +63,7 @@ function validateIdentity(identity) {
 // binary, accept executable paths from connection metadata, or manufacture its
 // device identity from the chat UUID. UID is stdin, never a command-line arg.
 export async function readQoderMachineIdentity(region, uid) {
+  if (process.env.QODER_IDENTITY_SOCKET) return readQoderSocketIdentity(region);
   const cn = region === "cn";
   const app = cn ? "Qoder CN" : "Qoder";
   const prefix = cn ? "QODERCN_" : "QODER_";
@@ -176,6 +178,12 @@ export async function performQoderCheckin(connection, {
         Accept: "application/json", "Content-Type": "application/json",
         Authorization: `Bearer ${credentials.accessToken}`,
         "Cosy-ClientType": "10", "User-Agent": "Qoder", ...identity,
+        ...(region === "global" ? {
+          "Cosy-Version": "1.1.82",
+          "Cosy-MachineOS": `${process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch}_${process.platform}`,
+          ...(identity["Cosy-MachineId"] ? { "Cosy-MachineId": identity["Cosy-MachineId"] } : {}),
+          "Cosy-MachineHostname": hostname().replace(/[^\x21-\x7e]/g, ""),
+        } : {}),
       },
       ...(method === "POST" ? { body: "{}" } : {}),
       signal: AbortSignal.timeout(20_000),
@@ -195,13 +203,16 @@ export async function performQoderCheckin(connection, {
     const expiry = credentials.expiresAt ? new Date(credentials.expiresAt).getTime() : NaN;
     if (Number.isFinite(expiry) && expiry - currentTime() < 5 * 60 * 1000 && credentials.refreshToken) await refresh();
     await resolve();
-    if (region === "cn") {
-      try {
-        const read = await readMachineIdentity(region, credentials.providerSpecificData.userId);
-        identity = validateIdentity({ machineToken: read?.["Cosy-MachineToken"], machineType: read?.["Cosy-MachineType"] });
-      } catch {
-        // CN can offer a campaign without the optional native helper.
+    try {
+      const read = await readMachineIdentity(region, credentials.providerSpecificData.userId);
+      identity = validateIdentity({ machineToken: read?.["Cosy-MachineToken"], machineType: read?.["Cosy-MachineType"] });
+      for (const field of ["Cosy-MachineCode", "Cosy-MachineId"]) {
+        if (typeof read?.[field] === "string" && /^[\x21-\x7e]{1,8192}$/.test(read[field])) identity[field] = read[field];
       }
+    } catch {
+      // CN supports native-free claims. International claims require a real
+      // locally generated identity; never claim by substituting a chat UUID.
+      if (region === "global") return result("runtime_missing", "官方设备身份组件不可用，尚未发起领取；请检查原生运行服务");
     }
     const listed = await request(base, "GET");
     if ([401, 403].includes(listed.status)) return authError();
@@ -214,17 +225,6 @@ export async function performQoderCheckin(connection, {
       const start = timestamp(c.startAt), end = timestamp(c.endAt);
       return start !== null && end !== null && start < end && start <= time && time < end;
     };
-    // Enforce the desktop-only contract here as well as at the scheduler/UI:
-    // even a CLAIMABLE campaign and a valid native identity must not trigger POST.
-    if (region === "global") {
-      const done = campaigns.find((c) => c.claimStatus === "CLAIMED" && active(c));
-      if (done) return result("already_checked_in", "官方已确认本轮积分已领取；本次仅查询，未发起领取", {
-        reward: rewardOf(done.benefit?.amount), successDate: qoderCheckinDate(time),
-      });
-      return { ok: true, status: "desktop_required", message: campaigns.some((c) => c.claimStatus === "CLAIMABLE" && active(c))
-        ? `官方显示本轮有可领取活动。${QODER_GLOBAL_REWARDS.message}`
-        : `当前查询未确认本轮已领取，不代表账号无资格。${QODER_GLOBAL_REWARDS.message}` };
-    }
     const campaign = campaigns.find((c) => c.claimStatus === "CLAIMABLE" && active(c));
     if (!campaign) {
       const done = campaigns.find((c) => c.claimStatus === "CLAIMED" && active(c));

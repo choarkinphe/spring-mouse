@@ -17,6 +17,9 @@ function buildMaps(models) {
     if (m.pricing === undefined) continue;
     if (m.fullModel) byFull[m.fullModel] = m.pricing;
     if (m.routedModel) byFull[m.routedModel] = m.pricing;
+    // Synced rows expose the routed alias (cx/...), while the model drawer asks
+    // with the canonical provider (codex/...). Index both without cross-channel fallback.
+    if (m.provider && m.model) byFull[`${m.provider}/${m.model}`] = m.pricing;
     if (m.model) byId[m.model] = m.pricing;
   }
   return { byFull, byId };

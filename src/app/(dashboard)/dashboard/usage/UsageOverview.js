@@ -6,6 +6,7 @@ import UsageTimeFilter from "./components/UsageTimeFilter";
 import { realtimeRange } from "@/shared/utils/realtimeRange";
 import { startOfDay, endOfDay } from "@/shared/utils/datetime";
 import DashboardUsageHeader from "./components/DashboardUsageHeader";
+import AccountCostsPanel from "./components/AccountCostsPanel";
 
 // How often the home page's rolling window advances. Without this the window
 // would freeze at whatever instant the page was opened, so "last 24 hours"
@@ -69,6 +70,8 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
           onScopeChanged={() => setScopeRevision((current) => current + 1)}
         />
       )}
+
+      {showBreakdowns && <AccountCostsPanel timeRange={timeRange} apiKeyId={apiKeyId} />}
 
       <Suspense fallback={<CardSkeleton />}>
         <UsageStats

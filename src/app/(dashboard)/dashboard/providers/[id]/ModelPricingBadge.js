@@ -3,7 +3,7 @@
 import PropTypes from "prop-types";
 import { formatRate } from "@/shared/hooks/useModelPricing";
 
-export default function ModelPricingBadge({ pricing, creditBilling, loaded = false }) {
+export default function ModelPricingBadge({ pricing, creditBilling, billingMode, loaded = false }) {
   if (creditBilling?.unit === "credits") {
     const rate = creditBilling.multiplier;
     const known = typeof rate === "number" && Number.isFinite(rate) && rate >= 0;
@@ -14,6 +14,9 @@ export default function ModelPricingBadge({ pricing, creditBilling, loaded = fal
         {known && creditBilling.originalMultiplier > rate && <del className="text-text-muted">{creditBilling.originalMultiplier}×</del>}
       </span>
     );
+  }
+  if (billingMode === "subscription" || billingMode === "free") {
+    return <span className="shrink-0 rounded border border-border-subtle bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-muted" title="Token 用量照常统计；订阅费用在账号中记录，不使用模型单价计算实际支出">{billingMode === "free" ? "免费账号" : "订阅内使用"}</span>;
   }
   if (!loaded) return null;
   return pricing ? (
@@ -26,7 +29,7 @@ export default function ModelPricingBadge({ pricing, creditBilling, loaded = fal
   ) : (
     <span
       className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-600"
-      title="未配置定价，该模型的所有请求成本都会记为 $0。可在本页「同步定价」或计费设置中补全。"
+      title="尚无适用的模型费率，无法估算按量费用；不代表免费。可同步参考定价或手动配置实际渠道费率。"
     >
       未定价
     </span>
@@ -36,5 +39,6 @@ export default function ModelPricingBadge({ pricing, creditBilling, loaded = fal
 ModelPricingBadge.propTypes = {
   pricing: PropTypes.shape({ input: PropTypes.number, output: PropTypes.number }),
   loaded: PropTypes.bool,
+  billingMode: PropTypes.string,
   creditBilling: PropTypes.shape({ unit: PropTypes.string, multiplier: PropTypes.number, originalMultiplier: PropTypes.number }),
 };

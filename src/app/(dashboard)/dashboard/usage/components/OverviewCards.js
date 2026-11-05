@@ -104,7 +104,7 @@ export default function OverviewCards({ stats, loading = false, failed = false }
         value={`~${fmtCost(stats.totalCost)}`}
         tone="warning"
         points={series("cost")}
-        detail="预估费用，非实际账单"
+        detail="Token 参考估值，含历史订阅用量；非实际支出"
         loading={loading}
         failed={failed}
       />

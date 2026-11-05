@@ -11,7 +11,7 @@ import { modelCreditBilling } from "open-sse/config/creditBilling.js";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, billingMode, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const creditBilling = modelCreditBilling(fullModel.split("/")[0], model);
@@ -72,9 +72,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
       <div className="min-w-0 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{modelType}</span>
-          {/* An unpriced model records $0 for every request, so this badge is the
-              earliest visible signal that billing is silently broken for it. */}
-          <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} loaded={pricingLoaded} />
+          <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} billingMode={billingMode} loaded={pricingLoaded} />
           {!creditBilling && model.name && model.name !== model.id && (
             <span className="min-w-0 flex-1 truncate text-[10px] italic text-text-muted/70" title={model.name}>{model.name}</span>
           )}

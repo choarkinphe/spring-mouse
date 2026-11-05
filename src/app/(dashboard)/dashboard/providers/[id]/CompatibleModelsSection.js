@@ -20,7 +20,7 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateMultiplier, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateMultiplier, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, billingMode, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -72,7 +72,7 @@ function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateM
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{sourceLabel || role.label}</span>
-            <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} loaded={pricingLoaded} />
+            <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} billingMode={billingMode} loaded={pricingLoaded} />
           </div>
           <span className="shrink-0" title={isEnabled ? "停用模型" : "启用模型"}>
             <Toggle
@@ -164,7 +164,7 @@ function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateM
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, billingMode, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const [openModelMenuId, setOpenModelMenuId] = useState(null);
 
   const allModels = getProviderCustomModelRows({
@@ -218,6 +218,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
                 sourceLabel={sourceLabel}
                 pricing={getPricing?.(`${providerId || providerStorageAlias}/${id}`)}
                 pricingLoaded={typeof getPricing === "function"}
+                billingMode={billingMode}
                 copied={copied}
                 onCopy={onCopy}
                 onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}

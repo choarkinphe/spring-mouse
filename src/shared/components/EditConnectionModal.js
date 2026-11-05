@@ -10,6 +10,7 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport";
 import Select from "@/shared/components/Select";
 import AccountScheduleEditor from "@/shared/components/AccountScheduleEditor";
+import AccountBillingEditor from "@/shared/components/AccountBillingEditor";
 import { findInvalidScheduleField } from "@/shared/utils/schedule.js";
 
 export default function EditConnectionModal({ isOpen, connection, mouses = [], channelConcurrencyLimit = null, channelAccountCount = null, channelBaseUrl = "", onSave, onDelete, onClose }) {
@@ -298,6 +299,7 @@ export default function EditConnectionModal({ isOpen, connection, mouses = [], c
               : "留空则使用渠道配置的地址；填写后本账号单独使用该地址。"}
           />
         )}
+        <AccountBillingEditor key={connection.id} connection={connection} />
         <AccountScheduleEditor schedule={schedule} onChange={setSchedule} />
         {!isOAuth && (
           <>

@@ -1,12 +1,15 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { UsageStats, CardSkeleton } from "@/shared/components";
+import { UsageStats, CardSkeleton, Button, Drawer } from "@/shared/components";
+import dynamic from "next/dynamic";
 import UsageTimeFilter from "./components/UsageTimeFilter";
 import { realtimeRange } from "@/shared/utils/realtimeRange";
 import { startOfDay, endOfDay } from "@/shared/utils/datetime";
 import DashboardUsageHeader from "./components/DashboardUsageHeader";
-import AccountCostsPanel from "./components/AccountCostsPanel";
+const AccountCostsPanel = dynamic(() => import("./components/AccountCostsPanel"), {
+  loading: () => <CardSkeleton />,
+});
 
 // How often the home page's rolling window advances. Without this the window
 // would freeze at whatever instant the page was opened, so "last 24 hours"
@@ -38,6 +41,7 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
   const [apiKeyId, setApiKeyId] = useState("");
   const [scopeRevision, setScopeRevision] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [costsOpen, setCostsOpen] = useState(false);
 
   // Advance the home page's rolling window so it keeps meaning "the last N hours".
   // Keep the range stable while the request-details drawer is open; otherwise the
@@ -68,10 +72,21 @@ function UsageOverviewContent({ showOverview, showBreakdowns, initialSystemStatu
           apiKeyId={apiKeyId}
           onApiKeyChange={setApiKeyId}
           onScopeChanged={() => setScopeRevision((current) => current + 1)}
+          actions={showBreakdowns ? (
+            <Button type="button" variant="secondary" icon="account_balance_wallet" onClick={() => setCostsOpen(true)} aria-haspopup="dialog" aria-expanded={costsOpen}>
+              成本看板
+            </Button>
+          ) : null}
         />
       )}
 
-      {showBreakdowns && <AccountCostsPanel timeRange={timeRange} apiKeyId={apiKeyId} />}
+      {showBreakdowns && (
+        <Drawer isOpen={costsOpen} onClose={() => setCostsOpen(false)} title="成本看板" width="3xl" bodyClassName="p-3 sm:p-6">
+          <div role="dialog" aria-modal="true" aria-label="成本看板">
+            {costsOpen && <AccountCostsPanel timeRange={timeRange} apiKeyId={apiKeyId} />}
+          </div>
+        </Drawer>
+      )}
 
       <Suspense fallback={<CardSkeleton />}>
         <UsageStats

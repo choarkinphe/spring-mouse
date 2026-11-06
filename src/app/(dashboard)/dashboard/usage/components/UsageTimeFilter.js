@@ -159,7 +159,7 @@ PersonFilterDropdown.propTypes = {
   scopeControl: PropTypes.node,
 };
 
-export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyChange, onScopeChanged }) {
+export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyChange, onScopeChanged, actions }) {
   const [preset, setPreset] = useState(value?.preset || "today");
   const [anchor, setAnchor] = useState(() => new Date());
   const [customStart, setCustomStart] = useState(value?.startDate ? new Date(value.startDate) : new Date());
@@ -302,6 +302,7 @@ export default function UsageTimeFilter({ value, onChange, apiKeyId, onApiKeyCha
           onChange={onApiKeyChange}
           scopeControl={<UsageScopeManager apiKeys={apiKeys} onSaved={onScopeChanged} compact />}
         />
+        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>
 
       <p className="sr-only">当前统计范围：{toChineseDate(range.start)} 至 {toChineseDate(range.end)}</p>
@@ -319,4 +320,5 @@ UsageTimeFilter.propTypes = {
   apiKeyId: PropTypes.string,
   onApiKeyChange: PropTypes.func,
   onScopeChanged: PropTypes.func,
+  actions: PropTypes.node,
 };

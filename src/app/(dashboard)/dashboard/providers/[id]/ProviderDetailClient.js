@@ -1055,7 +1055,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               capabilityProfiles={capabilityProfiles.filter((profile) => profile.modelId === model.id)}
               isTesting={testingModelIds.has(model.id)}
               isCustom
-              isFree={false}
+              isFree={model.isFree}
               sourceLabel={describeModelSource(model.modelSource)}
               caps={rowCaps}
               thinkingSuffix={resolveThinkingSuffix(model.id)}

@@ -12,7 +12,7 @@ export default {
     textIcon: "DV",
     website: "https://devin.ai",
     notice: {
-      text: "在浏览器中登录 Devin，使用账号额度直连模型；无需安装 CLI，也不会启动本机 Agent。模型家族、思考档位、快速变体及额度读取对齐 magpie 的 Devin 接入，具体模型以当前账号目录为准。",
+      text: "在浏览器中登录 Devin，使用账号额度直连模型；无需安装 CLI，也不会启动本机 Agent。支持模型家族、思考档位、快速变体及额度读取，具体模型以当前账号目录为准。",
       signupUrl: "https://app.devin.ai",
     },
   },

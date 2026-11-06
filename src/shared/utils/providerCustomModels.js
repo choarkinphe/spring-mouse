@@ -98,6 +98,7 @@ export function getProviderCustomModelRows({
     rows.push({
       id: model.id,
       name: model.name || model.id,
+      ...(model.isFree === true ? { isFree: true } : {}),
       ...(model.rateMultiplier !== undefined ? { rateMultiplier: model.rateMultiplier } : {}),
       ...(model.originalRateMultiplier !== undefined ? { originalRateMultiplier: model.originalRateMultiplier } : {}),
       fullModel,

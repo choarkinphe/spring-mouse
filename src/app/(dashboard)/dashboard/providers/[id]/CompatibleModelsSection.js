@@ -20,7 +20,7 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateMultiplier, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, billingMode, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+function CompatibleModelCard({ modelId, modelName, isFree, rateMultiplier, originalRateMultiplier, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, billingMode, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -72,6 +72,7 @@ function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateM
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{sourceLabel || role.label}</span>
+            {isFree && <span className="shrink-0 rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] font-bold text-green-600 dark:text-green-400">免费</span>}
             <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} billingMode={billingMode} loaded={pricingLoaded} />
           </div>
           <span className="shrink-0" title={isEnabled ? "停用模型" : "启用模型"}>
@@ -193,7 +194,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
             <span className="material-symbols-outlined text-[18px]">add</span>
             添加模型
           </button>
-          {allModels.map(({ id, name, rateMultiplier, originalRateMultiplier, alias, source, modelSource, providerId, capabilities, manualCapabilities, origin }) => {
+          {allModels.map(({ id, name, isFree, rateMultiplier, originalRateMultiplier, alias, source, modelSource, providerId, capabilities, manualCapabilities, origin }) => {
             const capsKey = `${providerStorageAlias}/${id}`;
             // Mirror ProviderDetailClient: the parent tracks the in-flight toggle as
             // "<alias>|<modelId>|<capabilityKey>"; the card only needs the suffix.
@@ -211,6 +212,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
                 key={`${source}-${providerStorageAlias}/${id}`}
                 modelId={id}
                 modelName={name}
+                isFree={isFree}
                 rateMultiplier={rateMultiplier}
                 originalRateMultiplier={originalRateMultiplier}
                 fullModel={`${providerDisplayAlias}/${id}`}
@@ -296,6 +298,7 @@ CompatibleModelsSection.propTypes = {
 
 CompatibleModelCard.propTypes = {
   sourceLabel: PropTypes.string,
+  isFree: PropTypes.bool,
   pricing: PropTypes.shape({ input: PropTypes.number, output: PropTypes.number }),
   pricingLoaded: PropTypes.bool,
   onEditCapabilities: PropTypes.func,

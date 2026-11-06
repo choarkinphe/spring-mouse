@@ -92,6 +92,18 @@ describe("provider custom model rows", () => {
     ]);
   });
 
+  it("preserves official free flags without marking paid or unknown models free", () => {
+    const rows = getProviderCustomModelRows({ providerAlias: "dvn", customModels: [
+      { providerAlias: "dvn", id: "swe-2", source: "official", isFree: true },
+      { providerAlias: "dvn", id: "swe-2-flash", source: "official", isFree: true },
+      { providerAlias: "dvn", id: "swe-2-lightning", source: "official" },
+      { providerAlias: "dvn", id: "paid", source: "official", isFree: false },
+    ] });
+    expect(rows.filter(row => row.isFree).map(row => row.id)).toEqual(["swe-2", "swe-2-flash"]);
+    expect(rows[2].isFree).toBeUndefined();
+    expect(rows[3].isFree).toBeUndefined();
+  });
+
   it("preserves synchronized capability metadata for custom model rows", () => {
     const rows = getProviderCustomModelRows({
       customModels: [{

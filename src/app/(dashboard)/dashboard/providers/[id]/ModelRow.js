@@ -72,6 +72,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
       <div className="min-w-0 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{modelType}</span>
+          {isFree && isCustom && <span className="shrink-0 rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] font-bold text-green-600 dark:text-green-400">免费</span>}
           <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} billingMode={billingMode} loaded={pricingLoaded} />
           {!creditBilling && model.name && model.name !== model.id && (
             <span className="min-w-0 flex-1 truncate text-[10px] italic text-text-muted/70" title={model.name}>{model.name}</span>

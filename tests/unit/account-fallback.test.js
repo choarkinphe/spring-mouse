@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { checkFallbackError } from "../../open-sse/services/accountFallback.js";
 
 describe("account fallback classification", () => {
+  it("rotates on an empty upstream reply without locking the account", () => {
+    const raw = '{"error":{"message":"An empty reply (Devin returned no text, reasoning or tool call)","type":"upstream_error","code":"empty_stream"}}';
+    expect(checkFallbackError(502, raw)).toEqual({ shouldFallback: true, cooldownMs: 0, modelLevel: true });
+  });
   it.each([400, 406, 409, 413, 422])(
     "does not rotate accounts for client error %s",
     (status) => {

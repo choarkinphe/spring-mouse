@@ -70,6 +70,21 @@ describe("Devin executor", () => {
     expect(result.response.status).toBe(502);
     expect(await result.response.json()).toMatchObject({ error: { code: "empty_stream" } });
   });
+  it("returns a length-limited reply when a max_tokens probe ends before any delta", async () => {
+    // Production: Claude Code's `Hi` / max_tokens 1 probe got stop reason 3 with no output.
+    fetchMock.mockResolvedValue(new Response(concat(frame(concat(b(1, "output-id"), v(5, DEVIN.stopReasons.maxTokens))), frame(b(7, concat(v(2, 10), v(3, 1)))), eos())));
+    const result = await new DevinExecutor().execute(opts({ body: { messages: [{ role: "user", content: "Hi" }], max_tokens: 1 } }));
+    expect(result.response.status).toBe(200);
+    const chunks = sse(await result.response.text());
+    expect(chunks.some(c => c.error)).toBe(false);
+    expect(chunks.at(-1)).toMatchObject({ choices: [{ finish_reason: "length" }], usage: { completion_tokens: 1 } });
+  });
+  it("treats an output-free reply that spent the whole budget as length-limited without a stop reason", async () => {
+    fetchMock.mockResolvedValue(new Response(concat(frame(b(7, concat(v(2, 10), v(3, 1)))), eos())));
+    const result = await new DevinExecutor().execute(opts({ body: { messages: [{ role: "user", content: "Hi" }], max_tokens: 1 }, stream: false }));
+    expect(result.response.status).toBe(200);
+    expect(await result.response.json()).toMatchObject({ choices: [{ finish_reason: "length", message: { content: "" } }] });
+  });
   it("preserves pre-content trailer error as native HTTP failure for fallback", async () => {
     fetchMock.mockResolvedValue(new Response(frame(Buffer.from('{"error":{"code":"resource_exhausted","message":"quota"}}'), 2)));
     const result = await new DevinExecutor().execute(opts());

@@ -45,6 +45,7 @@ export class DevinExecutor extends BaseExecutor {
     let headers;
     let transformedBody;
     let upstream;
+    let maxTokens;
     const startedAt = Date.now();
     try {
       headers = this.buildHeaders(credentials);
@@ -52,6 +53,7 @@ export class DevinExecutor extends BaseExecutor {
       const effort = native?.output_config?.effort ?? native?.thinking?.effort ?? body.reasoning_effort ?? body.reasoning?.effort;
       const wireModel = await resolveDevinModel({ credentials, model, effort, proxyOptions, signal: controller.signal });
       transformedBody = this.transformRequest(wireModel, body, stream, credentials);
+      maxTokens = body.max_completion_tokens || body.max_tokens;
       const remaining = Number.isFinite(overloadDeadline) ? overloadDeadline - Date.now() : Infinity;
       if (remaining <= 0) { const error = new Error("Devin dispatch deadline exceeded"); error.name = "TimeoutError"; throw error; }
       const compressed = transformedBody.length > DEVIN.gzipRequestThreshold;
@@ -109,12 +111,12 @@ export class DevinExecutor extends BaseExecutor {
     }
     if (!stream) {
       try {
-        const completion = await devinCompletion(upstream.body, model, { signal: controller.signal });
+        const completion = await devinCompletion(upstream.body, model, { signal: controller.signal, maxTokens });
         result.response = new Response(JSON.stringify(completion), { headers: { "Content-Type": "application/json" } });
         return result;
       } finally { controller.abort(); cleanup(); }
     }
-    const iterator = devinOpenAIChunks(upstream.body, model, { signal: controller.signal });
+    const iterator = devinOpenAIChunks(upstream.body, model, { signal: controller.signal, maxTokens });
     let first;
     try {
       first = await runWithAbortDeadline(() => iterator.next(), {

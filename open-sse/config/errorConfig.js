@@ -111,6 +111,9 @@ export const ERROR_RULES = [
   { text: "quota exceeded",           backoff: true },
   { text: "capacity",                 cooldownMs: 0, modelLevel: true },
   { text: "overloaded",               cooldownMs: 0, modelLevel: true },
+  // A reply with no output says nothing about the account's health. A 30s
+  // account lock here took a single-account channel fully offline.
+  { text: "empty_stream",             cooldownMs: 0, modelLevel: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },

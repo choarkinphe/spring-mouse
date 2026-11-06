@@ -6,7 +6,7 @@ import { OPENAI_FINISH } from "../../translator/schema/finishReasons.js";
 import { DevinProtocolError, parseDevinFrame, parseDevinTrailer, readConnectFrames } from "./protocol.js";
 import { encodeDevinToolId, rememberDevinSignatureType } from "./request.js";
 
-export async function* devinOpenAIChunks(body, model, { signal } = {}) {
+export async function* devinOpenAIChunks(body, model, { signal, maxTokens } = {}) {
   const id = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
   const chunk = (delta, finishReason = null) => ({ id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta, finish_reason: finishReason }] });
@@ -79,7 +79,15 @@ export async function* devinOpenAIChunks(body, model, { signal } = {}) {
     }
   }
   if (!terminal) throw new DevinProtocolError("Devin stream ended before EOS trailer", "stream_truncated");
-  if (!started) throw new DevinProtocolError("An empty reply (Devin returned no text, reasoning or tool call)", "empty_stream");
+  const reasons = DEVIN.stopReasons;
+  const lengthStop = [reasons.incomplete, reasons.maxTokens].includes(stopReason);
+  // A tiny budget (Claude Code's `max_tokens: 1` probe) can be exhausted before
+  // any visible delta. That is a completed length-limited reply, not an empty
+  // upstream failure: reporting 502 also quarantined single-account channels.
+  const budgetSpent = Number.isSafeInteger(maxTokens) && (usage.output ?? dimensionUsage.output ?? 0) >= maxTokens;
+  if (!started && !lengthStop && !budgetSpent) {
+    throw new DevinProtocolError(`An empty reply (Devin returned no text, reasoning or tool call; stop reason ${stopReason ?? "none"})`, "empty_stream");
+  }
   const contentTail = contentDecoder.decode();
   const reasoningTail = reasoningDecoder.decode();
   if (contentTail) yield chunk({ content: contentTail });
@@ -94,8 +102,7 @@ export async function* devinOpenAIChunks(body, model, { signal } = {}) {
     rememberDevinSignatureType(signature, signatureType);
     yield chunk({ reasoning_signature: signature, ...(signatureType ? { reasoning_signature_type: signatureType } : {}) });
   }
-  const reasons = DEVIN.stopReasons;
-  const finishReason = [reasons.incomplete, reasons.maxTokens].includes(stopReason) ? OPENAI_FINISH.LENGTH
+  const finishReason = lengthStop || (!started && budgetSpent) ? OPENAI_FINISH.LENGTH
     : stopReason === reasons.contentFilter ? OPENAI_FINISH.CONTENT_FILTER
       : calls.length || stopReason === reasons.toolCalls ? OPENAI_FINISH.TOOL_CALLS : OPENAI_FINISH.STOP;
   // #7 is authoritative; dimension metrics fill only missing/zero counters.

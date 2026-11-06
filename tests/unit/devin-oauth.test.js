@@ -356,6 +356,17 @@ describe("Devin static Next route", () => {
     expect(mocks.servers[0].close).toHaveBeenCalled();
   });
 
+  it("accepts browser-proven same-origin requests behind TLS and Host rewriting", async () => {
+    const res = await post("begin", { mode: "manual" }, { url: "http://0.0.0.0:8008/api/oauth/devin/begin", headers: { Host: "internal:8008", Origin: "https://gateway.example.invalid", "Sec-Fetch-Site": "same-origin", "X-Forwarded-Host": "ignored.invalid" } });
+    expect(res.status).toBe(200);
+    const auth = await res.json();
+    sessions.push(auth.state);
+    expect(auth.mode).toBe("manual");
+    const denied = await post("begin", {}, { headers: { Origin: "https://attacker.invalid", "X-Forwarded-Host": "attacker.invalid", "X-Forwarded-Proto": "https" } });
+    expect(denied.status).toBe(403);
+    const sameSite = await post("begin", {}, { headers: { Origin: "http://localhost:8008", "Sec-Fetch-Site": "same-site" } });
+    expect(sameSite.status).toBe(403);
+  });
   it("rejects browser cross-origin mutation requests", async () => {
     const res = await post("begin", {}, { headers: { Origin: "https://attacker.invalid" } });
     expect(res.status).toBe(403);

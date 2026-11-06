@@ -22,11 +22,18 @@ function errorResponse(error) {
 // DashboardGuard authenticates /api/oauth/*; add an explicit mutation origin
 // check as well. A CLI without Origin is allowed, cross-site browser calls aren't.
 function sameOrigin(request) {
-  if (request.headers.get("sec-fetch-site") === "cross-site") return false;
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "cross-site" || site === "same-site") return false;
   const origin = request.headers.get("origin");
   if (!origin) return true;
   try {
     const parsed = new URL(origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    // Browsers set this forbidden request header from the actual page origin.
+    // TLS termination/Host rewriting can make Next's internal URL entirely
+    // different; do not trust attacker-supplied X-Forwarded-* to reconstruct it.
+    // DashboardGuard has already authenticated this management request.
+    if (site === "same-origin") return true;
     return parsed.origin === new URL(request.url).origin
       && parsed.host === (request.headers.get("host") || new URL(request.url).host);
   } catch { return false; }

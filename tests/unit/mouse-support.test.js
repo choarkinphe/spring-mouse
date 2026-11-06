@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import {
   MOUSE_UNSUPPORTED_PROVIDERS,
   supportsMouseExecution,
@@ -21,7 +22,7 @@ import {
 // Run from the repo root: `npx vitest run unit/mouse-support.test.js`.
 // ============================================================
 
-const EXECUTORS_DIR = path.resolve("open-sse/executors");
+const EXECUTORS_DIR = fileURLToPath(new URL("../../open-sse/executors/", import.meta.url));
 
 /** provider key → executor class → source file, straight from the registry. */
 function readExecutorRegistry() {

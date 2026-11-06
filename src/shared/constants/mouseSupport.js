@@ -29,6 +29,7 @@ export const MOUSE_UNSUPPORTED_PROVIDERS = Object.freeze([
   "mimo-free", // MimoFreeExecutor — talks to api.xiaomimimo.com directly
   "mmf", // alias of mimo-free
   "perplexity-web", // PerplexityWebExecutor — talks to www.perplexity.ai directly
+  "devin", // DevinExecutor — Connect-proto binary transport, not Mouse JSON
   "devin-cli", // DevinCliExecutor — spawns a local child process
 ]);
 

@@ -26,6 +26,7 @@ import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
 import { FirstOutputExecutor } from "./first-output.js";
 import { DevinCliExecutor } from "./devin-cli.js";
+import { DevinExecutor } from "./devin.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -63,6 +64,7 @@ const executors = {
   zed: new ZedExecutor(),
   windsurf: new WindsurfExecutor(),
   "devin-cli": new DevinCliExecutor(),
+  devin: new DevinExecutor(),
 };
 
 const defaultCache = new Map();

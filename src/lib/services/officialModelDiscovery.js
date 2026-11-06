@@ -8,6 +8,7 @@ import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
+import { resolveDevinModels } from "open-sse/services/devinModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { QIANWEN_ENDPOINTS } from "open-sse/config/qianwen.js";
@@ -452,6 +453,12 @@ const PROVIDER_MODELS_CONFIG = {
       parseFn: parseGeminiCliModels,
       errorLabel: "Failed to fetch Gemini CLI models"
     })
+  },
+  devin: {
+    customResolver: async (connection) => {
+      const proxyOptions = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+      return resolveDevinModels(connection, { proxyOptions });
+    },
   },
   "grok-cli": {
     customResolver: async (connection) => {

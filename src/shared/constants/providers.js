@@ -134,6 +134,7 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "qoder-cn",
   "gemini-cli",
   "grok-cli",
+  "devin",
   "ollama-local",
   "nanobanana",
   "chutes",

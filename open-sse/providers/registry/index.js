@@ -138,6 +138,8 @@ import p126 from "./workbuddy.js";
 
 import p127 from "./qoder-cn.js";
 
+import p128 from "./devin.js";
+
 export default [
   p0,
   p18,
@@ -265,4 +267,5 @@ export default [
   p126,
   p100,
   p127,
+  p128,
 ];

@@ -50,12 +50,57 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
+  const callbackProcessedRef = useRef(false);
+  const devinSessionRef = useRef(null);
+  const devinGenerationRef = useRef(0);
   const { copied, copy } = useCopyToClipboard();
+
+  const cancelDevinFlow = useCallback(() => {
+    devinGenerationRef.current += 1;
+    const state = devinSessionRef.current;
+    devinSessionRef.current = null;
+    if (state) fetch("/api/oauth/devin/cancel", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }), keepalive: true,
+    }).catch(() => {});
+  }, []);
+
+  const startDevinFlow = useCallback(async (manual = false) => {
+    cancelDevinFlow();
+    const generation = devinGenerationRef.current;
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+    const res = await fetch("/api/oauth/devin/begin", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: manual || !local ? "manual" : "local" }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    // A close/retry while begin was pending must not leak a session or popup.
+    if (generation !== devinGenerationRef.current) {
+      fetch("/api/oauth/devin/cancel", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: data.state }), keepalive: true,
+      }).catch(() => {});
+      return;
+    }
+    devinSessionRef.current = data.state;
+    callbackProcessedRef.current = false;
+    setCallbackUrl("");
+    setAuthData({ ...data, proxyProvider: "devin" });
+    setStep(data.mode === "manual" ? "input" : "waiting");
+    popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700,noopener,noreferrer");
+  }, [cancelDevinFlow]);
+
+  useEffect(() => {
+    if (isOpen && provider === "devin") return () => {
+      cancelDevinFlow();
+      openedRef.current = false;
+    };
+  }, [isOpen, provider, cancelDevinFlow]);
 
   // State for client-only values to avoid hydration mismatch
   const [isLocalhost, setIsLocalhost] = useState(false);
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
-  const callbackProcessedRef = useRef(false);
 
   // Detect if running on localhost (client-side only)
   useEffect(() => {
@@ -215,6 +260,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (!provider) return;
     try {
       setError(null);
+
+      if (provider === "devin") {
+        await startDevinFlow();
+        return;
+      }
 
       // Trae/Windsurf: proxy OAuth (browser mode) — handled by dedicated flow.
       // Paste-token mode is handled by handleManualSubmit (no /authorize call).
@@ -399,7 +449,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
+  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow, startDevinFlow]);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
@@ -429,7 +479,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Abort polling and cleanup proxy when modal closes
       pollingAbortRef.current = true;
       openedRef.current = false;
-      if (provider === "codex") {
+      if (provider === "devin") {
+        cancelDevinFlow();
+      } else if (provider === "codex") {
         fetch("/api/oauth/codex/stop-proxy").catch(() => {});
       } else if (provider === "xai") {
         fetch("/api/oauth/xai/stop-proxy").catch(() => {});
@@ -441,7 +493,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         fetch("/api/oauth/zed/stop-proxy").catch(() => {});
       }
     }
-  }, [isOpen, provider, startOAuthFlow]);
+  }, [isOpen, provider, startOAuthFlow, cancelDevinFlow]);
 
   // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port):
   // poll status until the proxy auto-exchanges and saves the connection.
@@ -467,6 +519,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           const res = await fetch(`/api/oauth/${pollProvider}/poll-status?state=${encodeURIComponent(authData.state)}`);
         const data = await res.json();
         if (cancelled || callbackProcessedRef.current) return;
+        if (pollProvider === "devin" && !res.ok) {
+          callbackProcessedRef.current = true;
+          setError(data.error || "Devin login expired; restart authorization");
+          setStep("error");
+          return;
+        }
         if (data.status === "done") {
           callbackProcessedRef.current = true;
           setStep("success");
@@ -496,7 +554,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   // Listen for OAuth callback via multiple methods
   useEffect(() => {
-    if (!authData) return;
+    if (!authData || provider === "devin") return;
     callbackProcessedRef.current = false; // Reset when authData changes
 
     // Handler for callback data - only process once
@@ -573,7 +631,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       window.removeEventListener("storage", handleStorage);
       if (channel) channel.close();
     };
-  }, [authData, exchangeTokens]);
+  }, [authData, exchangeTokens, provider]);
 
   // Handle manual URL input
   const handleManualSubmit = async () => {
@@ -597,6 +655,21 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       }
 
       const input = callbackUrl.trim();
+
+      if (provider === "devin") {
+        if (callbackProcessedRef.current) return;
+        callbackProcessedRef.current = true; // pause polling during manual completion
+        const res = await fetch("/api/oauth/devin/complete", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: authData?.state, code: input }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setCallbackUrl("");
+        setStep("success");
+        onSuccess?.();
+        return;
+      }
 
       // Trae/Windsurf proxy flow fallback (popup blocked): paste the full callback URL
       if (PROXY_OAUTH_PROVIDERS.has(provider) && input) {
@@ -657,7 +730,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   // Clear session on modal close + cleanup proxy
   const handleClose = useCallback(() => {
-    if (provider === "codex") {
+    if (provider === "devin") {
+      cancelDevinFlow();
+      setAuthData(null);
+    } else if (provider === "codex") {
       fetch("/api/oauth/codex/stop-proxy").catch(() => {});
     } else if (provider === "xai") {
       fetch("/api/oauth/xai/stop-proxy").catch(() => {});
@@ -669,7 +745,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       fetch("/api/oauth/zed/stop-proxy").catch(() => {});
     }
     onClose();
-  }, [onClose, provider]);
+  }, [onClose, provider, cancelDevinFlow]);
 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
@@ -759,8 +835,35 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </>
         )}
 
+        {provider === "devin" && (step === "waiting" || step === "input") && (
+          <div className="space-y-4">
+            <p className="text-sm text-text-muted">
+              {authData?.mode === "manual"
+                ? "在浏览器中登录 Devin，然后粘贴页面显示的授权码。无需安装 CLI；远程服务器和容器也支持此方式。"
+                : "在浏览器中登录 Devin，完成后将通过本机回调自动连接。如果使用了端口转发或容器，请切换为手动授权码。"}
+            </p>
+            <div className="flex gap-2">
+              <Input value={authData?.authUrl || ""} readOnly className="flex-1 font-mono text-xs" />
+              <Button variant="secondary" onClick={() => window.open(authData?.authUrl, "_blank", "noopener,noreferrer")} disabled={!authData?.authUrl}>打开</Button>
+              <Button variant="secondary" onClick={() => copy(authData?.authUrl, "auth_url")} disabled={!authData?.authUrl}>复制</Button>
+            </div>
+            {authData?.mode === "manual" ? (
+              <>
+                <Input value={callbackUrl} onChange={(e) => setCallbackUrl(e.target.value)} placeholder="粘贴 Devin 授权码" className="font-mono text-xs" />
+                <Button onClick={handleManualSubmit} disabled={!callbackUrl.trim()} fullWidth>连接</Button>
+              </>
+            ) : (
+              <Button variant="secondary" onClick={() => {
+                setError(null);
+                startDevinFlow(true).catch((err) => { setError(err.message); setStep("error"); });
+              }} fullWidth>改用手动授权码</Button>
+            )}
+            <Button onClick={handleClose} variant="ghost" fullWidth>取消</Button>
+          </div>
+        )}
+
         {/* Waiting + Manual Input combined (non-device-code, non-proxy) */}
-        {(step === "waiting" || step === "input") && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && (
+        {(step === "waiting" || step === "input") && provider !== "devin" && !isDeviceCode && !PROXY_OAUTH_PROVIDERS.has(provider) && (
           <>
             {/* Option A: Auto via popup */}
             <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">

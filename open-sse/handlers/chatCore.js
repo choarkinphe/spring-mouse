@@ -277,6 +277,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     stripContinuityFields(translatedBody);
   }
 
+  // Devin's Messages builder must receive the original blocks, cache marks and
+  // thinking signatures. The OpenAI pivot is deliberately bypassed for this
+  // provider's native Messages input only; its response remains OpenAI SSE.
+  if (provider === "devin" && sourceFormat === FORMATS.CLAUDE) {
+    translatedBody._devinNative = body;
+  }
+
   // Native multi-endpoint transports must send the same streaming mode that the
   // response handlers expect (Responses defaults to JSON, unlike forced Chat).
   if (useTransport?.forceStream !== undefined) translatedBody.stream = stream;

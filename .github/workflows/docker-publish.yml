@@ -175,6 +175,14 @@ jobs:
           unit/codebuddy-checkin-repo.test.js
           unit/workbuddy-services.test.js
           unit/pricing-sync.test.js
+          unit/devin-models.test.js
+          unit/devin-protocol.test.js
+          unit/devin-executor.test.js
+          unit/devin-integration.test.js
+          unit/devin-oauth.test.js
+          unit/devin-usage.test.js
+          unit/devin-signatures.test.js
+          unit/mouse-support.test.js
 
       - name: Verify admission against isolated Redis
         run: |

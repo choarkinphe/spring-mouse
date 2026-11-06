@@ -25,10 +25,12 @@ import { buildClineHeaders } from "@/shared/utils/clineAuth";
 import { WORKBUDDY_SITES } from "open-sse/config/workbuddy.js";
 import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { getQoderProviderRegion, getQoderEndpoints } from "open-sse/shared/qoder/constants.js";
+import { fetchDevinUserStatus } from "open-sse/services/usage/devin.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
   claude: { checkExpiry: true, refreshable: true },
+  devin: { devinStatusProbe: true, refreshable: false },
   codex: {
     url: "https://chatgpt.com/backend-api/codex/responses",
     method: "POST",
@@ -392,6 +394,15 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
   if (config.tokenExists) {
     return { valid: true, error: null, refreshed: false, newTokens: null };
+  }
+
+  if (config.devinStatusProbe) {
+    try {
+      await fetchDevinUserStatus(connection, { proxyOptions: effectiveProxy });
+      return { valid: true, error: null, refreshed: false, newTokens: null };
+    } catch (error) {
+      return { valid: false, error: error.message, refreshed: false };
+    }
   }
 
   if (config.quotaProbe) {

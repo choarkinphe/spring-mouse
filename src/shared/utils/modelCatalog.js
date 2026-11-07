@@ -179,6 +179,89 @@ export function resetModelsDevCatalogCache() {
   catalogCache = null;
 }
 
+// ── Global id → capability lookup ────────────────────────────────────────────
+// Compatible channels (openai-compatible-*, scnet-style resellers, …) get only
+// bare model ids from /v1/models — no modalities. A provider-scoped catalog
+// parse helps only channels with a mapped models.dev key; the rest fell back to
+// id-pattern guessing and lost fields like vision entirely. The global index
+// answers "what does this model id do" across every provider in the catalog.
+let globalIndexCache = null; // { data, index: Map(lowercaseId -> entry) }
+
+// Vendors whose entries are treated as authoritative when several providers
+// list the same (lowercased) id with different spec sheets. Exact match on
+// models.dev provider key, case-insensitive.
+const CANONICAL_VENDOR_KEYS = new Set([
+  "deepseek", "openai", "anthropic", "google", "zai", "moonshotai",
+  "minimax", "alibaba", "alibaba-cn", "mistral", "meta", "qwen", "xai",
+]);
+
+function buildGlobalModelIndex(payload) {
+  const index = new Map();
+  if (!payload || typeof payload !== "object") return index;
+  for (const [providerKey, provider] of Object.entries(payload)) {
+    const models = provider?.models;
+    if (!models || typeof models !== "object") continue;
+    for (const model of Object.values(models)) {
+      const id = model?.id;
+      if (!id) continue;
+      const entry = {
+        id,
+        name: model.name || id,
+        capabilities: capabilitiesFromModelsDev(model),
+        releaseDate: model.release_date || null,
+        lastUpdated: model.last_updated || null,
+      };
+      const key = id.toLowerCase();
+      const existing = index.get(key);
+      // First-wins for canonical vendors; resellers only fill gaps.
+      if (existing) {
+        if (CANONICAL_VENDOR_KEYS.has(providerKey) && !existing._canonical) {
+          entry._canonical = true;
+          index.set(key, entry);
+        }
+        continue;
+      }
+      if (CANONICAL_VENDOR_KEYS.has(providerKey)) entry._canonical = true;
+      index.set(key, entry);
+    }
+  }
+  return index;
+}
+
+/**
+ * Find a model's catalog entry by id — first under `providerKey`, then globally
+ * across every provider (resellers mirror the same upstream ids, which is fine
+ * for modalities/reasoning/tools flags). Returns null when the catalog has no
+ * such id. Case-insensitive.
+ */
+export function lookupModelInCatalog(payload, modelId, providerKey = null) {
+  if (!modelId || !payload) return null;
+  const id = String(modelId);
+  if (providerKey) {
+    const scoped = payload?.[providerKey]?.models;
+    if (scoped && typeof scoped === "object") {
+      for (const model of Object.values(scoped)) {
+        if (String(model?.id).toLowerCase() === id.toLowerCase()) {
+          return {
+            id,
+            name: model.name || id,
+            capabilities: capabilitiesFromModelsDev(model),
+            releaseDate: model.release_date || null,
+            lastUpdated: model.last_updated || null,
+          };
+        }
+      }
+    }
+  }
+  if (globalIndexCache?.data !== payload) {
+    globalIndexCache = { data: payload, index: buildGlobalModelIndex(payload) };
+  }
+  const found = globalIndexCache.index.get(id.toLowerCase()) || null;
+  if (!found) return null;
+  const { _canonical, ...rest } = found;
+  return rest;
+}
+
 // `source` values persisted on synchronized rows — the dashboard renders these
 // as badges so it is obvious where each entry came from.
 export const SYNC_SOURCE_OFFICIAL = "official";

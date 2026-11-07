@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabilities } from "@/models";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
-import { normalizeModelCapabilities } from "@/shared/utils/modelCatalog";
+import { normalizeModelCapabilities, fetchModelsDevCatalog, lookupModelInCatalog } from "@/shared/utils/modelCatalog";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
 import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
 
@@ -28,7 +28,18 @@ export async function POST(request) {
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
     }
-    const added = await addCustomModel({ providerAlias, id, type: type || "llm", name });
+    // Bare model ids added by hand carry no modality data — borrow the shared
+    // catalog's spec sheet (cross-provider id lookup) so vision/reasoning etc.
+    // resolve correctly instead of falling back to name patterns.
+    let capabilities = null;
+    try {
+      const payload = await fetchModelsDevCatalog();
+      const catalogEntry = lookupModelInCatalog(payload, id, null);
+      if (catalogEntry?.capabilities && Object.keys(catalogEntry.capabilities).length > 0) {
+        capabilities = catalogEntry.capabilities;
+      }
+    } catch { /* catalog unreachable — add without capabilities */ }
+    const added = await addCustomModel({ providerAlias, id, type: type || "llm", name, capabilities });
     await refreshModelCapabilityOverrides({ force: true });
     return NextResponse.json({ success: true, added });
   } catch (error) {

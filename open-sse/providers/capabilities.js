@@ -266,6 +266,10 @@ export const PROVIDER_CAPABILITIES = {
  * a broad family pattern swallowing an exception (e.g. glm-4.6v vs glm-5).
  */
 export const PATTERN_CAPABILITIES = [
+  // ── Devin SWE (thinking is always on; medium/high/max only, free tier) ──
+  { pattern: "*swe-2*",           caps: { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 262144 } },
+  { pattern: "*swe-1*",           caps: { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 262144 } },
+
   // ── Claude (4.6+ = adaptive thinking; older/haiku = budget) ──────
   { pattern: "*claude*opus-5*",     caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*claude*opus-4.6*",   caps: { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive" } },
@@ -346,6 +350,8 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*glm*",           caps: { reasoning: true, thinkingFormat: "zai", contextWindow: 200000 } },
 
   // ── DeepSeek (thinking.enabled + reasoning_effort; r1 = thinking-only) ─
+  // NOTE: v4.1 ids have both vision and text-only deployments — do NOT set
+  // vision in a glob here; the shared-catalog enrichment layer fills it per id.
   { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*reasoner*",      caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-r*",    caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },

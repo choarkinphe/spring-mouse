@@ -576,7 +576,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
         lastUpstreamAt: receivedAt, lastUpstreamStatus: upstreamError.status,
         lastUpstreamSource: upstreamError.source, lastUpstreamLayer: upstreamError.layer || "provider",
         lastUpstreamDiagnostics: upstreamError.diagnostics || null,
-        lastUpstreamRaw: String(upstreamError.body).slice(0, 4000),
+        lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
         healthRevision: (conn?.healthRevision || 0) + 1,
       } };
     }
@@ -659,7 +659,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       transport: transportFailure,
       ...(accountScoped ? { accountScoped: true } : {}),
     };
-    if (!shouldFallback) return { value: decision };
+    if (!shouldFallback) {
+      // A client-side 4xx need not trigger fallback or change account health,
+      // but its upstream evidence still belongs in the failure analysis.
+      return { value: decision, ...(isUpstream ? { update: {
+        lastUpstreamError: String(upstreamError.message || errorText || "Provider error").slice(0, 2000),
+        lastUpstreamStatus: upstreamError.status ?? status,
+        lastUpstreamSource: upstreamError.source,
+        lastUpstreamLayer: upstreamError.layer || "provider",
+        lastUpstreamDiagnostics: upstreamError.diagnostics || null,
+        lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
+        lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
+      } } : {}) };
+    }
 
     const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
     const evidence = isUpstream ? {
@@ -668,7 +680,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       lastUpstreamSource: upstreamError.source,
       lastUpstreamLayer: upstreamError.layer || "provider",
       lastUpstreamDiagnostics: upstreamError.diagnostics || null,
-      lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
+      lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
       lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
       lastError: String(upstreamError.message || reason).slice(0, 2000),
       // Cooldown responses use errorCode; retain HTTP 200 only as raw evidence.

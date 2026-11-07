@@ -21,6 +21,18 @@ vi.mock("../../open-sse/handlers/chatCore/requestDetail.js", () => ({
 import { handleNonStreamingResponse } from "../../open-sse/handlers/chatCore/nonStreamingHandler.js";
 
 describe("non-streaming upstream body deadline", () => {
+  it("retains the exact upstream JSON error response including details after 4000 characters", async () => {
+    const raw = JSON.stringify({ error: { message: "Provider rejected the request", detail: "x".repeat(8000) }, request_id: "tail-request-id" }, null, 2);
+    const result = await handleNonStreamingResponse({
+      providerResponse: new Response(raw, { headers: { "Content-Type": "application/json" } }),
+      provider: "test-provider", model: "test-model", sourceFormat: "openai", targetFormat: "openai",
+      body: {}, translatedBody: {}, finalBody: {}, clientRawRequest: {}, recordUsage: false,
+      reqLogger: { logProviderResponse: vi.fn() }, trackDone: vi.fn(), appendLog: vi.fn(),
+    });
+    expect(result.success).toBe(false);
+    expect(result.upstreamError.body).toBe(raw);
+    expect(result.upstreamError.body).toContain("tail-request-id");
+  });
   it("returns 504 and aborts upstream when headers arrive but JSON never completes", async () => {
     const upstream = new AbortController();
     const abort = vi.fn((reason) => upstream.abort(reason));

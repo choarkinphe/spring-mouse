@@ -159,13 +159,13 @@ failures that are hours old. Always compare with
 
 ```bash
 # production host
-scp sm-clean-requestlogs.sh root@192.168.86.72:/usr/local/bin/
-ssh root@192.168.86.72 'chmod +x /usr/local/bin/sm-clean-requestlogs.sh'
-ssh root@192.168.86.72 '(crontab -l | grep -v sm-clean-requestlogs; \
+scp sm-clean-requestlogs.sh root@192.168.86.22:/usr/local/bin/
+ssh root@192.168.86.22 'chmod +x /usr/local/bin/sm-clean-requestlogs.sh'
+ssh root@192.168.86.22 '(crontab -l | grep -v sm-clean-requestlogs; \
   echo "*/5 * * * * KEEP_MIN=60 MAX_MB=6144 MIN_FREE_MB=3000 /usr/local/bin/sm-clean-requestlogs.sh >/dev/null 2>&1") | crontab -'
 
 # into the container (bind-mounted, so it survives restarts)
-scp sm-scan-dumps.sh sm-query.js root@192.168.86.72:/www/docker/spring-mouse/data/sm-tools/
+scp sm-scan-dumps.sh sm-query.js root@192.168.86.22:/www/docker/spring-mouse/data/sm-tools/
 
 # WSL
 cp sm-overload-monitor.sh ~/.claude/scripts/ && chmod +x ~/.claude/scripts/sm-overload-monitor.sh

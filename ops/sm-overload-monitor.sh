@@ -5,7 +5,7 @@
 # 以免长输出被 harness 折叠改写。
 set -uo pipefail
 
-HOST=192.168.86.72
+HOST=192.168.86.22
 SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$HOST"
 REPORT="$HOME/.claude/state/sm-overload-last.txt"
 RAW=/tmp/sm-mon-remote.$$.sh

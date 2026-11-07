@@ -24,6 +24,7 @@ import CompatibleModelsSection from "./CompatibleModelsSection";
 import EditCompatibleNodeIconModal from "./EditCompatibleNodeIconModal";
 import AddModelDrawer from "./AddModelDrawer";
 import ModelCapabilityTestDrawer from "./ModelCapabilityTestDrawer";
+import ProviderBillingHelpDrawer from "./ProviderBillingHelpDrawer";
 
 // Chinese labels for thinking levels ("auto" = no suffix appended when copying model names).
 const THINKING_LEVEL_LABELS = {
@@ -99,6 +100,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
   const [batchMode, setBatchMode] = useState(false);
   const [selectedModelIds, setSelectedModelIds] = useState(() => new Set());
   const [batchAction, setBatchAction] = useState("");
+  const [billingHelpOpen, setBillingHelpOpen] = useState(false);
   const [batchTestProgress, setBatchTestProgress] = useState(null);
   const batchTestStopRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
@@ -1586,6 +1588,16 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         <div className="flex flex-col gap-2 rounded-[10px] border border-info/30 bg-info/10 px-3 py-2 sm:flex-row sm:items-center">
           <span className="material-symbols-outlined text-[16px] text-info shrink-0">info</span>
           <p className="min-w-0 flex-1 text-xs leading-relaxed text-info">{providerInfo.notice.text}</p>
+          {providerInfo.billingHelp && (
+            <button
+              type="button"
+              onClick={() => setBillingHelpOpen(true)}
+              className="inline-flex shrink-0 items-center justify-center gap-1 rounded-[8px] border border-info/40 px-2.5 py-1 text-xs font-semibold text-info transition-colors hover:bg-info/10 sm:py-0.5"
+            >
+              <span className="material-symbols-outlined text-[14px]">help</span>
+              计费规则
+            </button>
+          )}
           {providerInfo.notice.apiKeyUrl && (
             <a
               href={providerInfo.notice.apiKeyUrl}
@@ -1599,6 +1611,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           )}
         </div>
       )}
+
+      <ProviderBillingHelpDrawer
+        help={providerInfo.billingHelp}
+        isOpen={billingHelpOpen}
+        onClose={() => setBillingHelpOpen(false)}
+      />
 
       {/* Models — the channel header above carries the section actions and every
           model card draws its own border, so no outer card wraps this list. */}

@@ -1,4 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   makeRoutingDbAdapter,
@@ -13,6 +16,7 @@ import {
 import { writeRoutingEvent } from "../../src/shared/utils/routingTelemetry.js";
 
 const databases = [];
+const tempFiles = [];
 
 function openDb({ routing = true, billing = false } = {}) {
   const db = new DatabaseSync(":memory:");
@@ -109,7 +113,15 @@ function count(db, table) {
 }
 
 afterEach(() => {
-  while (databases.length) databases.pop().close();
+  while (databases.length) {
+    const db = databases.pop();
+    if (db.isTransaction) db.exec("ROLLBACK");
+    db.close();
+  }
+  while (tempFiles.length) {
+    const file = tempFiles.pop();
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(file + suffix, { force: true });
+  }
 });
 
 describe("routing-writer", () => {
@@ -146,6 +158,30 @@ describe("routing-writer", () => {
     const second = await processRoutingTick({ client: replayAgain, database: db, batchSize: 2 });
     expect(second.committed).toBe(1);
     expect(count(db, "routingRequests")).toBe(1);
+  });
+
+  it("classifies a real cross-process busy error as retryable and leaves no transaction", async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sm-routing-busy-")), "data.sqlite");
+    tempFiles.push(file);
+    const holder = new DatabaseSync(file);
+    const db = new DatabaseSync(file);
+    databases.push(holder, db);
+    db.exec("PRAGMA busy_timeout=0");
+    const schemaDb = openDb();
+    const schema = schemaDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('routingRequests','routingAttempts')").all();
+    for (const { sql } of schema) db.exec(sql);
+    holder.exec("BEGIN IMMEDIATE");
+    const redis = mockRedis({ fresh: [message("1-0", envelope("request", requestRecord()))] });
+
+    const result = await processRoutingTick({ client: redis, database: db });
+
+    expect(result.skipped).toBe("database-busy");
+    expect(result.error.errcode & 0xff).toBe(5);
+    expect(db.isTransaction).toBe(false);
+    expect(redis.calls.some(([name]) => name === "xAck")).toBe(false);
+    holder.exec("ROLLBACK");
+    db.prepare("INSERT INTO routingRequests(routingRequestId,startedAt) VALUES('after-lock','now')").run();
+    expect(db.prepare("SELECT routingRequestId FROM routingRequests").get().routingRequestId).toBe("after-lock");
   });
 
   it("writes request and attempt snapshots in one transaction", () => {
@@ -273,17 +309,24 @@ describe("routing-writer", () => {
     expect(writer.state.lastRetentionAt).toBe(1002);
   });
 
-  it("restores the actual SQLite busy timeout after a routing write", async () => {
+  it("never changes the shared connection's busy timeout across Redis awaits", async () => {
     const db = openDb();
-    db.exec("PRAGMA busy_timeout = 4321");
+    db.exec("PRAGMA busy_timeout = 10000");
+    let finishAck;
     const redis = mockRedis({ fresh: [message("1-0", envelope("request", requestRecord()))] });
-    const result = await processRoutingTick({
-      client: redis,
-      database: db,
-      retention: { busyTimeoutMs: 7, lastAt: Date.now(), intervalMs: 60_000, due: () => false },
-    });
+    redis.xAck = async () => {
+      // Usage ingestion can start while the routing task awaits Redis. It must
+      // never inherit a temporary 250ms telemetry timeout on this connection.
+      expect(db.prepare("PRAGMA busy_timeout").get().timeout).toBe(10000);
+      await new Promise((resolve) => { finishAck = resolve; });
+      expect(db.prepare("PRAGMA busy_timeout").get().timeout).toBe(10000);
+    };
+    const pending = processRoutingTick({ client: redis, database: db });
+    await new Promise((resolve) => setImmediate(resolve));
+    finishAck();
+    const result = await pending;
     expect(result.committed).toBe(1);
-    expect(db.prepare("PRAGMA busy_timeout").get().timeout).toBe(4321);
+    expect(db.prepare("PRAGMA busy_timeout").get().timeout).toBe(10000);
   });
 
   it("returns bounded startup/replay errors without throwing", async () => {

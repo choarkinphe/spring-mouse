@@ -426,7 +426,7 @@ export function normalizeRoutingEvent(event) {
  * terminal outcome/completedAt pair is latched in SQL; out-of-order start
  * snapshots therefore cannot undo a finished event.
  */
-export function writeRoutingEvent(db, event) {
+export function writeRoutingEvent(db, event, { throwOnError = false } = {}) {
   if (!db || typeof db.run !== "function" || typeof db.get !== "function") return null;
   const normalized = normalizeRoutingEvent(event);
   if (!normalized) return null;
@@ -442,7 +442,11 @@ export function writeRoutingEvent(db, event) {
     // adapter completed the write. It also keeps the adapter contract honest on
     // drivers whose run() result does not expose a portable changes count.
     db.get(`SELECT ${idColumn} FROM ${tableFor(kind)} WHERE ${idColumn} = ?`, [record[idColumn]]);
-  } catch {
+  } catch (error) {
+    // Direct best-effort callers retain the old null contract. The durable
+    // writer must receive the original SQLite error so SQLITE_BUSY can be
+    // retried and the Redis messages remain pending instead of being dropped.
+    if (throwOnError) throw error;
     return null;
   }
   return {

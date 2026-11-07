@@ -11,6 +11,7 @@ import {
   historyDateKeys,
   getCompleteThrough,
 } from "./usage-rollup.mjs";
+import { isSqliteBusy, runSqliteTransaction } from "./sqlite-transaction.mjs";
 
 const redisUrl = process.env.SPRING_MOUSE_REDIS_URL || "redis://127.0.0.1:6379";
 const dataDir = process.env.DATA_DIR || "/app/data";
@@ -54,7 +55,10 @@ function openDatabase() {
   if (db) return db;
   if (!fs.existsSync(dbFile)) return null;
   const candidate = new DatabaseSync(dbFile);
-  candidate.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
+  // DatabaseSync's constructor timeout does not reliably govern every later
+  // statement on Node 22. Set busy_timeout explicitly, including before WAL mode
+  // negotiation and schema checks that may contend with the web process.
+  candidate.exec("PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
   const ready = candidate.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usageHistory'").get();
   const columns = ready ? candidate.prepare("PRAGMA table_info(usageHistory)").all() : [];
   if (!ready || !columns.some((column) => column.name === "trafficRequestId")) { candidate.close(); return null; }
@@ -69,9 +73,10 @@ function openDatabase() {
 function persistBatch(events) {
   const database = openDatabase();
   if (!database) return false;
-  const savepoint = `usage_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  database.exec(`SAVEPOINT ${savepoint}`);
-  try {
+  // The dedup SELECT precedes writes. BEGIN IMMEDIATE is required here: a
+  // deferred transaction can fail its lock upgrade after a concurrent web
+  // commit (SQLITE_BUSY_SNAPSHOT), and busy_timeout does not cover that case.
+  runSqliteTransaction(database, () => {
     const existingStmt = database.prepare("SELECT id FROM usageHistory WHERE requestId = ?");
     const insertStmt = database.prepare(`INSERT OR IGNORE INTO usageHistory(timestamp, provider, model, connectionId, apiKey, apiKeyId, requestId, trafficRequestId, startedAt, completedAt, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const lastUsedStmt = database.prepare(`UPDATE apiKeys SET lastUsedAt = CASE WHEN lastUsedAt IS NULL OR lastUsedAt < ? THEN ? ELSE lastUsedAt END WHERE id = ?`);
@@ -103,12 +108,8 @@ function persistBatch(events) {
       const current = Number.parseInt(metaGet.get()?.value || "0", 10) || 0;
       metaSet.run(String(current + insertedCount));
     }
-    database.exec(`RELEASE ${savepoint}`);
-    return true;
-  } catch (error) {
-    try { database.exec(`ROLLBACK TO ${savepoint}`); database.exec(`RELEASE ${savepoint}`); } catch {}
-    throw error;
-  }
+  });
+  return true;
 }
 
 /**
@@ -142,7 +143,7 @@ function resolveRetentionDays(database) {
  * Chunked + index-covered: each statement deletes at most PRUNE_CHUNK rows via
  * `idx_uh_ts` / `idx_nt_ts` (both on `timestamp`), and we yield to the event loop
  * between chunks. A single unbounded DELETE would hold a long write transaction
- * against the web process (which shares `busy_timeout=5000`).
+ * against the web process (which shares `busy_timeout=10000`).
  *
  * Both tables are pruned at the same cutoff so `usageHistory.trafficRequestId`
  * references do not outlive their `networkTraffic` rows by much.
@@ -228,7 +229,7 @@ const RETRY_MIN_MS = 250;
 const RETRY_MAX_MS = 5000;
 
 function isLockError(error) {
-  return /database is locked|SQLITE_BUSY/i.test(String(error?.message || error));
+  return isSqliteBusy(error);
 }
 
 async function persistWithRetry(client, messages) {
@@ -467,4 +468,9 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => {
   try { routingRedisClient?.destroy(); } catch {}
   try { redisClient?.destroy(); } catch {}
 });
-main().catch((error) => { console.error("[UsageWriter] fatal:", error); process.exit(1); });
+export const __test__ = { persistBatch };
+// Tests import the pure persistence seam without connecting to Redis or starting
+// either consumer loop. Production always starts the standalone writer as before.
+if (process.env.SPRING_MOUSE_USAGE_WRITER_TEST !== "true") {
+  main().catch((error) => { console.error("[UsageWriter] fatal:", error); process.exit(1); });
+}

@@ -18,6 +18,7 @@ import {
   ROUTING_STREAM_KEY as SHARED_ROUTING_STREAM_KEY,
   ROUTING_STREAM_GROUP as SHARED_ROUTING_STREAM_GROUP,
 } from "../src/shared/utils/routingTelemetry.js";
+import { isSqliteBusy, runSqliteTransaction } from "./sqlite-transaction.mjs";
 
 export const ROUTING_STREAM_KEY = SHARED_ROUTING_STREAM_KEY;
 export const ROUTING_STREAM_GROUP = SHARED_ROUTING_STREAM_GROUP;
@@ -25,8 +26,6 @@ export const ROUTING_CONSUMER = `routing-writer-${process.env.HOSTNAME || "local
 
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_POLL_MS = 250;
-const DEFAULT_BUSY_TIMEOUT_MS = 250;
-const DEFAULT_USAGE_BUSY_TIMEOUT_MS = 5000;
 const DEFAULT_RETENTION_DAYS = 30;
 const DEFAULT_RETENTION_CHUNK = 500;
 const DEFAULT_RETENTION_INTERVAL_MS = 60 * 60 * 1000;
@@ -116,26 +115,15 @@ export function makeRoutingDbAdapter(database) {
     get(sql, params = []) { return database.prepare(sql).get(...params); },
     all(sql, params = []) { return database.prepare(sql).all(...params); },
     exec(sql) { return database.exec(sql); },
-    transaction(fn) {
-      const savepoint = `routing_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      database.exec(`SAVEPOINT ${savepoint}`);
-      try {
-        const value = fn();
-        database.exec(`RELEASE ${savepoint}`);
-        return value;
-      } catch (error) {
-        try { database.exec(`ROLLBACK TO ${savepoint}`); } catch {}
-        try { database.exec(`RELEASE ${savepoint}`); } catch {}
-        throw error;
-      }
-    },
+    transaction(fn) { return runSqliteTransaction(database, fn); },
   };
 }
 
 function withTransaction(database, fn) {
   if (typeof database?.transaction === "function") return database.transaction(fn);
   if (typeof database?.exec !== "function") return fn();
-  dbExec(database, "BEGIN");
+  if (database.raw?.isTransaction !== undefined) return runSqliteTransaction(database.raw, fn);
+  dbExec(database, "BEGIN IMMEDIATE");
   try {
     const value = fn();
     dbExec(database, "COMMIT");
@@ -162,28 +150,9 @@ export function routingSchemaReady(database) {
   }
 }
 
-function setBusyTimeout(database, milliseconds) {
-  if (!database || typeof database.exec !== "function") return null;
-  try {
-    const previous = dbGet(database, "PRAGMA busy_timeout");
-    dbExec(database, `PRAGMA busy_timeout = ${Math.max(0, Math.floor(milliseconds))}`);
-    return Number(previous?.timeout ?? previous?.busy_timeout ?? previous?.["busy_timeout"] ?? DEFAULT_USAGE_BUSY_TIMEOUT_MS);
-  } catch {
-    // A mock adapter may not expose PRAGMA reads. Still set the short timeout;
-    // restoring to the known usage default in finally is safer than leaving a
-    // short timeout on a shared production connection.
-    try { dbExec(database, `PRAGMA busy_timeout = ${Math.max(0, Math.floor(milliseconds))}`); } catch {}
-    return DEFAULT_USAGE_BUSY_TIMEOUT_MS;
-  }
-}
-
-function restoreBusyTimeout(database, previous) {
-  if (!database || typeof database.exec !== "function") return;
-  try { dbExec(database, `PRAGMA busy_timeout = ${Math.max(0, Math.floor(previous ?? DEFAULT_USAGE_BUSY_TIMEOUT_MS))}`); } catch {}
-}
-
 function isTransientDatabaseError(error) {
-  return /database is locked|database busy|SQLITE_BUSY|SQLITE_LOCKED/i.test(String(error?.message || error));
+  return isSqliteBusy(error)
+    || /SQLITE_LOCKED/i.test(String(error?.message || error));
 }
 
 function eventKey(message) {
@@ -236,7 +205,7 @@ export function persistRoutingMessages(database, messages, options = {}) {
 
   withTransaction(adapter, () => {
     for (const message of valid) {
-      const result = writeRoutingEvent(adapter, message.event);
+      const result = writeRoutingEvent(adapter, message.event, { throwOnError: true });
       if (!result) throw new Error("routing telemetry write failed");
     }
   });
@@ -267,14 +236,10 @@ function retentionResult(database, retention) {
 }
 
 function runRetentionBounded(database, retention) {
-  const previousBusyTimeout = setBusyTimeout(database, optionsBusyTimeout(retention));
-  try {
-    return retentionResult(database, retention);
-  } finally {
-    // Restore the timeout actually configured on this shared connection. Usage
-    // may use a different value than the 5s default.
-    restoreBusyTimeout(database, previousBusyTimeout);
-  }
+  // PRAGMA busy_timeout is connection-wide. Never temporarily lower it on the
+  // connection shared with usage ingestion: the other task can begin a write
+  // during our Redis await and inherit this task's short timeout.
+  return retentionResult(database, retention);
 }
 
 /**
@@ -339,7 +304,6 @@ export async function processRoutingTick({ client, database, adapter, replayCurs
   }
 
   let result;
-  const previousBusyTimeout = setBusyTimeout(db, optionsBusyTimeout(retention));
   try {
     result = persistRoutingMessages(db, messages, { adapter: dbAdapter });
   } catch (error) {
@@ -350,11 +314,6 @@ export async function processRoutingTick({ client, database, adapter, replayCurs
       skipped: isTransientDatabaseError(error) ? "database-busy" : "database-error",
       error,
     };
-  } finally {
-    // Do not keep the short routing timeout while awaiting Redis ACK/DEL. The
-    // usage loop shares this SQLite connection and must regain its normal
-    // timeout before another task can run.
-    restoreBusyTimeout(db, previousBusyTimeout);
   }
 
   try {
@@ -370,12 +329,6 @@ export async function processRoutingTick({ client, database, adapter, replayCurs
 
   const retained = runRetentionBounded(db, retention);
   return { nextReplayCursor, committed: result.valid, malformed: result.malformedIds.length, ...retained };
-}
-
-// Kept separate to make the short timeout explicit at the call site and easy to
-// override in tests without introducing an unbounded lock wait.
-function optionsBusyTimeout(retention) {
-  return positiveInt(retention?.busyTimeoutMs, DEFAULT_BUSY_TIMEOUT_MS);
 }
 
 function pruneDelete(database, table, cutoff, chunk) {
@@ -420,7 +373,6 @@ export function createRoutingWriter({
   pollMs = nonNegativeInt(process.env.SPRING_MOUSE_ROUTING_POLL_MS, DEFAULT_POLL_MS),
   retentionIntervalMs = positiveInt(process.env.SPRING_MOUSE_ROUTING_RETENTION_INTERVAL_MS, DEFAULT_RETENTION_INTERVAL_MS),
   retentionChunk = positiveInt(process.env.SPRING_MOUSE_ROUTING_RETENTION_CHUNK, DEFAULT_RETENTION_CHUNK),
-  busyTimeoutMs = positiveInt(process.env.SPRING_MOUSE_ROUTING_BUSY_TIMEOUT_MS, DEFAULT_BUSY_TIMEOUT_MS),
   isStopping = () => false,
   logger = console,
 } = {}) {
@@ -457,7 +409,6 @@ export function createRoutingWriter({
     const { database, adapter } = resolveDatabase();
     const now = Number(options.now ?? Date.now());
     const retention = {
-      busyTimeoutMs,
       chunkSize: retentionChunk,
       lastAt: state.lastRetentionAt,
       intervalMs: retentionIntervalMs,
@@ -527,6 +478,4 @@ export const __test = {
   dbAll,
   dbExec,
   withTransaction,
-  setBusyTimeout,
-  restoreBusyTimeout,
 };

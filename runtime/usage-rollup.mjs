@@ -36,6 +36,7 @@
 
 import { detectSourceApp } from "./usage-aggregate.mjs";
 import { startOfDay, localDateKey as localDateKeyTz } from "./timezone.mjs";
+import { runSqliteTransaction } from "./sqlite-transaction.mjs";
 
 export const ROLLUP_TABLE = "usageRollupDay";
 export const SESSION_GAP_MS = 30 * 60 * 1000;
@@ -136,6 +137,7 @@ function asAdapter(database) {
       get: (sql, p = []) => database.prepare(sql).get(...p),
       run: (sql, p = []) => database.prepare(sql).run(...p),
       exec: (sql) => database.exec(sql),
+    transaction: (fn) => runSqliteTransaction(database, fn),
     };
   }
   return database;
@@ -552,8 +554,7 @@ export async function rebuildRollupDays(database, { days = null, onYield = null,
       [new Date(dayStart - 86400_000).toISOString(), new Date(dayEnd).toISOString()],
     );
 
-    adapter.exec("BEGIN");
-    try {
+    const writeDay = () => {
       adapter.run(`DELETE FROM ${ROLLUP_TABLE} WHERE dateKey = ?`, [dateKey]);
       // Fold the whole day in memory and write once per (day, key): a
       // read-modify-write per event would be a statement per row, and this pass
@@ -570,13 +571,17 @@ export async function rebuildRollupDays(database, { days = null, onYield = null,
       for (const row of byKey.values()) {
         adapter.run(`INSERT INTO ${ROLLUP_TABLE}(${ROW_COLUMNS.join(", ")}) VALUES(${placeholders})`, serializeRow(row));
       }
-      adapter.exec("COMMIT");
-      setCompleteThrough(adapter, dateKey);
-      built++;
-    } catch (error) {
-      try { adapter.exec("ROLLBACK"); } catch {}
-      throw error;
+    };
+    if (typeof adapter.transaction === "function") adapter.transaction(writeDay);
+    else {
+      // Lightweight test adapters do not expose the underlying connection. Keep
+      // the legacy interface working, but use the same eager write lock.
+      adapter.exec("BEGIN IMMEDIATE");
+      try { writeDay(); adapter.exec("COMMIT"); }
+      catch (error) { try { adapter.exec("ROLLBACK"); } catch {} throw error; }
     }
+    setCompleteThrough(adapter, dateKey);
+    built++;
     if (onYield) await onYield();
   }
 

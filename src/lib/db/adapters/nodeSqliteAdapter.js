@@ -1,6 +1,7 @@
 // Built-in node:sqlite adapter — available in Node >= 22.5.0.
 // No native build, no npm install. API mirrors betterSqliteAdapter.
 import { PRAGMA_SQL } from "../schema.js";
+import { runSqliteTransaction } from "../../../../runtime/sqlite-transaction.mjs";
 
 export async function createNodeSqliteAdapter(filePath) {
   // Suppress "ExperimentalWarning: SQLite is an experimental feature" from node:sqlite.
@@ -43,9 +44,8 @@ export async function createNodeSqliteAdapter(filePath) {
   process.once("SIGINT", () => { onShutdown(); process.exit(0); });
   process.once("SIGTERM", () => { onShutdown(); process.exit(0); });
 
-  // 0 = outermost transaction (real BEGIN/COMMIT); >0 = nested SAVEPOINT.
-  let txDepth = 0;
-
+  // Transaction nesting comes from SQLite itself. This also stays correct when
+  // a standalone writer shares the connection with other asynchronous tasks.
   return {
     driver: "node:sqlite",
     run(sql, params = []) {
@@ -64,27 +64,7 @@ export async function createNodeSqliteAdapter(filePath) {
       return db.prepare(sql).iterate(...params);
     },
     exec(sql) { return db.exec(sql); },
-    transaction(fn) {
-      const nested = txDepth > 0;
-      const name = `sp_${Math.random().toString(36).slice(2)}`;
-      // Outermost: BEGIN IMMEDIATE — a deferred txn that reads first cannot
-      // upgrade after a concurrent commit (SQLITE_BUSY_SNAPSHOT, no busy_timeout).
-      db.exec(nested ? `SAVEPOINT ${name}` : "BEGIN IMMEDIATE");
-      txDepth++;
-      try {
-        const r = fn();
-        db.exec(nested ? `RELEASE ${name}` : "COMMIT");
-        return r;
-      } catch (e) {
-        try {
-          if (nested) { db.exec(`ROLLBACK TO ${name}`); db.exec(`RELEASE ${name}`); }
-          else db.exec("ROLLBACK");
-        } catch {}
-        throw e;
-      } finally {
-        txDepth--;
-      }
-    },
+    transaction(fn) { return runSqliteTransaction(db, fn); },
     checkpoint() { try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} },
     close() {
       gracefulClose();

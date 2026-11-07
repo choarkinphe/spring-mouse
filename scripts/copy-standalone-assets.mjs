@@ -38,6 +38,17 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
     console.log(`[standalone-assets] Copied custom-server.js to ${serverWrapperDestination}`);
   }
 
+  // The SQLite adapter deliberately shares the standalone workers' synchronous
+  // transaction implementation through a source-file import. Next preserves
+  // that external runtime path instead of bundling it, so ship it explicitly.
+  const sqliteTransactionSource = resolve(projectRoot, "runtime", "sqlite-transaction.mjs");
+  const sqliteTransactionDestination = resolve(standaloneDir, "runtime", "sqlite-transaction.mjs");
+  if (existsSync(sqliteTransactionSource)) {
+    mkdirSync(dirname(sqliteTransactionDestination), { recursive: true });
+    cpSync(sqliteTransactionSource, sqliteTransactionDestination, { force: true });
+    console.log(`[standalone-assets] Copied the SQLite transaction helper to ${sqliteTransactionDestination}`);
+  }
+
   // Nodes download their runtime from /api/mouses/agent, and that route reads the
   // file from disk instead of importing it, so tracing cannot see it.
   const mouseAgentSource = resolve(projectRoot, "mouse", "agent.mjs");

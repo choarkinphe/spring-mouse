@@ -30,6 +30,7 @@
 import { resolveProviderAlias } from "open-sse/services/model.js";
 import { getPricingForModel, MODEL_PRICING, PROVIDER_PRICING } from "open-sse/providers/pricing.js";
 import { MODELS_DEV_PROVIDER_KEYS } from "./modelCatalog.js";
+import { usesCreditBilling } from "open-sse/config/creditBilling.js";
 
 // Only these five fields are persisted; /api/pricing enforces the same set.
 const PRICING_FIELDS = ["input", "output", "cached", "reasoning", "cache_creation"];
@@ -229,6 +230,11 @@ export async function buildPricingFromCatalog(catalog, targets = [], { resolveCu
     if (!provider) continue;
 
     stats.scanned += 1;
+    if (usesCreditBilling(provider)) {
+      stats.skippedNoCost += 1;
+      unresolved.push({ provider, model, reason: "credit_billed" });
+      continue;
+    }
 
     // 1. A variant that only matched a wildcard adopts its base model's authored
     //    price. Checked first because it must win over the catalog value.

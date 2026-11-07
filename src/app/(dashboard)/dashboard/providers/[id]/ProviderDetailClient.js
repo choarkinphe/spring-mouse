@@ -10,9 +10,11 @@ import { AccessTagsEditor, Button, Drawer, CardSkeleton, ConfirmModal, ModelCapa
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, supportsLiveModelSync, usesUpstreamModelList, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
+import { usesCreditBilling } from "open-sse/config/creditBilling.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { useModelPricing } from "@/shared/hooks/useModelPricing";
+import { resolveAccountBillingMode } from "@/shared/utils/accountBilling";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { describeModelSource, getProviderCustomModelRows, getModelDisplayCapabilities, shouldUseStaticModelCatalog } from "@/shared/utils/providerCustomModels";
@@ -112,6 +114,11 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
         type: providerNode.type,
       }
     : (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId]);
+  const accountModes = connections.map(resolveAccountBillingMode);
+  const modelBillingMode = accountModes.length > 0 && accountModes.every((mode) => mode === "subscription" || mode === "free")
+    ? (accountModes.every((mode) => mode === "free") ? "free" : "subscription")
+    : !accountModes.length ? resolveAccountBillingMode({ provider: providerId, authType: OAUTH_PROVIDERS[providerId] ? "oauth" : "apikey" }) : null;
+  const subscriptionOnly = modelBillingMode === "subscription" || modelBillingMode === "free";
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const upstreamOnly = usesUpstreamModelList(providerId);
   const officialSnapshot = modelSyncSnapshots[providerId];
@@ -411,6 +418,12 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
     fetchCustomModels();
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
+
+  useEffect(() => {
+    const refresh = () => { fetchConnections().catch(() => {}); };
+    window.addEventListener("accountBillingChanged", refresh);
+    return () => window.removeEventListener("accountBillingChanged", refresh);
+  }, [fetchConnections]);
 
   // Cursor's model availability is account-specific and changes frequently.
   // Load the active account's live catalog for the dashboard; the static
@@ -988,6 +1001,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           connections={connections}
           getCaps={getCaps}
           getPricing={getPricing}
+          billingMode={modelBillingMode}
           modelAccessTags={modelAccessTags}
           onEditAccessTags={openModelTagEditor}
           onEditCapabilities={openModelCapabilitiesEditor}
@@ -1022,7 +1036,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
           return (
             <ModelRow
               key={`${model.source}-${model.fullModel}`}
-              model={{ id: model.id, name: model.name }}
+              model={model}
               fullModel={`${providerDisplayAlias}/${model.id}`}
               alias={model.alias}
               copied={copied}
@@ -1065,6 +1079,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               busyCapabilityKey={rowBusyCapabilityKey}
               pricing={getPricing(`${model.providerId || providerId}/${model.id}`)}
               pricingLoaded
+              billingMode={modelBillingMode}
               selectable={batchMode}
               selected={selectedModelIds.has(model.id)}
               onToggleSelect={() => toggleModelSelection(model.id)}
@@ -1123,6 +1138,7 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
               busyCapabilityKey={builtInBusyCapabilityKey}
               pricing={getPricing(`${providerId}/${model.id}`)}
               pricingLoaded
+              billingMode={modelBillingMode}
               selectable={batchMode}
               selected={selectedModelIds.has(model.id)}
               onToggleSelect={() => toggleModelSelection(model.id)}
@@ -1394,16 +1410,18 @@ export default function ProviderDetailClient({ providerId: providerIdOverride, e
             )}
             {/* Pricing sync is independent of model sync: a channel can have its
                 model list settled and still be missing prices for some of them. */}
-            <Button
+            {(!subscriptionOnly || usesCreditBilling(providerId)) && <Button
               size="md"
               variant="secondary"
               icon="paid"
-              onClick={handleSyncPricing}
-              disabled={syncingPricing}
-              loading={syncingPricing}
+              onClick={usesCreditBilling(providerId) ? handleSyncSupportedModels : handleSyncPricing}
+              disabled={usesCreditBilling(providerId) ? syncingModels : syncingPricing}
+              loading={usesCreditBilling(providerId) ? syncingModels : syncingPricing}
+              title={usesCreditBilling(providerId) ? "积分倍率随官方模型目录同步，不使用美元/token 定价" : undefined}
             >
-              {syncingPricing ? translate("Syncing pricing...") : translate("Sync Model Pricing")}
-            </Button>
+              {usesCreditBilling(providerId) ? "同步积分倍率" : syncingPricing ? translate("Syncing pricing...") : "同步参考定价"}
+            </Button>}
+            {subscriptionOnly && <Link href="/dashboard/usage" className="rounded-lg border border-border-subtle px-3 py-2 text-sm text-text-muted hover:text-text-main">账号用量与订阅成本</Link>}
             {/* Batch entry: every action here works for both channel kinds. */}
             <div className="relative">
               <Button

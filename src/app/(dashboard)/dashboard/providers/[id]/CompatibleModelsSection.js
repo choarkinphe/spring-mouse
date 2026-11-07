@@ -8,6 +8,7 @@ import { cn } from "@/shared/utils/cn";
 import { describeModelSource, getProviderCustomModelRows, getModelDisplayCapabilities } from "@/shared/utils/providerCustomModels";
 import ModelPricingBadge from "./ModelPricingBadge";
 import CapabilityEvidenceBadge from "./CapabilityEvidenceBadge";
+import { modelCreditBilling } from "open-sse/config/creditBilling.js";
 
 const CAPABILITY_KEYS = Object.keys(CAPACITY_META);
 
@@ -19,13 +20,15 @@ function getModelRole(modelId) {
   return { icon: "smart_toy", label: "LLM" };
 }
 
-function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+function CompatibleModelCard({ modelId, modelName, rateMultiplier, originalRateMultiplier, fullModel, caps, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isEnabled, onToggleEnabled, menuOpen, onToggleMenu, onCloseMenu, accessTags = [], onEditAccessTags, onEditCapabilities, onToggleCapability, busyCapabilityKey, sourceLabel, pricing, billingMode, pricingLoaded = false, selectable = false, selected = false, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
     ? "border-red-500/40"
     : "border-border-subtle";
   const role = getModelRole(modelId);
+  const creditBilling = modelCreditBilling(fullModel.split("/")[0], { name: modelName, id: modelId, rateMultiplier, originalRateMultiplier });
+  const displayName = creditBilling ? modelName || modelId : modelId;
   const statusIcon = testStatus === "ok" ? "check_circle" : testStatus === "error" ? "cancel" : role.icon;
   const statusColor = testStatus === "ok" ? "text-green-500" : testStatus === "error" ? "text-red-500" : "text-text-muted";
   const canToggleCaps = typeof onToggleCapability === "function";
@@ -39,7 +42,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
         <span className={`material-symbols-outlined mt-0.5 shrink-0 text-[18px] ${statusColor}`} title={testStatus === "ok" ? "测试通过" : testStatus === "error" ? "测试失败" : role.label}>
           {statusIcon}
         </span>
-        <p className="min-w-0 flex-1 break-words text-sm font-semibold leading-5 text-text-main line-clamp-2" title={modelId}>{modelId}</p>
+        <p className="min-w-0 flex-1 break-words text-sm font-semibold leading-5 text-text-main line-clamp-2" title={modelId}>{displayName}</p>
         <div className="flex shrink-0 items-center gap-0.5">
           {onEditCapabilities && (
             <button
@@ -69,7 +72,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
         <div className="flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="min-w-0 truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px] text-text-muted">{sourceLabel || role.label}</span>
-            <ModelPricingBadge pricing={pricing} loaded={pricingLoaded} />
+            <ModelPricingBadge pricing={pricing} creditBilling={creditBilling} billingMode={billingMode} loaded={pricingLoaded} />
           </div>
           <span className="shrink-0" title={isEnabled ? "停用模型" : "启用模型"}>
             <Toggle
@@ -161,7 +164,7 @@ function CompatibleModelCard({ modelId, fullModel, caps, copied, onCopy, onDelet
   );
 }
 
-export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
+export default function CompatibleModelsSection({ providerStorageAlias, providerDisplayAlias, modelAliases, customModels, copied, onCopy, onDeleteAlias, onDeleteCustomModel, onDisableModel, onEnableModel, disabledModelIds, connections, getCaps, getPricing, billingMode, modelAccessTags, onEditAccessTags, onEditCapabilities, onToggleCapability, onOpenAddModel, capabilityOverrides = {}, togglingCapability = null, modelTestResults = {}, testingModelIds, onTestModel, selectable = false, selectedModelIds, onToggleSelect, onTestCapabilities, capabilityProfiles }) {
   const [openModelMenuId, setOpenModelMenuId] = useState(null);
 
   const allModels = getProviderCustomModelRows({
@@ -190,7 +193,7 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
             <span className="material-symbols-outlined text-[18px]">add</span>
             添加模型
           </button>
-          {allModels.map(({ id, alias, source, modelSource, providerId, capabilities, manualCapabilities, origin }) => {
+          {allModels.map(({ id, name, rateMultiplier, originalRateMultiplier, alias, source, modelSource, providerId, capabilities, manualCapabilities, origin }) => {
             const capsKey = `${providerStorageAlias}/${id}`;
             // Mirror ProviderDetailClient: the parent tracks the in-flight toggle as
             // "<alias>|<modelId>|<capabilityKey>"; the card only needs the suffix.
@@ -207,11 +210,15 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               <CompatibleModelCard
                 key={`${source}-${providerStorageAlias}/${id}`}
                 modelId={id}
+                modelName={name}
+                rateMultiplier={rateMultiplier}
+                originalRateMultiplier={originalRateMultiplier}
                 fullModel={`${providerDisplayAlias}/${id}`}
                 caps={caps}
                 sourceLabel={sourceLabel}
                 pricing={getPricing?.(`${providerId || providerStorageAlias}/${id}`)}
                 pricingLoaded={typeof getPricing === "function"}
+                billingMode={billingMode}
                 copied={copied}
                 onCopy={onCopy}
                 onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}

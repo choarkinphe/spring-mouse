@@ -21,7 +21,9 @@ describe("Qoder quota snapshot", () => {
     expect(formatQuotaAmount(quota)).toBe("0 / 0 credits");
     expect(formatQuotaRemainingLabel(quota)).toBe("余量 0 credits");
     expect(getRemainingPercentage(quota)).toBe(0);
-    expect(formatResetTime(quota.resetAt)).toBe("9999-01-01");
+    expect(result.quotas.user.resetAt).toBe("9999-01-01T00:00:00.000Z");
+    expect(quota.resetAt).toBeNull();
+    expect(formatResetTime(quota.resetAt)).toBe("-");
   });
 
   it.each([false, undefined, null, "false"])("does not infer exceeded from %s", async (flag) => {
@@ -40,6 +42,12 @@ describe("Qoder quota snapshot", () => {
     expect(proxyAwareFetch.mock.calls.at(-1)[0]).toBe("https://openapi.qoder.com.cn/sash/api/v2/me/usage");
     expect(result.quotas.user).toMatchObject({ total: 100, used: 75, remaining: 25 });
     expect(parseQuotaData("qoder-cn", result)).toHaveLength(2);
+  });
+
+  it.each(["qoder", "qoder-cn"])("suppresses only year 9999 for %s", (provider) => {
+    const makeRows = (resetAt) => parseQuotaData(provider, { quotas: { user: { total: 10, used: 1, unit: "credits", resetAt } } });
+    expect(makeRows("9999-12-31T00:00:00.000Z")[0].resetAt).toBeNull();
+    expect(makeRows("2027-01-01T00:00:00.000Z")[0].resetAt).toBe("2027-01-01T00:00:00.000Z");
   });
 
   it("does not turn missing amounts into zero", async () => {

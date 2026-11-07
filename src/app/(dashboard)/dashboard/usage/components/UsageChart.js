@@ -18,7 +18,7 @@ import { formatBytes } from "@/shared/utils/formatBytes";
 
 const METRICS = {
   tokens: { label: "Token", color: "#6366f1", yAxisId: "tokens", format: (value) => fmtTokens(value) },
-  cost: { label: "成本", color: "#f59e0b", yAxisId: "cost", format: (value) => fmtCost(value) },
+  cost: { label: "Token 参考估值", color: "#f59e0b", yAxisId: "cost", format: (value) => fmtCost(value) },
   requests: { label: "模型调用", color: "#10b981", yAxisId: "requests", format: (value) => new Intl.NumberFormat("zh-CN").format(value || 0) },
   trafficBytes: { label: "流量", color: "#0891b2", yAxisId: "traffic", format: (value) => formatBytes(value) },
 };
@@ -205,7 +205,7 @@ export default function UsageChart({ timeRange, apiKeyId, scope, refreshToken = 
             {selectedMetrics.includes("cost") ? (
               <Line
                 yAxisId="cost"
-                name="成本"
+                name="Token 参考估值"
                 type="monotone"
                 dataKey="cost"
                 stroke={METRICS.cost.color}

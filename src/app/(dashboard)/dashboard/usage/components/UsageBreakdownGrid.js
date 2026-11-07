@@ -332,7 +332,7 @@ function RecentCallDetailsTable({ rows, totalCalls }) {
                 <th className="px-3 py-2.5 text-right">上传流量</th>
                 <th className="px-3 py-2.5 text-right">下载流量</th>
                 <th className="px-3 py-2.5 text-right">总流量</th>
-                <th className="px-3 py-2.5 text-right">成本</th>
+                <th className="px-3 py-2.5 text-right">Token 参考估值</th>
                 <th className="px-3 py-2.5 text-left">端点</th>
                 <th className="px-3 py-2.5 text-left">对话</th>
               </tr>
@@ -554,7 +554,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
           points={recent.map((item) => item.cost || 0)}
           loading={loading}
           failed={failed}
-          detail={`Top 模型：${topModel?.rawModel || topModel?.key || "暂无"}`}
+          detail="Token 参考估值，含历史订阅用量；非实际支出"
         />
         <StatCard
           icon="hub"
@@ -575,7 +575,7 @@ export default function UsageBreakdownGrid({ stats, timeRange, apiKeyId, scope, 
             apiKeyId={apiKeyId}
             scope={scope}
             refreshToken={chartRefreshToken}
-            title="Token 与成本趋势"
+            title="Token 与参考估值趋势"
             className="xl:h-[500px]"
           />
 

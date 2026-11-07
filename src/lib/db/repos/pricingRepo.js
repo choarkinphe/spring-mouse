@@ -2,6 +2,7 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
 import { deleteHotJson } from "@/lib/redis/hotCache.js";
+import { usesCreditBilling } from "open-sse/config/creditBilling.js";
 
 const pricingKv = makeKv("pricing");
 const CACHE_TTL_MS = 5000;
@@ -61,7 +62,8 @@ export async function getPricing() {
 }
 
 export async function getPricingForModel(provider, model) {
-  if (!model) return null;
+  // Ignore previously auto-imported token prices on credit subscriptions too.
+  if (!model || usesCreditBilling(provider)) return null;
   // 复用缓存的 getPricing() 而非直接读 KV，避免每请求全量扫描 pricing scope
   const allPricing = await getPricing();
   if (provider && allPricing[provider]?.[model]) return allPricing[provider][model];
@@ -91,7 +93,7 @@ export async function getPricingForModels(entries = []) {
     const key = `${provider || ""}/${model}`;
     if (out.has(key)) continue;
     const merged = provider ? allPricing[provider]?.[model] : null;
-    out.set(key, merged || resolveConst(provider, model));
+    out.set(key, usesCreditBilling(provider) ? null : merged || resolveConst(provider, model));
   }
   return out;
 }

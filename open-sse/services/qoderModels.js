@@ -21,6 +21,7 @@
 import { createHash } from "crypto";
 
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
+import { dedupRefresh } from "./tokenRefresh/dedup.js";
 import { buildCosyHeaders } from "../shared/qoder/cosy.js";
 import {
   QODER_MODEL_LIST_URL,
@@ -39,6 +40,31 @@ const PAT_PREFIX = "pt-";
 // PAT and re-exchange once it is within 5 minutes of expiry.
 const PAT_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const PAT_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+
+function qoderRateMultiplier(entry) {
+  const raw = entry.price_factor ?? entry.priceFactor;
+  const factor = typeof raw === "number" || (typeof raw === "string" && raw.trim()) ? Number(raw) : NaN;
+  if (!Number.isFinite(factor) || factor < 0) return null;
+  const promotion = entry.promotion || entry.prommotion;
+  if (promotion?.active === true) {
+    const beforeRaw = promotion.before_promotion_price_factor ?? promotion.beforePromotionPriceFactor;
+    const discountRaw = promotion.discount_factor ?? promotion.discountFactor;
+    const before = typeof beforeRaw === "number" || (typeof beforeRaw === "string" && beforeRaw.trim()) ? Number(beforeRaw) : NaN;
+    const discount = typeof discountRaw === "number" || (typeof discountRaw === "string" && discountRaw.trim()) ? Number(discountRaw) : NaN;
+    if (factor === 0 && Number.isFinite(before) && before > 0 && Number.isFinite(discount) && discount > 0) return before * discount;
+  }
+  return factor;
+}
+
+function qoderOriginalRateMultiplier(entry, rateMultiplier) {
+  if (rateMultiplier === null) return null;
+  const promotion = entry.promotion || entry.prommotion;
+  const raw = promotion?.active === true
+    ? (promotion.before_promotion_price_factor ?? promotion.beforePromotionPriceFactor)
+    : (entry.original_price_factor ?? entry.originalPriceFactor);
+  const value = typeof raw === "number" || (typeof raw === "string" && raw.trim()) ? Number(raw) : NaN;
+  return Number.isFinite(value) && value >= 0 && value > rateMultiplier ? value : null;
+}
 
 export function isQoderPat(token) {
   return typeof token === "string" && token.startsWith(PAT_PREFIX);
@@ -152,15 +178,20 @@ export async function refreshQoderToken(credentials, proxyOptions = null, signal
   if (!refreshToken) throw new Error("Qoder refresh token is missing");
   const isJob = String(credentials?.accessToken || "").startsWith("jt-");
   const path = isJob ? "jobToken" : "deviceToken";
-  const response = await proxyAwareFetch(`${region.openapi}/api/v1/${path}/refresh`, {
-    method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }), signal,
-  }, proxyOptions);
-  if (!response.ok) throw new Error(`Qoder ${path} refresh failed: HTTP ${response.status}`);
-  const data = await response.json();
-  const accessToken = data.token || data.device_token || data.access_token;
-  if (!accessToken || !data.refresh_token) throw new Error(`Qoder ${path} refresh returned incomplete token pair`);
-  return { accessToken, refreshToken: data.refresh_token, expiresIn: typeof data.expires_in === "number" ? data.expires_in / 1000 : undefined };
+  // One rotating-token boundary for chat retries and daily check-in. A caller's
+  // cancellation must not cancel the shared refresh another caller is awaiting.
+  signal?.throwIfAborted();
+  return dedupRefresh(`qoder:${region.region}:${path}`, refreshToken, async sharedSignal => {
+    const response = await proxyAwareFetch(`${region.openapi}/api/v1/${path}/refresh`, {
+      method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }), signal: sharedSignal,
+    }, proxyOptions);
+    if (!response.ok) throw new Error(`Qoder ${path} refresh failed: HTTP ${response.status}`);
+    const data = await response.json();
+    const accessToken = data.token || data.device_token || data.access_token;
+    if (!accessToken || !data.refresh_token) throw new Error(`Qoder ${path} refresh returned incomplete token pair`);
+    return { accessToken, refreshToken: data.refresh_token, expiresIn: typeof data.expires_in === "number" ? data.expires_in / 1000 : undefined };
+  });
 }
 
 export async function resolveQoderCredentials(credentials, proxyOptions = null, signal = null) {
@@ -268,30 +299,44 @@ async function fetchQoderCatalogRaw(credentials, signal, proxyOptions = null) {
 
   if (!response.ok) return null;
 
-  const body = await response.json().catch(() => null);
-  if (!body || !Array.isArray(body.chat)) return null;
+  return parseQoderCatalog(await response.json().catch(() => null));
+}
+
+// Account catalog protocol: magpie-community/plugins 270b228, packages/qoder
+// (MIT; see THIRD_PARTY_NOTICES.md). IDs remain native routing keys.
+export function parseQoderCatalog(body) {
+  if (!body || (!Array.isArray(body.chat) && !Array.isArray(body.app))) return null;
 
   const models = [];
   const rawConfigs = new Map();
-  for (const entry of body.chat) {
+  // Magpie's official directory distinguishes app scenes from chat scenes.
+  // Prefer app records but retain chat-only models (e.g. Performance).
+  const entries = [...(Array.isArray(body.app) ? body.app : []), ...(Array.isArray(body.chat) ? body.chat : [])];
+  for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const key = entry.key;
-    if (!key) continue;
+    if (typeof key !== "string" || !key.trim() || rawConfigs.has(key)) continue;
 
-    // Always cache the config — chat needs model_config even for UI-hidden
-    // models (enable:false). Upstream still accepts chat for these keys.
+    // Keep the first app-scene config in preference to a chat-scene duplicate.
     rawConfigs.set(key, entry);
-    if (entry.enable === false) continue;
+    if (entry.enable === false || key === "auto" || key === "default") continue;
 
-    const display = entry.display_name || key;
+    const display = entry.display_name || entry.displayName || key;
+    const rateMultiplier = qoderRateMultiplier(entry);
+    const originalRateMultiplier = qoderOriginalRateMultiplier(entry, rateMultiplier);
     const ctx = Number(entry.max_input_tokens) || 131_072;
     models.push({
       id: key,
       name: `${display}`,
-      contextLength: ctx,
-      isVL: !!entry.is_vl,
+      contextLength: Number(entry.max_input_tokens) > 0 ? Number(entry.max_input_tokens)
+        : Number(entry.context_config?.max_input_tokens ?? entry.contextConfig?.maxInputTokens) > 0
+          ? Number(entry.context_config?.max_input_tokens ?? entry.contextConfig?.maxInputTokens) : ctx,
+      isVL: !!(entry.is_vl ?? entry.isVL),
       isReasoning: !!entry.is_reasoning,
       maxOutputTokens: Number(entry.max_output_tokens) || 0,
+      ...(rateMultiplier !== null ? { rateMultiplier } : {}),
+      ...(originalRateMultiplier !== null ? { originalRateMultiplier } : {}),
+      isFree: rateMultiplier === 0,
       description: entry.description || "",
     });
   }

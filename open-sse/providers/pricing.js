@@ -12,6 +12,7 @@
  */
 import { QIANWEN_REFERENCE_PRICING } from "../config/qianwen.js";
 import { JEVAPI_CONFIG, JEVAPI_STATIC_MODELS } from "../config/jevapi.js";
+import { usesCreditBilling } from "../config/creditBilling.js";
 
 export const MODEL_PRICING = {
   // === Anthropic / Claude ===
@@ -374,7 +375,7 @@ const OPENCODE_FREE_PRICING = Object.freeze({ input: 0, output: 0, cached: 0, re
  * @returns {object|null}
  */
 export function getPricingForModel(provider, model) {
-  if (!model) return null;
+  if (!model || usesCreditBilling(provider)) return null;
 
   // 1. Provider-specific override
   if (provider && PROVIDER_PRICING[provider]?.[model]) {

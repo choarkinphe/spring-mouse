@@ -25,6 +25,7 @@ import { HTTP_STATUS, REQUEST_OVERLOAD_BUDGET_MS, COMBO_RESOLUTION_LIMITS } from
 import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
+import { getResponsesStateError } from "open-sse/shared/responsesState.js";
 import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
 import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
 import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
@@ -195,6 +196,9 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("CHAT", "Missing model");
       return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model"), "missing_model");
     }
+
+    const stateError = getResponsesStateError(body, detectFormatByEndpoint(clientRawRequest?.endpoint || "", body) || detectFormat(body));
+    if (stateError) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, stateError), "unsupported_response_state");
 
     await refreshModelCapabilityOverrides().catch((error) => {
       log.warn("CAPABILITIES", `Failed to load synchronized model capabilities: ${error.message}`);
@@ -648,6 +652,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   const modelLevelExcluded = new Set();
   let lastError = null;
   let lastStatus = null;
+  let lastRestrictionResponse = null;
   // Counts accounts that reported a *model-level* problem (the upstream model is
   // busy). Fanning out to the whole pool on such a signal multiplies the errors
   // we send at an upstream that is already saturated, so it is capped.
@@ -686,6 +691,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       );
     }
 
+    if (credentials?.reauthorizationRequired) return lastRestrictionResponse || errorResponse(409, credentials.error);
     if (credentials?.capabilityUnavailable) return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, credentials.error);
     if (credentials?.aborted) return errorResponse(499, "Request aborted");
 
@@ -746,7 +752,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       // attributed to the upstream status it ended on rather than to local policy.
       log.warn("CHAT", `${reqPrefix}No more accounts available`, { provider });
       saveOutcome(lastStatus ? `upstream:${lastStatus}` : "blocked:accounts_exhausted");
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return lastRestrictionResponse || errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
     if (clientSignal?.aborted || request?.signal?.aborted) {
@@ -869,7 +875,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
     }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff, or precise resetsAtMs)
-    const { shouldFallback, modelLevel, transport, accountScoped } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
+    const { shouldFallback, modelLevel, transport, accountScoped, restricted } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs, result.upstreamError);
 
     if (shouldFallback) {
       const scanBound = result.upstreamError?.origin === SSE_ERROR_ORIGINS.FIRST_OUTPUT_TIMEOUT
@@ -950,6 +956,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       if (modelLevel) modelLevelExcluded.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
+      lastRestrictionResponse = restricted ? result.response : null;
 
       if (modelLevel) {
         modelLevelFailures += 1;

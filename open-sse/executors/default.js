@@ -88,6 +88,15 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      // Official reasoning models reject Chat's legacy output-limit spelling.
+      // Other OpenAI-compatible providers may still require max_tokens.
+      if (this.provider === "openai" && transportFormat !== "openai-responses"
+        && /^(?:o\d+(?:-|$)|gpt-5(?:[.-]|$))/i.test(model || "")) {
+        if (transformed.max_completion_tokens === undefined && transformed.max_tokens !== undefined) {
+          transformed.max_completion_tokens = transformed.max_tokens;
+        }
+        delete transformed.max_tokens;
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });

@@ -127,6 +127,11 @@ async function runHeavyStartup() {
     .then(({ startCodeBuddyAutoCheckin }) => startCodeBuddyAutoCheckin())
     .catch(() => console.log("[CodeBuddyCheckin] scheduler start failed"));
 
+  // Spend Codex reset credits shortly before they expire instead of losing them.
+  import("@/shared/services/codexResetCreditAutoRedeem.js")
+    .then(({ startCodexResetCreditAutoRedeem }) => startCodexResetCreditAutoRedeem())
+    .catch((e) => console.log("[CodexResetCredit] scheduler start failed:", e.message));
+
   // Periodic pricing refresh. Opt-in via settings; the call is a no-op when the
   // setting is off, so it is safe to register unconditionally here.
   import("@/shared/services/pricingAutoSync.js")

@@ -112,7 +112,9 @@ export function buildUpstreamError(response, bodyText, message, source = "http",
     source,
     status: response?.status,
     message: String(message || "").slice(0, 2000),
-    body: String(bodyText || "").slice(0, 4000),
+    // Preserve the error payload for dashboard diagnostics / copy. Structured
+    // monitoring diagnostics remain independently bounded and allowlisted below.
+    body: String(bodyText || ""),
     retryAfterMs: retryAfterMs(response),
     receivedAt: new Date().toISOString(),
     layer: classifyErrorLayer(bodyText, message),

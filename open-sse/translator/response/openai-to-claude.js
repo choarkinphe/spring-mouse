@@ -75,6 +75,15 @@ export function openaiToClaudeResponse(chunk, state) {
   const choice = chunk.choices[0];
   const delta = choice.delta;
 
+  // Devin emits the signature only after its text/tools. Keep its thinking block
+  // open until that opaque signature arrives; replay subsequent output afterward.
+  // Other providers retain their existing immediate streaming behavior.
+  if (state.provider === "devin" && !state.devinReplaying && !state.devinSignatureSeen
+      && state.thinkingBlockStarted && (delta?.content || delta?.tool_calls)) {
+    (state.devinDeferredChunks ||= []).push(chunk);
+    return null;
+  }
+
   // Track usage from OpenAI chunk if available
   if (chunk.usage && typeof chunk.usage === "object") {
     const promptTokens = typeof chunk.usage.prompt_tokens === "number" ? chunk.usage.prompt_tokens : 0;
@@ -82,7 +91,8 @@ export function openaiToClaudeResponse(chunk, state) {
 
     // Extract cache tokens from prompt_tokens_details
     const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens;
-    const cacheCreationTokens = chunk.usage.prompt_tokens_details?.cache_creation_tokens;
+    const cacheCreationTokens = chunk.usage.prompt_tokens_details?.cache_creation_tokens
+      ?? chunk.usage.prompt_tokens_details?.cache_write_tokens;
     const cacheReadTokens = typeof cachedTokens === "number" ? cachedTokens : 0;
     const cacheCreateTokens = typeof cacheCreationTokens === "number" ? cacheCreationTokens : 0;
 
@@ -133,6 +143,35 @@ export function openaiToClaudeResponse(chunk, state) {
         usage: { input_tokens: 0, output_tokens: 0 }
       }
     });
+  }
+
+  // Devin sends its opaque signature as a trailing delta after reasoning and
+  // sometimes after regular text. Preserve it as Claude signature_delta rather
+  // than interpreting or normalizing the provider-owned value.
+  if (typeof delta?.reasoning_signature === "string" && delta.reasoning_signature.length > 0) {
+    const signature = delta.reasoning_signature;
+    state.devinSignatureSeen = true;
+    if (state.thinkingBlockStarted) {
+      results.push({ type: "content_block_delta", index: state.thinkingBlockIndex,
+        delta: { type: "signature_delta", signature } });
+    } else {
+      stopTextBlock(state, results);
+      state.thinkingBlockIndex = state.nextBlockIndex++;
+      state.thinkingBlockStarted = true;
+      results.push({ type: "content_block_start", index: state.thinkingBlockIndex,
+        content_block: { type: CLAUDE_BLOCK.THINKING, thinking: "" } });
+      results.push({ type: "content_block_delta", index: state.thinkingBlockIndex,
+        delta: { type: "signature_delta", signature } });
+    }
+  }
+
+  if ((state.devinSignatureSeen || choice.finish_reason) && state.devinDeferredChunks?.length) {
+    const deferred = state.devinDeferredChunks;
+    state.devinDeferredChunks = [];
+    state.devinReplaying = true;
+    try {
+      for (const pending of deferred) results.push(...(openaiToClaudeResponse(pending, state) || []));
+    } finally { state.devinReplaying = false; }
   }
 
   // Handle reasoning (thinking) across vendor shapes - GLM/DeepSeek/Qwen/MiniMax/etc.

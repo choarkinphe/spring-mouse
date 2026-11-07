@@ -36,6 +36,10 @@ const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh
 
 // Model-name pattern overrides (glob, first match wins) — more precise than format default.
 const PATTERN_THINKING = [
+  // Devin SWE-2 family: medium/high/max only (no "none", no low/xhigh).
+  { provider: "devin", pattern: "*swe-2*", levels: ["medium", "high", "max"] },
+  // SWE-1.x exposes a single effort toggle (medium maps to it).
+  { provider: "devin", pattern: "*swe-1*", levels: ["medium"] },
   { provider: "codex", pattern: "*gpt-5.6-sol*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-luna*", levels: CODEX_GPT_5_6_LEVELS },

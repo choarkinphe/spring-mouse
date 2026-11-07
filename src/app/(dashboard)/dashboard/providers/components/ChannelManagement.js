@@ -232,6 +232,50 @@ function getResetCreditCount(resetCredits) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+const INACTIVE_RESET_CREDIT_STATUSES = new Set(["redeemed", "consumed", "used", "expired", "cancelled", "revoked"]);
+
+// Usable credits, earliest expiry first, so the tooltip leads with the one at risk.
+function getActiveResetCredits(resetCredits, now = Date.now()) {
+  const credits = Array.isArray(resetCredits?.credits) ? resetCredits.credits : [];
+  return credits
+    .filter((credit) => !INACTIVE_RESET_CREDIT_STATUSES.has(String(credit?.status || "").toLowerCase()))
+    .filter((credit) => !credit?.expiresAt || new Date(credit.expiresAt).getTime() > now)
+    .sort((a, b) => (a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity) - (b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity));
+}
+
+function formatResetCreditRemaining(expiresAt, now = Date.now()) {
+  if (!expiresAt) return "无过期时间";
+  const diffMs = new Date(expiresAt).getTime() - now;
+  if (!Number.isFinite(diffMs)) return "未知";
+  if (diffMs <= 0) return "已过期";
+  const totalHours = Math.ceil(diffMs / (60 * 60 * 1000));
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return days > 0 ? `${days} 天 ${hours} 小时` : `${hours} 小时`;
+}
+
+// Highlight the button a day ahead; the server redeems 2h before expiry.
+const RESET_CREDIT_EXPIRING_SOON_MS = 24 * 60 * 60 * 1000;
+
+function isResetCreditExpiringSoon(resetCredits, now = Date.now()) {
+  const expiresAt = getActiveResetCredits(resetCredits, now)[0]?.expiresAt;
+  return Boolean(expiresAt) && new Date(expiresAt).getTime() - now < RESET_CREDIT_EXPIRING_SOON_MS;
+}
+
+function getResetCreditTooltip(resetCredits, count) {
+  if (count <= 0) return "暂无可用的 Codex 重置券";
+  const lines = [`使用 1 张额度重置券（剩余 ${count} 张）`];
+  const active = getActiveResetCredits(resetCredits);
+  if (active.length) {
+    lines.push("", "各券过期时间：");
+    active.forEach((credit, index) => {
+      lines.push(`${index + 1}. ${credit.expiresAt ? formatDateTime(credit.expiresAt) : "—"}（剩 ${formatResetCreditRemaining(credit.expiresAt)}）`);
+    });
+    lines.push("", "到期前 2 小时内会自动使用，避免浪费。");
+  }
+  return lines.join("\n");
+}
+
 function ChannelQuota({ quotas, loading }) {
   if (loading) {
     return <div className="h-10 w-full max-w-[32rem] animate-pulse rounded-lg bg-white/[0.045]" />;
@@ -794,13 +838,14 @@ function ChannelCreatedModal({ created, onClose, onAddAnother }) {
   );
 }
 
-function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetting, resetError, isFirst, isLast, reordering, mouse, testState, concurrency, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
+function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resetCredits, resetting, resetError, isFirst, isLast, reordering, mouse, testState, concurrency, onRefreshQuota, onResetCodexLimit, onToggle, onMoveUp, onMoveDown, onEdit }) {
   const { copied, copy } = useCopyToClipboard();
   const notify = useNotificationStore();
   const providerName = getProviderName(connection.provider);
   const providerColor = getProviderColor(connection.provider);
   const quotaAvailable = canTrackQuota(connection);
   const isCodex = connection.provider === "codex";
+  const resetCreditExpiringSoon = isCodex && isResetCreditExpiringSoon(resetCredits);
   const status = getAccountStatus(connection);
   // Two failure records can coexist (a tunnel timeout followed by an upstream
   // 503); only the fresher one is worth the single line this row can spare.
@@ -1089,7 +1134,7 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
 
       <div className="flex items-center justify-end gap-1 border-t border-white/[0.065] pt-3 lg:border-0 lg:pt-0">
         {isCodex && (
-          <Tooltip text={resetCreditCount > 0 ? `使用 1 张额度重置券（剩余 ${resetCreditCount} 张）` : "暂无可用的 Codex 重置券"}>
+          <Tooltip text={getResetCreditTooltip(resetCredits, resetCreditCount)}>
             <button
               type="button"
               onClick={() => onResetCodexLimit(connection)}
@@ -1097,7 +1142,9 @@ function ChannelRow({ connection, quotas, quotaLoading, resetCreditCount, resett
               aria-label={resetCreditCount > 0 ? `使用 1 张 Codex 重置券，剩余 ${resetCreditCount} 张` : "暂无可用的 Codex 重置券"}
               className={cn(
                 "flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                resetCreditCount > 0
+                resetCreditCount > 0 && resetCreditExpiringSoon
+                  ? "border-amber-400/45 bg-amber-400/[0.1] text-amber-300 hover:bg-amber-400/[0.16]"
+                  : resetCreditCount > 0
                   ? "border-[#38bdf8]/35 bg-[#38bdf8]/[0.08] text-[#7dd3fc] hover:bg-[#38bdf8]/[0.14]"
                   : "border-white/[0.08] bg-white/[0.025] text-text-muted",
               )}
@@ -1485,7 +1532,8 @@ function ChannelGroup({ group, quotaData, quotaLoading, resetCreditsByConnection
             connection={connection}
             quotas={quotaData[connection.id]}
             quotaLoading={quotaLoading[connection.id]}
-            resetCreditCount={resetCreditsByConnection[connection.id] || 0}
+            resetCreditCount={getResetCreditCount(resetCreditsByConnection[connection.id])}
+            resetCredits={resetCreditsByConnection[connection.id] || null}
             resetting={resettingConnectionId === connection.id}
             resetError={resetErrors[connection.id]}
             isFirst={index === 0}
@@ -1938,7 +1986,7 @@ export default function ChannelManagement({ initialDetailProviderId = null }) {
 
         setResetCreditsByConnection((current) => ({
           ...current,
-          [connection.id]: getResetCreditCount(resetCredits),
+          [connection.id]: resetCredits,
         }));
         setResetErrors((current) => ({ ...current, [connection.id]: null }));
       }

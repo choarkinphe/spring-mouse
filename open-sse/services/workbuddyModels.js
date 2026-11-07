@@ -14,8 +14,13 @@ export function parseWorkBuddyModels(payload) {
   return ids.map(id => {
     const model = known.get(id);
     if (!model) throw new Error("Incomplete WorkBuddy account catalog");
+    // Account points rate, not a dollar/token price. /v3/config publishes
+    // values such as credits: "x0.08" (including x0.00 for free models).
+    const rate = typeof model.credits === "string" && /^x\d+(?:\.\d+)?$/i.test(model.credits.trim())
+      ? Number(model.credits.trim().slice(1)) : null;
     return {
       id: model.id, name: typeof model.name === "string" ? model.name : model.id,
+      ...(rate !== null && Number.isFinite(rate) ? { rateMultiplier: rate, isFree: rate === 0 } : {}),
       supportedFormats: ["openai"],
       ...(Number.isSafeInteger(model.maxInputTokens) && model.maxInputTokens > 0 ? { contextWindow: model.maxInputTokens } : {}),
       ...(Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0 ? { maxOutputTokens: model.maxOutputTokens } : {}),
@@ -28,7 +33,7 @@ export function parseWorkBuddyModels(payload) {
 export async function discoverWorkBuddyModels(connection, proxyOptions = null) {
   const site = getWorkBuddySite(connection.provider);
   const response = await proxyAwareFetch(`${site.origin}/v3/config`, {
-    method: "GET", headers: buildWorkBuddyHeaders(connection.provider, connection, { catalog: true }),
+    method: "GET", headers: buildWorkBuddyHeaders(connection.provider, connection),
     signal: AbortSignal.timeout(15000), cache: "no-store", redirect: "error",
   }, proxyOptions);
   if (!response.ok) return { error: `WorkBuddy model discovery returned HTTP ${response.status}`, status: response.status };

@@ -12,8 +12,8 @@ const { rows, adapter } = vi.hoisted(() => {
 vi.mock("../../src/lib/db/driver.js", () => ({ getAdapter: async () => adapter }));
 vi.mock("../../src/lib/db/repos/connectionsRepo.js", () => ({
   getProviderConnectionById: async (id) => ({
-    provider: String(id).startsWith("wb-") ? "workbuddy" : "codebuddy-cn",
-    providerSpecificData: { codebuddyUid: id === "duplicate" ? "a" : id },
+    provider: String(id).startsWith("qdcn-") ? "qoder-cn" : String(id).startsWith("qd-") ? "qoder" : String(id).startsWith("wb-") ? "workbuddy" : "codebuddy-cn",
+    providerSpecificData: { codebuddyUid: id === "duplicate" ? "a" : id, userId: "same-qoder-user" },
   }),
 }));
 const { getCheckinState, updateCheckinState } = await import("../../src/lib/db/repos/checkinRepo.js");
@@ -46,6 +46,13 @@ describe("persistent checkin state", () => {
     expect(rows.has("codebuddyCheckin:account:codebuddy-cn:a")).toBe(true);
     expect(await getCheckinState("wb-a")).toMatchObject({ lastSuccessDate: "2026-10-22" });
     expect(await getCheckinState("a")).toMatchObject({ lastSuccessDate: "2026-10-21" });
+  });
+
+  it("shares Qoder user markers within one region, not across regions", async () => {
+    await updateCheckinState("qd-a", () => ({ enabled: true, lastSuccessDate: "2026-10-28" }));
+    expect(await getCheckinState("qd-b")).toMatchObject({ enabled: false, lastSuccessDate: "2026-10-28" });
+    expect(await getCheckinState("qdcn-a")).toEqual({ enabled: false });
+    expect(rows.has("codebuddyCheckin:account:qoder:same-qoder-user")).toBe(true);
   });
 
   it("propagates flush failures instead of reporting a durable lease", async () => {

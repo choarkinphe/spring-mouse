@@ -19,7 +19,8 @@ function write(db, key, value) {
 
 async function accountKey(connectionId) {
   const connection = await getProviderConnectionById(connectionId);
-  const uid = connection?.providerSpecificData?.codebuddyUid;
+  const uid = connection?.provider === "qoder" || connection?.provider === "qoder-cn"
+    ? connection.providerSpecificData?.userId : connection?.providerSpecificData?.codebuddyUid;
   return uid ? `account:${connection.provider}:${uid}` : `connection:${connectionId}`;
 }
 

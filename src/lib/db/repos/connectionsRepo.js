@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { deleteModelCapabilityTests } from "./modelCapabilityTestsRepo.js";
+import { hasWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -225,6 +226,13 @@ export async function updateProviderConnection(id, data) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
+    if (hasWorkBuddyRestriction(existing.provider, existing)) {
+      // Generic token/test/bulk updates cannot release a restriction. Recovery
+      // uses the explicit management action and the atomic health updater.
+      for (const key of ["accountRestriction", "isActive", "testStatus", "testStatusUntil", "lastError", "lastErrorAt", "errorCode"]) {
+        merged[key] = existing[key];
+      }
+    }
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;

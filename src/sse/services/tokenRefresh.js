@@ -1,5 +1,7 @@
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger.js";
+import { hasWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
+import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 import { updateProviderConnection } from "../../lib/localDb.js";
 import {
   getProjectIdForConnection,
@@ -223,6 +225,7 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
  * @returns {Promise<object>} updated credentials object
  */
 export async function checkAndRefreshToken(provider, credentials, options = {}) {
+  if (credentials.isActive === false || hasWorkBuddyRestriction(provider, credentials) || requiresWorkBuddyAuthorization(provider, credentials)) return credentials;
   let creds = { ...credentials };
   if (!creds.connectionId && creds.id) {
     creds.connectionId = creds.id;

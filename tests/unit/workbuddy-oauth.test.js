@@ -52,6 +52,7 @@ describe("WorkBuddy browser OAuth contract", () => {
       accessToken: "opaque-access-token", refreshToken: "opaque-refresh-token", expiresIn: 7200,
       displayName: "Tester", email: "person@example.com",
       providerSpecificData: {
+        workbuddyLegacyCredential: false,
         workbuddyProduct: platform, workbuddyOrigin: origin, workbuddyPlatform: platform,
         workbuddyContract: "0.1.30", codebuddyUid: "00123", domain: new URL(origin).hostname,
         refreshExpiresAt: NOW + 86400000, tokenType: "Bearer", enterpriseId: "enterprise-42",
@@ -225,7 +226,7 @@ describe("WorkBuddy browser OAuth contract", () => {
       .mockResolvedValueOnce(response(account({ enterpriseId: "tenant-1", unknown: "private-secret", phoneNumber: "private-secret", state: "private-state" })));
     const mapped = handler.mapTokens((await handler.pollToken(config, "private-state")).data);
     expect(Object.keys(mapped.providerSpecificData).sort()).toEqual([
-      "codebuddyUid", "domain", "enterpriseId", "refreshExpiresAt", "tenantId", "tenantVerified", "tokenType", "workbuddyContract", "workbuddyOrigin", "workbuddyPlatform", "workbuddyProduct",
+      "codebuddyUid", "domain", "enterpriseId", "refreshExpiresAt", "tenantId", "tenantVerified", "tokenType", "workbuddyContract", "workbuddyLegacyCredential", "workbuddyOrigin", "workbuddyPlatform", "workbuddyProduct",
     ]);
     expect(JSON.stringify(mapped.providerSpecificData)).not.toMatch(/private-secret|private-state|opaque-access|opaque-refresh/);
   });

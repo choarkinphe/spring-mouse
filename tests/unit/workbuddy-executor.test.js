@@ -4,7 +4,7 @@ const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({ proxyAwareFetch: (...args) => fetchMock(...args) }));
 vi.mock("../../src/lib/mouse/tunnel.js", () => ({ dispatchMouseTask: vi.fn() }));
 
-import { WorkBuddyExecutor, forgetRefusedWorkBuddySystems } from "../../open-sse/executors/workbuddy.js";
+import { WorkBuddyExecutor } from "../../open-sse/executors/workbuddy.js";
 import { CodeBuddyBaseExecutor } from "../../open-sse/executors/codebuddy-base.js";
 import { WORKBUDDY_SITES, getWorkBuddySite, buildWorkBuddyHeaders } from "../../open-sse/config/workbuddy.js";
 
@@ -20,7 +20,7 @@ function credentials(provider, metadata = {}) {
 }
 const providers = Object.keys(WORKBUDDY_SITES);
 const frame = delta => `data: ${JSON.stringify({ choices: [{ delta, finish_reason: null }] })}\n\n`;
-afterEach(() => { fetchMock.mockReset(); vi.useRealTimers(); forgetRefusedWorkBuddySystems(); });
+afterEach(() => { fetchMock.mockReset(); vi.useRealTimers(); });
 
 describe("trusted WorkBuddy sites and headers", () => {
   it("has separate domestic/international origins and platforms", () => {
@@ -42,24 +42,34 @@ describe("trusted WorkBuddy sites and headers", () => {
       runtimeTransport: { headers: { Authorization: "Bearer runtime", "X-IDE-Name": "WorkBuddy" } },
     };
     const headers = buildWorkBuddyHeaders(provider, selected, { stream: true });
-    // The client attribution headers are what the channel check reads: the same
-    // account answered 11128 without them and 200 with them (measured 2026-10-24).
     expect(headers).toMatchObject({
       Authorization: `Bearer test-${provider}-token`, "X-User-Id": "test-user",
-      "User-Agent": "WorkBuddy/5.5.6", "X-Domain": getWorkBuddySite(provider).domain,
+      "User-Agent": "Spring-Mouse/WorkBuddy-Gateway", "X-Domain": getWorkBuddySite(provider).domain,
       "X-Product": "SaaS", Accept: "text/event-stream",
-      "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": "5.5.6",
-      "X-Agent-Intent": "craft", "X-Agent-Purpose": "conversation",
-      "X-Requested-With": "XMLHttpRequest",
     });
-    // X-Agent-Type is the international build's main-agent marker.
-    expect(headers["X-Agent-Type"]).toBe(provider === "workbuddy-ai" ? "main" : undefined);
+    for (const key of ["X-IDE-Type", "X-IDE-Name", "X-IDE-Version", "X-Agent-Intent", "X-Agent-Purpose", "X-Agent-Type"]) expect(headers[key]).toBeUndefined();
     // Caller-supplied identity still never wins over the bound credential.
     for (const key of ["Cookie", "X-Tenant-Id"]) expect(headers[key]).toBeUndefined();
     expect(Object.values(headers)).not.toContain("hostile");
     expect(headers["X-Request-ID"]).toMatch(/^[\da-f-]{36}$/);
     expect(headers["X-Conversation-Message-ID"]).toBe(headers["X-Request-ID"]);
     expect(buildWorkBuddyHeaders(provider, selected, { stream: true })["X-Request-ID"]).not.toBe(headers["X-Request-ID"]);
+  });
+
+  it("scopes conversation and turn IDs to account, tenant and session", () => {
+    const saved = credentials("workbuddy");
+    const chat = { sessionId: "session-one", messages: [{ role: "user", content: "hello" }] };
+    const ids = (account = saved, conversation = chat) => buildWorkBuddyHeaders("workbuddy", account, { stream: true, conversation });
+    const first = ids();
+    expect(ids()["X-Conversation-ID"]).toBe(first["X-Conversation-ID"]);
+    expect(ids()["X-Conversation-Request-ID"]).toBe(first["X-Conversation-Request-ID"]);
+    for (const other of [ids(credentials("workbuddy", { codebuddyUid: "another-user" })), ids(saved, { ...chat, sessionId: "session-two" })]) {
+      expect(other["X-Conversation-ID"]).not.toBe(first["X-Conversation-ID"]);
+      expect(other["X-Conversation-Request-ID"]).not.toBe(first["X-Conversation-Request-ID"]);
+    }
+    expect(ids(saved, { messages: [] })["X-Conversation-ID"]).toBeUndefined();
+    const imageChat = url => ({ sessionId: "images", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }] });
+    expect(ids(saved, imageChat("image-one"))["X-Conversation-Request-ID"]).not.toBe(ids(saved, imageChat("image-two"))["X-Conversation-Request-ID"]);
   });
 
   it("permits unauthenticated OAuth setup without inventing user identity", () => {
@@ -185,20 +195,10 @@ describe.each(providers)("%s normal request transport", provider => {
     }
   });
 
-  it("rewords the lines WorkBuddy's channel check refuses, keeping the instruction", () => {
-    const flagged = "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
-      + "# Environment\n - Main branch (you will usually use this for PRs): main\n - Primary working directory: /repo";
-    const out = transform({ messages: [
-      { role: "system", content: flagged },
-      { role: "assistant", content: "You are Claude Code, Anthropic's official CLI for Claude." },
-      { role: "user", content: "keep this question" },
-    ] });
-    const [system, assistant, user] = out.messages;
-    expect(system.content).toBe("You are Claude Code, Anthropic's CLI for Claude.\n\n"
-      + "# Environment\n - Main branch (usually the base for PRs): main\n - Primary working directory: /repo");
-    expect(assistant.content).toBe("You are Claude Code, Anthropic's CLI for Claude.");
-    expect(user.content).toEqual([{ type: "text", text: "keep this question" }]);
-    expect(flagged).toContain("official CLI for Claude");
+  it("preserves client identity wording rather than modifying channel checks", () => {
+    const flagged = "You are Claude Code, Anthropic's official CLI for Claude.\nMain branch (you will usually use this for PRs): main";
+    const out = transform({ messages: [{ role: "system", content: flagged }, { role: "assistant", content: flagged }] });
+    expect(out.messages.map(m => m.content)).toEqual([flagged, flagged]);
   });
 
   it("leaves text the channel check accepts exactly as sent", () => {
@@ -208,34 +208,15 @@ describe.each(providers)("%s normal request transport", provider => {
     expect(out.messages[1].content).toEqual([{ type: "text", text: "hello" }]);
   });
 
-  it("moves a refused system prompt into the user's turn and returns the second answer", async () => {
-    const refusal = JSON.stringify({ code: 11128, msg: "Illegal API invocation from an unapproved channel" });
-    const ok = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: null }] })}\n\n`;
-    fetchMock.mockResolvedValueOnce(new Response(refusal, { status: 400, headers: { "content-type": "application/json" } }));
-    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
-    const body = { messages: [
-      { role: "system", content: "An unreworded agent prompt WorkBuddy refuses." },
-      { role: "user", content: "Original question" },
-    ] };
-    const result = await executor.execute({ model: "test-model", body, stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
-    expect(result.response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const retried = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(retried.messages[0]).toEqual({ role: "system", content: "You are a helpful assistant." });
-    expect(retried.messages[1].content).toEqual([{ type: "text", text: "<instructions>\nAn unreworded agent prompt WorkBuddy refuses.\n</instructions>\n\nOriginal question" }]);
-    expect(body.messages[0].content).toBe("An unreworded agent prompt WorkBuddy refuses.");
-    expect(fetchMock.mock.calls[1][1].headers["X-Request-ID"]).not.toBe(fetchMock.mock.calls[0][1].headers["X-Request-ID"]);
-  });
-
-  it("passes a second refusal back unchanged and retries it only once", async () => {
-    const raw = JSON.stringify({ code: 11128, msg: "request rejected", details: { reason: "upstream evidence" } });
-    fetchMock.mockImplementation(() => Promise.resolve(new Response(raw, { status: 400, headers: { "content-type": "application/json" } })));
-    const body = { messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: "Original question" }] };
-    const result = await executor.execute({ model: "test-model", body, stream: false, credentials: credentials(provider) });
+  it("returns a channel refusal unchanged without rewriting or retrying", async () => {
+    const raw = JSON.stringify({ code: 11128, msg: "Illegal API invocation from an unapproved channel" });
+    fetchMock.mockResolvedValue(new Response(raw, { status: 400 }));
+    const body = { messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: "Question" }] };
+    const result = await executor.execute({ model: "test-model", body, stream: true, credentials: credentials(provider) });
     expect(result.response.status).toBe(400);
     expect(await result.response.text()).toBe(raw);
-    expect(executor.parseError({ status: 400 }, raw)).toEqual({ status: 400, message: raw });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).messages[0]).toEqual(body.messages[0]);
   });
 
   it("does not retry a 400 that is not the channel-verification refusal", async () => {
@@ -246,22 +227,6 @@ describe.each(providers)("%s normal request transport", provider => {
     expect(result.response.status).toBe(400);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ stream: true, messages: [{ role: "system", content: "Original instruction" }, { role: "user", content: [{ type: "text", text: "Original question" }] }] });
-  });
-
-  it("sends a system prompt already refused as the user's instructions up front", async () => {
-    const refusal = JSON.stringify({ code: 11128, msg: "Illegal API invocation from an unapproved channel" });
-    const ok = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: null }] })}\n\n`;
-    const system = "An agent prompt WorkBuddy refuses once.";
-    const body = () => ({ messages: [{ role: "system", content: system }, { role: "user", content: "next question" }] });
-    fetchMock.mockResolvedValueOnce(new Response(refusal, { status: 400, headers: { "content-type": "application/json" } }));
-    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
-    await executor.execute({ model: "test-model", body: body(), stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
-    fetchMock.mockResolvedValueOnce(new Response(ok, { headers: { "content-type": "text/event-stream" } }));
-    await executor.execute({ model: "test-model", body: body(), stream: true, credentials: credentials(provider), overloadDeadline: Date.now() + 5000 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const later = JSON.parse(fetchMock.mock.calls[2][1].body);
-    expect(later.messages[0]).toEqual({ role: "system", content: "You are a helpful assistant." });
-    expect(later.messages[1].content[0].text).toContain("<instructions>\nAn agent prompt WorkBuddy refuses once.\n</instructions>");
   });
 
   it("reactively refreshes the selected provider through its bound refresh service", async () => {

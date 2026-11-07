@@ -29,6 +29,14 @@ globalThis.fetch = function workbuddyFixtureFetch(input, init) {
     return json({ Response: { Data: { Accounts: [monthly, ...bonus] } } });
   }
   if (url.pathname === "/v2/billing/meter/checkin-activity-status") return json({ CheckedIn: false });
+  if (url.pathname === "/v2/chat/completions" && JSON.parse(init?.body || "{}").model === "fixture-late-restricted") {
+    const output = 'data: {"choices":[{"index":0,"delta":{"content":"synthetic partial output"},"finish_reason":null}]}\n\n';
+    return Promise.resolve(new Response(output + 'data: {"code":11140,"msg":"request illegal","retry_policy":{"retry":false}}\n\ndata: [DONE]\n\n', { headers: { "Content-Type": "text/event-stream" } }));
+  }
+  if (url.pathname === "/v2/chat/completions" && JSON.parse(init?.body || "{}").model === "fixture-restricted") {
+    console.log("[WorkBuddy fixture] restricted chat; no real upstream request");
+    return Promise.resolve(Response.json({ code: 11140, msg: "request illegal", retry_policy: { retry: false }, requestId: "fixture-restricted-not-real" }, { status: 403 }));
+  }
   if (url.pathname === "/v2/chat/completions") return Promise.resolve(new Response(`data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: `fixture via ${url.hostname}` }, finish_reason: null }] })}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5}}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } }));
   return Promise.reject(new Error(`fixture blocks ${url.pathname}`));
 };

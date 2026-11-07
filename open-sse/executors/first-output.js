@@ -3,6 +3,7 @@ import { reserveFirstOutputDeadline, STREAM_FIRST_CHUNK_TIMEOUT_MS, FETCH_CONNEC
 import { SSE_ERROR_ORIGINS } from "../config/errorConfig.js";
 import { buildUpstreamError, errorResponse } from "../utils/error.js";
 import { guardOpenAIFirstOutput } from "../utils/openaiFirstOutput.js";
+import { observeWorkBuddyRestriction } from "../utils/workbuddyRestrictionStream.js";
 
 export class FirstOutputExecutor extends DefaultExecutor {
   async execute(args) {
@@ -37,11 +38,17 @@ export class FirstOutputExecutor extends DefaultExecutor {
         timing: { upstreamHeadersMs: Date.now() - now, firstOutputWaitMs: 0 } };
     }
     const headersAt = Date.now();
+    result.response = observeWorkBuddyRestriction(result.response, this.provider, args.onStreamUpstreamError);
+    const getStreamError = result.response.__smGetStreamError;
     result.response = await guardOpenAIFirstOutput(result.response, {
       deadlineMs, signal: args.signal, abort: () => controller.abort(),
       format: result.responseFormat || args.credentials?.runtimeTransport?.format || this.config.format,
       provider: this.provider,
     });
+    if (getStreamError) {
+      result.response.__smGetStreamError = getStreamError;
+      if (!result.response.ok && getStreamError()) result.response.__smUpstreamError = getStreamError().upstreamError;
+    }
     result.timing = { upstreamHeadersMs: headersAt - now, firstOutputWaitMs: Date.now() - headersAt };
     return result;
   }

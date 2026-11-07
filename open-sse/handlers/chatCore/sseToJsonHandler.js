@@ -1,5 +1,6 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { createErrorResult } from "../../utils/error.js";
+import { isWorkBuddyRestriction, workBuddyRestrictionResponse } from "../../shared/workbuddyRestriction.js";
 import { HTTP_STATUS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { runWithAbortDeadline } from "../../utils/abortable.js";
 import { FORMATS } from "../../translator/formats.js";
@@ -76,8 +77,10 @@ function chatCompletionToClaudeMessage(parsed, fallbackModel) {
 
   // Reasoning → thinking block first (mirrors the streaming path's block order).
   const reasoning = message.reasoning_content || message.reasoning;
-  if (typeof reasoning === "string" && reasoning.length > 0) {
-    content.push({ type: CLAUDE_BLOCK.THINKING, thinking: reasoning });
+  const signature = typeof message.reasoning_signature === "string" ? message.reasoning_signature : "";
+  if ((typeof reasoning === "string" && reasoning.length > 0) || signature) {
+    content.push({ type: CLAUDE_BLOCK.THINKING, thinking: reasoning || "",
+      ...(signature ? { signature } : {}) });
   }
   if (typeof message.content === "string" && message.content.length > 0) {
     content.push({ type: CLAUDE_BLOCK.TEXT, text: message.content });
@@ -96,6 +99,10 @@ function chatCompletionToClaudeMessage(parsed, fallbackModel) {
   if (content.length === 0) content.push({ type: CLAUDE_BLOCK.TEXT, text: "" });
 
   const usage = parsed?.usage || {};
+  const cacheRead = usage.prompt_tokens_details?.cached_tokens || usage.cached_tokens || 0;
+  const cacheWrite = usage.prompt_tokens_details?.cache_creation_tokens
+    ?? usage.prompt_tokens_details?.cache_write_tokens ?? usage.cache_creation_input_tokens ?? 0;
+  const inputTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
   return {
     id: String(parsed?.id || `msg_${Date.now()}`).replace(/^chatcmpl-/, ""),
     type: "message",
@@ -107,8 +114,10 @@ function chatCompletionToClaudeMessage(parsed, fallbackModel) {
     stop_reason: fromOpenAIFinish(choice?.finish_reason, FORMATS.CLAUDE),
     stop_sequence: null,
     usage: {
-      input_tokens: usage.prompt_tokens || usage.input_tokens || 0,
+      input_tokens: Math.max(0, inputTokens - cacheRead - cacheWrite),
       output_tokens: usage.completion_tokens || usage.output_tokens || 0,
+      ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
+      ...(cacheWrite > 0 ? { cache_creation_input_tokens: cacheWrite } : {}),
     },
   };
 }
@@ -233,6 +242,8 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
   const first = chunks[0];
   const contentParts = [];
   const reasoningParts = [];
+  const signatureParts = [];
+  let signatureType;
   const toolCallMap = new Map(); // index -> { id, type, function: { name, arguments } }
   let finishReason = "stop";
   let usage = null;
@@ -242,6 +253,8 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     const delta = choice?.delta || {};
     if (typeof delta.content === "string" && delta.content.length > 0) contentParts.push(delta.content);
     if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) reasoningParts.push(delta.reasoning_content);
+    if (typeof delta.reasoning_signature === "string") signatureParts.push(delta.reasoning_signature);
+    if (typeof delta.reasoning_signature_type === "string") signatureType = delta.reasoning_signature_type;
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     const extractedUsage = extractUsage(chunk);
     if (extractedUsage) usage = mergeUsage(usage, extractedUsage);
@@ -263,6 +276,8 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
 
   const message = { role: "assistant", content: contentParts.join("") || (toolCallMap.size > 0 ? null : "") };
   if (reasoningParts.length > 0) message.reasoning_content = reasoningParts.join("");
+  if (signatureParts.length > 0) message.reasoning_signature = signatureParts.join("");
+  if (signatureType) message.reasoning_signature_type = signatureType;
   if (toolCallMap.size > 0) {
     message.tool_calls = [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => tc);
   }
@@ -494,10 +509,16 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     }
     if (parsed.error) {
       if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
-      return createErrorResult(
-        HTTP_STATUS.BAD_GATEWAY,
-        parsed.error.message || "Upstream SSE stream failed"
+      const streamError = providerResponse.__smGetStreamError?.();
+      const result = createErrorResult(
+        streamError?.status || HTTP_STATUS.BAD_GATEWAY,
+        parsed.error.message || "Upstream SSE stream failed",
+        undefined, streamError?.upstreamError,
       );
+      if (isWorkBuddyRestriction(provider, streamError?.upstreamError?.body)) {
+        result.response = workBuddyRestrictionResponse(result.error);
+      }
+      return result;
     }
 
     if (onRequestSuccess) await onRequestSuccess();
@@ -535,7 +556,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     // Previously this was unconditional, which broke Qwen3.5, Claude extended thinking, etc.
     if (parsed?.choices) {
       for (const choice of parsed.choices) {
-        if (choice?.message?.reasoning_content && choice.message.content) {
+        if (sourceFormat !== FORMATS.CLAUDE && choice?.message?.reasoning_content && choice.message.content) {
           delete choice.message.reasoning_content;
         }
       }

@@ -34,6 +34,8 @@ import { resolveSessionId } from "../utils/sessionManager.js";
 import { buildOpenCodeGoHeaders } from "../utils/opencodeGoHeaders.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { createCompactionDiagnostics } from "../utils/compactionDiagnostics.js";
+import { hasWorkBuddyRestriction, isWorkBuddyRestriction, workBuddyRestrictionResponse } from "../shared/workbuddyRestriction.js";
+import { getResponsesStateError } from "../shared/responsesState.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -64,6 +66,12 @@ export function stripContinuityFields(body) {
 
 export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onStreamUpstreamError, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, maxEffort = null, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, hasFallback = false, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
+  const stateError = getResponsesStateError(body, sourceFormatOverride);
+  if (stateError) return createErrorResult(HTTP_STATUS.BAD_REQUEST, stateError);
+  if (hasWorkBuddyRestriction(provider, credentials)) {
+    const message = "WorkBuddy account is restricted; submit feedback and manually recover only after the restriction is lifted";
+    return { ...createErrorResult(HTTP_STATUS.FORBIDDEN, message), response: workBuddyRestrictionResponse(message) };
+  }
   const coreStartedAt = Date.now();
   const requestStartTime = Number.isFinite(ingressStartedAt) && ingressStartedAt > 0 ? Math.min(ingressStartedAt, coreStartedAt) : coreStartedAt;
   // Reuse the caller's id so the request line, the usage row and the routing
@@ -168,8 +176,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (maxEffort) body = capThinking(body, maxEffort, resolvedUpstreamModel);
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
-  const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
-  let stream = providerRequiresStreaming ? true : (body.stream !== false);
+  const providerRequiresStreaming = (useTransport?.forceStream ?? PROVIDERS[provider]?.forceStream) === true;
+  let stream = providerRequiresStreaming ? true
+    : useTransport?.forceStream === false ? body.stream === true : (body.stream !== false);
 
   // Image generation models require non-streaming (Google v1internal:generateContent)
   const modelType = getModelType(alias, model);
@@ -267,6 +276,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
   }
+
+  // Devin's Messages builder must receive the original blocks, cache marks and
+  // thinking signatures. The OpenAI pivot is deliberately bypassed for this
+  // provider's native Messages input only; its response remains OpenAI SSE.
+  if (provider === "devin" && sourceFormat === FORMATS.CLAUDE) {
+    translatedBody._devinNative = body;
+  }
+
+  // Native multi-endpoint transports must send the same streaming mode that the
+  // response handlers expect (Responses defaults to JSON, unlike forced Chat).
+  if (useTransport?.forceStream !== undefined) translatedBody.stream = stream;
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
   if (clientTool === "claude" && Array.isArray(translatedBody.tools)) {
@@ -517,7 +537,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   try {
     if (capabilityProbe) onProbeDispatch?.({ body: translatedBody, format: finalFormat });
     if (routing.timing) routing.timing.preDispatchMs = Date.now() - requestStartTime;
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, hasFallback, requestId });
+    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, hasFallback, requestId, onStreamUpstreamError });
     if (routing.timing && result.timing) Object.assign(routing.timing, result.timing);
     clearTimeout(execDiagTimer);
     providerResponse = result.response;
@@ -558,8 +578,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
   }
 
-  // Handle 401/403 - try token refresh (skip for noAuth providers)
-  if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
+  // Inspect structured restriction evidence before attempting auth recovery.
+  // A first-output SSE gate may have preserved it on an HTTP-shaped response.
+  let accountRestricted = isWorkBuddyRestriction(provider, providerResponse.__smUpstreamError?.body);
+  if (!accountRestricted && providerResponse.status === HTTP_STATUS.FORBIDDEN) {
+    try { accountRestricted = isWorkBuddyRestriction(provider, await providerResponse.clone().text()); } catch { /* Keep normal error parsing. */ }
+  }
+  // A restriction is not an expired token; never refresh or resend it.
+  if (!accountRestricted && !executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
     try {
       // Mutate credentials after each successful refresh: rotating refresh_token
       // providers (xAI/grok-cli) issue a new RT on every refresh; without this,
@@ -580,9 +606,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, hasFallback, requestId });
+          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions, overloadDeadline, hasFallback, requestId, onStreamUpstreamError });
           if (routing.timing && retryResult.timing) Object.assign(routing.timing, retryResult.timing);
-          if (retryResult.response.ok) {
+          let retryRestricted = isWorkBuddyRestriction(provider, retryResult.response.__smUpstreamError?.body);
+          if (!retryRestricted && retryResult.response.status === HTTP_STATUS.FORBIDDEN) {
+            try { retryRestricted = isWorkBuddyRestriction(provider, await retryResult.response.clone().text()); } catch { /* Preserve normal auth handling. */ }
+          }
+          if (retryResult.response.ok || retryRestricted) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
             providerResponseFormat = retryResult.responseFormat || targetFormat;
@@ -640,7 +670,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       log.errorLine(reqTag, "✗", `UPSTREAM ${statusCode} · ${source} · ${provider}/${model} · ${Date.now() - requestStartTime}ms${urlStr}\n    ${errMsg}${raw}`);
     }
     reqLogger.logError(new Error(message), finalBody || translatedBody);
-    return createErrorResult(statusCode, errMsg, resetsAtMs, upstreamError);
+    const result = createErrorResult(statusCode, errMsg, resetsAtMs, upstreamError);
+    if (isWorkBuddyRestriction(provider, upstreamError?.body)) result.response = workBuddyRestrictionResponse(errMsg);
+    return result;
   }
 
   // Request statistics and the console detail drawer must reflect real traffic.

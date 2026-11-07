@@ -19,6 +19,9 @@ import { estimateRequestWeight, getRequestWeightLimit, getConnectionConcurrencyL
 import { getProviderModelBreaker, getModelOverloadThrottle } from "./providerBreaker.js";
 import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabilities.js";
+import { hasWorkBuddyRestriction, isWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
+import { WORKBUDDY_RESTRICTION } from "open-sse/config/errorConfig.js";
+import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
 // every request wait behind a SQLite read and a lastUsedAt write. Assignment
@@ -196,7 +199,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const isOffSchedule = (connection) => !isScheduleActive(connection.schedule, scheduleNow, { onInvalid: true });
 
     const isEligible = (c) => {
-      if (c.isActive === false) return false;
+      if (c.isActive === false || hasWorkBuddyRestriction(providerId, c)) return false;
+      if (requiresWorkBuddyAuthorization(providerId, c)) return false;
       if (options.strictConnectionId && c.id !== options.strictConnectionId) return false;
       if (model && options.requiredCapabilities?.size) {
         const caps = getMeasuredCapabilitiesForConnection(providerId, model, c.id);
@@ -244,6 +248,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         const caps = getMeasuredCapabilitiesForConnection(providerId, model, c.id);
         return [...options.requiredCapabilities].some((key) => caps[key] === false);
       })) return { capabilityUnavailable: true, error: "没有账号支持当前请求所需的模型能力" };
+      if (connections.every(c => requiresWorkBuddyAuthorization(providerId, c))) {
+        return { reauthorizationRequired: true, error: "旧 CodeBuddy 凭据不能继续作为 WorkBuddy 使用，请按正确产品重新授权；受限账号须先等待上游解除限制。" };
+      }
       // Find earliest lock expiry across all connections for retry timing
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
@@ -496,6 +503,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // the stored row — the suppression silently never engaged (verified live).
         lastRefreshFailureAt: connection.lastRefreshFailureAt,
         lastRefreshFailureCode: connection.lastRefreshFailureCode,
+        accountRestriction: connection.accountRestriction,
         projectId: connection.projectId,
         connectionName: connection.displayName || connection.name || connection.email || connection.id,
         copilotToken: connection.providerSpecificData?.copilotToken,
@@ -555,6 +563,29 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   let decision = { shouldFallback: false, cooldownMs: 0, modelLevel: false };
   const applyFailure = (conn) => {
+    if (isUpstream && (isWorkBuddyRestriction(provider, upstreamError.body) || isWorkBuddyRestriction(provider, upstreamError.diagnostics))) {
+      const receivedAt = upstreamError.receivedAt || new Date().toISOString();
+      decision = { shouldFallback: true, cooldownMs: 0, modelLevel: false, restricted: true };
+      return { value: decision, update: {
+        isActive: false,
+        accountRestriction: conn?.accountRestriction || { code: WORKBUDDY_RESTRICTION.code, detectedAt: receivedAt },
+        testStatus: "unavailable", testStatusUntil: null,
+        lastError: String(upstreamError.message || errorText).slice(0, 2000),
+        lastErrorAt: receivedAt, errorCode: 403,
+        lastUpstreamError: String(upstreamError.message || errorText).slice(0, 2000),
+        lastUpstreamAt: receivedAt, lastUpstreamStatus: upstreamError.status,
+        lastUpstreamSource: upstreamError.source, lastUpstreamLayer: upstreamError.layer || "provider",
+        lastUpstreamDiagnostics: upstreamError.diagnostics || null,
+        lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
+        healthRevision: (conn?.healthRevision || 0) + 1,
+      } };
+    }
+    // Other requests already in flight cannot downgrade a persistent restriction
+    // into a temporary model cooldown or restore the account's health.
+    if (hasWorkBuddyRestriction(provider, conn)) {
+      decision = { shouldFallback: true, cooldownMs: 0, modelLevel: false, restricted: true };
+      return { value: decision };
+    }
     const backoffLevel = conn?.backoffLevel || 0;
     const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
@@ -628,7 +659,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       transport: transportFailure,
       ...(accountScoped ? { accountScoped: true } : {}),
     };
-    if (!shouldFallback) return { value: decision };
+    if (!shouldFallback) {
+      // A client-side 4xx need not trigger fallback or change account health,
+      // but its upstream evidence still belongs in the failure analysis.
+      return { value: decision, ...(isUpstream ? { update: {
+        lastUpstreamError: String(upstreamError.message || errorText || "Provider error").slice(0, 2000),
+        lastUpstreamStatus: upstreamError.status ?? status,
+        lastUpstreamSource: upstreamError.source,
+        lastUpstreamLayer: upstreamError.layer || "provider",
+        lastUpstreamDiagnostics: upstreamError.diagnostics || null,
+        lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
+        lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
+      } } : {}) };
+    }
 
     const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
     const evidence = isUpstream ? {
@@ -637,7 +680,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       lastUpstreamSource: upstreamError.source,
       lastUpstreamLayer: upstreamError.layer || "provider",
       lastUpstreamDiagnostics: upstreamError.diagnostics || null,
-      lastUpstreamRaw: String(upstreamError.body || reason).slice(0, 4000),
+      lastUpstreamRaw: upstreamError.body == null ? null : String(upstreamError.body),
       lastUpstreamAt: upstreamError.receivedAt || new Date().toISOString(),
       lastError: String(upstreamError.message || reason).slice(0, 2000),
       // Cooldown responses use errorCode; retain HTTP 200 only as raw evidence.
@@ -722,6 +765,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
   if (!connectionId || connectionId === "noauth") return;
   const requestStartedAt = Number(currentConnection._routingStartedAt || 0);
   const clearFailure = (conn) => {
+    if (hasWorkBuddyRestriction(conn.provider, conn)) return { value: null };
     const now = Date.now();
     const latestFailureAt = conn.lastErrorAt ? new Date(conn.lastErrorAt).getTime() : 0;
     const newerFailureInFlight = (requestStartedAt > 0 && latestFailureAt > requestStartedAt)

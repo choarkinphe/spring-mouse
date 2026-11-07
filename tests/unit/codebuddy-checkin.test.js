@@ -25,6 +25,11 @@ vi.mock("open-sse/services/oauthCredentialManager.js", () => ({
   getCredentialExpiryMs: (connection) => connection.expiresAt ? Date.parse(connection.expiresAt) : null,
 }));
 
+vi.mock("@/lib/services/qoderCheckin.js", () => ({
+  performQoderCheckin: vi.fn(),
+  qoderCheckinDate: (time) => new Date(time - 2 * 3600000).toISOString().slice(0, 10),
+}));
+import { performQoderCheckin } from "@/lib/services/qoderCheckin.js";
 import { createCodeBuddyCheckinService, publicCheckinState } from "@/lib/services/codebuddyCheckin.js";
 import { CODEBUDDY_CHECKIN as config, codeBuddyCheckinDate } from "@/shared/config/codebuddyCheckin.js";
 
@@ -160,6 +165,24 @@ describe("CodeBuddy check-in eligibility and opt-in", () => {
     expect(f.patches).toEqual([{ enabled: true }, { enabled: false }]);
     expect(f.fetch).not.toHaveBeenCalled();
     expect(f.updateConnection).not.toHaveBeenCalled();
+  });
+});
+
+describe("Qoder shared check-in persistence", () => {
+  it.each(["qoder", "qoder-cn"])("persists %s success and follows the 10am boundary", async provider => {
+    const start = Date.parse("2026-10-28T01:59:00Z");
+    const f = fixture({ connection: { provider, accessToken: "dt-fixture", providerSpecificData: { userId: "fixture-user" } }, state: { enabled: true }, time: start });
+    performQoderCheckin.mockImplementation(async (_connection, { renewLease }) => {
+      expect(await renewLease()).toBe(true);
+      return { ok: true, status: "success", message: "done", reward: 50, successDate: "2026-10-27", nextAttemptAt: start + 120000 };
+    });
+    expect(await f.service.run(ID)).toMatchObject({ ok: true, checkin: { lastSuccessDate: "2026-10-27", reward: 50 } });
+    f.setTime(Date.parse("2026-10-28T02:00:00Z"));
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ skipped: "cooldown" });
+    f.setTime(start + 120000);
+    performQoderCheckin.mockResolvedValue({ ok: true, status: "already_checked_in", message: "done", successDate: "2026-10-28" });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ checkin: { lastSuccessDate: "2026-10-28" } });
+    expect(f.fetch).not.toHaveBeenCalled();
   });
 });
 

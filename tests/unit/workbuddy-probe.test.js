@@ -33,8 +33,7 @@ afterEach(() => { fetchMock.mockReset(); vi.clearAllMocks(); });
 
 describe("per-account test for the replaced CodeBuddy channels", () => {
   it.each([
-    [migratedCn(), "https://copilot.tencent.com"],
-    [migratedIntl, "https://www.codebuddy.ai"],
+    [{ ...migratedCn(), providerSpecificData: { codebuddyUid: "u1", workbuddyLegacyCredential: false } }, "https://copilot.tencent.com"],
     [freshAi, "https://www.workbuddy.ai"],
   ])("probes $1.provider at the origin its credential belongs to", async (connection, origin) => {
     db.getProviderConnectionById.mockResolvedValue(connection);
@@ -46,8 +45,24 @@ describe("per-account test for the replaced CodeBuddy channels", () => {
     expect(db.updateProviderConnection).toHaveBeenCalledWith(connection.id, expect.objectContaining({ testStatus: "active" }));
   });
 
+  it.each([{ isActive: false }, { accountRestriction: { code: 11140 } }])("never probes an inactive/restricted account: %j", async fields => {
+    db.getProviderConnectionById.mockResolvedValue({ ...migratedCn(), ...fields });
+    const result = await testSingleConnection("c1");
+    expect(result.valid).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.updateProviderConnection).not.toHaveBeenCalled();
+  });
+
+  it.each([migratedCn(), migratedIntl])("does not probe migrated credentials: $provider", async connection => {
+    db.getProviderConnectionById.mockResolvedValue(connection);
+    const result = await testSingleConnection(connection.id);
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/explicit authorization/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports a rejected credential as failed instead of claiming success", async () => {
-    db.getProviderConnectionById.mockResolvedValue(migratedCn());
+    db.getProviderConnectionById.mockResolvedValue(freshAi);
     fetchMock.mockResolvedValue({ ok: false, status: 403, json: async () => ({}) });
     const result = await testSingleConnection("c1");
     expect(result.valid).toBe(false);
@@ -56,7 +71,7 @@ describe("per-account test for the replaced CodeBuddy channels", () => {
   });
 
   it("reports an endpoint-level business error as failed", async () => {
-    db.getProviderConnectionById.mockResolvedValue(migratedIntl);
+    db.getProviderConnectionById.mockResolvedValue(freshAi);
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 11128, msg: "request illegal" }) });
     const result = await testSingleConnection("c2");
     expect(result.valid).toBe(false);
@@ -64,7 +79,7 @@ describe("per-account test for the replaced CodeBuddy channels", () => {
   });
 
   it("is not silently 'supported' without a token", async () => {
-    db.getProviderConnectionById.mockResolvedValue({ ...migratedCn(), accessToken: "" });
+    db.getProviderConnectionById.mockResolvedValue({ ...freshAi, accessToken: "" });
     const result = await testSingleConnection("c1");
     expect(result.valid).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();

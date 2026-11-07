@@ -289,6 +289,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   const saveFailure = (status = HTTP_STATUS.BAD_GATEWAY) => recordUsage ? saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true }) : undefined;
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
+  let rawResponseBody = null;
 
   try {
     const readBody = (operation) => runWithAbortDeadline(operation, {
@@ -309,7 +310,14 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       }
       responseBody = parsed;
     } else {
-      responseBody = await readBody(() => providerResponse.json());
+      if (typeof providerResponse.text === "function") {
+        rawResponseBody = await readBody(() => providerResponse.text());
+        responseBody = JSON.parse(rawResponseBody);
+      } else {
+        // Compatibility for lightweight Response-like adapters; native fetch
+        // responses use text() above so their exact JSON bytes remain available.
+        responseBody = await readBody(() => providerResponse.json());
+      }
     }
   } catch (err) {
     trackDone();
@@ -328,15 +336,16 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   trackDone();
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
-  const rejectBody = (message) => {
+  const rejectBody = (message, preserveUpstreamBody = false) => {
     const status = HTTP_STATUS.BAD_GATEWAY;
     outcomeObserver?.recordTerminal({ outcome: ROUTING_OUTCOMES.FAILED, terminalReason: TERMINAL_REASONS.UPSTREAM_ERROR });
     outcomeObserver?.settle({ upstreamStatus: providerResponse.status });
     appendLog({ status: `FAILED ${status}` });
     saveFailure(status);
-    // Keep the transport status and retry hint without storing arbitrary body
-    // content from an unrecognized payload as an account error.
-    const upstreamError = buildUpstreamError(providerResponse, "", message, contentType.includes("text/event-stream") ? "sse" : "http");
+    // Keep the actual JSON error response, including request IDs and nested
+    // details. Never save a whole SSE preamble that may echo the user's prompt.
+    const errorBody = preserveUpstreamBody && rawResponseBody !== null ? rawResponseBody : "";
+    const upstreamError = buildUpstreamError(providerResponse, errorBody, message, contentType.includes("text/event-stream") ? "sse" : "http");
     return createErrorResult(status, message, undefined, upstreamError);
   };
   if (!responseBody || typeof responseBody !== "object" || Array.isArray(responseBody)) {
@@ -346,7 +355,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   const classified = classifyJsonBody(responseBody, targetFormat, { lenient: true });
   if (classified.outcome === ROUTING_OUTCOMES.FAILED) {
     const message = responseBody.error?.message;
-    return rejectBody(typeof message === "string" && message ? message : `Upstream returned an error body from ${provider}`);
+    return rejectBody(typeof message === "string" && message ? message : `Upstream returned an error body from ${provider}`, true);
   }
 
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)

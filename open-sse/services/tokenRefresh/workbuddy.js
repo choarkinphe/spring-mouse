@@ -1,19 +1,8 @@
 // WorkBuddy refresh contract adapted from magpie-community/plugins@575f1e23
 // packages/workbuddy (MIT); see THIRD_PARTY_NOTICES.md.
-import { resolveWorkBuddySite, buildWorkBuddyHeaders } from "../../config/workbuddy.js";
+import { resolveWorkBuddySite, buildWorkBuddyHeaders, assertWorkBuddyCredential } from "../../config/workbuddy.js";
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { dedupRefresh } from "./dedup.js";
-import { refreshCodebuddyToken, refreshCodebuddyIntlToken } from "./providers.js";
-
-// Migrated CodeBuddy credentials delegate to the exact refresh implementation
-// they used before the rename. This keeps production accounts working without a
-// re-login: the request host, headers and response parser are unchanged.
-function refreshLegacyCodeBuddyToken(provider, credentials, log) {
-  return provider === "workbuddy"
-    ? refreshCodebuddyToken(credentials.refreshToken, log)
-    : refreshCodebuddyIntlToken(credentials.refreshToken, log);
-}
-
 function expiry(data, absolute, relative, now, fallback) {
   if (data[relative] !== undefined && (typeof data[relative] !== "number" || !Number.isFinite(data[relative]) || data[relative] <= 0)) {
     throw new Error("Invalid WorkBuddy token expiry");
@@ -27,12 +16,7 @@ function expiry(data, absolute, relative, now, fallback) {
 export async function refreshWorkBuddyToken(provider, credentials, log, proxyOptions = null) {
   if (!credentials?.refreshToken) return null;
   const metadata = credentials.providerSpecificData || {};
-  // A migrated CodeBuddy credential keeps the refresh call it was already using,
-  // byte for byte: same host, same headers, same parser. The new WorkBuddy
-  // contract only applies to authorizations this build issued.
-  if (metadata.workbuddyLegacyCredential === true) {
-    return refreshLegacyCodeBuddyToken(provider, credentials, log);
-  }
+  assertWorkBuddyCredential(credentials);
   const site = resolveWorkBuddySite(provider, metadata);
   // Validate provenance before sending any rotating credential.
   const headers = buildWorkBuddyHeaders(provider, credentials);

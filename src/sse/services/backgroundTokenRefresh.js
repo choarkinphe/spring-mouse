@@ -2,6 +2,8 @@
 // Fail-open everywhere: tick errors and per-connection failures never kill the interval.
 
 import * as log from "../utils/logger.js";
+import { hasWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
+import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 import { getRefreshLeadMs } from "open-sse/services/tokenRefresh.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
 
@@ -53,7 +55,7 @@ export function selectConnectionsNeedingRefresh(connections, nowMs = Date.now())
 
   const out = [];
   for (const conn of connections) {
-    if (!conn) continue;
+    if (!conn || conn.isActive === false || hasWorkBuddyRestriction(conn.provider, conn) || requiresWorkBuddyAuthorization(conn.provider, conn)) continue;
 
     const authType = String(conn.authType || "").toLowerCase().replace(/_/g, "");
     if (authType !== "oauth") continue;
@@ -82,8 +84,11 @@ async function loadActiveConnections() {
 }
 
 async function refreshOne(connection) {
+  const { getProviderConnectionById } = await import("../../lib/db/repos/connectionsRepo.js");
+  const current = await getProviderConnectionById(connection.id);
+  if (!current || current.isActive === false || hasWorkBuddyRestriction(current.provider, current) || requiresWorkBuddyAuthorization(current.provider, current)) return;
   const { checkAndRefreshToken } = await import("./tokenRefresh.js");
-  return checkAndRefreshToken(connection.provider, connection, { force: true });
+  return checkAndRefreshToken(current.provider, current, { force: true });
 }
 
 /**

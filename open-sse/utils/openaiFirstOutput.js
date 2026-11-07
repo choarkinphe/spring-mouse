@@ -5,6 +5,7 @@ import { runWithAbortDeadline } from "./abortable.js";
 import { buildUpstreamError, errorResponse, normalizeErrorStatus } from "./error.js";
 import { applyCodeBuddyRateLimit } from "../shared/codebuddyRateLimit.js";
 import { FORMATS } from "../translator/formats.js";
+import { isWorkBuddyRestriction } from "../shared/workbuddyRestriction.js";
 import { CLAUDE_BLOCK } from "../translator/schema/blocks.js";
 
 // Inspect only the preamble. Keep its exact bytes for replay, then hand over the
@@ -19,7 +20,8 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
   const fail = (message, origin = null, payload = null) => {
     stop();
     const quota = [CODEBUDDY_RATE_LIMIT.throttleCode, CODEBUDDY_RATE_LIMIT.quotaCode].includes(Number(payload?.code));
-    const status = quota || payload?.error?.type === "rate_limit_error" ? HTTP_STATUS.RATE_LIMITED
+    const status = isWorkBuddyRestriction(provider, payload) ? HTTP_STATUS.FORBIDDEN
+      : quota || payload?.error?.type === "rate_limit_error" ? HTTP_STATUS.RATE_LIMITED
       : origin ? HTTP_STATUS.SERVICE_UNAVAILABLE
       : normalizeErrorStatus(payload?.error?.status || payload?.status);
     const result = payload ? Response.json(payload, { status }) : errorResponse(status, message);
@@ -56,7 +58,7 @@ export async function guardOpenAIFirstOutput(response, { deadlineMs, signal, abo
         error: { message, status, type: status === 429 ? "rate_limit_error" : "api_error" },
       });
     }
-    if (item?.error || (Number(item?.code) > 0 && (item?.msg || item?.message))) {
+    if (isWorkBuddyRestriction(provider, item) || item?.error || (Number(item?.code) > 0 && (item?.msg || item?.message))) {
       return fail(String(item.error?.message || item.msg || item.message || "Upstream stream error"), null, item);
     }
     if (format === FORMATS.CLAUDE) {

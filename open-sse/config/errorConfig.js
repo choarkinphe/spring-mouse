@@ -64,6 +64,13 @@ export const CODEBUDDY_VERIFICATION = Object.freeze({
   cooldownMs: 5 * 60 * 1000,
 });
 
+// Account restriction is not token expiry or a timed rate limit. Only an
+// operator may restore an account after the upstream lifts the restriction.
+export const WORKBUDDY_RESTRICTION = Object.freeze({
+  providers: Object.freeze(new Set(["workbuddy", "workbuddy-ai", "codebuddy-cn", "codebuddy-intl"])),
+  code: 11140,
+});
+
 // CodeBuddy 14003 explicitly advises waiting about one minute.
 export const CODEBUDDY_RATE_LIMIT = Object.freeze({
   quotaCode: 6004,
@@ -104,6 +111,9 @@ export const ERROR_RULES = [
   { text: "quota exceeded",           backoff: true },
   { text: "capacity",                 cooldownMs: 0, modelLevel: true },
   { text: "overloaded",               cooldownMs: 0, modelLevel: true },
+  // A reply with no output says nothing about the account's health. A 30s
+  // account lock here took a single-account channel fully offline.
+  { text: "empty_stream",             cooldownMs: 0, modelLevel: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },

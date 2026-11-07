@@ -6,13 +6,19 @@ import { proxyAwareFetch } from "open-sse/utils/proxyFetch.js";
 import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
 import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
-import { CODEBUDDY_CHECKIN as config, supportsCodeBuddyCheckin, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+import { requiresWorkBuddyAuthorization, WORKBUDDY_LEGACY } from "open-sse/config/workbuddy.js";
+import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+import { performQoderCheckin, qoderCheckinDate } from "./qoderCheckin.js";
+import { refreshQoderToken } from "open-sse/services/qoderModels.js";
+import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 
 // The refresh contract is per provider: the new `workbuddy` provider uses the
 // WorkBuddy rotating-token endpoint and binds its credentials to the site.
 const REFRESHERS = {
   "codebuddy-cn": (connection, proxy) => refreshCodebuddyToken(connection.refreshToken, null, proxy),
   workbuddy: (connection, proxy) => refreshWorkBuddyToken("workbuddy", connection, null, proxy),
+  qoder: (connection, proxy) => refreshQoderToken({ ...connection, providerSpecificData: withQoderProviderRegion(connection.provider, connection.providerSpecificData) }, proxy, AbortSignal.timeout(config.timeoutMs)),
+  "qoder-cn": (connection, proxy) => refreshQoderToken({ ...connection, providerSpecificData: withQoderProviderRegion(connection.provider, connection.providerSpecificData) }, proxy, AbortSignal.timeout(config.timeoutMs)),
 };
 
 const MESSAGES = {
@@ -169,11 +175,13 @@ export function createCodeBuddyCheckinService(deps = {}) {
   async function run(connectionId, { automatic = false } = {}) {
     const connection = await load(connectionId);
     if (!connection) return { ok: false, httpStatus: 404, message: "账号不存在" };
-    if (!supportsCodeBuddyCheckin(connection)) return { ok: false, httpStatus: 400, message: MESSAGES.unsupported };
+    if (requiresWorkBuddyAuthorization(connection.provider, connection)) return { ok: false, httpStatus: WORKBUDDY_LEGACY.status, message: WORKBUDDY_LEGACY.message };
+    if (!supportsDailyCheckin(connection)) return { ok: false, httpStatus: 400, message: DAILY_CHECKIN_UNSUPPORTED };
     if (connection.isActive === false) return { ok: false, httpStatus: 400, message: "请先启用账号", checkin: publicCheckinState(await getState(connectionId)) };
 
     const startedAt = now();
-    const date = codeBuddyCheckinDate(startedAt);
+    const isQoder = isQoderCheckinProvider(connection.provider);
+    const date = isQoder ? qoderCheckinDate(startedAt) : codeBuddyCheckinDate(startedAt);
     const leaseId = randomUUID();
     let skipped;
     let acquired = false;
@@ -193,7 +201,7 @@ export function createCodeBuddyCheckinService(deps = {}) {
 
     let result;
     try {
-      result = await perform(connection, async () => {
+      const renewLease = async () => {
         let valid = false;
         await updateState(connectionId, (state) => {
           if (state.leaseId !== leaseId || state.leaseUntil <= now() || state.lastSuccessDate === date) return null;
@@ -201,7 +209,11 @@ export function createCodeBuddyCheckinService(deps = {}) {
           return { leaseUntil: now() + config.leaseMs };
         });
         return valid;
-      });
+      };
+      result = isQoder
+        ? await performQoderCheckin(connection, { fetch: fetcher, refreshConnection, now, renewLease,
+          proxy: await resolveConnectionProxyConfig(connection.providerSpecificData) })
+        : await perform(connection, renewLease);
     } catch { result = outcome("error"); }
     if (result.skipped) return { ...result, checkin: publicCheckinState(await getState(connectionId)) };
     const finished = await updateState(connectionId, (state) => {
@@ -209,9 +221,9 @@ export function createCodeBuddyCheckinService(deps = {}) {
       return {
         leaseId: null, leaseUntil: 0,
         status: result.status, message: result.message, reward: result.reward ?? null,
-        ...(result.ok ? { lastSuccessDate: date } : {}),
-        terminalDate: ["ineligible", "ended", "own_app"].includes(result.status) ? date : null,
-        retryAfter: result.status === "error" ? now() + config.retryMs : 0,
+        ...(result.ok ? { lastSuccessDate: result.successDate || date } : {}),
+        terminalDate: !result.nextAttemptAt && ["ineligible", "ended", "own_app"].includes(result.status) ? date : null,
+        retryAfter: Number.isFinite(result.nextAttemptAt) ? result.nextAttemptAt : result.status === "error" ? now() + config.retryMs : 0,
       };
     });
     return { ...result, checkin: publicCheckinState(finished) };

@@ -36,6 +36,19 @@ export function supportsCodeBuddyCheckin(connection) {
   return isCodeBuddyCheckinProvider(connection?.provider) && connection?.authType === "oauth";
 }
 
+export function isQoderCheckinProvider(provider) {
+  return provider === "qoder" || provider === "qoder-cn";
+}
+
+// Retain the WorkBuddy-specific predicate for its OAuth contract; use this rule
+// at the shared UI/API/scheduler boundaries. Qoder PATs exchange to job tokens.
+export function supportsDailyCheckin(connection) {
+  return supportsCodeBuddyCheckin(connection) || (isQoderCheckinProvider(connection?.provider)
+    && ["oauth", "apikey"].includes(connection?.authType));
+}
+
+export const DAILY_CHECKIN_UNSUPPORTED = "仅支持 WorkBuddy 国内版 OAuth 或 Qoder / Qoder CN OAuth、PAT 账号签到";
+
 export function codeBuddyCheckinDate(now = Date.now()) {
   return new Date(now + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }

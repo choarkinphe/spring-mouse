@@ -4,7 +4,8 @@ import { getModelCapabilityTests } from "@/lib/db/repos/modelCapabilityTestsRepo
 import { capabilityFingerprint, currentEvidence, evidenceCapabilities, manualCapabilities } from "@/lib/modelCapabilities/evidence.js";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
 import { resolveProviderAliases } from "@/shared/utils/providerCustomModels";
-import { AI_PROVIDERS, ALIAS_TO_ID } from "@/shared/constants/providers";
+import { fetchModelsDevCatalog, lookupModelInCatalog } from "@/shared/utils/modelCatalog";
+import { AI_PROVIDERS, ALIAS_TO_ID, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 
 const REFRESH_INTERVAL_MS = 30_000;
 let loadedAt = 0;
@@ -50,8 +51,21 @@ export async function refreshModelCapabilityOverrides({ force = false } = {}) {
     if (!force) return;
   }
 
-  inflight = Promise.all([getCustomModels(), collectChannelPrefixes(), getModelCapabilityTests(), getProviderConnections()])
-    .then(([models, channelPrefixes, profiles, accounts]) => {
+  inflight = Promise.all([
+    getCustomModels(),
+    collectChannelPrefixes(),
+    getModelCapabilityTests(),
+    getProviderConnections(),
+  ])
+    .then(async ([models, channelPrefixes, profiles, accounts]) => {
+      // Only worth fetching the shared catalog when a COMPATIBLE channel has a
+      // synced row still lacking capability metadata — registry providers have
+      // their own metadata paths and every refresh would pay a remote fetch.
+      const needsEnrichment = (models || []).some((model) => model?.id
+        && !(model.capabilities || model.manualCapabilities || model.declaredCapabilities)
+        && [model.providerAlias, model.providerId].some((id) =>
+          isOpenAICompatibleProvider(id) || isAnthropicCompatibleProvider(id) || isCustomEmbeddingProvider(id)));
+      const catalogPayload = needsEnrichment ? await fetchModelsDevCatalog().catch(() => null) : null;
       const aliasesFor = (id) => resolveProviderAliases(id, {
         prefix: channelPrefixes.get(id) && !isBuiltInProviderPrefix(channelPrefixes.get(id)) ? channelPrefixes.get(id) : undefined,
       });
@@ -85,7 +99,33 @@ export async function refreshModelCapabilityOverrides({ force = false } = {}) {
       const entries = [];
       const manual = [];
       for (const model of models || []) {
-        if (!model?.id || (!model?.capabilities && !model?.manualCapabilities && !model?.declaredCapabilities)) continue;
+        if (!model?.id) continue;
+        const hasStored = model.capabilities || model.manualCapabilities || model.declaredCapabilities;
+        const isCompatibleChannelRow = [model.providerAlias, model.providerId].some((id) =>
+          isOpenAICompatibleProvider(id) || isAnthropicCompatibleProvider(id) || isCustomEmbeddingProvider(id));
+        // Compatible-channel rows synced before capability enrichment (or added
+        // by hand) carry no spec sheet — look the id up in the shared catalog so
+        // their badges and downstream capability gates stop reading as text-only.
+        if (!hasStored && isCompatibleChannelRow && catalogPayload) {
+          const entry = lookupModelInCatalog(catalogPayload, model.id, null);
+          if (entry?.capabilities && Object.keys(entry.capabilities).length > 0) {
+            const providers = new Set();
+            for (const id of [model.providerAlias, model.providerId]) {
+              if (!id) continue;
+              const prefix = channelPrefixes.get(id);
+              for (const alias of resolveProviderAliases(id, {
+                prefix: prefix && !isBuiltInProviderPrefix(prefix) ? prefix : undefined,
+              })) {
+                providers.add(alias);
+              }
+            }
+            for (const provider of providers) {
+              entries.push({ provider, model: model.id, capabilities: entry.capabilities });
+            }
+            continue;
+          }
+        }
+        if (!hasStored) continue;
         const providers = new Set();
         for (const id of [model.providerAlias, model.providerId]) {
           if (!id) continue;

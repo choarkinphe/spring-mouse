@@ -5,11 +5,13 @@ import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides"
 import {
   fetchModelsDevCatalog,
   parseModelsDevCatalog,
+  lookupModelInCatalog,
   MODELS_DEV_CATALOG_URL,
   resolveModelsDevProviderKey,
 } from "@/shared/utils/modelCatalog";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { OFFICIAL_MODEL_CATALOG } from "@/shared/config/officialModelCatalog";
+import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { discoverConnectionModels } from "@/lib/services/officialModelDiscovery";
 
 export const dynamic = "force-dynamic";
@@ -66,11 +68,17 @@ export async function POST(request) {
     // the official directory returned, never add a catalog-only ID.
     const catalog = resolveCatalog(provider, providerId);
     let catalogModels = [];
+    let catalogPayload = null;
     let warning;
     if (catalog?.type === "models-dev" && catalog.provider) {
-      const payload = await fetchModelsDevCatalog({ url: catalog.url || MODELS_DEV_CATALOG_URL });
-      if (payload) catalogModels = parseModelsDevCatalog(payload, catalog.provider);
+      catalogPayload = await fetchModelsDevCatalog({ url: catalog.url || MODELS_DEV_CATALOG_URL });
+      if (catalogPayload) catalogModels = parseModelsDevCatalog(catalogPayload, catalog.provider);
       else warning = "capability catalog unavailable; official model IDs were retained";
+    } else if (isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId)) {
+      // Compatible / reseller channels have no mapped catalog key — still fetch
+      // it so missing modality data can be filled by global id lookup below.
+      // Registry providers without a catalog keep their old zero-fetch path.
+      catalogPayload = await fetchModelsDevCatalog();
     }
     const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
     const staticById = new Map(getModelsByProviderId(providerId).map((model) => [model.id, model]));
@@ -87,7 +95,8 @@ export async function POST(request) {
       const providerKind = provider?.serviceKinds?.length === 1 ? provider.serviceKinds[0] : null;
       const type = declaredKind || known?.kind || known?.type || (allowedKinds.has(providerKind) ? providerKind : "llm");
       const model = { ...routing, ...official, type, kind: type };
-      const metadata = catalogById.get(model.id);
+      const metadata = catalogById.get(model.id)
+        || lookupModelInCatalog(catalogPayload, model.id, catalog?.provider || null);
       if (!metadata) return { ...model, source: "official" };
       const providerName = model.name && model.name !== model.id ? model.name : "";
       return {

@@ -34,14 +34,17 @@ export async function getCustomModels() {
 }
 
 // Atomic check-then-insert inside transaction to prevent duplicate races
-export async function addCustomModel({ providerAlias, id, type = "llm", name }) {
+export async function addCustomModel({ providerAlias, id, type = "llm", name, capabilities = null }) {
   const k = customKey(providerAlias, id, type);
   const db = await getAdapter();
   let added = false;
   db.transaction(() => {
     const row = db.get(`SELECT 1 FROM kv WHERE scope = 'customModels' AND key = ?`, [k]);
     if (row) return;
-    const value = stringifyJson({ providerAlias, id, type, name: name || id });
+    const value = stringifyJson({
+      providerAlias, id, type, name: name || id,
+      ...(capabilities && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
+    });
     db.run(`INSERT INTO kv(scope, key, value) VALUES('customModels', ?, ?)`, [k, value]);
     added = true;
   });

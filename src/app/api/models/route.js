@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCustomModels, getModelAliases, setModelAlias } from "@/models";
+import { getCustomModels, getModelAliases, setModelAlias, getProviderNodes } from "@/models";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
@@ -20,7 +20,18 @@ export async function GET(request) {
     const modelAliases = await getModelAliases();
     const disabled = await getDisabledModels();
     const snapshots = await getModelSyncSnapshots();
-    const customModels = (await getCustomModels()).filter((model) => isVisibleModelCatalogRow(model, snapshots));
+    const [customModels, providerNodes] = await Promise.all([
+      getCustomModels(),
+      getProviderNodes().catch(() => []),
+    ]);
+    const visibleCustomModels = (customModels || []).filter((model) => isVisibleModelCatalogRow(model, snapshots));
+    // Compatible channels are addressed by their display prefix in combos
+    // ("scnet/model"), but rows are keyed by the node id — routedModel must use
+    // the prefix or client-side capability lookup misses the row.
+    const nodePrefixById = new Map();
+    for (const node of providerNodes || []) {
+      if (node?.id && node?.prefix) nodePrefixById.set(node.id, node.prefix);
+    }
 
     const models = AI_MODELS
       .filter((m) => {
@@ -48,9 +59,10 @@ export async function GET(request) {
       });
 
     const seen = new Set(models.flatMap((model) => [model.fullModel, model.routedModel]));
-    for (const custom of customModels || []) {
+    for (const custom of visibleCustomModels || []) {
       if (!custom?.providerAlias || !custom?.id || (custom.type && custom.type !== "llm")) continue;
-      const routedModel = `${custom.providerAlias}/${custom.id}`;
+      const routedPrefix = nodePrefixById.get(custom.providerAlias) || nodePrefixById.get(custom.providerId) || custom.providerAlias;
+      const routedModel = `${routedPrefix}/${custom.id}`;
       if (seen.has(routedModel)) continue;
       const providerId = custom.providerId || custom.providerAlias;
       const disabledIds = disabled[custom.providerAlias] || disabled[providerId] || [];

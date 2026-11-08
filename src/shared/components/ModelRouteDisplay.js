@@ -3,6 +3,7 @@
 import PropTypes from "prop-types";
 import { cn } from "@/shared/utils/cn";
 import { isModelRouted, normalizeModelRouting } from "@/shared/utils/modelRouting.js";
+import { labelModelRoute, useProviderNodeLabels } from "@/shared/hooks/useProviderNodeLabels";
 
 function clean(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -20,9 +21,10 @@ export default function ModelRouteDisplay({
   showLabels = true,
   wrap = false,
 }) {
+  const nodeLabels = useProviderNodeLabels();
   const { originalModel, executedModel } = normalizeModelRouting(record);
-  const originalLabel = originalModel || clean(record.model) || "—";
-  const executedLabel = executedModel || originalLabel;
+  const originalLabel = labelModelRoute(originalModel || clean(record.model) || "—", nodeLabels);
+  const executedLabel = labelModelRoute(executedModel, nodeLabels) || originalLabel;
   const routed = isModelRouted(record);
   const modelClassName = wrap ? "break-words" : "truncate";
 

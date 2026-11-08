@@ -12,11 +12,11 @@ import {
 import { getQuotaCounter, initializeQuotaCounter } from "@/lib/redis/liveUsage.js";
 import { QUOTA_LIMIT_FIELDS, QUOTA_RESET_FIELDS, QUOTA_WINDOWS, nextScheduledReset, windowStartIso } from "@/lib/quotaWindows.js";
 import {
-  buildModelQuotaGroupStatus,
-  findModelQuotaGroup,
-  readModelGroupUsageTotals,
-  resolveModelQuotaGroups,
-} from "@/lib/apiKeyModelQuota.js";
+  buildMemberQuotaStatus,
+  getMemberQuotaTargets,
+  memberQuotaScope,
+  readMemberUsageTotals,
+} from "@/lib/memberQuota.js";
 
 export { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 
@@ -64,7 +64,7 @@ function buildWindowStatus(window, rules, usage) {
   };
 }
 
-export function buildApiKeyQuotaStatus(key, rules, usages = {}, modelGroupStatuses = []) {
+export function buildApiKeyQuotaStatus(key, rules, usages = {}, memberQuotas = []) {
   const normalizedRules = normalizeApiKeyQuotaRules(rules);
   const mode = normalizeApiKeyQuotaMode(key?.quotaMode);
   const windows = API_KEY_QUOTA_WINDOWS.map((window) => buildWindowStatus(window, normalizedRules, usages[window.id]));
@@ -75,11 +75,11 @@ export function buildApiKeyQuotaStatus(key, rules, usages = {}, modelGroupStatus
     enabled,
     windows,
     exceededWindow,
-    // Model groups are independent of the whole-key allowance: a key on
-    // "unlimited" still gets its premium models throttled, which is the whole
-    // point of asking for a per-model limit.
-    modelGroups: modelGroupStatuses,
-    exceededModelGroup: modelGroupStatuses.find((group) => group.exceededWindow) || null,
+    // Combo member quotas are independent of the whole-key allowance: a key on
+    // "unlimited" still has its premium members skipped once it used its share,
+    // which is the point of putting a limit on a member.
+    memberQuotas,
+    exhaustedMembers: memberQuotas.filter((member) => member.exceededWindow).map((member) => member.id),
   };
 }
 
@@ -125,65 +125,65 @@ async function readUsages(db, apiKeyId, key) {
   ])));
 }
 
-// Model-group counters for one key. Run after the whole-key windows so a group's
-// cold seed can reuse the same live Redis connection pool, and in one pass over
-// distinct provider/model pairs rather than one query per group.
-async function readModelGroupStatuses(db, key, groups) {
-  if (!groups.length) return [];
-  const usagesByGroup = Object.fromEntries(groups.map((group) => [group.id, {}]));
+// Member counters for one key: one Redis read per quota'd member and window,
+// and one grouped SQL pass per window for whatever has no live counter yet.
+async function readMemberQuotaStatuses(db, key, targets) {
+  const list = [...targets.values()];
+  if (!list.length) return [];
+  const usagesByTarget = Object.fromEntries(list.map((target) => [target.id, {}]));
   for (const window of API_KEY_QUOTA_WINDOWS) {
     const nextResetAt = key[API_KEY_QUOTA_RESET_FIELDS[window.id]];
     if (!nextResetAt) continue;
-    const limited = groups.filter((group) => group[window.limitField] !== null);
+    const limited = list.filter((target) => target[window.limitField] != null);
     if (!limited.length) continue;
 
     const missing = [];
-    await Promise.all(limited.map(async (group) => {
-      const cached = await getQuotaCounter(key.id, window.id, nextResetAt, modelScope(group.id));
-      if (cached === null) missing.push(group);
-      else usagesByGroup[group.id][window.id] = { usedTokens: cached, nextResetAt };
+    await Promise.all(limited.map(async (target) => {
+      const cached = await getQuotaCounter(key.id, window.id, nextResetAt, memberQuotaScope(target.id));
+      if (cached === null) missing.push(target);
+      else usagesByTarget[target.id][window.id] = { usedTokens: cached, nextResetAt };
     }));
     if (!missing.length) continue;
 
-    const totals = readModelGroupUsageTotals(db, key.id, window, nextResetAt, missing);
-    await Promise.all(missing.map(async (group) => {
-      usagesByGroup[group.id][window.id] = {
-        usedTokens: await initializeQuotaCounter(key.id, window.id, nextResetAt, totals.get(group.id) || 0, modelScope(group.id)),
+    const totals = readMemberUsageTotals(db, key.id, window, nextResetAt, missing.map((target) => target.id));
+    await Promise.all(missing.map(async (target) => {
+      usagesByTarget[target.id][window.id] = {
+        usedTokens: await initializeQuotaCounter(key.id, window.id, nextResetAt, totals.get(target.id) || 0, memberQuotaScope(target.id)),
         nextResetAt,
       };
     }));
   }
-  return groups.map((group) => buildModelQuotaGroupStatus(group, usagesByGroup[group.id]));
+  return list.map((target) => buildMemberQuotaStatus(target, usagesByTarget[target.id]));
 }
 
-function modelScope(groupId) {
-  return `model:${groupId}`;
-}
-
-async function buildStatusFor(db, key, settings) {
+async function buildStatusFor(db, key, settings, memberTargets) {
   const rules = normalizeApiKeyQuotaRules(settings.apiKeyQuotaRules);
   const usages = normalizeApiKeyQuotaMode(key.quotaMode) === "limited" && rulesHaveLimit(rules)
     ? await readUsages(db, key.id, key)
     : {};
-  const groups = resolveModelQuotaGroups(settings.apiKeyModelQuotaRules, key);
-  const modelGroups = await readModelGroupStatuses(db, key, groups);
-  return buildApiKeyQuotaStatus(key, rules, usages, modelGroups);
+  const memberQuotas = await readMemberQuotaStatuses(db, key, memberTargets.targets);
+  return buildApiKeyQuotaStatus(key, rules, usages, memberQuotas);
 }
 
 export async function getApiKeyQuotaStatuses(keys = null) {
-  const [db, settings, allKeys] = await Promise.all([getAdapter(), getSettings(), keys ? Promise.resolve(keys) : getApiKeys()]);
+  const [db, settings, allKeys, memberTargets] = await Promise.all([
+    getAdapter(),
+    getSettings(),
+    keys ? Promise.resolve(keys) : getApiKeys(),
+    getMemberQuotaTargets(),
+  ]);
   await advanceApiKeyQuotaResets(allKeys);
   const statuses = {};
   for (const key of allKeys) {
-    statuses[key.id] = await buildStatusFor(db, key, settings);
+    statuses[key.id] = await buildStatusFor(db, key, settings, memberTargets);
   }
   return statuses;
 }
 
 /**
- * Whole-key gate. Model groups are enforced separately (see
- * `checkModelQuotaForRequest`) because they only apply to the models they claim
- * and can route somewhere else rather than reject.
+ * Whole-key gate. Member quotas are enforced inside combo routing instead (see
+ * `getComboMemberQuotaGate`), because an exhausted member is skipped, not
+ * rejected.
  */
 export async function checkApiKeyQuota(apiKey) {
   if (!apiKey) return { applies: false, allowed: true };
@@ -206,15 +206,15 @@ export async function getApiKeyQuotaStatus(apiKey) {
 
   const generation = getQuotaCacheGeneration();
   const load = (async () => {
-    const [db, settings] = await Promise.all([getAdapter(), getSettings()]);
+    const [db, settings, memberTargets] = await Promise.all([getAdapter(), getSettings(), getMemberQuotaTargets()]);
     const key = db.get(
-      `SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt, modelQuotaOverrides FROM apiKeys WHERE key = ?`,
+      `SELECT id, quotaMode, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`,
       [apiKey],
     );
     if (!key) return null;
 
     await advanceApiKeyQuotaResets([key]);
-    const status = await buildStatusFor(db, key, settings);
+    const status = await buildStatusFor(db, key, settings, memberTargets);
 
     // An explicit reset or rule change may happen while the query is running.
     // In that case return the result to the original caller but do not let the
@@ -229,20 +229,35 @@ export async function getApiKeyQuotaStatus(apiKey) {
   return load;
 }
 
+const NO_MEMBER_GATE = Object.freeze({ isExhausted: () => false, exhaustedFor: () => null });
+
 /**
- * Model-group decision for one request. `applies: false` means no configured
- * group claims this model, which is the common case and must stay cheap — the
- * status it reads is already cached for the whole-key gate that ran before it.
+ * Member-quota view for one request, resolved once and then consulted
+ * synchronously by the combo filters. `isExhausted(memberId)` takes the member
+ * id exactly as written in the combo (`cx/gpt-5.6-sol`); alias resolution was
+ * done when the targets were collected.
+ *
+ * Fails open: a quota read that errors must never take a working route down.
  */
-export async function checkModelQuotaForRequest(apiKey, { provider = null, model = null } = {}) {
-  if (!apiKey || (!provider && !model)) return { applies: false, allowed: true };
-  const status = await getApiKeyQuotaStatus(apiKey);
-  const groups = status?.modelGroups || [];
-  if (!groups.length) return { applies: false, allowed: true };
-  const group = findModelQuotaGroup(groups, { provider, model });
-  if (!group) return { applies: false, allowed: true };
-  if (!group.exceededWindow) return { applies: true, allowed: true, group };
-  return { applies: true, allowed: false, group, fallback: group.fallback || null };
+export async function getComboMemberQuotaGate(apiKey) {
+  if (!apiKey) return NO_MEMBER_GATE;
+  try {
+    const { memberToTarget } = await getMemberQuotaTargets();
+    if (!memberToTarget.size) return NO_MEMBER_GATE;
+    const status = await getApiKeyQuotaStatus(apiKey);
+    const exhausted = new Map(
+      (status?.memberQuotas || []).filter((member) => member.exceededWindow).map((member) => [member.id, member]),
+    );
+    if (!exhausted.size) return NO_MEMBER_GATE;
+    const exhaustedFor = (memberId) => {
+      const targetId = typeof memberId === "string" ? memberToTarget.get(memberId) : null;
+      return targetId ? exhausted.get(targetId) || null : null;
+    };
+    return { isExhausted: (memberId) => Boolean(exhaustedFor(memberId)), exhaustedFor };
+  } catch (error) {
+    console.warn("[MemberQuota] gate unavailable, allowing request:", error?.message || error);
+    return NO_MEMBER_GATE;
+  }
 }
 
 export function buildCodexUsagePayload(status) {

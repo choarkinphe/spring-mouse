@@ -1,14 +1,13 @@
 import { EventEmitter } from "events";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { getAdapter } from "../driver.js";
-import { getSettings } from "./settingsRepo.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { detectSourceApp } from "@/shared/utils/requestSource.js";
 import { getGeoIpStatus, lookupGeoIp } from "@/lib/geoip.js";
 import { enqueueUsageEvent, quotaCounterKey, updateActiveFlow, getRecentUsageEvents } from "@/lib/redis/liveUsage.js";
-import { buildModelQuotaCounters } from "@/lib/apiKeyModelQuota.js";
+import { buildMemberQuotaCounters, getMemberQuotaTargets } from "@/lib/memberQuota.js";
 import { getTrafficBuckets } from "./trafficRepo.js";
 import { runUsageAggregation } from "../usageAggregatePool.js";
 import { applyEventToRollup, getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
@@ -685,9 +684,9 @@ export async function saveRequestUsage(entry) {
     if (db.get(`SELECT id FROM usageHistory WHERE requestId = ?`, [requestId])) return;
     const rawApiKey = typeof entry.apiKey === "string" ? entry.apiKey : null;
     const knownKey = entry.apiKeyId
-      ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt, modelQuotaOverrides FROM apiKeys WHERE id = ?`, [entry.apiKeyId]) || { id: entry.apiKeyId }
+      ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE id = ?`, [entry.apiKeyId]) || { id: entry.apiKeyId }
       : rawApiKey
-        ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt, modelQuotaOverrides FROM apiKeys WHERE key = ?`, [rawApiKey])
+        ? db.get(`SELECT id, key, fiveHourQuotaResetAt, weeklyQuotaResetAt FROM apiKeys WHERE key = ?`, [rawApiKey])
         : null;
     const apiKeyId = knownKey?.id
       || (rawApiKey ? externalApiKeyId(db, rawApiKey) : "local-no-key");
@@ -741,21 +740,22 @@ export async function saveRequestUsage(entry) {
     };
 
     const usageAffectsQuota = ["success", "ok"].includes(status) && promptTokens + completionTokens > 0;
-    // Only read the per-model rules when this write can actually be charged to a
-    // group; a failed request must not pay for a settings read.
-    const modelQuotaRules = usageAffectsQuota ? (await getSettings()).apiKeyModelQuotaRules : null;
+    // Only resolve the member-quota targets when this write can actually be
+    // charged; the set is memoised, so a charged write rarely pays for it either.
+    const memberTargets = usageAffectsQuota && knownKey?.id ? (await getMemberQuotaTargets()).targets : null;
     const quotaCounters = usageAffectsQuota && knownKey?.id
       ? [
         knownKey.fiveHourQuotaResetAt && { key: quotaCounterKey(knownKey.id, "fiveHour", knownKey.fiveHourQuotaResetAt), delta: promptTokens + completionTokens },
         knownKey.weeklyQuotaResetAt && { key: quotaCounterKey(knownKey.id, "weekly", knownKey.weeklyQuotaResetAt), delta: promptTokens + completionTokens },
-        // Per-model groups are charged against the model that actually ran, so a
-        // request downgraded away from a spent premium group lands on the
-        // cheaper group's counter — never back on the one it was routed off.
-        ...buildModelQuotaCounters({
-          key: { ...knownKey, modelQuotaRules },
+        // Combo members are charged against the model that actually ran, so a
+        // request that fell through past a spent premium member lands on the
+        // cheaper member's counter — never back on the one it skipped.
+        ...buildMemberQuotaCounters({
+          key: knownKey,
           provider: record.provider,
           model: record.model,
           tokens: promptTokens + completionTokens,
+          targets: memberTargets,
         }).map((counter) => ({
           key: quotaCounterKey(knownKey.id, counter.windowId, counter.resetAt, counter.scope),
           delta: counter.delta,

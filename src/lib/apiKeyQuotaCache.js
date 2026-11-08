@@ -54,3 +54,17 @@ export function invalidateQuotaCache(apiKey = null) {
     statusLoads.clear();
   }
 }
+
+// Combo member quotas are read from the combo list, not from the key, so a
+// combo edit must retire both the memoised member-quota targets and every
+// cached key status built from them.
+let comboQuotaGeneration = 0;
+
+export function getComboQuotaGeneration() {
+  return comboQuotaGeneration;
+}
+
+export function invalidateComboQuotaTargets() {
+  comboQuotaGeneration += 1;
+  invalidateQuotaCache();
+}

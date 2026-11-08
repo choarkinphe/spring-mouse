@@ -132,9 +132,8 @@ export const TABLES = {
       rpmLimit: "INTEGER",
       rpmQueueMax: "INTEGER",
       queueTimeoutMs: "INTEGER",
-      // Per-key overrides for the global per-model quota groups, JSON
-      // `{ [groupId]: { fiveHourTokenLimitM, weeklyTokenLimitM, fallback } }`.
-      // NULL inherits every group's configured limits.
+      // Unused: per-model quotas moved onto combo members (`quota`). Kept
+      // because migration 028 already added it to deployed databases.
       modelQuotaOverrides: "TEXT",
       createdAt: "TEXT NOT NULL",
       lastUsedAt: "TEXT",

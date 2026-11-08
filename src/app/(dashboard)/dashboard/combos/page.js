@@ -123,7 +123,37 @@ const MAX_MEMBER_WEIGHT = 1000;
  * nothing is configured — that keeps existing rows byte-identical and makes
  * "no options" unambiguous.
  */
-function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced", { effort = null, weight = 1 } = {}) {
+const MEMBER_QUOTA_FIELDS = ["fiveHourTokenLimitM", "weeklyTokenLimitM"];
+
+/**
+ * Per-member token quota, in millions of tokens per API key. Mirrors the
+ * server's normalizeMemberQuota: only positive finite numbers survive, and an
+ * empty quota is null so the entry can collapse back to a plain string.
+ */
+function normalizeMemberQuota(quota) {
+  if (!quota || typeof quota !== "object") return null;
+  const normalized = {};
+  for (const field of MEMBER_QUOTA_FIELDS) {
+    const value = Number(quota[field]);
+    if (Number.isFinite(value) && value > 0) normalized[field] = Math.round(value * 1000) / 1000;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+/** Only a provider/model member is a concrete target a quota can count against. */
+function memberSupportsQuota(model) {
+  return typeof model === "string" && model.includes("/");
+}
+
+function formatMemberQuotaSummary(quota) {
+  if (!quota) return "不限";
+  return [
+    quota.fiveHourTokenLimitM ? `5h ${quota.fiveHourTokenLimitM}M` : null,
+    quota.weeklyTokenLimitM ? `周 ${quota.weeklyTokenLimitM}M` : null,
+  ].filter(Boolean).join(" · ");
+}
+
+function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced", { effort = null, weight = 1, quota = null } = {}) {
   const normalizedTags = normalizeAccessTags(accessTags);
   const normalizedTier = ["fast", "balanced", "strong"].includes(autoTier) ? autoTier : "balanced";
   const normalizedEffort = EFFORT_OPTIONS.some((option) => option.value === effort) ? effort : null;
@@ -131,8 +161,9 @@ function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced"
   const normalizedWeight = Number.isFinite(parsedWeight)
     ? Math.min(MAX_MEMBER_WEIGHT, Math.max(MIN_MEMBER_WEIGHT, parsedWeight))
     : MIN_MEMBER_WEIGHT;
+  const normalizedQuota = memberSupportsQuota(model) ? normalizeMemberQuota(quota) : null;
   const plain = !schedule && normalizedTags.length === 0 && normalizedTier === "balanced"
-    && !normalizedEffort && normalizedWeight === MIN_MEMBER_WEIGHT;
+    && !normalizedEffort && normalizedWeight === MIN_MEMBER_WEIGHT && !normalizedQuota;
   if (plain) return model;
   return {
     model,
@@ -141,6 +172,7 @@ function buildComboModelEntry(model, schedule, accessTags, autoTier = "balanced"
     ...(normalizedTier !== "balanced" ? { autoTier: normalizedTier } : {}),
     ...(normalizedEffort ? { effort: normalizedEffort } : {}),
     ...(normalizedWeight !== MIN_MEMBER_WEIGHT ? { weight: normalizedWeight } : {}),
+    ...(normalizedQuota ? { quota: normalizedQuota } : {}),
   };
 }
 
@@ -152,6 +184,7 @@ function comboModelEntryParts(entry) {
     autoTier: getComboModelAutoTier(entry),
     effort: typeof entry === "object" && entry !== null ? (entry.effort || null) : null,
     weight: typeof entry === "object" && entry !== null && Number.isInteger(entry.weight) ? entry.weight : MIN_MEMBER_WEIGHT,
+    quota: typeof entry === "object" && entry !== null ? normalizeMemberQuota(entry.quota) : null,
   };
 }
 
@@ -161,6 +194,7 @@ function rebuildComboModelEntry(entry, patch = {}) {
   return buildComboModelEntry(model, parts.schedule, parts.accessTags, parts.autoTier, {
     effort: parts.effort,
     weight: parts.weight,
+    quota: parts.quota,
   });
 }
 
@@ -1189,6 +1223,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                           onScheduleChange={(schedule) => updateModelAt(index, rebuildComboModelEntry(entry, { schedule }))}
                           onAccessTagsChange={(accessTags) => updateModelAt(index, rebuildComboModelEntry(entry, { accessTags }))}
                           onEffortChange={(effort) => updateModelAt(index, rebuildComboModelEntry(entry, { effort }))}
+                          onQuotaChange={(quota) => updateModelAt(index, rebuildComboModelEntry(entry, { quota }))}
                           onMoveUp={() => moveModel(index, -1)}
                           onMoveDown={() => moveModel(index, 1)}
                           onRemove={() => removeModelAt(index)}
@@ -1243,6 +1278,9 @@ function ComboCard({ combo, getCaps, activeProviders = [], onEdit, onToggleActiv
                       }}
                       onWeightChange={(weight) => {
                         updateModelAt(index, rebuildComboModelEntry(entry, { weight }));
+                      }}
+                      onQuotaChange={(quota) => {
+                        updateModelAt(index, rebuildComboModelEntry(entry, { quota }));
                       }}
                       onMoveUp={() => moveModel(index, -1)}
                       onMoveDown={() => moveModel(index, 1)}
@@ -1627,7 +1665,7 @@ function ScheduleWindowSection({
   );
 }
 
-function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, showWeight = false, onEdit, onScheduleChange, onAccessTagsChange, onEffortChange, onWeightChange, onMoveUp, onMoveDown, onRemove }) {
+function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCaps, role, showWeight = false, onEdit, onScheduleChange, onAccessTagsChange, onEffortChange, onWeightChange, onQuotaChange, onMoveUp, onMoveDown, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1641,6 +1679,8 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
   const autoTier = getComboModelAutoTier(entry);
   const effort = typeof entry === "object" && entry !== null ? (entry.effort || null) : null;
   const weight = typeof entry === "object" && entry !== null && Number.isInteger(entry.weight) ? entry.weight : 1;
+  const quota = typeof entry === "object" && entry !== null ? normalizeMemberQuota(entry.quota) : null;
+  const quotaSupported = memberSupportsQuota(model) && typeof onQuotaChange === "function";
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
   const commit = () => {
@@ -1800,6 +1840,11 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
             {accessTags.length} 个权限标签
           </span>
         )}
+        {quotaSupported && quota && (
+          <span className="shrink-0 rounded-full border border-amber-400/20 bg-amber-400/[0.08] px-1.5 py-0 text-[9px] font-medium text-amber-200">
+            配额 {formatMemberQuotaSummary(quota)}
+          </span>
+        )}
       </div>
 
       {/* One frame for the whole panel; the groups inside separate themselves
@@ -1860,6 +1905,21 @@ function ModelItem({ id, index, entry, isFirst, isLast, disabled = false, getCap
                 showWeight={showWeight}
                 onWeightChange={onWeightChange}
               />
+            </AdvancedSection>
+          )}
+
+          {/* Usage quota: how much each API key may spend on this member. Sits
+              beside availability and access — those decide whether a key may
+              use the member, this decides how much. */}
+          {quotaSupported && (
+            <AdvancedSection
+              icon="data_usage"
+              tone="text-amber-300"
+              title="用量配额"
+              summary={formatMemberQuotaSummary(quota)}
+              defaultOpen={!!quota}
+            >
+              <MemberQuotaFields model={model} quota={quota} disabled={disabled} onQuotaChange={onQuotaChange} />
             </AdvancedSection>
           )}
 
@@ -2069,6 +2129,62 @@ function StrategyFields({ model, weight, showWeight, onWeightChange }) {
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Token limits for one member, per API key, in millions of tokens.
+ *
+ * Inputs keep a local draft and commit on blur/Enter: the inline editor saves
+ * the combo on every change, and "1.5" would otherwise be saved as "1" first.
+ */
+function MemberQuotaFields({ model, quota, disabled = false, onQuotaChange }) {
+  const fields = [
+    { key: "fiveHourTokenLimitM", label: "5 小时" },
+    { key: "weeklyTokenLimitM", label: "每周" },
+  ];
+  const toDraft = (source) => Object.fromEntries(fields.map(({ key }) => [key, source?.[key] ? String(source[key]) : ""]));
+  const [draft, setDraft] = useState(() => toDraft(quota));
+  const quotaKey = JSON.stringify(quota || {});
+  const [syncedKey, setSyncedKey] = useState(quotaKey);
+  if (syncedKey !== quotaKey) {
+    setSyncedKey(quotaKey);
+    setDraft(toDraft(quota));
+  }
+
+  const commit = () => {
+    const next = normalizeMemberQuota(draft);
+    if (JSON.stringify(next || {}) !== quotaKey) onQuotaChange(next);
+    else setDraft(toDraft(quota));
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      {fields.map(({ key, label }) => (
+        <div key={key} className="flex min-w-0 items-center gap-2">
+          <span className="w-10 shrink-0 text-[10px] text-text-muted">{label}</span>
+          <input
+            type="number"
+            min={0}
+            step="any"
+            inputMode="decimal"
+            disabled={disabled}
+            value={draft[key]}
+            placeholder="不限制"
+            onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))}
+            onBlur={commit}
+            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+            className="h-7 w-24 rounded-md border border-white/[0.09] bg-black/[0.15] px-2 text-center font-mono text-[10px] text-text-main outline-none placeholder:text-text-muted/50 focus:border-amber-400/50"
+            aria-label={`${model} ${label} Token 限额（百万）`}
+          />
+          <span className="shrink-0 text-[10px] text-text-muted">M Token</span>
+        </div>
+      ))}
+      <p className="text-[10px] leading-4 text-text-muted">
+        按每个 API 密钥单独计算，留空表示不限制。用完后本次请求跳过该成员、按路由策略继续尝试后续成员；所有成员都用完时返回 429。
+        同一模型出现在多个组合中时共用计数，取最小限额。
+      </p>
+    </div>
   );
 }
 
@@ -2407,6 +2523,11 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, onDelete, activeProvid
                       onWeightChange={(weight) => {
                         const updated = [...models];
                         updated[index] = rebuildComboModelEntry(updated[index], { weight });
+                        setModels(updated);
+                      }}
+                      onQuotaChange={(quota) => {
+                        const updated = [...models];
+                        updated[index] = rebuildComboModelEntry(updated[index], { quota });
                         setModels(updated);
                       }}
                       onMoveUp={() => handleMoveUp(index)}

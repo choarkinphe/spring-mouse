@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { deleteHotJson, fillHotJson, getHotJson } from "@/lib/redis/hotCache.js";
+import { invalidateComboQuotaTargets } from "@/lib/apiKeyQuotaCache.js";
 
 function rowToCombo(row) {
   if (!row) return null;
@@ -82,6 +83,7 @@ export async function createCombo(data) {
   );
   deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
   deleteHotJson(comboCacheKey(combo.name)).catch(() => {});
+  invalidateComboQuotaTargets();
   return combo;
 }
 
@@ -101,6 +103,7 @@ export async function updateCombo(id, data) {
   if (result) {
     deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
     deleteHotJson(comboCacheKey(result.name)).catch(() => {});
+    invalidateComboQuotaTargets();
   }
   return result;
 }
@@ -108,6 +111,9 @@ export async function updateCombo(id, data) {
 export async function deleteCombo(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
-  if ((res?.changes ?? 0) > 0) deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
+  if ((res?.changes ?? 0) > 0) {
+    deleteHotJson(COMBOS_CACHE_KEY).catch(() => {});
+    invalidateComboQuotaTargets();
+  }
   return (res?.changes ?? 0) > 0;
 }

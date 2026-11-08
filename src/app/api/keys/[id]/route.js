@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { API_KEY_QUOTA_RESET_FIELDS, API_KEY_QUOTA_WINDOWS } from "@/lib/apiKeyQuota";
-import { normalizeModelQuotaOverrides } from "@/lib/apiKeyModelQuota";
 import { deleteApiKey, getApiKeyById, getSettings, updateApiKey, updateSettings } from "@/lib/localDb";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
 
@@ -27,7 +26,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags, rpmLimit, rpmQueueMax, queueTimeoutMs, modelQuotaOverrides } = body;
+    const { name, isActive, quotaMode, resetQuota, resetQuotaWindow, accessTags, rpmLimit, rpmQueueMax, queueTimeoutMs } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -50,11 +49,6 @@ export async function PUT(request, { params }) {
     if (rpmLimit !== undefined) updateData.rpmLimit = rpmLimit;
     if (rpmQueueMax !== undefined) updateData.rpmQueueMax = rpmQueueMax;
     if (queueTimeoutMs !== undefined) updateData.queueTimeoutMs = queueTimeoutMs;
-    // `{}` or null clears every override and inherits the global group limits
-    // again; the repo stores NULL for that case.
-    if (modelQuotaOverrides !== undefined) {
-      updateData.modelQuotaOverrides = normalizeModelQuotaOverrides(modelQuotaOverrides);
-    }
 
     const resetAll = resetQuota === true;
     const windowId = resetQuotaWindow || (typeof resetQuota === "string" ? resetQuota : null);

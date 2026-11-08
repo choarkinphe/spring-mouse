@@ -54,6 +54,7 @@ export const ROUTING_TERMINAL_REASONS = Object.freeze([
   "account_locked",
   "no_account",
   "accounts_exhausted",
+  "quota_exceeded",
   "transport_error",
   "upstream_http_error",
   "internal_error",

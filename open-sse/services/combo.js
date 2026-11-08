@@ -250,7 +250,8 @@ export function normalizeComboModelsForStorage(models) {
     // a silent downgrade to "whatever the agent asked for".
     if (effort === null && entry.effort != null && entry.effort !== "") return null;
     const weight = entry.weight == null ? null : normalizeMemberWeight(entry.weight);
-    normalized.push(schedule || accessTags.length > 0 || autoTier || effort || (weight && weight !== DEFAULT_MEMBER_WEIGHT)
+    const quota = normalizeMemberQuota(entry.quota);
+    normalized.push(schedule || accessTags.length > 0 || autoTier || effort || quota || (weight && weight !== DEFAULT_MEMBER_WEIGHT)
       ? {
         model,
         ...(schedule ? { schedule } : {}),
@@ -258,6 +259,7 @@ export function normalizeComboModelsForStorage(models) {
         ...(autoTier ? { autoTier } : {}),
         ...(effort ? { effort } : {}),
         ...(weight && weight !== DEFAULT_MEMBER_WEIGHT ? { weight } : {}),
+        ...(quota ? { quota } : {}),
       }
       : model);
   }
@@ -270,7 +272,7 @@ function comboModelIdentifier(entry) {
 
 export function comboModelEntry(entry) {
   if (typeof entry === "string") {
-    return { model: entry, schedule: null, accessTags: [], autoTier: "balanced", effort: null, weight: DEFAULT_MEMBER_WEIGHT };
+    return { model: entry, schedule: null, accessTags: [], autoTier: "balanced", effort: null, weight: DEFAULT_MEMBER_WEIGHT, quota: null };
   }
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     return {
@@ -280,9 +282,31 @@ export function comboModelEntry(entry) {
       autoTier: AUTO_TIERS.has(entry.autoTier) ? entry.autoTier : "balanced",
       effort: normalizeMemberEffort(entry.effort),
       weight: normalizeMemberWeight(entry.weight),
+      quota: normalizeMemberQuota(entry.quota),
     };
   }
-  return { model: "", schedule: null, accessTags: [], effort: null, weight: DEFAULT_MEMBER_WEIGHT };
+  return { model: "", schedule: null, accessTags: [], effort: null, weight: DEFAULT_MEMBER_WEIGHT, quota: null };
+}
+
+const MEMBER_QUOTA_FIELDS = ["fiveHourTokenLimitM", "weeklyTokenLimitM"];
+
+/**
+ * A member's own token allowance per API key, in millions of tokens.
+ *
+ * Only the windows that carry a positive limit are kept; a member with none is
+ * unlimited and stores no `quota` at all. An unusable value is dropped rather
+ * than rejected: an empty dashboard field means "no limit", not an error.
+ */
+export function normalizeMemberQuota(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const quota = {};
+  for (const field of MEMBER_QUOTA_FIELDS) {
+    const parsed = typeof value[field] === "number" ? value[field] : Number(value[field]);
+    if (value[field] !== "" && value[field] != null && Number.isFinite(parsed) && parsed > 0) {
+      quota[field] = Math.round(parsed * 1000) / 1000;
+    }
+  }
+  return Object.keys(quota).length ? quota : null;
 }
 
 /**

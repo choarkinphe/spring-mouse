@@ -1,7 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { invalidateQuotaCache } from "@/lib/apiKeyQuotaCache.js";
-import { normalizeModelQuotaOverrides, parseModelQuotaOverrides } from "@/lib/apiKeyModelQuota.js";
 import { createHash } from "node:crypto";
 import { deleteHotJson, fillHotJson, getHotJson, setHotJson } from "@/lib/redis/hotCache.js";
 
@@ -81,7 +80,6 @@ function rowToKey(row) {
     rpmLimit: positiveIntOrNull(row.rpmLimit),
     rpmQueueMax: nonNegativeIntOrNull(row.rpmQueueMax),
     queueTimeoutMs: positiveIntOrNull(row.queueTimeoutMs),
-    modelQuotaOverrides: parseModelQuotaOverrides(row.modelQuotaOverrides),
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt || null,
   };
@@ -167,16 +165,11 @@ export async function updateApiKey(id, data) {
         const rpmLimit = positiveIntOrNull(merged.rpmLimit);
         const rpmQueueMax = nonNegativeIntOrNull(merged.rpmQueueMax);
         const queueTimeoutMs = positiveIntOrNull(merged.queueTimeoutMs);
-        // Clearing every override stores NULL rather than `{}`, so the column
-        // keeps meaning "inherit everything" instead of accumulating an empty
-        // object that reads as an override.
-        const modelQuotaOverrides = normalizeModelQuotaOverrides(merged.modelQuotaOverrides);
-        const modelQuotaOverridesJson = Object.keys(modelQuotaOverrides).length ? JSON.stringify(modelQuotaOverrides) : null;
         db.run(
-          `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, rpmLimit = ?, rpmQueueMax = ?, queueTimeoutMs = ?, modelQuotaOverrides = ?, lastUsedAt = ? WHERE id = ?`,
-          [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, rpmLimit, rpmQueueMax, queueTimeoutMs, modelQuotaOverridesJson, merged.lastUsedAt || null, id]
+          `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, quotaMode = ?, quotaResetAt = ?, fiveHourQuotaResetAt = ?, weeklyQuotaResetAt = ?, rpmLimit = ?, rpmQueueMax = ?, queueTimeoutMs = ?, lastUsedAt = ? WHERE id = ?`,
+          [merged.key, merged.name, merged.machineId, isActive ? 1 : 0, quotaMode, merged.quotaResetAt || null, merged.fiveHourQuotaResetAt || null, merged.weeklyQuotaResetAt || null, rpmLimit, rpmQueueMax, queueTimeoutMs, merged.lastUsedAt || null, id]
         );
-        candidate = { ...merged, quotaMode, isActive, rpmLimit, rpmQueueMax, queueTimeoutMs, modelQuotaOverrides };
+        candidate = { ...merged, quotaMode, isActive, rpmLimit, rpmQueueMax, queueTimeoutMs };
       });
       result = candidate;
       previousKey = candidateKey;

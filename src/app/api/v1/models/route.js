@@ -22,6 +22,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { authorizeApiKey, extractApiKey, resolveApiKeyAccessTags } from "@/sse/services/auth.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags";
+import { isComboOnlyKey } from "@/shared/utils/comboOnlyRouting";
 import { getActiveComboModels } from "open-sse/services/combo.js";
 import { normalizeComboSearch } from "open-sse/services/comboSearch.js";
 import { getClaudeMessagesComboError } from "@/shared/utils/claudeMessagesRoute.js";
@@ -274,6 +275,8 @@ export async function buildModelsList(kindFilter, options = {}) {
   const accessSettings = accessTags === null ? null : await getSettings();
   const modelAccessTags = accessSettings?.modelAccessTags || {};
   const canExposeModel = (model) => accessTags === null || canAccessWithTags(accessTags, getModelAccessTags(modelAccessTags, model?.id));
+  // A combo-only key would get 403 for anything but a combo, so list only combos.
+  const comboOnly = accessTags !== null && isComboOnlyKey(accessSettings, accessTags);
   let connections = [];
   try {
     connections = await getProviderConnections();
@@ -358,10 +361,11 @@ export async function buildModelsList(kindFilter, options = {}) {
 
   // Public /models endpoints expose routing entrypoints only. Direct provider
   // models remain available internally for dashboard model counts and management.
-  if (options.includeProviderModels !== true) {
+  if (options.includeProviderModels !== true || comboOnly) {
     const seenPublicModelIds = new Set();
     return models.filter((model) => {
       if (!model?.id || seenPublicModelIds.has(model.id) || !canExposeModel(model)) return false;
+      if (comboOnly && model.is_combo !== true) return false;
       seenPublicModelIds.add(model.id);
       return true;
     });

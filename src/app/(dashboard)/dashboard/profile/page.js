@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import Image from "next/image";
 import { Badge, Card, Button, DashboardHero, Drawer, SegmentedControl, Select, Toggle, Input } from "@/shared/components";
 import Modal from "@/shared/components/Modal";
+import AccessTagsEditor from "@/shared/components/AccessTagsEditor";
 import { APP_CONFIG } from "@/shared/constants/config";
 import { DESTINATION_TYPES, DESTINATION_TYPE_ORDER } from "@/shared/constants/backupDestinations";
 import TokenSaverClient from "../token-saver/TokenSaverClient";
@@ -40,25 +41,6 @@ const SETTINGS_ZONES = [
   { id: "token-saver", index: "04", title: "Token 节省", icon: "savings" },
   { id: "zone-data", index: "05", title: "数据维护", icon: "inventory_2" },
 ];
-
-// The form holds every limit as a string so a field can be blanked mid-edit;
-// `null`/unset means "no limit", which the API normalizes back to null.
-function modelQuotaFormFromRules(rules) {
-  const groups = Array.isArray(rules?.groups) ? rules.groups : [];
-  return {
-    enabled: rules?.enabled !== false,
-    groups: groups.map((group) => ({
-      id: group.id || "",
-      label: group.label || "",
-      enabled: group.enabled !== false,
-      models: Array.isArray(group.models) ? group.models : [],
-      fallback: group.fallback || "",
-      fiveHourTokenLimitM: group.fiveHourTokenLimitM?.toString() || "",
-      weeklyTokenLimitM: group.weeklyTokenLimitM?.toString() || "",
-      exceeded: group.exceeded === true,
-    })),
-  };
-}
 
 function SettingsZone({ id, index, title, description, children }) {
   return (
@@ -148,11 +130,9 @@ export default function ProfilePage() {
   const [apiKeyQuotaForm, setApiKeyQuotaForm] = useState({ fiveHourTokenLimitM: "", weeklyTokenLimitM: "" });
   const [apiKeyQuotaStatus, setApiKeyQuotaStatus] = useState({ type: "", message: "" });
   const [apiKeyQuotaLoading, setApiKeyQuotaLoading] = useState(false);
-  // Per-model quota groups. Held as strings (like the fields above) so a value
-  // can be cleared while typing; converted to numbers on save.
-  const [modelQuotaForm, setModelQuotaForm] = useState({ enabled: true, groups: [] });
-  const [modelQuotaStatus, setModelQuotaStatus] = useState({ type: "", message: "" });
-  const [modelQuotaLoading, setModelQuotaLoading] = useState(false);
+  const [comboOnlyForm, setComboOnlyForm] = useState({ enabled: false, exemptTags: ["god", "sys"] });
+  const [comboOnlyStatus, setComboOnlyStatus] = useState({ type: "", message: "" });
+  const [comboOnlyLoading, setComboOnlyLoading] = useState(false);
   // Retention windows. Kept as strings so the field can be cleared while typing.
   const [retentionForm, setRetentionForm] = useState({ usage: "", requestDetails: "" });
   const [retentionStatus, setRetentionStatus] = useState({ type: "", message: "" });
@@ -194,7 +174,10 @@ export default function ProfilePage() {
           fiveHourTokenLimitM: data?.apiKeyQuotaRules?.fiveHourTokenLimitM?.toString() || "",
           weeklyTokenLimitM: data?.apiKeyQuotaRules?.weeklyTokenLimitM?.toString() || "",
         });
-        setModelQuotaForm(modelQuotaFormFromRules(data?.apiKeyModelQuotaRules));
+        setComboOnlyForm({
+          enabled: data?.comboOnlyRouting?.enabled === true,
+          exemptTags: Array.isArray(data?.comboOnlyRouting?.exemptTags) ? data.comboOnlyRouting.exemptTags : ["god", "sys"],
+        });
         setRetentionForm({
           usage: data?.usageRetentionDays?.toString() ?? "",
           requestDetails: data?.requestDetailsRetentionDays?.toString() ?? "",
@@ -692,62 +675,28 @@ export default function ProfilePage() {
     }
   };
 
-  const updateModelQuotaGroup = (index, patch) => {
-    setModelQuotaForm((prev) => ({
-      ...prev,
-      groups: prev.groups.map((group, groupIndex) => (groupIndex === index ? { ...group, ...patch } : group)),
-    }));
-  };
-
-  const addModelQuotaGroup = () => {
-    setModelQuotaForm((prev) => ({
-      ...prev,
-      groups: [...prev.groups, { label: "", enabled: true, models: [], fallback: "", fiveHourTokenLimitM: "", weeklyTokenLimitM: "", exceeded: false }],
-    }));
-  };
-
-  const removeModelQuotaGroup = (index) => {
-    setModelQuotaForm((prev) => ({ ...prev, groups: prev.groups.filter((_, groupIndex) => groupIndex !== index) }));
-  };
-
-  const saveModelQuotaRules = async () => {
-    setModelQuotaLoading(true);
-    setModelQuotaStatus({ type: "", message: "" });
+  const updateComboOnlyRouting = async (event) => {
+    event.preventDefault();
+    setComboOnlyLoading(true);
+    setComboOnlyStatus({ type: "", message: "" });
     try {
-      // Blank limits mean "no limit in this window", which the API turns back
-      // into null; a group with no models is rejected server-side, so the
-      // cheapest failure is caught here first.
-      const emptyGroup = modelQuotaForm.groups.find((group) => !(group.models || []).some((model) => String(model).trim()));
-      if (emptyGroup) throw new Error(`“${emptyGroup.label || "未命名"}”没有匹配任何模型`);
       const res = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKeyModelQuotaRules: {
-            enabled: modelQuotaForm.enabled !== false,
-            groups: modelQuotaForm.groups.map((group) => ({
-              // Sending the id back keeps the group's counters attached when a
-              // label is edited; a new group has none and gets a stable one.
-              ...(group.id ? { id: group.id } : {}),
-              label: group.label,
-              enabled: group.enabled !== false,
-              models: group.models,
-              fallback: group.fallback,
-              fiveHourTokenLimitM: group.fiveHourTokenLimitM || null,
-              weeklyTokenLimitM: group.weeklyTokenLimitM || null,
-            })),
-          },
-        }),
+        body: JSON.stringify({ comboOnlyRouting: comboOnlyForm }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to update model quota rules");
+      if (!res.ok) throw new Error(data.error || "Failed to update combo-only routing");
       setSettings((prev) => ({ ...prev, ...data }));
-      setModelQuotaForm(modelQuotaFormFromRules(data.apiKeyModelQuotaRules));
-      setModelQuotaStatus({ type: "success", message: "单模型配额已保存" });
+      setComboOnlyForm({
+        enabled: data.comboOnlyRouting?.enabled === true,
+        exemptTags: Array.isArray(data.comboOnlyRouting?.exemptTags) ? data.comboOnlyRouting.exemptTags : [],
+      });
+      setComboOnlyStatus({ type: "success", message: "已保存" });
     } catch (err) {
-      setModelQuotaStatus({ type: "error", message: err.message || "保存失败" });
+      setComboOnlyStatus({ type: "error", message: err.message || "An error occurred" });
     } finally {
-      setModelQuotaLoading(false);
+      setComboOnlyLoading(false);
     }
   };
 
@@ -1552,116 +1501,40 @@ export default function ProfilePage() {
           </Card>
 
           <Card>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-lg bg-violet-500/10 text-violet-500 shrink-0">
-                <span className="material-symbols-outlined text-[20px]">tune</span>
-              </div>
-              <div>
-                <h3 className="text-base sm:text-lg font-semibold">单模型配额</h3>
-                <p className="text-xs sm:text-sm text-text-muted">
-                  为指定模型单独设额度。额度用完后，配了降级目标就自动改道到更便宜的模型，没配则直接返回 429；走在模型组合里的请求会自动跳到下一个成员。按成功请求的输入 + 输出 Token 统计，与整钥额度各自独立。
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-4">
-              {modelQuotaForm.groups.length === 0 && (
-                <p className="rounded-lg border border-dashed border-border/60 px-4 py-6 text-center text-xs text-text-muted">
-                  还没有单模型配额组。例如把 <code className="font-mono">claude-opus*</code> 归为一组、设 5 小时 2M，用完后降级到 <code className="font-mono">anthropic/claude-sonnet-4-5</code>。
-                </p>
-              )}
-              {modelQuotaForm.groups.map((group, index) => (
-                <div key={group.id || index} className="rounded-lg border border-border/60 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-text-muted">组 {index + 1}</span>
-                      <Toggle
-                        checked={group.enabled !== false}
-                        onChange={() => updateModelQuotaGroup(index, { enabled: group.enabled === false })}
-                        aria-label={`启用模型组 ${index + 1}`}
-                      />
-                      {group.exceeded && (
-                        <span className="rounded border border-rose-400/25 bg-rose-400/10 px-1.5 py-0.5 text-[10px] text-rose-200">已有密钥超额</span>
-                      )}
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      icon="delete"
-                      onClick={() => removeModelQuotaGroup(index)}
-                    >
-                      删除
-                    </Button>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Input
-                      label="组名称"
-                      value={group.label}
-                      onChange={(event) => updateModelQuotaGroup(index, { label: event.target.value })}
-                      placeholder="例如：高阶模型"
-                      disabled={loading || modelQuotaLoading}
-                    />
-                    <Input
-                      label="降级目标（可不填）"
-                      value={group.fallback}
-                      onChange={(event) => updateModelQuotaGroup(index, { fallback: event.target.value })}
-                      placeholder="provider/model 或模型组合名"
-                      disabled={loading || modelQuotaLoading}
-                    />
-                  </div>
-                  <div className="mt-3">
-                    <label className="mb-1 block text-xs font-medium text-text-muted">
-                      匹配模型（每行一个，支持 * 通配；写成 provider/model 可限定渠道）
-                    </label>
-                    <textarea
-                      className="w-full rounded-lg border border-border/60 bg-transparent px-3 py-2 font-mono text-xs"
-                      rows={3}
-                      value={(group.models || []).join("\n")}
-                      onChange={(event) => updateModelQuotaGroup(index, { models: event.target.value.split("\n") })}
-                      placeholder={"claude-opus*\nopenai/gpt-5*"}
-                      disabled={loading || modelQuotaLoading}
-                    />
-                  </div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Input
-                      label="5 小时 Token 限额 (M)"
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="不限制"
-                      value={group.fiveHourTokenLimitM}
-                      onChange={(event) => updateModelQuotaGroup(index, { fiveHourTokenLimitM: event.target.value })}
-                      disabled={loading || modelQuotaLoading}
-                    />
-                    <Input
-                      label="周 Token 限额 (M)"
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="不限制"
-                      value={group.weeklyTokenLimitM}
-                      onChange={(event) => updateModelQuotaGroup(index, { weeklyTokenLimitM: event.target.value })}
-                      disabled={loading || modelQuotaLoading}
-                    />
-                  </div>
+            <form onSubmit={updateComboOnlyRouting}>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 rounded-lg bg-violet-500/10 text-violet-500 shrink-0">
+                  <span className="material-symbols-outlined text-[20px]">account_tree</span>
                 </div>
-              ))}
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="secondary" icon="add" onClick={addModelQuotaGroup} disabled={loading || modelQuotaLoading}>
-                  新增模型组
-                </Button>
-                <Button type="button" onClick={saveModelQuotaRules} loading={modelQuotaLoading} disabled={loading}>
-                  保存单模型配额
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base sm:text-lg font-semibold">仅允许调用组合</h3>
+                  <p className="text-xs sm:text-sm text-text-muted">
+                    开启后，API 密钥只能调用模型组合，直接调用「渠道/模型」返回 403，/v1/models 也只列出组合；组合成员的权限、时段与用量配额因此无法被绕过。带豁免标签的密钥不受限制。
+                  </p>
+                </div>
+                <Toggle
+                  checked={comboOnlyForm.enabled}
+                  onChange={() => setComboOnlyForm((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                  disabled={loading || comboOnlyLoading}
+                />
+              </div>
+              <div className="grid gap-4 border-t border-border/50 pt-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                <AccessTagsEditor
+                  value={comboOnlyForm.exemptTags}
+                  onChange={(exemptTags) => setComboOnlyForm((prev) => ({ ...prev, exemptTags }))}
+                  label="豁免标签"
+                  hint="拥有任一豁免标签的密钥仍可直接调用渠道模型，用于调试与内部工具。"
+                />
+                <Button type="submit" size="field" loading={comboOnlyLoading} disabled={loading}>
+                  Save
                 </Button>
               </div>
-              {modelQuotaStatus.message && (
-                <p className={`border-t border-border/50 pt-4 text-xs sm:text-sm ${modelQuotaStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
-                  {modelQuotaStatus.message}
-                </p>
-              )}
-            </div>
+            </form>
+            {comboOnlyStatus.message && (
+              <p className={`mt-4 border-t border-border/50 pt-4 text-xs sm:text-sm ${comboOnlyStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+                {comboOnlyStatus.message}
+              </p>
+            )}
           </Card>
 
           <div>

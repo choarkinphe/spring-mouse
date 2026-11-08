@@ -59,10 +59,10 @@ const DEFAULT_SETTINGS = {
   totpPendingSecretEncrypted: null,
   totpPendingRecoveryCodeHashes: [],
   apiKeyQuotaRules: { fiveHourTokenLimitM: null, weeklyTokenLimitM: null },
-  // Per-model-group quotas. Each group claims models by glob (`claude-opus*`)
-  // and carries its own rolling limits plus an optional downgrade target. Global
-  // definition, per-key accounting; a key may override a group's limits.
-  apiKeyModelQuotaRules: { enabled: true, groups: [] },
+  // When enabled, API keys may call combos only (not provider/model directly);
+  // keys tagged with one of `exemptTags` keep direct access. Per-model quotas
+  // live on combo members, so a direct call would bypass them.
+  comboOnlyRouting: { enabled: false, exemptTags: ["god", "sys"] },
   // Instance-wide default request-rate limit, in three parts: requests per
   // minute, how many may wait once that is used up, and how long a queued
   // request waits. A key may override any of them; all null = gate disabled.
@@ -205,8 +205,7 @@ export async function updateSettings(updates) {
   settingsCache = null;
   settingsCacheExpire = 0;
   setHotJson(SETTINGS_CACHE_KEY, mergeWithDefaults(next), SETTINGS_REDIS_TTL_SECONDS).catch(() => {});
-  if (Object.prototype.hasOwnProperty.call(updates || {}, "apiKeyQuotaRules")
-    || Object.prototype.hasOwnProperty.call(updates || {}, "apiKeyModelQuotaRules")) {
+  if (Object.prototype.hasOwnProperty.call(updates || {}, "apiKeyQuotaRules")) {
     invalidateQuotaCache();
   }
 

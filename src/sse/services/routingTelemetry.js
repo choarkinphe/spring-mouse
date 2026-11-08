@@ -17,6 +17,7 @@ const VALID_REASONS = new Set([
   "terminal", "upstream_error", "incomplete", "parse_error", "response_error", "unknown",
   "output_limit", "content_filter", "empty_stream",
   "header_timeout", "first_output_timeout", "sse_scan_limit", "queue_full", "deadline_exceeded", "weight_exceeds_capacity",
+  "quota_exceeded",
 ]);
 
 let producer = null;

@@ -1,6 +1,6 @@
 // Shared rolling-window definitions for every token quota (whole key, and each
-// per-model group). Kept dependency-free so `apiKeyQuota.js` and
-// `apiKeyModelQuota.js` can both import it without a cycle.
+// combo member). Kept dependency-free so `apiKeyQuota.js` and
+// `memberQuota.js` can both import it without a cycle.
 //
 // `resetAt` is a scheduled boundary: the key stores the next boundary for each
 // window, and every counter key embeds it, so advancing the boundary ("the

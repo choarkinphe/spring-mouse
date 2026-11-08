@@ -10,7 +10,7 @@ import {
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
-import { checkModelQuotaForRequest } from "@/lib/apiKeyQuota.js";
+import { getComboMemberQuotaGate } from "@/lib/apiKeyQuota.js";
 import { getSettings, getComboByName, getCombos } from "@/lib/localDb";
 import { getModelInfo, getComboModelEntries } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
@@ -42,6 +42,7 @@ import { clearProviderModelBreaker, recordProviderModelFailure } from "../servic
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { canAccessWithTags } from "@/shared/utils/accessTags";
+import { isComboOnlyKey } from "@/shared/utils/comboOnlyRouting";
 import { createRoutingTelemetrySession, attemptTerminalFromResult } from "../services/routingTelemetry.js";
 import { createRoutingObserver } from "open-sse/utils/routingOutcome.js";
 import { createModelRouting } from "@/shared/utils/modelRouting.js";
@@ -58,15 +59,76 @@ function resolveComboRequestModels(comboModels, requiredCapabilities, capabiliti
   return { models };
 }
 
-async function resolveComboRoutingModels(entries, requiredCapabilities, capabilities, comboPath, accessTags, searchBinding = null) {
+const entryModelId = (entry) => typeof entry === "string" ? entry : entry?.model;
+
+/**
+ * 429 for a combo whose every remaining member has used its per-key quota.
+ * Retry-After points at the earliest window roll among the exhausted members,
+ * because that is when the first of them becomes routable again.
+ */
+function comboMemberQuotaResponse(comboName, exhausted) {
+  const resets = exhausted
+    .map((member) => member?.exceededWindow?.resetAt)
+    .filter(Boolean)
+    .map((value) => new Date(value).getTime())
+    .filter(Number.isFinite);
+  const resetMs = resets.length ? Math.min(...resets) : null;
+  const retryAfterSeconds = resetMs ? Math.max(1, Math.ceil((resetMs - Date.now()) / 1000)) : 3600;
+  const resetAt = resetMs ? new Date(resetMs).toISOString() : null;
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: `Every model in "${comboName}" has used its quota for this API key; resets at ${resetAt || "the next window roll"}`,
+        type: "rate_limit_error",
+        code: "combo_member_quota_exceeded",
+        quota: {
+          combo: comboName,
+          resetAt,
+          members: exhausted.map((member) => ({ id: member.id, window: member.exceededWindow?.id || null, resetAt: member.exceededWindow?.resetAt || null })),
+        },
+      },
+    }),
+    {
+      status: HTTP_STATUS.RATE_LIMITED,
+      headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds), "Access-Control-Allow-Origin": "*" },
+    },
+  );
+}
+
+/**
+ * Drop members whose per-key quota is spent, exactly like members outside their
+ * schedule. Returns `{ entries }`, or `{ exhausted }` when the quota alone
+ * emptied a combo that had members — the caller answers 429 then, not 400,
+ * because the route is fine and only this key's allowance ran out.
+ */
+function applyMemberQuotaGate(entries, memberGate) {
+  if (!Array.isArray(entries) || !entries.length || !memberGate) return { entries };
+  const kept = [];
+  const exhausted = [];
+  for (const entry of entries) {
+    const member = memberGate.exhaustedFor(entryModelId(entry));
+    if (member) exhausted.push(member);
+    else kept.push(entry);
+  }
+  if (!exhausted.length) return { entries };
+  const skipped = [...new Set(exhausted.map((member) => member.id))];
+  log.info("QUOTA", `Skipping quota-exhausted combo member(s): ${skipped.join(", ")}`);
+  return kept.length ? { entries: kept, skipped } : { exhausted, skipped };
+}
+
+async function resolveComboRoutingModels(entries, requiredCapabilities, capabilities, comboPath, accessTags, searchBinding = null, memberGate = null) {
   const nodes = Array.isArray(entries) ? entries : [];
-  const ids = nodes.map((entry) => typeof entry === "string" ? entry : entry.model);
+  const ids = nodes.map(entryModelId);
   const now = new Date();
   // Only load the graph when a capability check actually traverses a sub-combo.
+  // A sub-combo whose capable members are all over quota must not count as
+  // capable, so the quota gate joins the schedule and tag checks here.
   const options = (searchBinding || requiredCapabilities.size) && ids.some((id) => !id.includes("/")) ? {
     combos: await getCombos(),
     comboPath,
-    isEntryAvailable: (entry) => isComboModelActive(entry, now) && canAccessWithTags(accessTags, entry?.accessTags),
+    isEntryAvailable: (entry) => isComboModelActive(entry, now)
+      && canAccessWithTags(accessTags, entry?.accessTags)
+      && !memberGate?.isExhausted(entryModelId(entry)),
     isComboAvailable: (combo) => canAccessWithTags(accessTags, combo.accessTags),
   } : undefined;
   const resolved = resolveComboRequestModels(nodes, requiredCapabilities, capabilities, options);
@@ -274,6 +336,23 @@ export async function handleChat(request, clientRawRequest = null) {
     }
 
     const comboEntries = await getComboModelEntries(routedModelStr, accessTags);
+
+    // Combo-only keys must name an existing combo: a direct provider/model call
+    // (or an alias to one) bypasses the member quotas, schedules and access tags
+    // configured on the route. An operator-configured harness/legacy route
+    // (defaultRouteKind) is allowed through even when its target is a
+    // provider/model pair — that mapping IS the operator's route.
+    if (!comboEntries && !defaultRouteKind && isComboOnlyKey(settings, accessTags)) {
+      log.warn("AUTH", `${routedModelStr} | rejected: combo-only routing is enabled`);
+      return finishEarly(
+        errorResponse(HTTP_STATUS.FORBIDDEN, `Model "${routedModelStr}" is not an available combo; this API key may only call combos`),
+        "access_denied",
+      );
+    }
+
+    // Resolved once per client request and handed down to nested combos, so a
+    // member is judged against one consistent quota snapshot for the whole route.
+    const memberGate = await getComboMemberQuotaGate(apiKey);
     let response;
 
     // A harness mapping is the operator's per-tool intent, so when it resolves to
@@ -290,7 +369,13 @@ export async function handleChat(request, clientRawRequest = null) {
         log.warn("AUTH", `${routedModelStr} | denied by combo access tags`);
         return finishEarly(errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key"), "access_denied");
       }
-      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags, combo?.search);
+      const gated = applyMemberQuotaGate(comboEntries, memberGate);
+      if (gated.exhausted) {
+        log.warn("QUOTA", `${routedModelStr} | every member is over this key's quota`);
+        routing.hint({ comboName: routedModelStr });
+        return finishEarly(comboMemberQuotaResponse(routedModelStr, gated.exhausted), "quota_exceeded");
+      }
+      const resolved = await resolveComboRoutingModels(gated.entries, requiredCapabilities, combo?.capabilities, [routedModelStr], accessTags, combo?.search, memberGate);
       if (resolved.error) return finishEarly(errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error), "unsupported_capability");
 
       // Strategies are keyed by the combo's stable id. getComboStrategy also
@@ -324,6 +409,7 @@ export async function handleChat(request, clientRawRequest = null) {
               routed: true,
               comboPath: [routedModelStr],
               maxEffort: memberEffortFor(resolved.models, m),
+              memberGate,
             });
           },
           log,
@@ -342,7 +428,7 @@ export async function handleChat(request, clientRawRequest = null) {
         response = await handleComboChat({
           body,
           models: routedModels,
-          handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, routing, role: "primary", routeKind: comboRouteKind, routed: true, search: combo?.search || null }),
+          handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, routing, role: "primary", routeKind: comboRouteKind, routed: true, search: combo?.search || null, memberGate }),
           log,
           comboName: routedModelStr,
           comboStrategy,
@@ -361,6 +447,7 @@ export async function handleChat(request, clientRawRequest = null) {
         role: "primary",
         routeKind: defaultRouteKind || "direct",
         routed: Boolean(defaultRouteKind),
+        memberGate,
       });
     }
 
@@ -375,109 +462,6 @@ export async function handleChat(request, clientRawRequest = null) {
     });
     throw error;
   }
-}
-
-/**
- * Enforce the per-model quota group that claims this model.
- *
- * Returns a Response when the request must stop, or `null` to continue. Two
- * outcomes stop it:
- *
- *   - the group is spent and names a `fallback` target → re-dispatch there. The
- *     downgrade is recorded in telemetry and logged as a FALLBACK line, because
- *     "why did my Opus request come back as Sonnet" must be answerable.
- *   - the group is spent with no target → 429. Silently continuing would treat
- *     the limit as advisory.
- *
- * A group that is undersubscribed, or a model no group claims, costs one cached
- * status read and nothing else.
- */
-async function enforceModelQuotaGate({ body, clientRawRequest, apiKey, accessTags, provider, model, modelStr, request, maxEffort = null, routing = null, comboPath = [], hasFallback = false, overloadDeadline = null, routeKind = null, routed = undefined }) {
-  const decision = await checkModelQuotaForRequest(apiKey, { provider, model });
-  if (!decision.applies || decision.allowed) return null;
-
-  const group = decision.group;
-  const window = group.exceededWindow;
-  // A downgrade target that loops back to the same model (or into the combo
-  // ancestry) would spin until the deadline; only follow it when it is a real,
-  // different destination.
-  const target = decision.fallback && decision.fallback !== modelStr ? decision.fallback : null;
-
-  if (target) {
-    log.warn(
-      "QUOTA",
-      `${modelStr} | model group "${group.label}" exhausted (${window?.label || "window"} ${window?.usedM ?? "?"}/${window?.limitM ?? "?"}M) → downgrading to ${target}`,
-    );
-    routing?.hint({ modelQuotaGroup: group.id, modelQuotaDowngrade: target });
-    // The downgrade target goes through the normal single-model pipeline, so it
-    // keeps account fallback, token refresh, capability checks and its own
-    // certificate: if the target is itself over quota it is refused there rather
-    // than downgrading again in a chain nobody can follow.
-    const downgraded = await handleSingleModelChat(
-      body,
-      target,
-      clientRawRequest,
-      request,
-      apiKey,
-      accessTags,
-      overloadDeadline,
-      { routing, routeKind, routed: true, maxEffort, hasFallback, comboPath, modelQuotaDepth: 1 },
-    );
-    // The caller asked for `modelStr`, so a failure must say so. Returning the
-    // target's error verbatim ("No active credentials for provider: anthropic"
-    // naming a model they never sent) reads like a gateway bug and hides the
-    // fact that a quota downgrade even happened.
-    if (downgraded.ok) return downgraded;
-    const detail = await downgraded.clone().json().catch(() => null);
-    const detailText = detail?.error?.message || detail?.error || downgraded.statusText || `HTTP ${downgraded.status}`;
-    log.warn("QUOTA", `${modelStr} | downgrade target ${target} also failed (${downgraded.status}): ${detailText}`);
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: `${modelStr} is over its model quota and the downgrade target ${target} failed: ${detailText}`,
-          type: "rate_limit_error",
-          code: "model_quota_downgrade_failed",
-          quota: { group: group.id, label: group.label, window: window?.id || null, downgradedTo: target, targetStatus: downgraded.status },
-        },
-      }),
-      {
-        status: downgraded.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      },
-    );
-  }
-
-  log.warn(
-    "QUOTA",
-    `${modelStr} | model group "${group.label}" exhausted (${window?.label || "window"} ${window?.usedM ?? "?"}/${window?.limitM ?? "?"}M) and has no downgrade target`,
-  );
-  routing?.hint({ modelQuotaGroup: group.id, modelQuotaBlocked: true });
-  return modelQuotaResponse(group);
-}
-
-function modelQuotaResponse(group) {
-  const window = group.exceededWindow;
-  const retryAfterSeconds = window?.resetAt
-    ? Math.max(1, Math.ceil((new Date(window.resetAt).getTime() - Date.now()) / 1000))
-    : 3600;
-  return new Response(
-    JSON.stringify({
-      error: {
-        message: `Model quota exceeded for "${group.label}" (${window?.label || "current window"}); resets at ${window?.resetAt || "the next window roll"}`,
-        type: "rate_limit_error",
-        code: "model_quota_exceeded",
-        quota: { group: group.id, label: group.label, window: window?.id || null, resetAt: window?.resetAt || null },
-      },
-    }),
-    {
-      status: HTTP_STATUS.RATE_LIMITED,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfterSeconds),
-        "Access-Control-Allow-Origin": "*",
-      },
-    },
-  );
 }
 
 /**
@@ -523,7 +507,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   return handleSingleModelChatInner(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, options);
 }
 
-async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null, modelQuotaDepth = 0 } = {}) {
+async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null, memberGate = null } = {}) {
   if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
   if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
     return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
@@ -546,25 +530,6 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   if (modelInfo.provider && isNonChatServiceProvider(modelInfo.provider)) {
     log.warn("CHAT", `${modelStr} | provider "${modelInfo.provider}" is a non-chat service — use its native endpoint`);
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Model "${modelStr}" is not a chat model`);
-  }
-  // Per-model quota. Checked here, after the model resolves to its executed
-  // provider/model but before any account is chosen: an over-quota group must
-  // never lock, cool down or even select an account, and this one place covers
-  // direct requests, aliases, combos and downgrade targets alike.
-  //
-  // Internal traffic (auto-routing classifier, fusion panel) is exempt: it is a
-  // gateway-enforced call the caller never asked for, and its usage is not
-  // persisted either, so charging it would be invisible spend.
-  // `modelQuotaDepth` bounds a chain of downgrades (A → B → C): one hop is
-  // useful, an unbounded chain is a routing loop the deadline would only end by
-  // timing the caller out.
-  if (apiKey && !internalRequest && provider && modelQuotaDepth === 0) {
-    const modelQuota = await enforceModelQuotaGate({
-      body, clientRawRequest, apiKey, accessTags, provider, model, modelStr, request,
-      maxEffort, routing, comboPath, hasFallback, overloadDeadline,
-      routeKind: effectiveRouteKind, routed: effectiveRouted,
-    });
-    if (modelQuota) return modelQuota;
   }
   const implicitClaudeFallback = typeof modelStr === "string"
     && !modelStr.includes("/")
@@ -639,7 +604,15 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       const chatSettings = await getSettings();
       const requiredCapabilities = detectRequiredCapabilities(body);
       const effectiveSearch = internalRequest || role === "panel" || role === "classifier" ? null : search || combo?.search || null;
-      const resolved = await resolveComboRoutingModels(comboEntries, requiredCapabilities, combo?.capabilities, [...comboPath, modelStr], accessTags, effectiveSearch);
+      const gated = applyMemberQuotaGate(comboEntries, memberGate);
+      if (gated.exhausted) {
+        log.warn("QUOTA", `${modelStr} | every member is over this key's quota`);
+        // Only a reason, not a completion: as a member of an outer combo this 429
+        // is a fallback signal, and the outer route may still succeed.
+        routing?.setTerminalReason?.("quota_exceeded");
+        return comboMemberQuotaResponse(modelStr, gated.exhausted);
+      }
+      const resolved = await resolveComboRoutingModels(gated.entries, requiredCapabilities, combo?.capabilities, [...comboPath, modelStr], accessTags, effectiveSearch, memberGate);
       if (resolved.error) {
         const response = errorResponse(HTTP_STATUS.BAD_REQUEST, resolved.error);
         routing?.complete({ outcome: "failed", terminalReason: "unsupported_capability" });
@@ -682,6 +655,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
               internalRequest, clientSignal, autoRoutingDepth, hasFallback,
               comboPath: [...comboPath, modelStr],
               maxEffort: combineEffortCeilings(maxEffort, memberEffortFor(resolved.models, m)),
+              memberGate,
             });
           },
           log,
@@ -699,7 +673,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       return handleComboChat({
         body,
         models: routedModels,
-        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, maxEffort: combineEffortCeilings(maxEffort, context.maxEffort), internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true, search: effectiveSearch }),
+        handleSingleModel: (b, m, context) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, accessTags, overloadDeadline, { ...context, maxEffort: combineEffortCeilings(maxEffort, context.maxEffort), internalRequest, clientSignal, autoRoutingDepth, routing, role, routeKind: nestedRouteKind, routed: true, search: effectiveSearch, memberGate }),
         log,
         comboName: modelStr,
         comboStrategy,

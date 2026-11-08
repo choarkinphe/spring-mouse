@@ -11,7 +11,7 @@ export const USAGE_COMMITTED_CHANNEL = "spring-mouse:usage:committed";
 let commitSubscriber = null;
 
 // `scope` namespaces one counter series inside a key — the whole-key quota uses
-// none, a per-model group uses `model:<groupId>`. It is a path segment rather
+// none, a combo member uses `member:<target>`. It is a path segment rather
 // than a separate prefix so `deleteQuotaCounters`' scan still finds both, and so
 // the whole-key key keeps the exact format it has always had (a live counter
 // written by an older build must keep being read after an upgrade).

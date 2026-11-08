@@ -10,7 +10,8 @@
 // (rpmLimit / rpmQueueMax / queueTimeoutMs).
 // The columns themselves are additive, so syncSchemaFromTables() backfills them.
 // 25 adds the combo search binding (`search`, JSON, NULL = disabled).
-export const SCHEMA_VERSION = 25;
+// 26 adds per-model quota overrides on apiKeys (`modelQuotaOverrides`, JSON).
+export const SCHEMA_VERSION = 26;
 
 // Keep the shared page cache bounded. The former 64 MiB cap was excessive for
 // this single-process control plane and could inflate RSS on small containers.
@@ -131,6 +132,10 @@ export const TABLES = {
       rpmLimit: "INTEGER",
       rpmQueueMax: "INTEGER",
       queueTimeoutMs: "INTEGER",
+      // Per-key overrides for the global per-model quota groups, JSON
+      // `{ [groupId]: { fiveHourTokenLimitM, weeklyTokenLimitM, fallback } }`.
+      // NULL inherits every group's configured limits.
+      modelQuotaOverrides: "TEXT",
       createdAt: "TEXT NOT NULL",
       lastUsedAt: "TEXT",
     },

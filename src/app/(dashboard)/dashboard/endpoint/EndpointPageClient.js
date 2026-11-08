@@ -141,7 +141,7 @@ function RateLimitPolicyCell({ activity }) {
 const MENU_GAP = 8;
 const MENU_VIEWPORT_MARGIN = 12;
 
-function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
+function KeyActionMenu({ onRotate, onTags, onRateLimit, onModelQuota, onDelete }) {
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState(null);
   const rootRef = useRef(null);
@@ -260,6 +260,10 @@ function KeyActionMenu({ onRotate, onTags, onRateLimit, onDelete }) {
             <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>speed</span>
             <span>配置请求限流</span>
           </button>
+          <button type="button" role="menuitem" onClick={() => runAction(onModelQuota)} className={styles.actionMenuItem}>
+            <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>tune</span>
+            <span>配置单模型配额</span>
+          </button>
           <div className={styles.actionMenuDivider} />
           <button type="button" role="menuitem" onClick={() => runAction(onDelete)} className={`${styles.actionMenuItem} ${styles.actionMenuDanger}`}>
             <span aria-hidden="true" className={`material-symbols-outlined ${styles.icon}`}>delete</span>
@@ -341,28 +345,74 @@ function LiveActivityCell({ activity }) {
   );
 }
 
-function QuotaCell({ quota, onReset, resettingWindow = null }) {
+// Per-model groups sit below the whole-key windows. They are shown for every
+// key, not only "limited" ones: a group limit applies independently of the
+// whole-key allowance, and that independence is exactly what an operator needs
+// to see when a premium model starts returning 429.
+function ModelQuotaGroups({ groups = [], overrides = {} }) {
+  if (!groups.length) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {groups.map((group) => (
+        <div key={group.id} className="min-w-0">
+          <div className="flex items-center gap-1.5 text-[11px] leading-none">
+            <span className={`truncate font-medium ${group.exceededWindow ? "text-rose-200" : "text-text-main"}`}>{group.label}</span>
+            {overrides[group.id] && <span className="shrink-0 rounded border border-violet-400/20 bg-violet-400/[0.08] px-1 py-0.5 text-[9px] text-violet-200">覆盖</span>}
+            {group.exceededWindow && <span className="shrink-0 rounded border border-rose-400/25 bg-rose-400/10 px-1 py-0.5 text-[9px] text-rose-200">已超额</span>}
+          </div>
+          <div className="mt-1 flex flex-col gap-1">
+            {group.windows.map((window) => (
+              <div key={window.id} className="flex items-center gap-2 text-[10px] leading-none">
+                <span className="w-12 shrink-0 text-text-muted">{window.label}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-text-muted">
+                  {formatTokenMillions(window.usedM)} / {formatTokenMillions(window.limitM)}
+                </span>
+                <span className={`shrink-0 font-mono ${window.exceeded ? "text-rose-300" : "text-text-muted"}`}>
+                  {window.usedPercentage ?? 0}%
+                </span>
+              </div>
+            ))}
+          </div>
+          {group.fallback && <p className="mt-0.5 truncate text-[10px] text-text-muted">超额后 → {group.fallback}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function QuotaCell({ quota, onReset, resettingWindow = null, modelGroups = [], overrides = {} }) {
+  const groupBlock = <ModelQuotaGroups groups={modelGroups} overrides={overrides} />;
+
   if (quota?.mode === "off") {
     return (
-      <span className="rounded-md border border-white/[.08] bg-black/[.12] px-2 py-1 text-[11px] text-text-muted">
-        配额关闭
-      </span>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="w-fit rounded-md border border-white/[.08] bg-black/[.12] px-2 py-1 text-[11px] text-text-muted">
+          配额关闭
+        </span>
+        {groupBlock}
+      </div>
     );
   }
 
   if (quota?.mode === "unlimited") {
     return (
-      <span className="rounded-md border border-sky-400/20 bg-sky-400/[.07] px-2 py-1 text-[11px] text-sky-200">
-        无限制
-      </span>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="w-fit rounded-md border border-sky-400/20 bg-sky-400/[.07] px-2 py-1 text-[11px] text-sky-200">
+          无限制
+        </span>
+        {groupBlock}
+      </div>
     );
   }
 
   if (!quota?.enabled) {
     return (
-      <span className="rounded-md border border-amber-400/20 bg-amber-400/[.07] px-2 py-1 text-[11px] text-amber-200">
-        请先在设置中配置额度
-      </span>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="w-fit rounded-md border border-amber-400/20 bg-amber-400/[.07] px-2 py-1 text-[11px] text-amber-200">
+          请先在设置中配置额度
+        </span>
+        {groupBlock}
+      </div>
     );
   }
 
@@ -376,6 +426,7 @@ function QuotaCell({ quota, onReset, resettingWindow = null }) {
           resetting={resettingWindow === window.id}
         />
       ))}
+      {groupBlock}
     </div>
   );
 }
@@ -403,6 +454,12 @@ export default function APIPageClient({ machineId }) {
   const [rateLimitDraft, setRateLimitDraft] = useState({ rpmLimit: "", rpmQueueMax: "", queueTimeoutSeconds: "" });
   const [savingRateLimit, setSavingRateLimit] = useState(false);
   const [rateLimitError, setRateLimitError] = useState("");
+  // Per-key overrides for the global model quota groups.
+  const [modelQuotaKey, setModelQuotaKey] = useState(null);
+  const [modelQuotaDraft, setModelQuotaDraft] = useState({});
+  const [savingModelQuota, setSavingModelQuota] = useState(false);
+  const [modelQuotaError, setModelQuotaError] = useState("");
+  const [modelQuotaGroups, setModelQuotaGroups] = useState([]);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -505,6 +562,9 @@ export default function APIPageClient({ machineId }) {
         const res = await fetch("/api/keys", { cache: "no-store" });
         if (!res.ok) return [];
         const data = await res.json();
+        // Group definitions ride along with the key list; keep them so the
+        // per-key override dialog can label each group without another request.
+        setModelQuotaGroups(Array.isArray(data.modelQuotaGroups) ? data.modelQuotaGroups : []);
         return data.keys || [];
       };
 
@@ -621,6 +681,64 @@ export default function APIPageClient({ machineId }) {
       setRateLimitError("保存失败，请稍后重试");
     } finally {
       setSavingRateLimit(false);
+    }
+  };
+
+  // Draft starts from the key's stored overrides. A blank limit means "inherit
+  // the global value for this group", which is what an absent field means to the
+  // API — so blank and inherited are the same state, and no extra toggle is
+  // needed to tell them apart.
+  const openModelQuotaDialog = (key) => {
+    setModelQuotaKey(key);
+    setModelQuotaError("");
+    setModelQuotaDraft(Object.fromEntries(modelQuotaGroups.map((group) => {
+      const override = key.modelQuotaOverrides?.[group.id] || {};
+      return [group.id, {
+        enabled: override.enabled !== false,
+        fallback: override.fallback ?? "",
+        fiveHourTokenLimitM: override.fiveHourTokenLimitM?.toString() || "",
+        weeklyTokenLimitM: override.weeklyTokenLimitM?.toString() || "",
+      }];
+    })));
+  };
+
+  const handleSaveModelQuota = async (event) => {
+    event.preventDefault();
+    if (!modelQuotaKey || savingModelQuota) return;
+    setSavingModelQuota(true);
+    setModelQuotaError("");
+    try {
+      // Only groups that actually differ from the global rules are stored, so
+      // the key keeps following a global change for everything it did not
+      // deliberately pin.
+      const overrides = {};
+      for (const group of modelQuotaGroups) {
+        const draft = modelQuotaDraft[group.id] || {};
+        const entry = {};
+        if (draft.fiveHourTokenLimitM !== "") entry.fiveHourTokenLimitM = Number(draft.fiveHourTokenLimitM);
+        if (draft.weeklyTokenLimitM !== "") entry.weeklyTokenLimitM = Number(draft.weeklyTokenLimitM);
+        const fallback = String(draft.fallback || "").trim();
+        if (fallback) entry.fallback = fallback;
+        // "Disabled for this key" cannot be expressed by a blank limit (blank
+        // means inherit), so it needs the explicit flag.
+        if (draft.enabled === false) entry.enabled = false;
+        if (Object.keys(entry).length) overrides[group.id] = entry;
+      }
+      const res = await fetch(`/api/keys/${modelQuotaKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelQuotaOverrides: overrides }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update model quota overrides");
+      }
+      await fetchData();
+      setModelQuotaKey(null);
+    } catch (error) {
+      setModelQuotaError(error.message || "保存失败，请稍后重试");
+    } finally {
+      setSavingModelQuota(false);
     }
   };
 
@@ -885,6 +1003,8 @@ export default function APIPageClient({ machineId }) {
                     <div className={styles.quotaLayout}>
                       <QuotaCell
                         quota={key.quota}
+                        modelGroups={key.quota?.modelGroups || []}
+                        overrides={key.modelQuotaOverrides || {}}
                         resettingWindow={resettingKeyQuotaId?.startsWith(`${key.id}:`)
                           ? resettingKeyQuotaId.split(":").pop()
                           : null}
@@ -917,6 +1037,7 @@ export default function APIPageClient({ machineId }) {
                         onRotate={() => { setRotationKey(key); setRotationError(""); }}
                         onTags={() => { setTaggingKey(key); setTagDraft(key.accessTags || []); }}
                         onRateLimit={() => openRateLimitDialog(key)}
+                        onModelQuota={() => openModelQuotaDialog(key)}
                         onDelete={() => handleDeleteKey(key.id)}
                       />
                     </div>
@@ -1053,6 +1174,93 @@ export default function APIPageClient({ machineId }) {
               取消
             </Button>
             <Button type="submit" loading={savingRateLimit}>
+              保存
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!modelQuotaKey}
+        title={modelQuotaKey ? `单模型配额 · ${modelQuotaKey.name || "未命名密钥"}` : "单模型配额"}
+        onClose={() => { if (!savingModelQuota) setModelQuotaKey(null); }}
+        closeOnOverlay={!savingModelQuota}
+      >
+        <form onSubmit={handleSaveModelQuota} className="flex flex-col gap-4">
+          <p className="text-xs text-text-muted">
+            留空即继承「设置 · API Key 配额」里的单模型配额组。只保存你在这里改过的组，其余继续跟随全局规则。
+          </p>
+          {modelQuotaGroups.length === 0 && (
+            <p className="rounded-lg border border-dashed border-border/60 px-4 py-5 text-center text-xs text-text-muted">
+              还没有配置任何单模型配额组，请先到「设置 · API Key 配额」中创建。
+            </p>
+          )}
+          {modelQuotaGroups.map((group) => {
+            const draft = modelQuotaDraft[group.id] || {};
+            return (
+              <div key={group.id} className="rounded-lg border border-border/60 p-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{group.label}</p>
+                    <p className="truncate font-mono text-[10px] text-text-muted">{(group.models || []).join(", ")}</p>
+                  </div>
+                  <Toggle
+                    checked={draft.enabled !== false}
+                    onChange={() => setModelQuotaDraft((prev) => ({
+                      ...prev,
+                      [group.id]: { ...prev[group.id], enabled: prev[group.id]?.enabled === false },
+                    }))}
+                    aria-label={`对这把密钥启用 ${group.label}`}
+                  />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input
+                    label="5 小时限额 (M)"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder={group.fiveHourTokenLimitM != null ? `继承 ${group.fiveHourTokenLimitM}` : "继承全局"}
+                    value={draft.fiveHourTokenLimitM ?? ""}
+                    onChange={(event) => setModelQuotaDraft((prev) => ({
+                      ...prev,
+                      [group.id]: { ...prev[group.id], fiveHourTokenLimitM: event.target.value },
+                    }))}
+                    disabled={savingModelQuota || draft.enabled === false}
+                  />
+                  <Input
+                    label="周限额 (M)"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder={group.weeklyTokenLimitM != null ? `继承 ${group.weeklyTokenLimitM}` : "继承全局"}
+                    value={draft.weeklyTokenLimitM ?? ""}
+                    onChange={(event) => setModelQuotaDraft((prev) => ({
+                      ...prev,
+                      [group.id]: { ...prev[group.id], weeklyTokenLimitM: event.target.value },
+                    }))}
+                    disabled={savingModelQuota || draft.enabled === false}
+                  />
+                </div>
+                <Input
+                  className="mt-2"
+                  label="降级目标（留空继承全局）"
+                  placeholder={group.fallback || "不降级，超额直接拒绝"}
+                  value={draft.fallback ?? ""}
+                  onChange={(event) => setModelQuotaDraft((prev) => ({
+                    ...prev,
+                    [group.id]: { ...prev[group.id], fallback: event.target.value },
+                  }))}
+                  disabled={savingModelQuota || draft.enabled === false}
+                />
+              </div>
+            );
+          })}
+          {modelQuotaError && <p role="alert" className="text-xs text-red-500">{modelQuotaError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" disabled={savingModelQuota} onClick={() => setModelQuotaKey(null)}>
+              取消
+            </Button>
+            <Button type="submit" loading={savingModelQuota} disabled={modelQuotaGroups.length === 0}>
               保存
             </Button>
           </div>

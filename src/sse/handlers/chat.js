@@ -10,6 +10,7 @@ import {
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
+import { checkModelQuotaForRequest } from "@/lib/apiKeyQuota.js";
 import { getSettings, getComboByName, getCombos } from "@/lib/localDb";
 import { getModelInfo, getComboModelEntries } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
@@ -377,6 +378,109 @@ export async function handleChat(request, clientRawRequest = null) {
 }
 
 /**
+ * Enforce the per-model quota group that claims this model.
+ *
+ * Returns a Response when the request must stop, or `null` to continue. Two
+ * outcomes stop it:
+ *
+ *   - the group is spent and names a `fallback` target → re-dispatch there. The
+ *     downgrade is recorded in telemetry and logged as a FALLBACK line, because
+ *     "why did my Opus request come back as Sonnet" must be answerable.
+ *   - the group is spent with no target → 429. Silently continuing would treat
+ *     the limit as advisory.
+ *
+ * A group that is undersubscribed, or a model no group claims, costs one cached
+ * status read and nothing else.
+ */
+async function enforceModelQuotaGate({ body, clientRawRequest, apiKey, accessTags, provider, model, modelStr, request, maxEffort = null, routing = null, comboPath = [], hasFallback = false, overloadDeadline = null, routeKind = null, routed = undefined }) {
+  const decision = await checkModelQuotaForRequest(apiKey, { provider, model });
+  if (!decision.applies || decision.allowed) return null;
+
+  const group = decision.group;
+  const window = group.exceededWindow;
+  // A downgrade target that loops back to the same model (or into the combo
+  // ancestry) would spin until the deadline; only follow it when it is a real,
+  // different destination.
+  const target = decision.fallback && decision.fallback !== modelStr ? decision.fallback : null;
+
+  if (target) {
+    log.warn(
+      "QUOTA",
+      `${modelStr} | model group "${group.label}" exhausted (${window?.label || "window"} ${window?.usedM ?? "?"}/${window?.limitM ?? "?"}M) → downgrading to ${target}`,
+    );
+    routing?.hint({ modelQuotaGroup: group.id, modelQuotaDowngrade: target });
+    // The downgrade target goes through the normal single-model pipeline, so it
+    // keeps account fallback, token refresh, capability checks and its own
+    // certificate: if the target is itself over quota it is refused there rather
+    // than downgrading again in a chain nobody can follow.
+    const downgraded = await handleSingleModelChat(
+      body,
+      target,
+      clientRawRequest,
+      request,
+      apiKey,
+      accessTags,
+      overloadDeadline,
+      { routing, routeKind, routed: true, maxEffort, hasFallback, comboPath, modelQuotaDepth: 1 },
+    );
+    // The caller asked for `modelStr`, so a failure must say so. Returning the
+    // target's error verbatim ("No active credentials for provider: anthropic"
+    // naming a model they never sent) reads like a gateway bug and hides the
+    // fact that a quota downgrade even happened.
+    if (downgraded.ok) return downgraded;
+    const detail = await downgraded.clone().json().catch(() => null);
+    const detailText = detail?.error?.message || detail?.error || downgraded.statusText || `HTTP ${downgraded.status}`;
+    log.warn("QUOTA", `${modelStr} | downgrade target ${target} also failed (${downgraded.status}): ${detailText}`);
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: `${modelStr} is over its model quota and the downgrade target ${target} failed: ${detailText}`,
+          type: "rate_limit_error",
+          code: "model_quota_downgrade_failed",
+          quota: { group: group.id, label: group.label, window: window?.id || null, downgradedTo: target, targetStatus: downgraded.status },
+        },
+      }),
+      {
+        status: downgraded.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      },
+    );
+  }
+
+  log.warn(
+    "QUOTA",
+    `${modelStr} | model group "${group.label}" exhausted (${window?.label || "window"} ${window?.usedM ?? "?"}/${window?.limitM ?? "?"}M) and has no downgrade target`,
+  );
+  routing?.hint({ modelQuotaGroup: group.id, modelQuotaBlocked: true });
+  return modelQuotaResponse(group);
+}
+
+function modelQuotaResponse(group) {
+  const window = group.exceededWindow;
+  const retryAfterSeconds = window?.resetAt
+    ? Math.max(1, Math.ceil((new Date(window.resetAt).getTime() - Date.now()) / 1000))
+    : 3600;
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: `Model quota exceeded for "${group.label}" (${window?.label || "current window"}); resets at ${window?.resetAt || "the next window roll"}`,
+        type: "rate_limit_error",
+        code: "model_quota_exceeded",
+        quota: { group: group.id, label: group.label, window: window?.id || null, resetAt: window?.resetAt || null },
+      },
+    }),
+    {
+      status: HTTP_STATUS.RATE_LIMITED,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfterSeconds),
+        "Access-Control-Allow-Origin": "*",
+      },
+    },
+  );
+}
+
+/**
  * Handle single model chat request
  */
 function combineEffortCeilings(a, b) {
@@ -419,7 +523,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   return handleSingleModelChatInner(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, options);
 }
 
-async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null } = {}) {
+async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null, modelQuotaDepth = 0 } = {}) {
   if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
   if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
     return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
@@ -442,6 +546,25 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   if (modelInfo.provider && isNonChatServiceProvider(modelInfo.provider)) {
     log.warn("CHAT", `${modelStr} | provider "${modelInfo.provider}" is a non-chat service — use its native endpoint`);
     return errorResponse(HTTP_STATUS.BAD_REQUEST, `Model "${modelStr}" is not a chat model`);
+  }
+  // Per-model quota. Checked here, after the model resolves to its executed
+  // provider/model but before any account is chosen: an over-quota group must
+  // never lock, cool down or even select an account, and this one place covers
+  // direct requests, aliases, combos and downgrade targets alike.
+  //
+  // Internal traffic (auto-routing classifier, fusion panel) is exempt: it is a
+  // gateway-enforced call the caller never asked for, and its usage is not
+  // persisted either, so charging it would be invisible spend.
+  // `modelQuotaDepth` bounds a chain of downgrades (A → B → C): one hop is
+  // useful, an unbounded chain is a routing loop the deadline would only end by
+  // timing the caller out.
+  if (apiKey && !internalRequest && provider && modelQuotaDepth === 0) {
+    const modelQuota = await enforceModelQuotaGate({
+      body, clientRawRequest, apiKey, accessTags, provider, model, modelStr, request,
+      maxEffort, routing, comboPath, hasFallback, overloadDeadline,
+      routeKind: effectiveRouteKind, routed: effectiveRouted,
+    });
+    if (modelQuota) return modelQuota;
   }
   const implicitClaudeFallback = typeof modelStr === "string"
     && !modelStr.includes("/")

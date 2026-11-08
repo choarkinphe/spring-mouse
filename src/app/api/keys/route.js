@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getApiKeys, createApiKey, getSettings } from "@/lib/localDb";
 import { getApiKeyQuotaStatuses } from "@/lib/apiKeyQuota";
+import { normalizeModelQuotaRules } from "@/lib/apiKeyModelQuota";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,10 @@ export async function GET() {
     const accessTagsByKey = settings.apiKeyAccessTags || {};
     return NextResponse.json({
       keys: keys.map((key) => ({ ...key, accessTags: accessTagsByKey[key.id] || [], quota: quotaStatuses[key.id] })),
+      // The global group definitions travel with the list so the credentials page
+      // can label a per-key override ("高阶模型 5h 2M → 覆盖 1M") without a second
+      // settings round trip.
+      modelQuotaGroups: normalizeModelQuotaRules(settings.apiKeyModelQuotaRules).groups,
     }, { headers: { "Cache-Control": "no-store, max-age=0" } });
   } catch (error) {
     console.log("Error fetching keys:", error);

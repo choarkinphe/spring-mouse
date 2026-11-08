@@ -7,6 +7,7 @@ import { normalizeComboStrategies } from "open-sse/services/autoRouting.js";
 import bcrypt from "bcryptjs";
 import { normalizeIpRules } from "@/lib/auth/ipAccess";
 import { normalizeAccessTags } from "@/shared/utils/accessTags";
+import { normalizeModelQuotaRules } from "@/lib/apiKeyModelQuota";
 import { normalizeClaudeMessagesRoute, getClaudeMessagesComboError, getComboTargetError } from "@/shared/utils/claudeMessagesRoute";
 import { normalizeHarnessProfiles, normalizeHarnessModels } from "@/shared/utils/harnessRoute";
 import { getActiveComboModels } from "open-sse/services/combo.js";
@@ -106,6 +107,22 @@ function normalizeApiKeyQuotaRules(rules) {
     fiveHourTokenLimitM: parseLimit(rules.fiveHourTokenLimitM),
     weeklyTokenLimitM: parseLimit(rules.weeklyTokenLimitM),
   };
+}
+
+// A downgrade target must resolve to something the gateway can actually route:
+// a `provider/model` pair, or an existing combo. A typo here would turn an
+// exhausted premium group into a 400 at request time, which is the worst moment
+// to discover it.
+function findInvalidModelQuotaComboTargets(rules, combos) {
+  const names = new Set((Array.isArray(combos) ? combos : []).map((combo) => combo?.name).filter(Boolean));
+  for (const group of rules.groups) {
+    if (!group.fallback) continue;
+    if (group.fallback.includes("/")) continue;
+    if (!names.has(group.fallback)) {
+      return `模型组“${group.label}”的降级目标“${group.fallback}”既不是 provider/model，也不是现有模型组合`;
+    }
+  }
+  return null;
 }
 
 function normalizeApiKeyRateLimitRules(rules) {
@@ -327,6 +344,18 @@ export async function PATCH(request) {
 
     if (Object.prototype.hasOwnProperty.call(body, "apiKeyQuotaRules")) {
       body.apiKeyQuotaRules = normalizeApiKeyQuotaRules(body.apiKeyQuotaRules);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "apiKeyModelQuotaRules")) {
+      // Normalizing here (rather than trusting the client) is what keeps a
+      // malformed group out of the settings row: the rules are read on the
+      // request hot path, so a group with a half-typed id or a negative limit
+      // must never reach storage.
+      body.apiKeyModelQuotaRules = normalizeModelQuotaRules(body.apiKeyModelQuotaRules);
+      const invalidTarget = findInvalidModelQuotaComboTargets(body.apiKeyModelQuotaRules, await getCombos());
+      if (invalidTarget) {
+        return NextResponse.json({ error: invalidTarget }, { status: 400 });
+      }
     }
 
     if (Object.prototype.hasOwnProperty.call(body, "apiKeyRateLimitRules")) {

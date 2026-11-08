@@ -20,6 +20,14 @@
 
 ## Unreleased
 
+### 单模型配额
+
+- 新增按模型分组的 Token 配额：在「设置 · API Key 配额」定义模型组（支持 `claude-opus*` 这类通配和 `provider/model` 渠道限定），各自拥有 5 小时与周额度。
+- 每把密钥独立计数，可单独覆盖某组的额度或降级目标；整体配额（`unlimited`）不受影响，高阶模型仍会被限。
+- 额度用完后：配了降级目标就改道到该模型或模型组合；没配则返回 429 `model_quota_exceeded`。走在模型组合里的请求按组合原有顺序自动跳过超额成员。
+- 降级目标自身失败时返回 `model_quota_downgrade_failed`，消息里同时点明原模型、所属组和目标模型。
+- 计数器复用密钥已有的滚动重置边界（Redis key 内嵌 `model:<groupId>`），新增 `apiKeys.modelQuotaOverrides` 列（迁移 028）存储逐钥覆盖。
+
 ### JevAPI / TypeSafe System One
 
 - 新增 JevAPI API Key 通道、上游模型同步和密钥验证。

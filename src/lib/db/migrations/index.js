@@ -23,8 +23,9 @@ import m024 from "./024-routing-telemetry.js";
 import m025 from "./025-backup-destinations.js";
 import m026 from "./026-combo-strategy-by-id.js";
 import m027 from "./027-codebuddy-to-workbuddy.js";
+import m028 from "./028-api-key-model-quota-overrides.js";
 
-export const MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m019, m020, m024, m025, m026, m027].sort((a, b) => a.version - b.version);
+export const MIGRATIONS = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m019, m020, m024, m025, m026, m027, m028].sort((a, b) => a.version - b.version);
 
 export function latestVersion() {
   return MIGRATIONS.length ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;

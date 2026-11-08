@@ -10,21 +10,29 @@ const ACTIVE_FLOW_PREFIX = "spring-mouse:active:flow:";
 export const USAGE_COMMITTED_CHANNEL = "spring-mouse:usage:committed";
 let commitSubscriber = null;
 
-export function quotaCounterKey(apiKeyId, windowId, resetAt) {
-  return `spring-mouse:quota:${apiKeyId}:${windowId}:${resetAt}`;
+// `scope` namespaces one counter series inside a key — the whole-key quota uses
+// none, a per-model group uses `model:<groupId>`. It is a path segment rather
+// than a separate prefix so `deleteQuotaCounters`' scan still finds both, and so
+// the whole-key key keeps the exact format it has always had (a live counter
+// written by an older build must keep being read after an upgrade).
+export function quotaCounterKey(apiKeyId, windowId, resetAt, scope = null) {
+  const prefix = scope
+    ? `spring-mouse:quota:${apiKeyId}:${scope}`
+    : `spring-mouse:quota:${apiKeyId}`;
+  return `${prefix}:${windowId}:${resetAt}`;
 }
 
-export async function getQuotaCounter(apiKeyId, windowId, resetAt) {
+export async function getQuotaCounter(apiKeyId, windowId, resetAt, scope = null) {
   const client = await getRedisClient({ required: false });
   if (!client) return null;
-  const value = await client.get(quotaCounterKey(apiKeyId, windowId, resetAt));
+  const value = await client.get(quotaCounterKey(apiKeyId, windowId, resetAt, scope));
   return value === null ? null : Number(value) || 0;
 }
 
-export async function initializeQuotaCounter(apiKeyId, windowId, resetAt, value) {
+export async function initializeQuotaCounter(apiKeyId, windowId, resetAt, value, scope = null) {
   const client = await getRedisClient({ required: false });
   if (!client) return Number(value) || 0;
-  const key = quotaCounterKey(apiKeyId, windowId, resetAt);
+  const key = quotaCounterKey(apiKeyId, windowId, resetAt, scope);
   const expiresAt = Math.max(Date.now() + 60000, new Date(resetAt).getTime() + 86400000);
   await client.sendCommand(["SET", key, String(Number(value) || 0), "NX", "PXAT", String(expiresAt)]);
   return Number(await client.get(key)) || 0;

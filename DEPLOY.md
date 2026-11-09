@@ -1,6 +1,6 @@
 # Spring Mouse 部署指南
 
-本文档只描述当前 Spring Mouse 仓库中已有的部署与运行机制：Node.js 生产运行、Docker、Docker Compose、Nginx 反向代理、Headroom、Cloudflare Tunnel、GeoIP 与 Jenkins 发布流程。
+本文档只描述当前 Spring Mouse 仓库中已有的部署与运行机制：Node.js 生产运行、Docker、Docker Compose、Nginx 反向代理、Headroom、Cloudflare Tunnel、GeoIP 与 GitHub Actions 发布流程。
 
 > 生产 HTTP 端口是 **8008**；本地开发端口是 **8007**。不要把开发端口暴露到公网。
 
@@ -18,7 +18,7 @@
 - [Headroom 与 PxPipe](#headroom-与-pxpipe)
 - [Cloudflare Tunnel](#cloudflare-tunnel)
 - [GeoIP](#geoip)
-- [Jenkins 发布](#jenkins-发布)
+- [GitHub Actions 发布](#github-actions-发布)
 - [升级、回滚与排查](#升级回滚与排查)
 
 ---
@@ -141,7 +141,7 @@ GEOIP_ASN_PATH=/app/data/geoip/GeoLite2-ASN.mmdb
 适用于不使用容器的单机或受控服务器。
 
 ```bash
-git clone git@git.wiguo.cn:service/spring-mouse.git
+git clone git@github.com:choarkinphe/spring-mouse.git
 cd spring-mouse
 
 npm install
@@ -247,9 +247,9 @@ curl -fsS http://127.0.0.1:8008/api/health
 
 ## Docker Compose 部署
 
-仓库的 `docker-compose.yml` 是内部生产镜像模板：
+仓库的 `docker-compose.yml` 是生产部署模板：
 
-- Spring Mouse 镜像：`docker.wiguo.cn/spring-mouse:latest`
+- Spring Mouse 镜像：`choarkinphe/spring-mouse:latest`（Docker Hub，可用 `SPRING_MOUSE_IMAGE` 覆盖）
 - 对外端口：`8008`
 - 数据挂载：`./data:/app/data`
 - GeoIP 挂载：`/www/geoip:/app/data/geoip`
@@ -455,27 +455,16 @@ GEOIP_ASN_PATH=/app/data/geoip/GeoLite2-ASN.mmdb
 
 ---
 
-## Jenkins 发布
+## GitHub Actions 发布
 
-仓库 `Jenkinsfile` 实现内部镜像的构建和部署流程：
+`.github/workflows/docker-publish.yml` 在每次 push 到 `main`（以及 `v*` 标签）时运行：
 
-1. 拉取指定 Git 分支；
-2. 读取短 commit SHA，并以 `APP_BUILD_VERSION` 注入镜像；
-3. 构建、检查并推送 `docker.wiguo.cn/spring-mouse:latest`；
-4. SSH 到目标服务器，通过 Compose 更新服务；
-5. 轮询 `/api/health`；
-6. 验证 `/api/version` 返回 `currentVersion`；
-7. 对比容器镜像 ID、OCI revision label 与容器内 `/app/build-info.json`；
-8. 清理 Jenkins 节点上的悬空镜像。
+1. 先跑关键请求路径的回归测试（vitest 子集）；
+2. 多架构构建（amd64 + arm64）镜像并推送到 Docker Hub `choarkinphe/spring-mouse`；
+3. 每次运行发布 `sha-<short-sha>` 与 `candidate-<full-sha>` 标签；push 到 `main` 会同时移动 `latest`；
+4. 镜像构建时以 `APP_BUILD_VERSION`（commit SHA）写入 `/app/build-info.json` 与 OCI revision label。
 
-Jenkins 参数：
-
-| 参数 | 作用 |
-|---|---|
-| `DEPLOY_TARGET` | 目标服务器配置。 |
-| `GIT_BRANCH` | 要构建/部署的分支。 |
-| `ONLY_BUILD` | 仅构建并推送镜像，不更新服务器。 |
-| `NO_CACHE_BUILD` | 禁用 Docker 构建缓存。 |
+镜像发布后，部署到生产服务器是手动步骤（见下文「升级」）：SSH 到目标服务器执行 `docker compose pull && docker compose up -d`，然后检查 `/api/health` 与 `/api/version` 返回的 `currentVersion`。
 
 部署服务器上的 `.env` 与 `docker-compose.yml` 是运维配置权威；不要依赖 CI 覆盖其中的密钥或环境差异。
 

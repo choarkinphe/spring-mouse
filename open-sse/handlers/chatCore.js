@@ -221,7 +221,15 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // Capture before translation drops body metadata. Never use _clientSessionId:
     // its generic resolver permits request IDs and account-scoped fallbacks.
     if (provider === "opencode-go") {
-      credentials.opencodeGoHeaders = buildOpenCodeGoHeaders({ headers: credentials.rawHeaders, body });
+      credentials.opencodeGoHeaders = buildOpenCodeGoHeaders({
+        headers: credentials.rawHeaders,
+        body,
+        // Upstream now rejects requests with no session at all. Clients that
+        // carry no conversation identity (plain REST callers like
+        // email-flight-change) get a stable per-key fallback instead — still
+        // hashed before it leaves this process.
+        sessionId: apiKey ? `key:${apiKey}` : `conn:${connectionId || "anonymous"}`,
+      });
     }
   }
 

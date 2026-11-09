@@ -56,13 +56,15 @@ function conversationId(headers, body) {
  * Build only the client identity headers required by OpenCode Go.
  * Native session IDs are preserved; explicit body conversation IDs are hashed
  * before forwarding so opaque third-party IDs are not exposed upstream.
+ * `sessionId` is a last-resort fallback (e.g. a gateway key/connection scope)
+ * used only when the client carries no conversation identity at all.
  */
 export function buildOpenCodeGoHeaders({ headers = {}, body = {}, sessionId = null } = {}) {
   const rawUserAgent = getHeader(headers, "user-agent");
   const userAgent = rawUserAgent && !GENERIC_USER_AGENTS.test(rawUserAgent)
     ? rawUserAgent
     : SPRING_MOUSE_USER_AGENT;
-  const resolvedSessionId = normalizedString(sessionId) || conversationId(headers, body);
+  const resolvedSessionId = conversationId(headers, body) || normalizedString(sessionId);
 
   return {
     "User-Agent": userAgent,

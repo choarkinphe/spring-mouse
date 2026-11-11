@@ -4,6 +4,7 @@ import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
+import { fetchImageAsBase64, parseDataUri } from "../translator/concerns/image.js";
 
 function serializeRequestBody(requestBody) {
   if (typeof FormData !== "undefined" && requestBody instanceof FormData) return requestBody;
@@ -189,13 +190,40 @@ export async function handleImageGenerationCore({
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, parseError.message || `Invalid response from ${provider}`);
   }
 
-  if (onRequestSuccess) await onRequestSuccess();
-
   // Normalize → OpenAI-compatible shape
   const normalized = adapter.normalize(parsed, body.prompt);
 
   // Already in OpenAI shape? skip re-normalize
   const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : parsed;
+
+  // CoreCode's GPT image endpoint returns temporary URLs even when b64_json
+  // is requested. Magpie's image tool expects inline data. Never fetch an
+  // upstream-supplied URL without the shared SSRF/size/signature protections.
+  if (provider === "corecode" && body.response_format !== "url" && !binaryOutput) {
+    if (!Array.isArray(finalBody?.data) || finalBody.data.length === 0) {
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "CoreCode returned no image data");
+    }
+    const data = [];
+    for (const item of finalBody.data) {
+      if (typeof item?.b64_json === "string" && item.b64_json.trim()) {
+        data.push(item);
+        continue;
+      }
+      const image = typeof item?.url === "string" ? await fetchImageAsBase64(item.url, { signal }) : null;
+      const base64 = image && parseDataUri(image.url)?.base64;
+      if (!base64) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "CoreCode image URL could not be safely downloaded or contained invalid image data");
+      data.push({ ...item, b64_json: base64 });
+    }
+    if (onRequestSuccess) await onRequestSuccess();
+    return {
+      success: true,
+      response: new Response(JSON.stringify({ ...finalBody, data }), {
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      }),
+    };
+  }
+
+  if (onRequestSuccess) await onRequestSuccess();
 
   // Binary output: decode first b64_json (or fetch url) into raw bytes
   if (binaryOutput) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.329 — 2026-11-12
+
+- 修复 CoreCode 图像模型返回临时 URL 时客户端缺少 `b64_json`：默认与 `response_format: "b64_json"` 的 JSON 响应会通过受保护下载补入 `b64_json`，下载失败明确返回 502；显式请求 `url` 仍保留链接、不下载图片。附 CoreCode 格式、逐图转换与安全失败回归测试及隔离预览夹具。
+
 ## v0.4.328 — 2026-11-11
 
 - 修复发布流水线：GitHub runner 持续无法解析 *.ubuntu.com 导致 apt 安装 redis-server 失败；CI 的 Redis 集成测试步骤增加从官方 `redis` 镜像拷贝二进制的兜底路径。

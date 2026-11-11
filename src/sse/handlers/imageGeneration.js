@@ -112,8 +112,11 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, accessTags, requesterId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, strictConnectionId: preferredConnectionId, accessTags, requesterId });
 
+    if (credentials?.pinnedUnavailable) {
+      return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, credentials.error);
+    }
     if (credentials?.accessDenied) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model or provider account is not available for this API key");
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -152,7 +155,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);
 
-    if (shouldFallback) {
+    if (shouldFallback && !preferredConnectionId) {
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;

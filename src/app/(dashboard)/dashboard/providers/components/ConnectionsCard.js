@@ -250,7 +250,9 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
     finally { setLoading(false); }
   }, [providerId]);
 
-  useEffect(() => { fetch_(); }, [fetch_]);
+  useEffect(() => { Promise.resolve().then(fetch_); }, [fetch_]);
+
+  useEffect(() => { window.dispatchEvent(new CustomEvent("providersChanged")); }, [connections]);
 
   const saveStrategy = async (strategy, stickyLimit) => {
     try {

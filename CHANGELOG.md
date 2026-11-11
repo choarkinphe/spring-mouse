@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.328 — 2026-11-11
+
+- 修复发布流水线：GitHub runner 持续无法解析 *.ubuntu.com 导致 apt 安装 redis-server 失败；CI 的 Redis 集成测试步骤增加从官方 `redis` 镜像拷贝二进制的兜底路径。
+
 ## v0.4.327 — 2026-11-11
 
 - 修复 CoreCode 渠道在部分号池因 `fallbacks` 字段被拒（400 `Extra inputs are not permitted`）：Claude Code 新版本会发送服务端 fallback 参数，而 CoreCode 部分号池的 Anthropic schema 不允许该字段；网关现在为 CoreCode 剥离 `fallbacks`/`fallback`（含 `output_config` 嵌套），改由网关自身的账号/模型回退兜底。

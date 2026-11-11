@@ -186,8 +186,15 @@ jobs:
 
       - name: Verify admission against isolated Redis
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y redis-server
+          if ! sudo apt-get update -qq || ! sudo apt-get install -y redis-server || ! command -v redis-server >/dev/null; then
+            # GitHub runner DNS occasionally loses *.ubuntu.com; fall back to the
+            # official image's binary (Docker Hub resolves even when apt does not).
+            docker create --name redis-bin redis:7-bookworm
+            docker cp redis-bin:/usr/local/bin/redis-server /tmp/redis-server
+            docker rm redis-bin
+            chmod +x /tmp/redis-server
+            sudo mv /tmp/redis-server /usr/local/bin/redis-server
+          fi
           SM_REDIS_INTEGRATION=1 npm exec --prefix tests vitest run -- --config tests/vitest.config.js tests/integration/connection-leases.test.js
 
   build:

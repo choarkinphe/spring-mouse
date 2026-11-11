@@ -7,6 +7,7 @@ import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getProviderAlias, isNonChatServiceProvider, supportsLiveModelSync } from "@/shared/constants/providers";
 import { shouldUseStaticModelCatalog, isVisibleModelCatalogRow } from "@/shared/utils/providerCustomModels";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { getCodexImageBaseModel, getCodexImageCandidates } from "@/shared/utils/codexImageModels";
 
 // ── ModelRow ───────────────────────────────────────────────────
 export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting }) {
@@ -27,7 +28,7 @@ export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCusto
         </div>
         {onTest && (
           <div className="relative group/btn">
-            <button onClick={onTest} disabled={isTesting} className={`p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-opacity ${isTesting ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+            <button aria-label={`测试 ${fullModel}`} title="测试模型（实际请求上游）" onClick={onTest} disabled={isTesting} className={`p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-opacity ${isTesting ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
               <span className="material-symbols-outlined text-sm" style={isTesting ? { animation: "spin 1s linear infinite" } : undefined}>
                 {isTesting ? "progress_activity" : "science"}
               </span>
@@ -120,6 +121,11 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   const [testingModelId, setTestingModelId] = useState(null);
   const [testError, setTestError] = useState("");
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
+  const codexImage = providerId === "codex" && kindFilter === "image";
+  const [connections, setConnections] = useState([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
+  const [selectedImageModel, setSelectedImageModel] = useState("");
+  const [addingModel, setAddingModel] = useState(false);
 
   const providerAlias = providerAliasOverride || getProviderAlias(providerId);
   const effectiveType = kindFilter || "llm";
@@ -143,7 +149,31 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     } catch (e) { console.log("ModelsCard fetch error:", e); }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { Promise.resolve().then(fetchData); }, [fetchData]);
+
+  useEffect(() => {
+    if (!canSync) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/providers", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "读取连接失败");
+        if (cancelled) return;
+        const active = (data.connections || []).filter((c) => c.provider === providerId && c.isActive !== false);
+        setConnections(active);
+        setSelectedConnectionId((previous) => active.some((c) => c.id === previous) ? previous : active.length === 1 ? active[0].id : "");
+      } catch (error) {
+        if (!cancelled) setModelSyncStatus({ type: "error", text: error.message });
+      }
+    };
+    load();
+    window.addEventListener("providersChanged", load);
+    return () => { cancelled = true; window.removeEventListener("providersChanged", load); };
+  }, [canSync, providerId]);
+
+  const imageCandidates = codexImage ? getCodexImageCandidates(snapshots.codex, selectedConnectionId) : [];
+  const selectedCandidate = imageCandidates.find((candidate) => candidate.id === selectedImageModel);
 
   const handleSetAlias = async (modelId, alias) => {
     const fullModel = `${providerAlias}/${modelId}`;
@@ -165,17 +195,21 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   };
 
   const handleAddCustomModel = async (modelId) => {
+    setAddingModel(true);
     try {
       const res = await fetch("/api/models/custom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerAlias, id: modelId, type: effectiveType }),
+        body: JSON.stringify({ providerAlias, id: modelId, type: effectiveType, ...(codexImage ? { connectionId: selectedConnectionId } : {}) }),
       });
-      if (res.ok) {
-        await fetchData();
-        window.dispatchEvent(new CustomEvent("customModelChanged"));
-      }
-    } catch (e) { console.log("add custom model error:", e); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "添加模型失败");
+      await fetchData();
+      window.dispatchEvent(new CustomEvent("customModelChanged"));
+      setShowAddCustomModel(false);
+      setTestError("");
+    } catch (error) { setTestError(error.message); }
+    finally { setAddingModel(false); }
   };
 
   const handleDeleteCustomModel = async (modelId) => {
@@ -200,11 +234,14 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       const connData = await connRes.json().catch(() => ({}));
       if (!connRes.ok) throw new Error(connData.error || "读取连接失败");
       const activeConnections = (connData.connections || []).filter((connection) => connection.provider === providerId && connection.isActive !== false);
-      if (activeConnections.length !== 1) {
-        setModelSyncStatus({ type: "error", text: activeConnections.length ? "多个账号请在渠道模型管理中选择同步连接" : "请先添加并启用一个连接" });
+      setConnections(activeConnections);
+      const activeConnection = activeConnections.find((connection) => connection.id === selectedConnectionId)
+        || (activeConnections.length === 1 ? activeConnections[0] : null);
+      if (!activeConnection) {
+        setModelSyncStatus({ type: "error", text: activeConnections.length ? "请选择用于同步的账号" : "请先添加并启用一个连接" });
         return;
       }
-      const activeConnection = activeConnections[0];
+      setSelectedConnectionId(activeConnection.id);
 
       const res = await fetch("/api/providers/model-sync", {
         method: "POST",
@@ -218,6 +255,8 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       }
       await fetchData();
       if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      setModelTestResults({});
+      setTestError("");
       setModelSyncStatus({ type: "success", text: `已同步 ${data.total} 个模型` });
     } catch (error) {
       setModelSyncStatus({ type: "error", text: `同步模型失败: ${error.message}` });
@@ -228,12 +267,21 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
   const handleTestModel = async (modelId) => {
     if (testingModelId) return;
+    if (codexImage && !selectedConnectionId) {
+      setTestError("请先选择用于出图测试的账号");
+      return;
+    }
+    if (codexImage && !imageCandidates.some((candidate) => candidate.id === modelId)) {
+      setTestError("请先同步所选账号的目录，确认该图像路由的底层模型在目录中");
+      return;
+    }
     setTestingModelId(modelId);
+    setTestError("");
     try {
       const res = await fetch("/api/models/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: `${providerAlias}/${modelId}`, kind: kindFilter }),
+        body: JSON.stringify({ model: `${providerAlias}/${modelId}`, kind: kindFilter, ...(codexImage ? { connectionId: selectedConnectionId } : {}) }),
       });
       const data = await res.json();
       setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
@@ -245,7 +293,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   };
 
   // Built-in models — filter by kindFilter if provided
-  const allBuiltIn = shouldUseStaticModelCatalog(providerId, snapshots) ? getModelsByProviderId(providerId) : [];
+  const allBuiltIn = !codexImage && shouldUseStaticModelCatalog(providerId, snapshots) ? getModelsByProviderId(providerId) : [];
   const builtInModels = kindFilter
     ? allBuiltIn.filter((m) => {
         if (m.kinds) return m.kinds.includes(kindFilter);
@@ -266,19 +314,54 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     <>
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">{nonChat ? "模型" : "Models"}{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
+          <h2 className="text-lg font-semibold">{nonChat || codexImage ? "模型" : "Models"}{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
           {canSync && (
             <Button
               size="sm"
               variant="secondary"
               icon="sync"
-              disabled={syncingModels}
+              aria-label="同步官方模型目录"
+              disabled={syncingModels || Boolean(testingModelId) || addingModel}
               onClick={handleSyncModels}
             >
               {syncingModels ? "同步中…" : "同步模型"}
             </Button>
           )}
         </div>
+        {canSync && (
+          <div className="mb-4 flex flex-col gap-2">
+            <label className="text-xs text-text-muted" htmlFor={`sync-account-${providerId}`}>同步{codexImage ? " / 出图测试" : ""}账号</label>
+            <select
+              id={`sync-account-${providerId}`}
+              aria-label="模型同步账号"
+              value={selectedConnectionId}
+              disabled={syncingModels || Boolean(testingModelId) || addingModel}
+              onChange={(event) => {
+                setSelectedConnectionId(event.target.value);
+                setSelectedImageModel("");
+                setModelTestResults({});
+                setModelSyncStatus(null);
+                setTestError("");
+              }}
+              className="w-full min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            >
+              <option value="">选择账号</option>
+              {connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name || connection.email || connection.id}</option>)}
+            </select>
+          </div>
+        )}
+        {codexImage && (
+          <div className="mb-4 space-y-3 rounded-lg border border-border p-3">
+            <p className="text-xs leading-5 text-text-muted">先选择账号并同步官方目录，再选择底层模型创建图像路由。目录可见不代表支持出图；需要 Plus 或更高等级及图像工具权限。测试会实际生成一张图片并消耗额度，仅使用所选账号。</p>
+            <label className="block text-xs text-text-muted" htmlFor="codex-image-base-model">底层模型（来自所选账号的官方目录）</label>
+            <select id="codex-image-base-model" aria-label="图像底层模型" value={selectedCandidate?.id || ""} onChange={(event) => setSelectedImageModel(event.target.value)} className="w-full min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm">
+              <option value="">{imageCandidates.length ? "选择底层模型" : "请先同步所选账号的模型目录"}</option>
+              {imageCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.baseModel}</option>)}
+            </select>
+            {selectedCandidate && <p className="break-all text-xs text-text-muted">图像路由：{providerAlias}/{selectedCandidate.id} → {selectedCandidate.baseModel} + image_generation（出图权限未验证）</p>}
+            <Button aria-label="添加 Codex 图像路由" size="sm" icon="add" disabled={!selectedCandidate || addingModel || syncingModels} onClick={() => handleAddCustomModel(selectedCandidate.id)}>{addingModel ? "添加中…" : "添加图像路由"}</Button>
+          </div>
+        )}
         {modelSyncStatus && (
           <p className={`text-xs mb-3 break-words ${modelSyncStatus.type === "error" ? "text-red-500" : "text-green-600"}`}>
             {modelSyncStatus.text}
@@ -301,7 +384,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
                 onSetAlias={(alias) => handleSetAlias(model.id, alias)}
                 onDeleteAlias={() => handleDeleteAlias(existingAlias)}
                 testStatus={modelTestResults[model.id]}
-                onTest={nonChat ? undefined : () => handleTestModel(model.id)}
+                onTest={nonChat && !codexImage ? undefined : () => handleTestModel(model.id)}
                 isTesting={testingModelId === model.id}
                 isFree={model.isFree}
               />
@@ -311,35 +394,32 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
           {myCustomModels.map((model) => (
             <ModelRow
               key={`${model.id}-${model.type}`}
-              model={{ id: model.id, name: model.name, ...(model.source === "official" ? { verified: true } : {}) }}
+              model={{ id: model.id, name: codexImage ? `底层模型：${getCodexImageBaseModel(model.id) || model.id} · ${modelTestResults[model.id] === "ok" ? "所选账号出图测试通过" : "出图权限需实测"}` : model.name, ...(!codexImage && model.source === "official" ? { verified: true } : {}) }}
               fullModel={`${providerAlias}/${model.id}`}
               copied={copied}
               onCopy={copy}
               onSetAlias={() => {}}
               onDeleteAlias={() => handleDeleteCustomModel(model.id)}
               testStatus={modelTestResults[model.id]}
-              onTest={nonChat ? undefined : () => handleTestModel(model.id)}
+              onTest={nonChat && !codexImage ? undefined : () => handleTestModel(model.id)}
               isTesting={testingModelId === model.id}
               isCustom
             />
           ))}
 
-          <button
+          {!codexImage && <button
             onClick={() => setShowAddCustomModel(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-black/15 dark:border-white/15 text-xs text-text-muted hover:text-primary hover:border-primary/40 transition-colors"
           >
             <span className="material-symbols-outlined text-sm">add</span>
             {nonChat ? "添加模型" : "Add Model"}
-          </button>
+          </button>}
         </div>
       </Card>
 
       <AddCustomModelModal
         isOpen={showAddCustomModel}
-        onSave={async (modelId) => {
-          await handleAddCustomModel(modelId);
-          setShowAddCustomModel(false);
-        }}
+        onSave={handleAddCustomModel}
         onClose={() => setShowAddCustomModel(false)}
       />
     </>

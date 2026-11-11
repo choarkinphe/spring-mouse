@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabilities } from "@/models";
+import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabilities, getProviderConnectionById } from "@/models";
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { normalizeModelCapabilities, fetchModelsDevCatalog, lookupModelInCatalog } from "@/shared/utils/modelCatalog";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
-import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
+import { getModelSyncSnapshot, getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
+import { getCodexImageCandidates } from "@/shared/utils/codexImageModels";
 
 export const dynamic = "force-dynamic";
 
@@ -24,9 +25,19 @@ export async function GET(request) {
 // POST /api/models/custom - Add custom model
 export async function POST(request) {
   try {
-    const { providerAlias, id, type, name } = await request.json();
+    const { providerAlias, id, type, name, connectionId } = await request.json();
     if (!providerAlias || !id) {
       return NextResponse.json({ error: "providerAlias and id required" }, { status: 400 });
+    }
+    if (["cx", "codex"].includes(providerAlias) && type === "image") {
+      const connection = connectionId ? await getProviderConnectionById(connectionId) : null;
+      if (!connection || connection.provider !== "codex" || connection.isActive === false) {
+        return NextResponse.json({ error: "请选择一个启用的 Codex 账号，并同步其官方模型目录" }, { status: 400 });
+      }
+      const snapshot = await getModelSyncSnapshot("codex");
+      if (!getCodexImageCandidates(snapshot, connectionId).some((candidate) => candidate.id === id)) {
+        return NextResponse.json({ error: "底层模型不在所选账号的官方目录中，请先同步该账号，再选择底层模型" }, { status: 400 });
+      }
     }
     // Bare model ids added by hand carry no modality data — borrow the shared
     // catalog's spec sheet (cross-provider id lookup) so vision/reasoning etc.

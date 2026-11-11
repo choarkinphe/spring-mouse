@@ -316,7 +316,11 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBeTruthy();
   });
 
-  it("generates image with Codex gpt-5.5-image using current Codex version header", async () => {
+  it.each([
+    ["gpt-5.5-image", "gpt-5.5"],
+    ["account-listed-model-image", "account-listed-model"],
+    ["account-listed-model", "account-listed-model"],
+  ])("generates Codex image with %s mapped to %s", async (routeModel, baseModel) => {
     global.fetch.mockResolvedValueOnce(
       new Response(
         [
@@ -335,7 +339,7 @@ describe("handleImageGenerationCore", () => {
         size: "1024x1024",
         output_format: "png",
       },
-      modelInfo: { provider: "codex", model: "gpt-5.5-image" },
+      modelInfo: { provider: "codex", model: routeModel },
       credentials: {
         accessToken: "codex-token",
         providerSpecificData: { chatgptAccountId: "account-123" },
@@ -358,7 +362,7 @@ describe("handleImageGenerationCore", () => {
 
     const fetchCall = global.fetch.mock.calls[0];
     const requestBody = JSON.parse(fetchCall[1].body);
-    expect(requestBody.model).toBe("gpt-5.5");
+    expect(requestBody.model).toBe(baseModel);
     expect(requestBody.tools).toEqual([
       { type: "image_generation", output_format: "png", size: "1024x1024" },
     ]);

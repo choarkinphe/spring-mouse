@@ -6,6 +6,7 @@ import { MEDIA_PROVIDER_KINDS, getProviderAlias, resolveProviderId } from "@/sha
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { Row, KIND_EXAMPLE_CONFIG } from "./exampleShared";
+import { getCodexImageCandidates } from "@/shared/utils/codexImageModels";
 
 const CLOUDFLARE_TEST_IMAGE_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog.png";
 const CLOUDFLARE_TEST_MASK_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog-mask.png";
@@ -36,13 +37,25 @@ export function GenericExampleCard({ providerId, kind }) {
   const exConfig = KIND_EXAMPLE_CONFIG[kind];
   const safeExConfig = exConfig || {};
 
-  // Get models for this kind (e.g., type="image")
-  const kindModels = getModelsByProviderId(providerId).filter((m) => getModelKind(m) === kind);
+  const codexImage = providerId === "codex" && kind === "image";
+  const [configuredModels, setConfiguredModels] = useState([]);
+  const [codexSnapshot, setCodexSnapshot] = useState(null);
+  const [connections, setConnections] = useState([]);
+  const [pinnedConnectionId, setPinnedConnectionId] = useState("");
+  // Codex examples must use configured routes backed by this account's directory,
+  // never suggest the registry's unverified hardcoded image aliases.
+  const presets = getModelsByProviderId(providerId).filter((m) => getModelKind(m) === kind);
+  const imageCandidates = getCodexImageCandidates(codexSnapshot, pinnedConnectionId);
+  const kindModels = codexImage
+    ? configuredModels.filter((m) => imageCandidates.some((candidate) => candidate.id === m.id))
+      .map((m) => ({ ...m, capabilities: presets[0]?.capabilities, params: presets[0]?.params }))
+    : presets;
   // Kinds that need a model identifier in the request (image/video/music)
   const KIND_NEEDS_MODEL = new Set(["image", "video", "music", "imageToText"]);
   const needsModel = KIND_NEEDS_MODEL.has(kind);
-  const allowManualModel = needsModel && kindModels.length === 0;
-  const [selectedModel, setSelectedModel] = useState(kindModels[0]?.id ?? "");
+  const allowManualModel = !codexImage && needsModel && kindModels.length === 0;
+  const [requestedModel, setSelectedModel] = useState("");
+  const selectedModel = codexImage ? (kindModels.some((m) => m.id === requestedModel) ? requestedModel : kindModels[0]?.id || "") : requestedModel || kindModels[0]?.id || "";
   const selectedModelObj = kindModels.find((m) => m.id === selectedModel);
   const supportsEdit = !!selectedModelObj?.capabilities?.includes("edit");
   const supportsMask = !!selectedModelObj?.capabilities?.includes("mask");
@@ -62,13 +75,11 @@ export function GenericExampleCard({ providerId, kind }) {
   const [binaryImageUrl, setBinaryImageUrl] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
-  const [connections, setConnections] = useState([]);
-  const [pinnedConnectionId, setPinnedConnectionId] = useState("");
   const { copied: copiedCurl, copy: copyCurl } = useCopyToClipboard();
   const { copied: copiedRes, copy: copyRes } = useCopyToClipboard();
 
   useEffect(() => {
-    setLocalEndpoint(window.location.origin);
+    Promise.resolve().then(() => setLocalEndpoint(window.location.origin));
     fetch("/api/keys")
       .then((r) => r.json())
       .then((d) => { setApiKey((d.keys || []).find((k) => k.isActive !== false)?.key || ""); })
@@ -83,6 +94,29 @@ export function GenericExampleCard({ providerId, kind }) {
       .catch(() => {});
   }, [providerId]);
 
+  useEffect(() => {
+    if (!codexImage) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [res, connRes] = await Promise.all([fetch("/api/models/custom", { cache: "no-store" }), fetch("/api/providers/client", { cache: "no-store" })]);
+        if (!res.ok || !connRes.ok) return;
+        const [data, connData] = await Promise.all([res.json(), connRes.json()]);
+        if (cancelled) return;
+        const snapshot = data.snapshots?.codex;
+        const active = (connData.connections || []).filter((c) => c.provider === providerId && c.isActive !== false);
+        setConnections(active);
+        setCodexSnapshot(snapshot || null);
+        setConfiguredModels((data.models || []).filter((m) => [providerAlias, providerId].includes(m.providerAlias) && getModelKind(m) === kind));
+        setPinnedConnectionId((previous) => active.some((c) => c.id === previous) ? previous : active.some((c) => c.id === snapshot?.connectionId) ? snapshot.connectionId : "");
+      } catch { /* Keep the example disabled until a usable catalog is available. */ }
+    };
+    load();
+    window.addEventListener("customModelChanged", load);
+    window.addEventListener("providersChanged", load);
+    return () => { cancelled = true; window.removeEventListener("customModelChanged", load); window.removeEventListener("providersChanged", load); };
+  }, [codexImage, providerAlias, providerId, kind]);
+
   // Safe to early-return now that all hooks are declared
   if (!kindConfig || !exConfig) return null;
 
@@ -91,7 +125,7 @@ export function GenericExampleCard({ providerId, kind }) {
   // webSearch/webFetch: use safeProviderAlias only. Other kinds: append model when present.
   const modelFull = !needsModel
     ? safeProviderAlias
-    : (selectedModel ? `${safeProviderAlias}/${selectedModel}` : (allowManualModel ? "" : safeProviderAlias));
+    : (selectedModel ? `${safeProviderAlias}/${selectedModel}` : (allowManualModel || codexImage ? "" : safeProviderAlias));
   const imageEditDefaults = getImageEditDefaults(providerId, selectedModel);
   const effectiveRefImage = refImage.trim() || imageEditDefaults.image || "";
   const effectiveMaskImage = maskImage.trim() || imageEditDefaults.mask_image || "";
@@ -220,11 +254,13 @@ export function GenericExampleCard({ providerId, kind }) {
   return (
     <Card>
       <h2 className="text-lg font-semibold mb-4">Example</h2>
+      {codexImage && <p className="mb-3 text-xs leading-5 text-text-muted">仅使用已添加且在所选账号目录中的图像路由。请先在上方同步账号并添加路由，再选择对应连接。运行会实际出图并消耗额度。</p>}
       <div className="flex flex-col gap-2.5">
         {/* Model selector — dropdown if presets exist, else manual input for media kinds */}
         {kindModels.length > 0 ? (
           <Row label="Model">
             <select
+              aria-label="示例模型"
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
@@ -265,11 +301,12 @@ export function GenericExampleCard({ providerId, kind }) {
         {connections.length > 0 && (
           <Row label="Connection">
             <select
+              aria-label="示例连接"
               value={pinnedConnectionId}
               onChange={(e) => setPinnedConnectionId(e.target.value)}
               className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
             >
-              <option value="">Auto (by priority)</option>
+              <option value="">{codexImage ? "选择已同步的账号" : "Auto (by priority)"}</option>
               {connections.map((c) => {
                 const plan = c.providerSpecificData?.chatgptPlanType;
                 const label = c.email || c.name || c.id.slice(0, 8);
@@ -438,6 +475,7 @@ export function GenericExampleCard({ providerId, kind }) {
                 {copiedCurl ? "Copied" : "Copy"}
               </button>
             <button
+              aria-label="运行媒体示例"
               onClick={handleRun}
               disabled={running || !input.trim() || !modelFull}
               className="flex w-full sm:w-auto items-center justify-center gap-1.5 px-3 py-1 rounded-lg bg-primary text-white text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

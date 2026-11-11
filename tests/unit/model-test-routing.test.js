@@ -3,7 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getApiKeys: vi.fn(),
   getConsistentMachineId: vi.fn(),
+  getProviderConnectionById: vi.fn(),
 }));
+
+vi.mock("@/models", () => ({ getProviderConnectionById: mocks.getProviderConnectionById }));
 
 vi.mock("@/lib/localDb", () => ({
   getApiKeys: mocks.getApiKeys,
@@ -66,10 +69,26 @@ describe("model test route kind routing", () => {
         method: "POST",
         body: JSON.stringify({
           model: "hf/black-forest-labs/FLUX.1-schnell",
-          prompt: "test",
+          prompt: "Draw a small blue circle on a white background.",
         }),
       })
     );
+  });
+
+  it("pins Codex image probes to the explicitly selected account", async () => {
+    mocks.getProviderConnectionById.mockResolvedValue({ id: "chosen", provider: "codex", isActive: true });
+    const { POST } = await import("../../src/app/api/models/test/route.js");
+    const res = await POST(new Request("http://localhost/api/models/test", { method: "POST", body: JSON.stringify({ model: "cx/account-model-image", kind: "image", connectionId: "chosen" }) }));
+    expect((await res.json()).ok).toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/images/generations"), expect.objectContaining({ headers: expect.objectContaining({ "x-connection-id": "chosen" }) }));
+  });
+
+  it.each([null, { provider: "openai", isActive: true }, { provider: "codex", isActive: false }])("rejects invalid Codex image test account %j", async (connection) => {
+    mocks.getProviderConnectionById.mockResolvedValue(connection);
+    const { POST } = await import("../../src/app/api/models/test/route.js");
+    const res = await POST(new Request("http://localhost/api/models/test", { method: "POST", body: JSON.stringify({ model: "cx/account-model-image", kind: "image", connectionId: "chosen" }) }));
+    expect(res.status).toBe(400);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("routes embedding model tests to /api/v1/embeddings", async () => {

@@ -51,8 +51,9 @@ async function getInternalHeaders() {
   return headers;
 }
 
-export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`) {
+export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`, { connectionId } = {}) {
   const headers = await getInternalHeaders();
+  if (connectionId) headers["x-connection-id"] = connectionId;
   const start = Date.now();
 
   if (kind === "embedding") {
@@ -82,8 +83,8 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     const res = await fetch(`${baseUrl}/api/v1/images/generations`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ model, prompt: "test" }),
-      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ model, prompt: "Draw a small blue circle on a white background." }),
+      signal: AbortSignal.timeout(180000),
     });
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");

@@ -411,6 +411,10 @@ export function formatRemainingQuota(quota) {
 
 /** Primary quota text always answers how much remains; totals belong in details. */
 export function formatQuotaRemainingLabel(quota) {
+  if (quota?.spend === true) {
+    const spent = formatQuotaBalance(quota) ?? formatQuotaAmount(quota);
+    return spent === null ? "消费暂不可用" : `已用 ${spent}`;
+  }
   const remaining = formatRemainingQuota(quota);
   if (remaining === null) return "余量暂不可用";
   return `${formatQuotaBalance(quota) !== null ? "余额" : "余量"} ${remaining}`;
@@ -678,8 +682,9 @@ export function parseQuotaData(provider, data) {
         break;
 
       case "corecode":
-        // Prepaid USD balance (new-api billing) + optional 30-day spend row.
-        // Forward `unlimited` — the spend row has no cap and must not render as 0%.
+        // Prepaid USD balance (new-api billing) + cumulative spend rows.
+        // `spend` marks a "money used, no cap" row: show the amount spent,
+        // never "unlimited" or a remaining percentage.
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({
@@ -688,6 +693,7 @@ export function parseQuotaData(provider, data) {
               total: quota.total || 0,
               balance: quota.balance,
               currency: quota.currency,
+              spend: quota.spend === true,
               unlimited: quota.unlimited === true,
               resetAt: quota.resetAt || null,
               remainingPercentage: quota.remainingPercentage,

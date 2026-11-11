@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.324 — 2026-11-11
+
+### CoreCode 渠道接入
+
+- 新增 CoreCode（corecode.live）渠道：纯血 Claude 中转，并带 GPT（Codex 号池）与 Grok。三种原生端点（Anthropic Messages、Chat Completions、Responses）按源格式直连零翻译；接入官方模型目录同步（按密钥分组返回）与图像、视频服务。
+- 配额面板显示近 30 天消费（美元）；上游不提供 sk- key 可查的余额接口，消费行以「已用」呈现而非「不限额」。
+
 ## v0.4.313 — 2026-11-06
 
 - 修复 Devin 在 `max_tokens: 1` 探活请求下无可见输出时被判为 502 `empty_stream` 的问题，改为返回 `finish_reason: length` 的正常回复。

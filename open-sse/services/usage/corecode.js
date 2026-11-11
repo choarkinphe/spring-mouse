@@ -102,7 +102,10 @@ export async function getCoreCodeUsage(apiKey = null, proxyOptions = null) {
       quotas["近 30 天消费 (USD)"] = {
         used: spendUsd,
         total: 0,
-        unlimited: true,
+        // Cumulative spend, not a quota: renders as an amount, never as
+        // remaining percentage or "unlimited".
+        spend: true,
+        balance: spendUsd,
         currency: "USD",
         resetAt: null,
       };

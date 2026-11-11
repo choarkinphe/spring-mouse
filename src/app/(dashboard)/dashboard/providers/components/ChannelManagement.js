@@ -250,7 +250,11 @@ function ChannelQuota({ quotas, loading }) {
           const detailText = detail?.length
             ? detail.map((q) => `${q.name}：${formatQuotaRemainingLabel(q)}${q.resetAt ? ` · ${formatResetTime(q.resetAt)}` : ""}`).join("\n")
             : null;
-          const valueNode = quota.unlimited ? (
+          const valueNode = quota.spend ? (
+            <Tooltip text={`累计消费：${amount ?? "—"}`}>
+              <span tabIndex={0} className="shrink-0 font-mono text-[#e4edf5]">已用 {amount ?? "—"}</span>
+            </Tooltip>
+          ) : quota.unlimited ? (
             <span className="shrink-0 text-[#7dd3fc]">不限额</span>
           ) : (
             <Tooltip text={detailText || (quota.balance !== undefined ? `账户余额：${amount ?? "—"}` : `已用 / 总量：${amount ?? "—"}`)}>
@@ -267,7 +271,7 @@ function ChannelQuota({ quotas, loading }) {
                 {valueNode}
                 {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
               </div>
-              {!quota.unlimited && (
+              {!quota.unlimited && !quota.spend && (
                 <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]" role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${remaining}%`}>
                   <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />
                 </div>

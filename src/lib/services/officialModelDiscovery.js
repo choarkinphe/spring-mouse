@@ -1,6 +1,6 @@
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
-import { refreshGoogleToken, refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
+import { refreshGoogleToken, refreshCodexToken, refreshClaudeOAuthToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
@@ -559,6 +559,14 @@ export async function discoverConnectionModels(connection) {
     }
   }
   if (!config) return { error: `Provider ${provider} has no implemented official model listing`, status: 501, unsupported: true };
+  // Legacy connections may lack authType. Explicit API Key connections must
+  // never pick up a stale OAuth token (or a Copilot token) from another flow.
+  const claudeOAuth = provider === "claude" && (connection.authType === "oauth"
+    || (!connection.authType && !!connection.accessToken));
+  if (claudeOAuth) {
+    config = { ...config, authHeader: "Authorization", authPrefix: "Bearer ",
+      headers: { ...config.headers, "anthropic-beta": "oauth-2025-04-20" } };
+  }
   const scope = config.listingScope || (provider === "opencode-go" ? "public" : "account");
   try {
     let result;
@@ -568,21 +576,46 @@ export async function discoverConnectionModels(connection) {
         return { error: result?.error || "Official model discovery failed", status: result?.status || 502 };
       }
     } else {
-      const token = connection.providerSpecificData?.copilotToken || connection.accessToken || connection.apiKey;
+      const token = provider === "claude"
+        ? (claudeOAuth ? connection.accessToken : connection.apiKey)
+        : connection.providerSpecificData?.copilotToken || connection.accessToken || connection.apiKey;
       if ((config.authHeader || config.authQuery) && !token) return { error: "No valid token found", status: 401 };
       const url = new URL(typeof config.url === "function" ? config.url(connection) : config.url);
       if (config.authQuery) url.searchParams.set(config.authQuery, token);
       const headers = { ...config.headers };
       if (config.authHeader) headers[config.authHeader] = (config.authPrefix || "") + token;
-      const options = { method: config.method || "GET", headers, cache: "no-store", signal: AbortSignal.timeout(15000) };
+      let options = { method: config.method || "GET", headers, cache: "no-store", signal: AbortSignal.timeout(15000) };
       if (config.body && options.method === "POST") options.body = JSON.stringify(config.body);
+      let refreshAttempted = false;
       const allModels = [];
       const seenPages = new Set();
       for (let page = 0; page < 100; page += 1) {
         const pageUrl = url.toString();
         if (seenPages.has(pageUrl)) throw new Error("Official directory pagination did not advance");
         seenPages.add(pageUrl);
-        const response = await fetch(pageUrl, options);
+        let response = await fetch(pageUrl, options);
+        if (claudeOAuth && !refreshAttempted && [401, 403].includes(response.status) && connection.refreshToken) {
+          refreshAttempted = true;
+          // Reuse the existing deduplicated refresh transport. A refresh failure
+          // preserves the original safe HTTP error, never upstream diagnostics.
+          const refreshed = await refreshClaudeOAuthToken(connection.refreshToken).catch(() => null);
+          if (refreshed?.accessToken) {
+            const credentials = {
+              accessToken: refreshed.accessToken,
+              refreshToken: refreshed.refreshToken || connection.refreshToken,
+              expiresIn: refreshed.expiresIn,
+            };
+            if (!await updateProviderCredentials(connection.id, credentials)) {
+              return { error: "Failed to save refreshed Claude credentials", status: 502 };
+            }
+            Object.assign(connection, credentials);
+            // New options avoid mutating the previous request's headers and give
+            // the retry its own deadline after the refresh has completed.
+            options = { ...options, headers: { ...options.headers, Authorization: `Bearer ${credentials.accessToken}` },
+              signal: AbortSignal.timeout(15000) };
+            response = await fetch(pageUrl, options);
+          }
+        }
         if (!response.ok) return await modelDiscoveryHttpError(response, provider);
         let data;
         try { data = await response.json(); } catch { return { error: "Upstream returned an invalid model list", status: 502 }; }

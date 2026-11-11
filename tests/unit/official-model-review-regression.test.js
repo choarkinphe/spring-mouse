@@ -150,6 +150,49 @@ describe("official model sync review regressions", () => {
     ]);
   });
 
+  it("syncs Claude OAuth models after refresh and persists the rotated token and complete snapshot", async () => {
+    connection = await createConnection("claude", { authType: "oauth", apiKey: null,
+      accessToken: "expired-test-token", refreshToken: "test-refresh-token" });
+    fetchMock.mockImplementation(async (url, options) => {
+      if (url === "https://api.anthropic.com/v1/oauth/token") {
+        expect(JSON.parse(options.body)).toMatchObject({ grant_type: "refresh_token", refresh_token: "test-refresh-token" });
+        return jsonResponse({ access_token: "fresh-test-token", refresh_token: "rotated-test-refresh", expires_in: 3600 });
+      }
+      if (url.startsWith("https://api.anthropic.com/v1/models")) {
+        const headers = new Headers(options.headers);
+        expect(headers.has("x-api-key")).toBe(false);
+        expect(headers.get("anthropic-beta")).toContain("oauth-2025-04-20");
+        if (headers.get("Authorization") === "Bearer expired-test-token") return jsonResponse({}, 401);
+        expect(headers.get("Authorization")).toBe("Bearer fresh-test-token");
+        const second = new URL(url).searchParams.has("after_id");
+        return jsonResponse({ data: [{ id: second ? "oauth-second" : "oauth-first" }],
+          has_more: !second, last_id: second ? "oauth-second" : "oauth-first" });
+      }
+      if (url === MODELS_DEV_URL) return jsonResponse({});
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const response = await sync();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true, officialCount: 2 });
+    const { getProviderConnectionById } = await import("@/lib/db/repos/connectionsRepo.js");
+    const saved = await getProviderConnectionById(connection.id);
+    expect(saved).toMatchObject({ accessToken: "fresh-test-token", refreshToken: "rotated-test-refresh", expiresIn: 3600 });
+    expect(new Date(saved.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(await snapshots.getModelSyncSnapshot("claude")).toMatchObject({ status: "success", modelIds: ["oauth-first", "oauth-second"] });
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/oauth/token"))).toHaveLength(1);
+
+    // A subsequent incomplete listing must not overwrite the successful snapshot.
+    fetchMock.mockImplementation(async (url) => {
+      if (url.endsWith("/oauth/token")) return jsonResponse({}, 400);
+      return new URL(url).searchParams.has("after_id") ? jsonResponse({}, 401)
+        : jsonResponse({ data: [{ id: "partial-only" }], has_more: true, last_id: "partial-only" });
+    });
+    const failed = await sync();
+    expect(failed.status).toBe(401);
+    expect(await snapshots.getModelSyncSnapshot("claude")).toMatchObject({ modelIds: ["oauth-first", "oauth-second"] });
+    expect((await repos.getCustomModels()).map(({ id }) => id)).toEqual(["oauth-first", "oauth-second"]);
+  });
+
   it("normalizes Codex upstream type=model to internal LLM and matching snapshot IDs", async () => {
     connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-codex-token" });
     fetchMock.mockImplementation(async (url, options) => {

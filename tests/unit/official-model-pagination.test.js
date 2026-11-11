@@ -4,6 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 // provider endpoints, OAuth refresh, or the user's persistent database.
 let discoverConnectionModels;
 let fetchMock;
+const refreshClaudeOAuthToken = vi.fn();
+const updateProviderCredentials = vi.fn();
 const API_KEY = "test-only-official-directory-key";
 const jsonResponse = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "Content-Type": "application/json" },
@@ -26,7 +28,8 @@ beforeAll(async () => {
   vi.doMock("@/sse/services/tokenRefresh", () => ({
     refreshGoogleToken: vi.fn(() => { throw new Error("Unexpected OAuth refresh"); }),
     refreshCodexToken: vi.fn(() => { throw new Error("Unexpected OAuth refresh"); }),
-    updateProviderCredentials: vi.fn(() => { throw new Error("Unexpected credential persistence"); }),
+    refreshClaudeOAuthToken,
+    updateProviderCredentials,
   }));
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
@@ -34,6 +37,8 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  refreshClaudeOAuthToken.mockReset().mockResolvedValue(null);
+  updateProviderCredentials.mockReset().mockResolvedValue(true);
   fetchMock.mockReset().mockRejectedValue(new Error("Unexpected external request in directory pagination test"));
 });
 
@@ -120,6 +125,128 @@ describe("complete official directory pagination", () => {
       expect(new URL(url).origin + new URL(url).pathname).toBe("https://api.cohere.ai/v1/models");
       expect(new Headers(options.headers).get("Authorization")).toBe(`Bearer ${API_KEY}`);
     }
+  });
+});
+
+describe("Claude model discovery authentication", () => {
+  const oauthConnection = (extra = {}) => ({
+    id: "isolated-claude-oauth", provider: "claude", authType: "oauth",
+    accessToken: "test-only-oauth-token", refreshToken: "test-only-refresh-token", ...extra,
+  });
+  const modelsPage = (id, more = false) => jsonResponse({
+    data: [{ id, display_name: `Display ${id}` }], has_more: more, last_id: id,
+  });
+  const expectOAuthHeaders = (options, token) => {
+    const headers = new Headers(options.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${token}`);
+    expect(headers.get("anthropic-beta")).toContain("oauth-2025-04-20");
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(headers.has("x-api-key")).toBe(false);
+  };
+
+  it.each(["oauth", undefined])("uses OAuth headers on every page for authType=%s", async (authType) => {
+    fetchMock.mockResolvedValueOnce(modelsPage("first", true)).mockResolvedValueOnce(modelsPage("second"));
+    const result = await discoverConnectionModels(oauthConnection({ authType, apiKey: API_KEY,
+      providerSpecificData: { copilotToken: "unrelated-token" } }));
+    expect(result.models.map(({ id }) => id)).toEqual(["first", "second"]);
+    expect(result.discovery).toMatchObject({ status: "success", source: "official", count: 2 });
+    expect(requestedUrls()[1].searchParams.get("after_id")).toBe("first");
+    for (const [, options] of fetchMock.mock.calls) expectOAuthHeaders(options, "test-only-oauth-token");
+    expect(refreshClaudeOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each(["apikey", "api_key"])("keeps %s authentication separate even with a stale accessToken", async (authType) => {
+    fetchMock.mockResolvedValueOnce(modelsPage("key-model"));
+    const result = await discoverConnectionModels(oauthConnection({ authType, apiKey: API_KEY }));
+    expect(result.discovery.status).toBe("success");
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get("x-api-key")).toBe(API_KEY);
+    expect(headers.has("Authorization")).toBe(false);
+    expect(headers.has("anthropic-beta")).toBe(false);
+    expect(refreshClaudeOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403])("refreshes once after HTTP %s and persists rotating credentials before retry", async (status) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, status)).mockResolvedValueOnce(modelsPage("refreshed"));
+    refreshClaudeOAuthToken.mockResolvedValue({ accessToken: "new-token", refreshToken: "new-refresh", expiresIn: 3600 });
+    const result = await discoverConnectionModels(oauthConnection());
+    expect(result.discovery.status).toBe("success");
+    expect(refreshClaudeOAuthToken).toHaveBeenCalledExactlyOnceWith("test-only-refresh-token");
+    expect(updateProviderCredentials).toHaveBeenCalledExactlyOnceWith("isolated-claude-oauth", expect.objectContaining({
+      accessToken: "new-token", refreshToken: "new-refresh", expiresIn: 3600,
+    }));
+    expect(updateProviderCredentials.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[1]);
+    expectOAuthHeaders(fetchMock.mock.calls[0][1], "test-only-oauth-token");
+    expectOAuthHeaders(fetchMock.mock.calls[1][1], "new-token");
+    expect(fetchMock.mock.calls[1][1].signal).not.toBe(fetchMock.mock.calls[0][1].signal);
+  });
+
+  it("retries the failed second page and carries the new token to later pages", async () => {
+    fetchMock.mockResolvedValueOnce(modelsPage("first", true)).mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(modelsPage("second", true)).mockResolvedValueOnce(modelsPage("third"));
+    refreshClaudeOAuthToken.mockResolvedValue({ accessToken: "new-token", expiresIn: 3600 });
+    const result = await discoverConnectionModels(oauthConnection());
+    expect(result.models.map(({ id }) => id)).toEqual(["first", "second", "third"]);
+    expect(requestedUrls().map(url => url.searchParams.get("after_id"))).toEqual([null, "first", "first", "second"]);
+    for (const [, options] of fetchMock.mock.calls.slice(2)) expectOAuthHeaders(options, "new-token");
+    expect(updateProviderCredentials).toHaveBeenCalledWith("isolated-claude-oauth", expect.objectContaining({ refreshToken: "test-only-refresh-token" }));
+    expect(refreshClaudeOAuthToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh again when a later page rejects the refreshed token", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 401)).mockResolvedValueOnce(modelsPage("first", true))
+      .mockResolvedValueOnce(jsonResponse({}, 401));
+    refreshClaudeOAuthToken.mockResolvedValue({ accessToken: "new-token" });
+    const result = await discoverConnectionModels(oauthConnection());
+    expectNoPartialSuccess(result);
+    expect(result.status).toBe(401);
+    expect(refreshClaudeOAuthToken).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([null, "throw"])("fails safely when refresh returns %s", async (outcome) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "private upstream diagnostic" }, 401));
+    if (outcome === "throw") refreshClaudeOAuthToken.mockRejectedValue(new Error("private refresh diagnostic"));
+    const result = await discoverConnectionModels(oauthConnection());
+    expect(result).toEqual({ error: "Failed to fetch models: 401", status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(updateProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("does not retry if rotating credentials cannot be saved", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 401));
+    refreshClaudeOAuthToken.mockResolvedValue({ accessToken: "new-token", refreshToken: "new-refresh" });
+    updateProviderCredentials.mockResolvedValue(false);
+    const result = await discoverConnectionModels(oauthConnection());
+    expectNoPartialSuccess(result);
+    expect(result.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { authType: "oauth", accessToken: "", apiKey: API_KEY },
+    { authType: "apikey", accessToken: "stale-token", apiKey: "" },
+  ])("does not fall back to another credential type when credentials are missing: %j", async (extra) => {
+    const result = await discoverConnectionModels(oauthConnection(extra));
+    expect(result.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(refreshClaudeOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { authType: "oauth", refreshToken: "" },
+    { authType: "apikey", apiKey: API_KEY },
+  ])("does not refresh missing-refresh-token or API Key connections: %j", async (extra) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 401));
+    expect((await discoverConnectionModels(oauthConnection(extra))).status).toBe(401);
+    expect(refreshClaudeOAuthToken).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([400, 429, 500])("does not refresh on non-authentication HTTP %s", async (status) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, status));
+    expect((await discoverConnectionModels(oauthConnection())).status).toBe(status);
+    expect(refreshClaudeOAuthToken).not.toHaveBeenCalled();
   });
 });
 

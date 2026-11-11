@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.327 — 2026-11-11
+
+- 修复 CoreCode 渠道在部分号池因 `fallbacks` 字段被拒（400 `Extra inputs are not permitted`）：Claude Code 新版本会发送服务端 fallback 参数，而 CoreCode 部分号池的 Anthropic schema 不允许该字段；网关现在为 CoreCode 剥离 `fallbacks`/`fallback`（含 `output_config` 嵌套），改由网关自身的账号/模型回退兜底。
+
+## v0.4.326 — 2026-11-11
+
+- 修复渠道图标：批量去除 26 个白底图标的白色边角；替换 Claude 星形（透明、居中）与 Anthropic（浅色文字版，适配深色看板）。
+
 ## v0.4.325 — 2026-11-11
 
 - 修复 Claude OAuth 模型目录获取：区分 OAuth Bearer 与 API key 鉴权，在分页失败前持久化轮换凭据，并在失败时保留已同步的完整模型快照；补鉴权、分页与 SQLite 持久化回归测试。

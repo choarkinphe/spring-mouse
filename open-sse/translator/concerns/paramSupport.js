@@ -8,6 +8,12 @@ import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 const STRIP_RULES = [
   // All Claude models: temperature deprecated/rejected upstream (Anthropic 400). #1748
   { match: /claude/i, drop: ["temperature"] },
+  // CoreCode's account pools run stricter Anthropic schemas: client-supplied
+  // `fallbacks` (Claude Code's server-side-fallback param) is rejected with
+  // 400 "fallbacks: Extra inputs are not permitted" on pools whose upstream
+  // doesn't know the field. The gateway's own account/model failover already
+  // covers this, so drop it (top level + nested in output_config).
+  { provider: "corecode", drop: ["fallbacks", "fallback"], dropNested: { output_config: ["fallbacks", "fallback"] } },
   // GitHub Copilot gpt-5.4: temperature unsupported.
   { provider: "github", match: /gpt-5\.4/i, drop: ["temperature"] },
   // GitHub Copilot Claude (except opus/sonnet 4.6): thinking + reasoning_effort rejected. #713
@@ -43,6 +49,14 @@ export function stripUnsupportedParams(provider, model, body) {
     if (!matches(rule, model)) continue;
     for (const key of rule.drop || []) {
       if (body[key] !== undefined) delete body[key];
+    }
+    for (const [parent, keys] of Object.entries(rule.dropNested || {})) {
+      const container = body[parent];
+      if (!container || typeof container !== "object") continue;
+      for (const key of keys) {
+        if (container[key] !== undefined) delete container[key];
+      }
+      if (Object.keys(container).length === 0) delete body[parent];
     }
     // CF Workers AI oneOf root schema only accepts content as plain string (#1926)
     if (rule.flattenContent && Array.isArray(body.messages)) {

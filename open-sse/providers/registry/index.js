@@ -140,6 +140,8 @@ import p127 from "./qoder-cn.js";
 
 import p128 from "./devin.js";
 
+import p129 from "./corecode.js";
+
 export default [
   p0,
   p18,
@@ -268,4 +270,5 @@ export default [
   p100,
   p127,
   p128,
+  p129,
 ];

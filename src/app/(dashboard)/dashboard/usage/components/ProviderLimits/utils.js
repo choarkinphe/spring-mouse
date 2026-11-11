@@ -677,6 +677,25 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "corecode":
+        // Prepaid USD balance (new-api billing) + optional 30-day spend row.
+        // Forward `unlimited` — the spend row has no cap and must not render as 0%.
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              balance: quota.balance,
+              currency: quota.currency,
+              unlimited: quota.unlimited === true,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
       case "ollama":
         // Session (5h) / Weekly (7d) usage % from ollama.com/api/usage.
         // remainingPercentage only — no absolute remaining (UI treats remaining as %).

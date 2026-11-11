@@ -1,0 +1,77 @@
+export default {
+  id: "corecode",
+  alias: "corecode",
+  aliases: ["core-code"],
+  uiAlias: "corecode",
+  display: {
+    name: "CoreCode",
+    icon: "hub",
+    color: "#D97757",
+    textIcon: "CC",
+    website: "https://corecode.live",
+    notice: {
+      text: "Claude Code relay answered by official Anthropic accounts. Also relays GPT (Codex pool) and Grok. API-key groups (auto group recommended) decide which models a key can call — see corecode.live pricing.",
+      apiKeyUrl: "https://corecode.live/token",
+    },
+  },
+  category: "apikey",
+  features: { usage: true, usageApikey: true },
+  thinkingConfig: {
+    options: ["auto", "none", "low", "medium", "high", "xhigh"],
+    defaultMode: "auto",
+  },
+  transport: {
+    baseUrl: "https://corecode.live/v1/chat/completions",
+    validateUrl: "https://corecode.live/v1/models",
+    usage: {
+      url: "https://corecode.live/v1/dashboard/billing/subscription",
+      spendUrl: "https://corecode.live/v1/dashboard/billing/usage",
+    },
+  },
+  // Relay catalog is per key group; the synced /v1/models list is what this
+  // key's group can actually call, so let it drive the model table.
+  modelListSource: "upstream",
+  // Three native endpoints per docs: Messages (no /v1), Chat Completions and
+  // Responses (under /v1). Every cataloged model works on all three — new-api
+  // style group routing selects the account pool by model name.
+  transports: [
+    { format: "openai", baseUrl: "https://corecode.live/v1/chat/completions", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+    { format: "claude", baseUrl: "https://corecode.live/v1/messages", auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true } },
+    { format: "openai-responses", baseUrl: "https://corecode.live/v1/responses", auth: { combined: true, header: "Authorization", scheme: "bearer" } },
+  ],
+  models: [
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+    { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+    { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
+    { id: "claude-opus-5", name: "Claude Opus 5" },
+    { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
+    { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
+    { id: "gpt-6.1-sol", name: "GPT 6.1 Sol" },
+    { id: "gpt-6.1-terra", name: "GPT 6.1 Terra" },
+    { id: "gpt-6-astra", name: "GPT 6 Astra" },
+    { id: "gpt-6-luna", name: "GPT 6 Luna" },
+    { id: "codex-auto-review", name: "Codex Auto Review" },
+    { id: "grok-4.7", name: "Grok 4.7" },
+    { id: "grok-4.6", name: "Grok 4.6" },
+    { id: "grok-imagine-image", name: "Grok Imagine Image", kind: "image" },
+    { id: "gpt-image-2", name: "GPT Image 2", capabilities: ["text2img", "edit"], params: ["size"], kind: "image" },
+    { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", capabilities: ["text2img", "edit"], params: ["size"], kind: "image" },
+    { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", capabilities: ["text2img", "edit"], params: ["size"], kind: "image" },
+    { id: "gpt-image-2.6-flare", name: "GPT Image 2.6 Flare", capabilities: ["text2img", "edit"], params: ["size"], kind: "image" },
+    { id: "gpt-image-2.6-sunburst", name: "GPT Image 2.6 Sunburst", capabilities: ["text2img", "edit"], params: ["size"], kind: "image" },
+    { id: "seedance-2.5-480p", name: "Seedance 2.5 480p", kind: "video" },
+    { id: "seedance-2.5-720p", name: "Seedance 2.5 720p", kind: "video" },
+    { id: "seedance-2.0-mini-720p-fixed", name: "Seedance 2.0 Mini 720p (Fixed)", kind: "video" },
+    { id: "seedance-2.5-720p-fixed", name: "Seedance 2.5 720p (Fixed)", kind: "video" },
+    { id: "wan-3.0-480p", name: "WAN 3.0 480p", kind: "video" },
+    { id: "wan-3.0-prime-720p", name: "WAN 3.0 Prime 720p", kind: "video" },
+    { id: "wan-3.0-prime-1080p", name: "WAN 3.0 Prime 1080p", kind: "video" },
+  ],
+  serviceKinds: ["llm", "image", "video"],
+  imageConfig: { baseUrl: "https://corecode.live/v1/images/generations" },
+  videoConfig: { baseUrl: "https://corecode.live/v1/videos" },
+  modelsFetcher: { url: "https://corecode.live/v1/models", type: "openai" },
+  passthroughModels: true,
+};

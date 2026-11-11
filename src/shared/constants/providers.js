@@ -141,6 +141,7 @@ export const OFFICIAL_MODEL_SYNC_PROVIDERS = new Set([
   "nvidia",
   "assemblyai",
   "vercel-ai-gateway",
+  "corecode",
   // Native systemone listing (GET /v1/models) — models synced as type "systemone".
   "jevapi",
 ]);

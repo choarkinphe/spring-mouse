@@ -30,6 +30,7 @@ import { UPSTREAM_FAILURE_KINDS } from "../config/upstreamErrorDiagnostics.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 import { stripCodexUnsupportedPatterns } from "../utils/codexToolSchema.js";
 import { normalizeCodexHostedHistory } from "../utils/codexHostedHistory.js";
+import { normalizeResponsesCallIds } from "../utils/responsesCallId.js";
 
 // SSE error patterns inside 200-OK bodies. Some retry same account first; capacity rotates accounts.
 // The generic OpenAI 500 blurb ("An error occurred while processing your request…
@@ -1195,6 +1196,9 @@ export class CodexExecutor extends BaseExecutor {
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) body.input = normalized;
+    // Native Responses requests skip the Chat→Responses translator. Normalize
+    // here too, keeping call/result IDs paired before upstream validation.
+    normalizeResponsesCallIds(body);
 
     // Ensure input is present and non-empty (Codex API rejects empty input)
     if (!body.input || (Array.isArray(body.input) && body.input.length === 0)) {

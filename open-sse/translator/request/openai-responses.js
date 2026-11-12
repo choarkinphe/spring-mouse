@@ -9,9 +9,7 @@ import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
-// Responses API enforces max 64 chars on call_id (#393)
-const MAX_CALL_ID_LEN = 64;
-const clampCallId = (id) => (typeof id === "string" && id.length > MAX_CALL_ID_LEN ? id.substring(0, MAX_CALL_ID_LEN) : id);
+import { normalizeResponsesCallIds } from "../../utils/responsesCallId.js";
 
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
@@ -382,7 +380,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
       for (const tc of msg.tool_calls) {
         result.input.push({
           type: RESPONSES_ITEM.FUNCTION_CALL,
-          call_id: clampCallId(tc.id),
+          call_id: tc.id,
           name: tc.function?.name || "_unknown",
           arguments: tc.function?.arguments || "{}"
         });
@@ -398,7 +396,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
           : JSON.stringify(msg.content);
       result.input.push({
         type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT,
-        call_id: clampCallId(msg.tool_call_id),
+        call_id: msg.tool_call_id,
         output
       });
     }
@@ -436,7 +434,7 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.service_tier !== undefined) result.service_tier = body.service_tier;
   if (body.prompt_cache_key !== undefined) result.prompt_cache_key = body.prompt_cache_key;
 
-  return result;
+  return normalizeResponsesCallIds(result);
 }
 
 // Register both directions

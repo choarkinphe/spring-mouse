@@ -9,6 +9,13 @@ globalThis.fetch = function codexImageFixtureFetch(input, init) {
   const baseModel = token === "Bearer fixture-b" ? "fixture-model-b" : "fixture-model-a";
   if (url.pathname === "/backend-api/wham/usage") return Promise.resolve(Response.json({ plan_type: "plus", rate_limit: { primary_window: { used_percent: 10, reset_at: Math.floor(Date.now() / 1000) + 3600 } } }));
   if (url.pathname === "/backend-api/codex/models") return Promise.resolve(Response.json({ models: [{ slug: baseModel, display_name: baseModel }, { slug: `${baseModel}-review`, display_name: "Review" }] }));
+  if (url.pathname === "/backend-api/codex/images/generations") {
+    const body = JSON.parse(init?.body || "{}");
+    console.log(`[codex-image-fixture] native model=${body.model} account=${headers.get("chatgpt-account-id")}`);
+    if (body.model !== "gpt-image-2" || body.tools || body.stream || body.response_format) throw new Error("Invalid native image request shape");
+    if (headers.get("chatgpt-account-id") !== (token === "Bearer fixture-b" ? "fixture-account-b" : "fixture-account-a")) throw new Error("Wrong native image account");
+    return Promise.resolve(Response.json({ created: 123, data: [{ b64_json: "iVBORw0KGgo=" }], output_format: "png", size: "1024x1024" }));
+  }
   if (url.pathname === "/backend-api/codex/responses") {
     const body = JSON.parse(init?.body || "{}");
     console.log(`[codex-image-fixture] model=${body.model} account=${headers.get("chatgpt-account-id")} tool=${body.tools?.[0]?.type}`);

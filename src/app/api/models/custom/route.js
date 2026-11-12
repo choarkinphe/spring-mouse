@@ -3,7 +3,7 @@ import { getCustomModels, addCustomModel, deleteCustomModel, upsertModelCapabili
 import { refreshModelCapabilityOverrides } from "@/lib/modelCapabilityOverrides";
 import { normalizeModelCapabilities, fetchModelsDevCatalog, lookupModelInCatalog } from "@/shared/utils/modelCatalog";
 import { compressedJsonResponse } from "@/lib/http/compressedJsonResponse";
-import { getModelSyncSnapshot, getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
+import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
 import { getCodexImageCandidates } from "@/shared/utils/codexImageModels";
 
 export const dynamic = "force-dynamic";
@@ -31,12 +31,11 @@ export async function POST(request) {
     }
     if (["cx", "codex"].includes(providerAlias) && type === "image") {
       const connection = connectionId ? await getProviderConnectionById(connectionId) : null;
-      if (!connection || connection.provider !== "codex" || connection.isActive === false) {
-        return NextResponse.json({ error: "请选择一个启用的 Codex 账号，并同步其官方模型目录" }, { status: 400 });
+      if (!connection || connection.id !== connectionId || connection.provider !== "codex" || connection.isActive === false) {
+        return NextResponse.json({ error: "请选择一个启用的 Codex 账号" }, { status: 400 });
       }
-      const snapshot = await getModelSyncSnapshot("codex");
-      if (!getCodexImageCandidates(snapshot, connectionId).some((candidate) => candidate.id === id)) {
-        return NextResponse.json({ error: "底层模型不在所选账号的官方目录中，请先同步该账号，再选择底层模型" }, { status: 400 });
+      if (!getCodexImageCandidates(null, connectionId).some((candidate) => candidate.id === id)) {
+        return NextResponse.json({ error: "请选择 Codex 原生图像模型 gpt-image-2；聊天模型及旧版图像别名不可用于新增配置" }, { status: 400 });
       }
     }
     // Bare model ids added by hand carry no modality data — borrow the shared

@@ -1,16 +1,19 @@
-// Codex image IDs are local tool routes, not models returned by /codex/models.
+import { CODEX_NATIVE_IMAGE_MODEL } from "open-sse/config/codexImage.js";
+
+// Kept only to identify persisted legacy chat-model image aliases.
 export const CODEX_IMAGE_SUFFIX = "-image";
 
 export function getCodexImageBaseModel(id) {
+  if (id === CODEX_NATIVE_IMAGE_MODEL) return id;
   return typeof id === "string" && id.endsWith(CODEX_IMAGE_SUFFIX)
     ? id.slice(0, -CODEX_IMAGE_SUFFIX.length)
     : null;
 }
 
-export function getCodexImageCandidates(snapshot, connectionId) {
-  if (!connectionId || snapshot?.providerId !== "codex" || snapshot.status !== "success" || snapshot.source !== "official"
-    || snapshot.scope !== "account" || snapshot.connectionId !== connectionId) return [];
-  return [...new Set((snapshot.modelIds || []).map((entry) => typeof entry === "string" ? entry : entry?.id))]
-    .filter((id) => typeof id === "string" && id.trim() && !id.endsWith(CODEX_IMAGE_SUFFIX) && !id.endsWith("-review"))
-    .map((id) => ({ id: `${id}${CODEX_IMAGE_SUFFIX}`, baseModel: id }));
+// The native Images API is independent of /codex/models. A chat directory
+// snapshot neither grants nor denies image access; the selected account must
+// be tested against the Images API to establish its current entitlement.
+export function getCodexImageCandidates(_snapshot, connectionId) {
+  if (typeof connectionId !== "string" || !connectionId.trim()) return [];
+  return [{ id: CODEX_NATIVE_IMAGE_MODEL, baseModel: CODEX_NATIVE_IMAGE_MODEL }];
 }

@@ -23,6 +23,13 @@ describe("image generation connection pinning", () => {
     expect((await handleImageGeneration(request())).status).toBe(429);
     expect(mocks.credentials).toHaveBeenCalledTimes(1);
   });
+  it("passes client cancellation through to the image core", async () => {
+    mocks.credentials.mockResolvedValue({ connectionId: "a" });
+    mocks.core.mockResolvedValue({ success: true, response: Response.json({ data: [{ b64_json: "ok" }] }) });
+    const req = request();
+    await handleImageGeneration(req);
+    expect(mocks.core).toHaveBeenCalledWith(expect.objectContaining({ signal: req.signal }));
+  });
   it("preserves normal fallback when no explicit account was selected", async () => {
     mocks.credentials.mockResolvedValueOnce({ connectionId: "a" }).mockResolvedValueOnce({ connectionId: "b" });
     mocks.core.mockResolvedValueOnce({ success: false, status: 429, error: "limited" }).mockResolvedValueOnce({ success: true, response: Response.json({ data: [{ b64_json: "ok" }] }) });

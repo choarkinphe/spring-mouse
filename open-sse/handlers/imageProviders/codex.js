@@ -1,7 +1,8 @@
-// Codex (ChatGPT Plus/Pro) image generation via Responses API + SSE
+// Codex native Images API; retain the older Responses tool route for explicit legacy IDs.
 import { randomUUID } from "node:crypto";
 import { nowSec } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
+import { CODEX_NATIVE_IMAGE_MODEL, CODEX_NATIVE_IMAGE_URL, CODEX_NATIVE_IMAGE_PARAMS, CODEX_IMAGE_CLIENT_VERSION } from "../../config/codexImage.js";
 
 const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
 const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
@@ -146,22 +147,39 @@ function buildSseResponse(providerResponse, log, onSuccess) {
 
 export default {
   stream: true,
-  buildUrl: () => CODEX_RESPONSES_URL,
-  buildHeaders: (creds) => {
+  buildUrl: (model) => model === CODEX_NATIVE_IMAGE_MODEL ? CODEX_NATIVE_IMAGE_URL : CODEX_RESPONSES_URL,
+  buildHeaders: (creds, _requestBody, model) => {
     const accountId = creds?.providerSpecificData?.chatgptAccountId || decodeAccountId(creds?.idToken);
+    const native = model === CODEX_NATIVE_IMAGE_MODEL;
     return {
-      "accept": "text/event-stream, application/json",
+      "accept": native ? "application/json" : "text/event-stream, application/json",
       "authorization": `Bearer ${creds?.accessToken || ""}`,
       "chatgpt-account-id": accountId || "",
       "content-type": "application/json",
       "originator": CODEX_ORIGINATOR,
       "session_id": randomUUID(),
-      "user-agent": CODEX_USER_AGENT,
-      "version": CODEX_VERSION,
+      "user-agent": native ? `${CODEX_ORIGINATOR}/${CODEX_IMAGE_CLIENT_VERSION}` : CODEX_USER_AGENT,
+      "version": native ? CODEX_IMAGE_CLIENT_VERSION : CODEX_VERSION,
       "x-client-request-id": randomUUID(),
+      ...(native ? {
+        "x-codex-imagegen-request-id": randomUUID(),
+        "x-codex-image-turn-id": randomUUID(),
+      } : {}),
     };
   },
   buildBody: (model, body) => {
+    if (model === CODEX_NATIVE_IMAGE_MODEL) {
+      if (body.image || body.images?.length || body.mask || body.mask_image) {
+        throw new Error("Codex native image generation does not accept reference images here; image editing requires a separate edits endpoint");
+      }
+      const request = { model, prompt: body.prompt, n: body.n ?? 1 };
+      for (const key of CODEX_NATIVE_IMAGE_PARAMS) {
+        if (body[key] !== undefined && body[key] !== null && body[key] !== "") request[key] = body[key];
+      }
+      // Native GPT Image returns b64_json; it does not take Responses fields or
+      // response_format. A chat model directory is unrelated to this endpoint.
+      return request;
+    }
     const refs = [];
     if (Array.isArray(body.images)) body.images.forEach((i) => { const u = toDataUrl(i); if (u) refs.push(u); });
     const single = toDataUrl(body.image);
@@ -185,7 +203,15 @@ export default {
     };
   },
   // Custom: codex parses SSE → either pipe to client or collect b64
-  async parseResponse(response, { log, streamToClient, onRequestSuccess }) {
+  async parseResponse(response, { log, streamToClient, onRequestSuccess, model }) {
+    if (model === CODEX_NATIVE_IMAGE_MODEL) {
+      const result = await response.json();
+      if (!Array.isArray(result?.data) || result.data.length === 0
+        || result.data.some((image) => typeof image?.b64_json !== "string" || !image.b64_json.trim())) {
+        throw new Error("Codex native image endpoint returned no image data");
+      }
+      return { ...result, created: result.created ?? nowSec() };
+    }
     if (streamToClient) {
       return { sseResponse: buildSseResponse(response, log, onRequestSuccess) };
     }

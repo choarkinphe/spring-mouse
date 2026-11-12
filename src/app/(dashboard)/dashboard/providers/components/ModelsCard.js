@@ -7,7 +7,8 @@ import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getProviderAlias, isNonChatServiceProvider, supportsLiveModelSync } from "@/shared/constants/providers";
 import { shouldUseStaticModelCatalog, isVisibleModelCatalogRow } from "@/shared/utils/providerCustomModels";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { getCodexImageBaseModel, getCodexImageCandidates } from "@/shared/utils/codexImageModels";
+import { getCodexImageCandidates } from "@/shared/utils/codexImageModels";
+import { CODEX_NATIVE_IMAGE_MODEL } from "open-sse/config/codexImage.js";
 
 // ── ModelRow ───────────────────────────────────────────────────
 export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting }) {
@@ -25,6 +26,7 @@ export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCusto
           {model.name && <span className="text-[9px] text-text-muted/70 italic pl-1">{model.name}</span>}
           {model.verified === false && <span className="text-[9px] text-amber-600 pl-1">内置·未验证</span>}
           {model.verified === true && <span className="text-[9px] text-emerald-600 pl-1">官方目录</span>}
+          {model.warning && <span className="text-[10px] text-amber-600 pl-1">{model.warning}</span>}
         </div>
         {onTest && (
           <div className="relative group/btn">
@@ -152,7 +154,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   useEffect(() => { Promise.resolve().then(fetchData); }, [fetchData]);
 
   useEffect(() => {
-    if (!canSync) return;
+    if (!canSync && !codexImage) return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -170,10 +172,11 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     load();
     window.addEventListener("providersChanged", load);
     return () => { cancelled = true; window.removeEventListener("providersChanged", load); };
-  }, [canSync, providerId]);
+  }, [canSync, codexImage, providerId]);
 
-  const imageCandidates = codexImage ? getCodexImageCandidates(snapshots.codex, selectedConnectionId) : [];
-  const selectedCandidate = imageCandidates.find((candidate) => candidate.id === selectedImageModel);
+  const hasSelectedAccount = connections.some((connection) => connection.id === selectedConnectionId && connection.provider === providerId && connection.isActive !== false);
+  const imageCandidates = codexImage ? getCodexImageCandidates(null, hasSelectedAccount ? selectedConnectionId : "") : [];
+  const selectedCandidate = imageCandidates.find((candidate) => candidate.id === selectedImageModel) || imageCandidates[0];
 
   const handleSetAlias = async (modelId, alias) => {
     const fullModel = `${providerAlias}/${modelId}`;
@@ -212,9 +215,9 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     finally { setAddingModel(false); }
   };
 
-  const handleDeleteCustomModel = async (modelId) => {
+  const handleDeleteCustomModel = async (modelId, storedProviderAlias = providerAlias) => {
     try {
-      const params = new URLSearchParams({ providerAlias, id: modelId, type: effectiveType });
+      const params = new URLSearchParams({ providerAlias: storedProviderAlias, id: modelId, type: effectiveType });
       const res = await fetch(`/api/models/custom?${params}`, { method: "DELETE" });
       if (res.ok) {
         await fetchData();
@@ -267,12 +270,12 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
   const handleTestModel = async (modelId) => {
     if (testingModelId) return;
-    if (codexImage && !selectedConnectionId) {
+    if (codexImage && !hasSelectedAccount) {
       setTestError("请先选择用于出图测试的账号");
       return;
     }
     if (codexImage && !imageCandidates.some((candidate) => candidate.id === modelId)) {
-      setTestError("请先同步所选账号的目录，确认该图像路由的底层模型在目录中");
+      setTestError("旧版聊天模型图像别名不再用于测试，请选择原生图像模型 gpt-image-2");
       return;
     }
     setTestingModelId(modelId);
@@ -303,7 +306,8 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
   // Custom models for this provider + kind, dedupe vs built-in
   const myCustomModels = customModels.filter(
-    (m) => isVisibleModelCatalogRow(m, snapshots) && m.providerAlias === providerAlias
+    (m) => (codexImage ? m.id && m.origin !== "capability-override" : isVisibleModelCatalogRow(m, snapshots))
+      && (m.providerAlias === providerAlias || (codexImage && ["cx", "codex"].includes(m.providerAlias)))
       && getModelKind(m, "llm") === effectiveType
       && !builtInModels.some((b) => b.id === m.id)
   );
@@ -315,7 +319,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       <Card>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">{nonChat || codexImage ? "模型" : "Models"}{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
-          {canSync && (
+          {canSync && !codexImage && (
             <Button
               size="sm"
               variant="secondary"
@@ -328,12 +332,12 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
             </Button>
           )}
         </div>
-        {canSync && (
+        {(canSync || codexImage) && (
           <div className="mb-4 flex flex-col gap-2">
-            <label className="text-xs text-text-muted" htmlFor={`sync-account-${providerId}`}>同步{codexImage ? " / 出图测试" : ""}账号</label>
+            <label className="text-xs text-text-muted" htmlFor={`sync-account-${providerId}`}>{codexImage ? "出图测试账号" : "同步账号"}</label>
             <select
               id={`sync-account-${providerId}`}
-              aria-label="模型同步账号"
+              aria-label={codexImage ? "出图测试账号" : "模型同步账号"}
               value={selectedConnectionId}
               disabled={syncingModels || Boolean(testingModelId) || addingModel}
               onChange={(event) => {
@@ -352,14 +356,14 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
         )}
         {codexImage && (
           <div className="mb-4 space-y-3 rounded-lg border border-border p-3">
-            <p className="text-xs leading-5 text-text-muted">先选择账号并同步官方目录，再选择底层模型创建图像路由。目录可见不代表支持出图；需要 Plus 或更高等级及图像工具权限。测试会实际生成一张图片并消耗额度，仅使用所选账号。</p>
-            <label className="block text-xs text-text-muted" htmlFor="codex-image-base-model">底层模型（来自所选账号的官方目录）</label>
-            <select id="codex-image-base-model" aria-label="图像底层模型" value={selectedCandidate?.id || ""} onChange={(event) => setSelectedImageModel(event.target.value)} className="w-full min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm">
-              <option value="">{imageCandidates.length ? "选择底层模型" : "请先同步所选账号的模型目录"}</option>
-              {imageCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.baseModel}</option>)}
+            <p className="text-xs leading-5 text-text-muted">使用 Codex 原生图像模型 gpt-image-2，无需同步聊天模型目录，也不通过聊天模型调用图像工具。出图权限取决于所选账号，需实际测试确认。测试会生成图片并消耗额度，仅使用所选账号。</p>
+            <label className="block text-xs text-text-muted" htmlFor="codex-image-base-model">原生图像模型</label>
+            <select id="codex-image-base-model" aria-label="原生图像模型" value={selectedCandidate?.id || ""} disabled={!hasSelectedAccount || addingModel || Boolean(testingModelId)} onChange={(event) => setSelectedImageModel(event.target.value)} className="w-full min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm">
+              {!imageCandidates.length && <option value="">请先选择启用的 Codex 账号</option>}
+              {imageCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.id}</option>)}
             </select>
-            {selectedCandidate && <p className="break-all text-xs text-text-muted">图像路由：{providerAlias}/{selectedCandidate.id} → {selectedCandidate.baseModel} + image_generation（出图权限未验证）</p>}
-            <Button aria-label="添加 Codex 图像路由" size="sm" icon="add" disabled={!selectedCandidate || addingModel || syncingModels} onClick={() => handleAddCustomModel(selectedCandidate.id)}>{addingModel ? "添加中…" : "添加图像路由"}</Button>
+            {selectedCandidate && <p className="break-all text-xs text-text-muted">图像模型：{providerAlias}/{selectedCandidate.id}（所选账号出图权限需实测）</p>}
+            <Button aria-label="添加 Codex 图像路由" size="sm" icon="add" disabled={!selectedCandidate || addingModel || Boolean(testingModelId)} onClick={() => handleAddCustomModel(selectedCandidate.id)}>{addingModel ? "添加中…" : "添加图像路由"}</Button>
           </div>
         )}
         {modelSyncStatus && (
@@ -393,15 +397,15 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
 
           {myCustomModels.map((model) => (
             <ModelRow
-              key={`${model.id}-${model.type}`}
-              model={{ id: model.id, name: codexImage ? `底层模型：${getCodexImageBaseModel(model.id) || model.id} · ${modelTestResults[model.id] === "ok" ? "所选账号出图测试通过" : "出图权限需实测"}` : model.name, ...(!codexImage && model.source === "official" ? { verified: true } : {}) }}
-              fullModel={`${providerAlias}/${model.id}`}
+              key={`${model.providerAlias}-${model.id}-${model.type}`}
+              model={{ id: model.id, name: codexImage ? (model.id === CODEX_NATIVE_IMAGE_MODEL ? `原生图像模型 · ${modelTestResults[model.id] === "ok" ? "所选账号出图测试通过" : "出图权限需实测"}` : model.name) : model.name, ...(codexImage && model.id !== CODEX_NATIVE_IMAGE_MODEL ? { warning: "旧版聊天模型图像别名，未验证且不再用于测试；可手动移除并改用 gpt-image-2" } : {}), ...(!codexImage && model.source === "official" ? { verified: true } : {}) }}
+              fullModel={`${model.providerAlias}/${model.id}`}
               copied={copied}
               onCopy={copy}
               onSetAlias={() => {}}
-              onDeleteAlias={() => handleDeleteCustomModel(model.id)}
+              onDeleteAlias={() => handleDeleteCustomModel(model.id, model.providerAlias)}
               testStatus={modelTestResults[model.id]}
-              onTest={nonChat && !codexImage ? undefined : () => handleTestModel(model.id)}
+              onTest={(nonChat && !codexImage) || (codexImage && model.id !== CODEX_NATIVE_IMAGE_MODEL) ? undefined : () => handleTestModel(model.id)}
               isTesting={testingModelId === model.id}
               isCustom
             />

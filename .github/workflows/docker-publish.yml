@@ -48,6 +48,11 @@ jobs:
           unit/network-traffic.test.js
           unit/ingress-usage.test.js
           unit/embedding-usage-persistence.test.js
+          unit/codex-native-image.test.js
+          unit/codex-image-models.test.js
+          unit/codex-image-config-api.test.js
+          unit/image-generation.test.js
+          unit/image-connection-pinning.test.js
           unit/fetch-success-clears-account.test.js
           unit/xai-video-handler.test.js
           unit/mouse-tunnel.test.js

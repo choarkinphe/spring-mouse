@@ -7,6 +7,7 @@ import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { Row, KIND_EXAMPLE_CONFIG } from "./exampleShared";
 import { getCodexImageCandidates } from "@/shared/utils/codexImageModels";
+import { CODEX_NATIVE_IMAGE_MODEL, CODEX_NATIVE_IMAGE_PARAMS } from "open-sse/config/codexImage.js";
 
 const CLOUDFLARE_TEST_IMAGE_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog.png";
 const CLOUDFLARE_TEST_MASK_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r2.dev/dog-mask.png";
@@ -38,17 +39,15 @@ export function GenericExampleCard({ providerId, kind }) {
   const safeExConfig = exConfig || {};
 
   const codexImage = providerId === "codex" && kind === "image";
-  const [configuredModels, setConfiguredModels] = useState([]);
-  const [codexSnapshot, setCodexSnapshot] = useState(null);
   const [connections, setConnections] = useState([]);
   const [pinnedConnectionId, setPinnedConnectionId] = useState("");
-  // Codex examples must use configured routes backed by this account's directory,
-  // never suggest the registry's unverified hardcoded image aliases.
+  const hasSelectedAccount = connections.some((connection) => connection.id === pinnedConnectionId && connection.provider === providerId && connection.isActive !== false);
+  // Native image generation needs an active account, not a chat-directory
+  // snapshot or a persisted custom model. Never inherit legacy edit capabilities.
   const presets = getModelsByProviderId(providerId).filter((m) => getModelKind(m) === kind);
-  const imageCandidates = getCodexImageCandidates(codexSnapshot, pinnedConnectionId);
+  const imageCandidates = getCodexImageCandidates(null, hasSelectedAccount ? pinnedConnectionId : "");
   const kindModels = codexImage
-    ? configuredModels.filter((m) => imageCandidates.some((candidate) => candidate.id === m.id))
-      .map((m) => ({ ...m, capabilities: presets[0]?.capabilities, params: presets[0]?.params }))
+    ? imageCandidates.map((model) => ({ ...model, name: `${model.id}（原生图像）`, params: CODEX_NATIVE_IMAGE_PARAMS }))
     : presets;
   // Kinds that need a model identifier in the request (image/video/music)
   const KIND_NEEDS_MODEL = new Set(["image", "video", "music", "imageToText"]);
@@ -84,6 +83,8 @@ export function GenericExampleCard({ providerId, kind }) {
       .then((r) => r.json())
       .then((d) => { setApiKey((d.keys || []).find((k) => k.isActive !== false)?.key || ""); })
       .catch(() => {});
+    // Codex maintains its active-account selection in the effect below.
+    if (codexImage) return;
     // Load active connections of this provider for pinning
     fetch("/api/providers/client")
       .then((r) => r.json())
@@ -92,30 +93,28 @@ export function GenericExampleCard({ providerId, kind }) {
         setConnections(conns);
       })
       .catch(() => {});
-  }, [providerId]);
+  }, [providerId, codexImage]);
 
   useEffect(() => {
     if (!codexImage) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const [res, connRes] = await Promise.all([fetch("/api/models/custom", { cache: "no-store" }), fetch("/api/providers/client", { cache: "no-store" })]);
-        if (!res.ok || !connRes.ok) return;
-        const [data, connData] = await Promise.all([res.json(), connRes.json()]);
+        const res = await fetch("/api/providers/client", { cache: "no-store" });
+        if (!res.ok) throw new Error("读取连接失败");
+        const data = await res.json();
         if (cancelled) return;
-        const snapshot = data.snapshots?.codex;
-        const active = (connData.connections || []).filter((c) => c.provider === providerId && c.isActive !== false);
+        const active = (data.connections || []).filter((c) => c.provider === providerId && c.isActive !== false);
         setConnections(active);
-        setCodexSnapshot(snapshot || null);
-        setConfiguredModels((data.models || []).filter((m) => [providerAlias, providerId].includes(m.providerAlias) && getModelKind(m) === kind));
-        setPinnedConnectionId((previous) => active.some((c) => c.id === previous) ? previous : active.some((c) => c.id === snapshot?.connectionId) ? snapshot.connectionId : "");
-      } catch { /* Keep the example disabled until a usable catalog is available. */ }
+        setPinnedConnectionId((previous) => active.some((c) => c.id === previous) ? previous : active.length === 1 ? active[0].id : "");
+      } catch {
+        if (!cancelled) { setConnections([]); setPinnedConnectionId(""); }
+      }
     };
     load();
-    window.addEventListener("customModelChanged", load);
     window.addEventListener("providersChanged", load);
-    return () => { cancelled = true; window.removeEventListener("customModelChanged", load); window.removeEventListener("providersChanged", load); };
-  }, [codexImage, providerAlias, providerId, kind]);
+    return () => { cancelled = true; window.removeEventListener("providersChanged", load); };
+  }, [codexImage, providerId]);
 
   // Safe to early-return now that all hooks are declared
   if (!kindConfig || !exConfig) return null;
@@ -134,6 +133,7 @@ export function GenericExampleCard({ providerId, kind }) {
 
   // Build request body with optional extra fields (only non-empty values)
   const extraBodyFromFields = Object.entries(extraValues).reduce((acc, [k, v]) => {
+    if (codexImage && !CODEX_NATIVE_IMAGE_PARAMS.includes(k)) return acc;
     if (v === "" || v === null || v === undefined) return acc;
     if (typeof v === "number" && Number.isNaN(v)) return acc;
     acc[k] = v;
@@ -148,9 +148,9 @@ export function GenericExampleCard({ providerId, kind }) {
     ...(supportsMask && effectiveMaskImage ? { mask_image: effectiveMaskImage } : {}),
   };
 
-  // Streaming supported for codex image (Plus/Pro accounts) — disabled when binary output requested
+  // The native Images API returns JSON; do not request the legacy Responses SSE protocol.
   const wantBinary = kind === "image" && imageOutputFormat === "binary";
-  const useStreaming = kind === "image" && providerId === "codex" && !wantBinary;
+  const useStreaming = codexImage && selectedModel !== CODEX_NATIVE_IMAGE_MODEL && Boolean(selectedModel) && !wantBinary;
   const apiPathWithQuery = `${apiPath}${wantBinary ? "?response_format=binary" : ""}`;
   const headersPreview = `-H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${apiKey || "YOUR_KEY"}"${pinnedConnectionId ? ` \\\n  -H "x-connection-id: ${pinnedConnectionId}"` : ""}${useStreaming ? ` \\\n  -H "Accept: text/event-stream"` : ""}`;
   const curlSnippet = `curl -X ${kindConfig.endpoint.method} ${endpoint}${apiPathWithQuery} \\
@@ -158,7 +158,7 @@ export function GenericExampleCard({ providerId, kind }) {
   -d '${JSON.stringify(requestBody)}'${wantBinary ? " \\\n  --output image.png" : ""}`;
 
   const handleRun = async () => {
-    if (!input.trim() || !modelFull) return;
+    if (!input.trim() || !modelFull || (codexImage && !hasSelectedAccount)) return;
     setRunning(true);
     setError("");
     setResult(null);
@@ -254,7 +254,7 @@ export function GenericExampleCard({ providerId, kind }) {
   return (
     <Card>
       <h2 className="text-lg font-semibold mb-4">Example</h2>
-      {codexImage && <p className="mb-3 text-xs leading-5 text-text-muted">仅使用已添加且在所选账号目录中的图像路由。请先在上方同步账号并添加路由，再选择对应连接。运行会实际出图并消耗额度。</p>}
+      {codexImage && <p className="mb-3 text-xs leading-5 text-text-muted">选择启用的 Codex 账号即可使用原生图像模型 gpt-image-2，无需同步聊天目录或添加自定义模型。示例使用 JSON 返回；不提供图像编辑。运行会实际出图并消耗额度，仅使用所选账号，账号权限需实测确认。</p>}
       <div className="flex flex-col gap-2.5">
         {/* Model selector — dropdown if presets exist, else manual input for media kinds */}
         {kindModels.length > 0 ? (
@@ -298,15 +298,16 @@ export function GenericExampleCard({ providerId, kind }) {
         </Row>
 
         {/* Connection picker - only show when 2+ connections (or any with email) */}
-        {connections.length > 0 && (
+        {(codexImage || connections.length > 0) && (
           <Row label="Connection">
             <select
               aria-label="示例连接"
+              disabled={codexImage && running}
               value={pinnedConnectionId}
               onChange={(e) => setPinnedConnectionId(e.target.value)}
               className="w-full px-3 py-1.5 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
             >
-              <option value="">{codexImage ? "选择已同步的账号" : "Auto (by priority)"}</option>
+              <option value="">{codexImage ? "选择启用的 Codex 账号" : "Auto (by priority)"}</option>
               {connections.map((c) => {
                 const plan = c.providerSpecificData?.chatgptPlanType;
                 const label = c.email || c.name || c.id.slice(0, 8);
@@ -414,7 +415,7 @@ export function GenericExampleCard({ providerId, kind }) {
 
         {/* Extra fields — for kinds without model concept (webSearch/webFetch), show all; otherwise filter by model.params */}
         {(exConfig.extraFields || [])
-          .filter((f) => kindModels.length === 0 || (Array.isArray(selectedModelObj?.params) && selectedModelObj.params.includes(f.key)))
+          .filter((f) => codexImage ? CODEX_NATIVE_IMAGE_PARAMS.includes(f.key) : kindModels.length === 0 || (Array.isArray(selectedModelObj?.params) && selectedModelObj.params.includes(f.key)))
           .map((f) => (
           <Row key={f.key} label={f.label}>
             {f.type === "select" ? (
@@ -477,7 +478,7 @@ export function GenericExampleCard({ providerId, kind }) {
             <button
               aria-label="运行媒体示例"
               onClick={handleRun}
-              disabled={running || !input.trim() || !modelFull}
+              disabled={running || !input.trim() || !modelFull || (codexImage && !hasSelectedAccount)}
               className="flex w-full sm:w-auto items-center justify-center gap-1.5 px-3 py-1 rounded-lg bg-primary text-white text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 <span className="material-symbols-outlined text-[14px]" style={running ? { animation: "spin 1s linear infinite" } : undefined}>

@@ -8,7 +8,7 @@ const SESSION_HEADERS = [
   "session_id",
   "x-amp-thread-id",
 ];
-const GENERIC_USER_AGENTS = /^(?:node|undici|axios|fetch|got|curl|python-requests|requests|openai-(?:python|node)|anthropic(?:-(?:python|node))?)(?:\/|$)/i;
+const GENERIC_USER_AGENTS = /^(?:node|undici|axios|fetch|got|curl|python-urllib|python-requests|requests|openai-(?:python|node)|anthropic(?:-(?:python|node))?)(?:\/|$)/i;
 const SPRING_MOUSE_USER_AGENT = `Spring-Mouse/${pkg.version || "0.0.0"}`;
 
 function normalizedString(value) {

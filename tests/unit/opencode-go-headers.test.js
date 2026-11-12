@@ -47,6 +47,32 @@ describe("OpenCode Go identity headers", () => {
     expect(identity["x-opencode-session"]).toBeUndefined();
   });
 
+  it.each([
+    "Python-urllib/3.11", // client UA recorded for the Cloudflare 1010 incident
+    "python-urllib",
+    "curl/8.7.1",
+    "openai-python/1.54.0",
+  ])("replaces library default User-Agent %s with the Spring-Mouse identity", (ua) => {
+    const identity = buildOpenCodeGoHeaders({ headers: { "user-agent": ua } });
+    expect(identity["User-Agent"]).toBe(springMouseUa);
+  });
+
+  it.each([false, true])("normalizes urllib in outgoing headers with captured identity=%s", (captured) => {
+    const rawHeaders = {
+      "User-Agent": "Python-urllib/3.11",
+      "x-opencode-session": "ses_urllib-conversation",
+    };
+    const credentials = { apiKey: "test-key", rawHeaders };
+    if (captured) credentials.opencodeGoHeaders = buildOpenCodeGoHeaders({ headers: rawHeaders });
+    const headers = new DefaultExecutor("opencode-go").buildHeaders(credentials, true);
+    expect(headers).toMatchObject({
+      Authorization: "Bearer test-key",
+      "User-Agent": springMouseUa,
+      "x-opencode-session": "ses_urllib-conversation",
+      Accept: "text/event-stream",
+    });
+  });
+
   it("uses captured pre-translation metadata without leaking the original user ID", () => {
     const originalBody = { metadata: { user_id: JSON.stringify({ session_id: "conversation-1", account_id: "private-account" }) } };
     const captured = buildOpenCodeGoHeaders({ body: originalBody });

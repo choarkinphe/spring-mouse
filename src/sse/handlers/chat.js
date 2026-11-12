@@ -27,6 +27,7 @@ import { SSE_ERROR_ORIGINS } from "open-sse/config/errorConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { detectFormat } from "open-sse/services/provider.js";
 import { getResponsesStateError } from "open-sse/shared/responsesState.js";
+import { getChatModelError } from "open-sse/shared/chatModel.js";
 import { createComboCapabilityResolver } from "open-sse/services/comboCapabilities.js";
 import { getComboStrategy, comboStrategyKey } from "open-sse/services/comboStrategy.js";
 import { claimComboRotationCount } from "@/lib/redis/comboRotation.js";
@@ -524,6 +525,11 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   const effectiveRouted = typeof routed === "boolean" ? routed : modelInfo.routed;
   let provider = modelInfo.provider;
   const model = modelInfo.model;
+  const chatModelError = getChatModelError(provider, model);
+  if (chatModelError) {
+    log.warn("CHAT", `${modelStr} | rejected image model on chat endpoint`);
+    return errorResponse(HTTP_STATUS.BAD_REQUEST, chatModelError);
+  }
   // Hard guard: a native non-chat service (e.g. JevAPI's /v1/systemone) must never
   // receive a chat request. Reject before account/transport resolution, otherwise
   // it would fall through to the OpenAI default transport.

@@ -36,6 +36,7 @@ import { createModelRouting } from "@/shared/utils/modelRouting.js";
 import { createCompactionDiagnostics } from "../utils/compactionDiagnostics.js";
 import { hasWorkBuddyRestriction, isWorkBuddyRestriction, workBuddyRestrictionResponse } from "../shared/workbuddyRestriction.js";
 import { getResponsesStateError } from "../shared/responsesState.js";
+import { getChatModelError } from "../shared/chatModel.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -66,6 +67,8 @@ export function stripContinuityFields(body) {
 
 export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onStreamUpstreamError, onDisconnect, onRequestFinished, routingObserver = null, clientRawRequest, clientSignal, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, maxEffort = null, requestLogFileDumpsEnabled, requestLogsDir, observabilityEnabled = true, observabilityMaxJsonChars = 128 * 1024, requestId: incomingRequestId = null, overloadDeadline = null, hasFallback = false, ingressStartedAt = null, admission = null, internalRequest = false, capabilityProbe = false, onProbeDispatch = null }) {
   const { provider, model } = modelInfo;
+  const chatModelError = getChatModelError(provider, model);
+  if (chatModelError) return createErrorResult(HTTP_STATUS.BAD_REQUEST, chatModelError);
   const stateError = getResponsesStateError(body, sourceFormatOverride);
   if (stateError) return createErrorResult(HTTP_STATUS.BAD_REQUEST, stateError);
   if (hasWorkBuddyRestriction(provider, credentials)) {

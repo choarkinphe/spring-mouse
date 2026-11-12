@@ -49,6 +49,9 @@ jobs:
           unit/ingress-usage.test.js
           unit/embedding-usage-persistence.test.js
           unit/codex-native-image.test.js
+          unit/image-model-discovery.test.js
+          unit/codex-image-client-routing.test.js
+          unit/codex-setup-images.test.js
           unit/codex-image-models.test.js
           unit/codex-image-config-api.test.js
           unit/image-generation.test.js

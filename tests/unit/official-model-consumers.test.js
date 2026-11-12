@@ -143,6 +143,20 @@ describe("official model consumer boundaries", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("publishes the native Codex image endpoint without adding it to the chat directory", async () => {
+    await createProviderConnection({ provider: "codex", authType: "oauth", name: "Isolated Codex discovery", accessToken: "test-only-codex-token" });
+    await createCombo({ name: "chat-entry", models: ["cx/account-chat-model"] });
+    await recordModelSyncSnapshot({ providerId: "codex", providerAlias: "cx", connectionId: "chat-directory-source", scope: "account", models: [{ id: "account-chat-model" }] });
+    const response = await publicGET(new Request("http://localhost/v1/models"));
+    expect(response.status).toBe(200);
+    const models = (await response.json()).data;
+    expect(models.map((model) => model.id)).toEqual(["chat-entry", "cx/gpt-image-2"]);
+    expect(models[1]).toMatchObject({ kind: "image", modalities: { input: ["text"], output: ["image"] } });
+    expect(await (await import("@/lib/db/repos/aliasRepo.js")).getCustomModels()).toEqual([]);
+    expect((await (await import("@/lib/db/repos/modelSyncRepo.js")).getModelSyncSnapshot("codex")).modelIds).toEqual(["account-chat-model"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("keeps public v1 models combos-only even with official provider snapshots", async () => {
     await seedSyncedProvider("deepseek", "ds");
     await createCombo({ name: "published-route", models: ["ds/current-official-model"] });

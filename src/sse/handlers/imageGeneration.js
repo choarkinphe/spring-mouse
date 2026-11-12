@@ -8,7 +8,10 @@ import {
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
 import { getSettings, getComboByName } from "@/lib/localDb";
-import { getModelInfo, getComboModels } from "../services/model.js";
+import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { getImageModelInfo, getComboModels } from "../services/model.js";
+import { isComboOnlyKey } from "@/shared/utils/comboOnlyRouting";
+import { CODEX_NATIVE_IMAGE_MODEL } from "open-sse/config/codexImage.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -82,14 +85,27 @@ export async function handleImageGeneration(request) {
     });
   }
 
+  if (isComboOnlyKey(settings, accessTags)) {
+    return errorResponse(HTTP_STATUS.FORBIDDEN, "This API key may only call configured combos");
+  }
   return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags, requesterId: apiKey || "local", signal: request.signal });
 }
 
 async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, accessTags = [], requesterId = null, signal } = {}) {
-  const modelInfo = await getModelInfo(modelStr);
+  const modelInfo = await getImageModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+
+  if (provider === "codex" && model === CODEX_NATIVE_IMAGE_MODEL) {
+    const disabled = await getDisabledModels();
+    if (["cx", "codex"].some((alias) => disabled[alias]?.includes(model))) {
+      return errorResponse(HTTP_STATUS.FORBIDDEN, "This image model is disabled");
+    }
+    // The bare native ID and the published cx/ ID share the same policy.
+    const accessFailure = await authorizeModelAccess("cx", model, accessTags);
+    if (accessFailure) return errorResponse(HTTP_STATUS.FORBIDDEN, "This model is not available for this API key");
+  }
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {

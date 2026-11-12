@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(), core: vi.fn(), mark: vi.fn() }));
 vi.mock("@/sse/services/auth.js", () => ({ getProviderCredentials: mocks.credentials, markAccountUnavailable: mocks.mark, authorizeModelAccess: vi.fn(), clearAccountError: vi.fn(), extractApiKey: () => null, authorizeApiKey: async () => null, resolveApiKeyAccessTags: async () => [] }));
+vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: async () => ({}) }));
 vi.mock("@/lib/localDb", () => ({ getSettings: async () => ({}), getComboByName: vi.fn() }));
-vi.mock("@/sse/services/model.js", () => ({ getModelInfo: async () => ({ provider: "codex", model: "actual-model-image" }), getComboModels: async () => null }));
+vi.mock("@/sse/services/model.js", () => ({ getImageModelInfo: async () => ({ provider: "codex", model: "actual-model-image" }), getComboModels: async () => null }));
 vi.mock("open-sse/handlers/imageGenerationCore.js", () => ({ handleImageGenerationCore: mocks.core }));
 vi.mock("@/sse/services/tokenRefresh.js", () => ({ checkAndRefreshToken: async (_provider, creds) => creds, updateProviderCredentials: vi.fn() }));
 vi.mock("@/sse/services/ingressUsage.js", () => ({ recordIngressUsage: vi.fn() }));

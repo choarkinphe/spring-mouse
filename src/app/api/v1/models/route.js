@@ -30,6 +30,7 @@ import { buildAnthropicModelsEnvelope, CLAUDE_DESKTOP_DEFAULT_TIER, CLAUDE_DESKT
 import { resolveHarnessProfiles } from "@/shared/utils/harnessRoute.js";
 import { isVisibleModelCatalogRow, shouldUseStaticModelCatalog, hasOfficialModelSnapshot } from "@/shared/utils/providerCustomModels";
 import { getModelSyncSnapshots } from "@/lib/db/repos/modelSyncRepo.js";
+import { CODEX_NATIVE_IMAGE_MODEL } from "open-sse/config/codexImage.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -356,11 +357,45 @@ export async function buildModelsList(kindFilter, options = {}) {
         ...(search ? { search: true } : {}),
       };
     }
+    if (combo.kind === "image") {
+      entry.kind = "image";
+      entry.output_modalities = ["image"];
+      entry.modalities = { output: ["image"] };
+    }
     models.push(entry);
   }
 
-  // Public /models endpoints expose routing entrypoints only. Direct provider
-  // models remain available internally for dashboard model counts and management.
+  // Codex's native Images API is a supported gateway endpoint, not an ID in
+  // the upstream chat directory. Publish just that known image route when a
+  // connection is enabled; never resurrect the legacy *-image chat aliases or
+  // expose all provider models. Discovery does not assert account entitlement.
+  if (kindFilter.includes("image") && !comboOnly && activeConnectionByProvider.has("codex")) {
+    const alias = getProviderAlias("codex");
+    const id = `${alias}/${CODEX_NATIVE_IMAGE_MODEL}`;
+    const disabled = [alias, "codex"].some((key) => isDisabled(key, CODEX_NATIVE_IMAGE_MODEL));
+    const prefixes = connections.filter((connection) => connection.provider === "codex")
+      .map((connection) => connection.providerSpecificData?.prefix)
+      .filter(Boolean);
+    const requiredTags = getModelAccessTags(modelAccessTags,
+      `codex/${CODEX_NATIVE_IMAGE_MODEL}`, id,
+      ...prefixes.map((prefix) => `${prefix}/${CODEX_NATIVE_IMAGE_MODEL}`),
+      CODEX_NATIVE_IMAGE_MODEL);
+    if (!disabled && (accessTags === null || canAccessWithTags(accessTags, requiredTags))) {
+      models.push({
+        id,
+        object: "model",
+        owned_by: alias,
+        name: "GPT Image (Codex)",
+        kind: "image",
+        input_modalities: ["text"],
+        output_modalities: ["image"],
+        modalities: { input: ["text"], output: ["image"] },
+      });
+    }
+  }
+
+  // Public /models endpoints expose configured routes plus supported native
+  // image endpoints. Direct chat/provider catalogs remain internal only.
   if (options.includeProviderModels !== true || comboOnly) {
     const seenPublicModelIds = new Set();
     return models.filter((model) => {
@@ -662,8 +697,9 @@ export async function buildClaudeDesktopModelEntry(settings, accessTags) {
 }
 
 /**
- * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
- * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
+ * GET /v1/models - OpenAI-compatible chat routes and discoverable image models.
+ * Image entries declare output_modalities so clients need not guess capability.
+ * For capability-filtered lists use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  *
  * The envelope follows anthropic-version when present. Both envelopes mark the
  * selected combo because Desktop discovery does not always send that header.
@@ -685,7 +721,7 @@ async function handleGET(request) {
       });
     }
 
-    const models = await buildModelsList([LLM_KIND], { skipDynamicFetch, accessTags });
+    const models = await buildModelsList([LLM_KIND, "image"], { skipDynamicFetch, accessTags });
     const entry = await buildClaudeDesktopModelEntry(settings, accessTags);
     const data = models.map(model => model.id === entry?.id ? { ...model, ...entry } : model);
     return Response.json({ object: "list", data }, {

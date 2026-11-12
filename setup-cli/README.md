@@ -19,6 +19,14 @@ node cli.js apply opencode --endpoint ... --key ... --models a,b [--subagent-mod
 node cli.js reset claude                                      # 移除接入（兼容清除历史 spring-mouse/9router 标识）
 ```
 
+## Codex 原生文字生图
+
+`apply codex` 会同时写入 SM 服务商的 Responses 地址、`requires_openai_auth = false`、SM Bearer Key，以及静态 `x-openai-actor-authorization = "sm-native-image-tool"` 标记。后者用于 Codex 自定义服务商的内置图像工具启用条件，不是 OpenAI 凭据，不授予账号额度，也不会绕过 SM 的 API Key 校验。含 Key 的配置及 auth 文件在 POSIX 上限制为 `0600`；不要分享完整配置。
+
+原生 Codex 的图像工具固定调用同一服务商下的 `/images/generations`、发送裸 `gpt-image-2`，不需要把聊天模型改为图像模型。SM 有启用 Codex 账号时可自动解析这个标准名，仍优先遵守同名别名/Combo。支持上述条件的 Codex 版本才会显示工具；仅刷新 `/v1/models` 不能启用客户端隐藏的工具。
+
+使用 cc-switch 等外部配置器时，在其 Codex 配置中保留同等服务商设置（base URL 以 `/v1` 或 `/codex/v1` 结尾），切换服务商后确认没有丢失该静态标记和 SM 鉴权。图像输出走 SM 的 Codex 账号，与配置器品牌无关。当前支持文字生图，不包含 `/images/edits` 参考图编辑。
+
 ## 架构
 
 ```

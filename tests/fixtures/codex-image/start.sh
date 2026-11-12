@@ -16,6 +16,7 @@ export NEXT_DIST_DIR=".next-preview/$(basename "$FIXTURE_DIR")" NEXT_TELEMETRY_D
 export NEXT_PUBLIC_BASE_URL="http://127.0.0.1:$PORT" PORT
 export SPRING_MOUSE_REDIS_URL="" SPRING_MOUSE_REDIS_REQUIRED=false
 export NODE_OPTIONS="--require \"$HERE/preload.cjs\""
+export NEXT_FONT_GOOGLE_MOCKED_RESPONSES="$HERE/fonts.cjs"
 pid=''
 stop_child_tree() {
   local target="$1" child

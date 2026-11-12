@@ -271,7 +271,7 @@ https://<域名>/codex/v1/responses           -> Codex
 
 Claude Desktop 的第三方网关在配置后会调用 `GET /v1/models` 发现可用模型。Spring Mouse 的 `src/app/api/v1/models/route.js` 按请求协议返回两种响应：
 
-- 无 `anthropic-version` 头（OpenAI 兼容客户端）：返回 `{ "object": "list", "data": [...] }`，与历史行为一致；其中**被选为默认路由的那个组合条目**会额外合并发现字段（见下），其余条目保持不变。
+- 无 `anthropic-version` 头（OpenAI 兼容客户端）：返回 `{ "object": "list", "data": [...] }`，包含已有聊天组合、图像组合以及满足条件的 Codex 原生图像入口（见下）；其中**被选为默认路由的那个组合条目**会额外合并发现字段（见下）。
 - 带 `anthropic-version` 头时：返回 Anthropic Models 列表信封 `{ data, has_more, first_id, last_id }`，其中仅包含**一个**条目——由 Claude Desktop harness profile 的映射目标（见 §6.2.2；未配置 `harnessProfiles` 时回落到 legacy `settings.claudeMessagesRoute`）指定的组合，其 `id` 即组合名；不满足条件时 `data` 为空数组。映射目标为 `provider/model` 时没有可发布的组合，返回空 `data`。
 
 之所以要区分，是因为 Claude Desktop 的自动发现只会展示「可识别为 Claude」的模型 id；组合名（如 `deepseek-flash`）不是 Claude id，若不带标记就会被 Desktop 过滤掉、导致模型选择器为空。因此该条目会附带：
@@ -285,6 +285,42 @@ Claude Desktop 的第三方网关在配置后会调用 `GET /v1/models` 发现�
 需要强调：发现**不等于**路由成功。发现只校验组合的配置与调度是否可用，实际请求仍可能在运行时因凭据失效、上游错误、限流或配额耗尽而失败——这些都要走正常的账号回退流程。数据库读取失败会向上抛出为 500，不会被静默吞掉。
 
 该端点不替代 `inferenceModels`：若在 Claude Desktop 中显式配置了模型列表，客户端会直接使用该列表而不调用发现。
+
+### 图像模型自动发现
+
+OpenAI 格式的 `GET /v1/models` 同时发布图像条目，供只读取标准目录的客户端（如 Magpie）发现；`GET /v1/models/image` 返回同一逻辑下的图像子集。图像条目带 `kind: "image"`、`output_modalities: ["image"]` 和 Magpie 可解析的 `modalities: { output: ["image"] }`，不应作为聊天模型使用。
+
+- 存在启用的 Codex 连接时，自动公布 `cx/gpt-image-2`（输入为 `text`），无需手动添加模型或同步聊天目录。它是独立原生 Images API 的入口，不是 `/codex/models` 返回的聊天模型，发现也不代表当前账号一定有额度或生图权限。
+- 无启用 Codex 连接、模型被禁用、访问标签不匹配，或调用 Key 受“仅限 Combo”策略限制时，不公布该直连入口。原有聊天模型仍仅公布组合，不自动暴露聊天服务商目录；Anthropic 格式目录保持原规则。
+- 图像组合也带输出模态标记，便于识别没有 `image` 字样的自定义路由名。拉取目录不会调用上游或生成图片。
+- Magpie 的服务商需开启模型列表获取；如果显式配置了固定模型集合，客户端仍可能需要刷新目录并勾选新模型。图像模型发给 SM 时保留完整 ID `cx/gpt-image-2`，不要依赖只作用于聊天的 wire 映射。
+
+#### 原生 Codex / cc-switch 接入边界
+
+原生 Codex 的内置生图工具不是从 `/v1/models` 选择图像模型：其协议固定发送裸 `model: "gpt-image-2"` 到当前服务商的 `/images/generations`。SM 在图像接口上下文中，存在启用 Codex 连接且未配置同名别名/Combo 时，将这个裸 ID 自动解析为 Codex 原生图像入口；显式别名和 Combo 优先，`openai/gpt-image-2` 仍明确指向 OpenAI，聊天模型推断不变。裸 ID 与 `cx/gpt-image-2` 共享模型禁用、标签、密钥鉴权及账号选择规则，不会因客户端来自 cc-switch 或 Magpie 而切换到其他渠道。
+
+原生客户端的服务商 `base_url` 使用 `https://<SM地址>/v1` 或 `https://<SM地址>/codex/v1`，`wire_api = "responses"` 用于聊天，图像请求仍走同一 base URL 下的 Images API。不要把 base URL 设为仅用于聊天重写的 `/codex`。如启用“仅限 Combo”，可配置名为 `gpt-image-2` 的图像 Combo，其成员为 `cx/gpt-image-2`；普通 Key 不会自动获得直连豁免。
+
+**模型发现不等于客户端工具启用。** Codex 版本、聊天模型的图像输入能力和服务商认证配置仍可能隐藏内置生图工具，修改 SM 的模型目录不能越过客户端的这些条件。配置工具（包括 cc-switch）必须保留相应 Codex 服务商设置；SM 不接管或修改外部配置工具。
+
+本机验证版本 `0.167.0-alpha.3.2` 已通过隔离原生 CLI → SM → 模拟 Codex 上游的图像工具闭环并保存 PNG，验证包括 Setup CLI 生成配置与 Bearer 鉴权；这不是所有客户端版本的保证，也不替代真实账号的额度检查。其自定义服务商设置示例（聊天模型仍使用 SM 聊天路由）：
+
+```toml
+[model_providers.spring-mouse]
+name = "Spring Mouse"
+base_url = "https://<SM地址>/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+experimental_bearer_token = "<SM API Key>"
+
+[model_providers.spring-mouse.http_headers]
+"x-openai-actor-authorization" = "sm-native-image-tool"
+```
+
+静态标记仅满足该版本客户端的工具条件，不是认证凭据；真正鉴权仍是 SM Bearer Key。也可用 `env_key` 替代明文 `experimental_bearer_token`，但必须确保每次启动客户端时都提供对应环境变量。Setup CLI 会写上述配置并将含 Key 文件权限设为 `0600`。切换配置后需新开会话；不保证所有历史/未来 Codex 版本或第三方配置器自动保留该设置。
+
+当前支持文字生图，`/images/edits` 和参考图编辑尚未实现，不应对外宣称可用。
 
 ### 6.3 通道账号选择
 

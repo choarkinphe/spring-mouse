@@ -1,5 +1,6 @@
 // Re-export from open-sse with localDb integration
-import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
+import { getModelAliases, getComboByName, getProviderNodes, getProviderConnections } from "@/lib/localDb";
+import { CODEX_NATIVE_IMAGE_MODEL } from "open-sse/config/codexImage.js";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 import { getActiveComboModelEntries } from "open-sse/services/combo.js";
@@ -89,6 +90,21 @@ export async function getModelInfo(modelStr) {
   }
 
   return getModelInfoCore(modelStr, getModelAliases);
+}
+
+/**
+ * The native Codex image tool sends a bare protocol ID, not a catalog choice.
+ * Resolve explicit operator aliases/combos first; only replace name inference
+ * in the Images API context when an enabled Codex channel actually exists.
+ * Explicit openai/... routes and chat model inference are never changed.
+ */
+export async function getImageModelInfo(modelStr) {
+  const info = await getModelInfo(modelStr);
+  if (modelStr !== CODEX_NATIVE_IMAGE_MODEL || info.routeKind) return info;
+  const connections = await getProviderConnections({ provider: "codex", isActive: true });
+  return connections.some((connection) => connection.provider === "codex" && connection.isActive !== false)
+    ? { provider: "codex", model: CODEX_NATIVE_IMAGE_MODEL }
+    : info;
 }
 
 /**

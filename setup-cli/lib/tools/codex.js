@@ -52,7 +52,7 @@ export async function status() {
 
 export async function apply({ endpoint, key, model, subagentModel }) {
   if (!endpoint || !key || !model) throw new Error("--endpoint、--key、--model 必填");
-  await fs.mkdir(codexDir(), { recursive: true });
+  await fs.mkdir(codexDir(), { recursive: true, mode: 0o700 });
 
   const parsed = await readToml(configPath());
   parsed.model = model;
@@ -61,14 +61,22 @@ export async function apply({ endpoint, key, model, subagentModel }) {
     name: PROVIDER_NAME,
     base_url: withV1(endpoint),
     wire_api: "responses",
+    requires_openai_auth: false,
+    supports_websockets: false,
+    // Native Codex images use the active provider's own bearer credential.
+    // auth.json alone is not consulted by every custom-provider auth path.
+    experimental_bearer_token: key,
+    http_headers: { "x-openai-actor-authorization": "sm-native-image-tool" },
   });
-  setNested(parsed, "agents.subagent", { model: subagentModel || model });
-  await fs.writeFile(configPath(), stringifyTOML(parsed));
+  setNested(parsed, "agents.subagent", { model: subagentModel || model, description: "Spring Mouse subagent" });
+  await fs.writeFile(configPath(), stringifyTOML(parsed), { mode: 0o600 });
+  await fs.chmod(configPath(), 0o600);
 
   const auth = (await readJson(authPath())) || {};
   auth.OPENAI_API_KEY = key;
   auth.auth_mode = "apikey";
   await writeJson(authPath(), auth);
+  await fs.chmod(authPath(), 0o600);
 
   return { file: configPath(), authFile: authPath() };
 }

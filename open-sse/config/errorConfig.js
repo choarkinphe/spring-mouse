@@ -109,6 +109,12 @@ export const ERROR_RULES = [
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
+  // Model entitlement failures (e.g. WorkBuddy 11158) arrive as HTTP 400,
+  // but another account or combo member may support the model. Match the
+  // explicit entitlement messages, not a bare business code or every 400.
+  // This is account × model scoped, not a model-wide capacity failure.
+  { text: "is not allowed for user type", cooldownMs: COOLDOWN.long },
+  { text: "your account type does not support this model", cooldownMs: COOLDOWN.long },
   { text: "capacity",                 cooldownMs: 0, modelLevel: true },
   { text: "overloaded",               cooldownMs: 0, modelLevel: true },
   // A reply with no output says nothing about the account's health. A 30s

@@ -178,6 +178,39 @@ describe("multi-account fan-out", () => {
     expect(mocks.updateProviderCredentials).not.toHaveBeenCalled();
   });
 
+  it("rotates a model entitlement HTTP 400 to a healthy sibling without locking other models", async () => {
+    const provider = "workbuddy";
+    const [rejected, healthy] = await seedAccounts(2, provider);
+    const error = JSON.stringify({ code: 11158,
+      msg: "model [model-x] is not allowed for user type [personal_free_user]" });
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-x" });
+    mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+      mocks.attempts.push(credentials.connectionId);
+      return credentials.connectionId === rejected.id
+        ? { success: false, status: 400, error, upstreamError: UPSTREAM(400, error),
+          response: Response.json({ error: { message: error } }, { status: 400 }) }
+        : { success: true, response: new Response("ok") };
+    });
+    expect((await handleChat(request(`${provider}/model-x`))).status).toBe(200);
+    expect(mocks.attempts).toEqual([rejected.id, healthy.id]);
+    const stored = await connectionsRepo.getProviderConnectionById(rejected.id);
+    expect(stored.isActive).toBe(true);
+    expect(Date.parse(stored["modelLock_model-x"]) - Date.now()).toBeGreaterThan(110_000);
+    expect(stored.modelLock___all).toBeUndefined();
+    expect(stored.accountRestriction).toBeFalsy();
+    const { getProviderModelBreaker } = await import("../../src/sse/services/providerBreaker.js");
+    expect((await getProviderModelBreaker(provider, "model-x")).open).toBe(false);
+    mocks.getModelInfo.mockResolvedValue({ provider, model: "model-y" });
+    mocks.attempts.length = 0;
+    mocks.handleChatCore.mockImplementation(async ({ credentials }) => {
+      mocks.attempts.push(credentials.connectionId);
+      return { success: true, response: new Response("ok") };
+    });
+    expect((await handleChat(request(`${provider}/model-y`))).status).toBe(200);
+    expect(mocks.attempts).toEqual([rejected.id]);
+    expect(mocks.updateProviderCredentials).not.toHaveBeenCalled();
+  });
+
   it("drains an all-11128 pool once, retains 400, and never refills or opens the model breaker", async () => {
     const provider = "codebuddy-intl";
     await seedAccounts(4, provider);

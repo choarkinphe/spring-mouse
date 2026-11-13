@@ -25,7 +25,7 @@ export default {
           heading: "额度不是固定的 Claude 次数",
           items: [
             "Devin 订阅（含 $200/月的 Devin Max）不给固定的 Claude 次数或美元额度，而是按「周额度百分比」计量；部分档位还有日额度（Max 档上游隐藏日额度）。",
-            "周额度按账号的重置时间滚动清零（额度卡片里的重置时间即上游 weeklyQuotaResetAt）。用尽后请求会被上游拒绝，直到重置或使用超额余额。",
+            "周额度按账号的重置时间滚动清零（额度卡片里的重置时间即上游 weeklyQuotaResetAt）。用尽后请求会被上游拒绝（HTTP 429，正文为「Your weekly usage quota has been exhausted」），直到重置或使用超额余额；此网关会把该计费模型锁 1 小时再探测，免费模型不受影响。",
             "上游只返回剩余百分比，不返回美元数，所以面板只能显示百分比。",
           ],
         },
@@ -34,7 +34,7 @@ export default {
           items: [
             "扣减 = 非缓存输入 × 输入单价 + 缓存命中输入 × 缓存单价 + 输出 × 输出单价（单价按每百万 token，来自账号模型目录）。",
             "思考档位（low / medium / high / xhigh / max）单价相同，但档位越高输出（含思考）token 越多，扣得越快。",
-            "-fast / -priority 变体单价为 2 倍。SWE-2 系列标记为免费，不消耗额度。",
+            "-fast / -priority 变体单价为 2 倍。SWE-2 系列标记为免费，不消耗周额度；但免费模型仍有单独的速率上限（上游会返回「Reached free model rate limit」，时长从几分钟到数小时不等，Max 档上限更高）。",
             "Agent 场景缓存命中率很高，缓存单价通常只有输入单价的 1/20～1/10，所以长对话的大头往往是输出。",
           ],
         },

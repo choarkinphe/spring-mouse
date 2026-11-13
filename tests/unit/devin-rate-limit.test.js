@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDevinQuotaReset } from "../../open-sse/shared/devin/rateLimit.js";
+import { parseDevinQuotaReset, isDevinQuotaExhausted } from "../../open-sse/shared/devin/rateLimit.js";
 
 const now = Date.parse("2026-11-13T08:14:00Z");
 const message = "Reached free model rate limit. Upgrade to Max for higher limits, or switch to a different model. Your limit will reset in 1 hour 45 minutes (at 10:01 UTC).";
@@ -33,5 +33,21 @@ describe("Devin quota reset parsing", () => {
     null, {},
   ])("does not invent an expiry from invalid or stale text: %j", text => {
     expect(parseDevinQuotaReset(text, now)).toBeNull();
+  });
+});
+
+describe("Devin weekly quota exhaustion detection", () => {
+  const exhausted = "Devin upstream error (failed_precondition): Your weekly usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.";
+  it("recognizes the upstream weekly-quota sentence", () => {
+    expect(isDevinQuotaExhausted(exhausted)).toBe(true);
+  });
+  it.each([
+    message,
+    "Reached free model rate limit. Please switch to a different model.",
+    "Devin upstream error (invalid_argument): There is an issue with this request, please try a different model.",
+    "daily quota has been exhausted",
+    null, {}, 429,
+  ])("does not match other errors: %j", text => {
+    expect(isDevinQuotaExhausted(text)).toBe(false);
   });
 });

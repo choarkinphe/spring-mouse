@@ -31,6 +31,12 @@ export const DEVIN = Object.freeze({
   // Quota resets may be hours away; do not poll them using transient backoff.
   maxQuotaCooldownMs: 24 * 60 * 60 * 1000,
   quotaResetPattern: /your limit will reset\s+(?:in\s+([^().]+))?(?:\s*\(?at\s+(\d{1,2}):(\d{2})\s+UTC\)?)?/i,
+  // Weekly quota exhaustion is account-wide for metered models and carries no
+  // reset clock. It used to fall through to the shared 429 backoff and probe the
+  // account every five minutes (measured: 1,013 rejected requests in two days).
+  // The lock stays model-scoped, so free models (swe-2) keep serving meanwhile.
+  weeklyQuotaPattern: /your weekly usage quota has been exhausted/i,
+  weeklyQuotaCooldownMs: 60 * 60 * 1000,
   contentType: "application/connect+proto",
   flags: Object.freeze({ data: 0, compressed: 1, end: 2 }),
   source: Object.freeze({ user: 1, assistant: 2, tool: 4 }),

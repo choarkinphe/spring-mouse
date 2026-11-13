@@ -22,8 +22,8 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-async function fail(text = message, { provider = "devin", status = 429, resetsAtMs = null } = {}) {
-  return markAccountUnavailable(account.id, status, text, provider, "swe-2", resetsAtMs, {
+async function fail(text = message, { provider = "devin", status = 429, resetsAtMs = null, model = "swe-2" } = {}) {
+  return markAccountUnavailable(account.id, status, text, provider, model, resetsAtMs, {
     status, message: text, body: JSON.stringify({ error: { message: text } }), source: "http", layer: "provider",
   });
 }
@@ -58,5 +58,31 @@ describe("Devin account quota cooldown", () => {
     account["modelLock_swe-2"] = "2026-11-13T11:00:00.000Z";
     await fail();
     expect(account["modelLock_swe-2"]).toBe("2026-11-13T11:00:00.000Z");
+  });
+});
+
+describe("Devin weekly quota exhaustion", () => {
+  const exhausted = "Devin upstream error (failed_precondition): Your weekly usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.";
+  it("locks the metered model for a bounded hour instead of the 5-minute 429 backoff", async () => {
+    const result = await fail(exhausted, { model: "claude-opus-5-5" });
+    expect(result).toMatchObject({ shouldFallback: true, cooldownMs: DEVIN.weeklyQuotaCooldownMs });
+    expect(account["modelLock_claude-opus-5-5"]).toBe(new Date(now + DEVIN.weeklyQuotaCooldownMs).toISOString());
+    expect(account.testStatus).toBe("limited");
+    expect(account.backoffLevel).toBe(0);
+    // Free models must keep serving on the same account.
+    expect(account.modelLock___all).toBeUndefined();
+    expect(account["modelLock_swe-2"]).toBeUndefined();
+  });
+  it("still rotates when the same message arrives as a failed_precondition trailer", async () => {
+    const result = await fail(exhausted, { model: "claude-opus-5-5", status: 400 });
+    expect(result).toMatchObject({ shouldFallback: true, cooldownMs: DEVIN.weeklyQuotaCooldownMs });
+  });
+  it("does not treat other rejected requests as quota exhaustion", async () => {
+    const result = await fail("Devin upstream error (invalid_argument): There is an issue with this request, please try a different model.", { status: 400 });
+    expect(result).toMatchObject({ shouldFallback: false, cooldownMs: 0 });
+    expect(account["modelLock_swe-2"]).toBeUndefined();
+  });
+  it("is a Devin-only policy", async () => {
+    expect((await fail(exhausted, { provider: "other" })).cooldownMs).not.toBe(DEVIN.weeklyQuotaCooldownMs);
   });
 });

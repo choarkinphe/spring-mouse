@@ -22,7 +22,7 @@ import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabil
 import { hasWorkBuddyRestriction, isWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
 import { WORKBUDDY_RESTRICTION } from "open-sse/config/errorConfig.js";
 import { DEVIN } from "open-sse/config/devin.js";
-import { parseDevinQuotaReset } from "open-sse/shared/devin/rateLimit.js";
+import { parseDevinQuotaReset, isDevinQuotaExhausted } from "open-sse/shared/devin/rateLimit.js";
 import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
@@ -595,6 +595,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // provider-specific cooldown; arbitrary resetsAtMs hints keep the shared cap.
     const devinResetAtMs = provider === DEVIN.provider && Number(status) === 429
       ? parseDevinQuotaReset(errorText) : null;
+    // Exhausted weekly quota cannot recover before the upstream weekly reset, so
+    // the shared 5-minute 429 backoff only re-probes a dead model. Lock the model
+    // for a bounded hour instead; it stays model-scoped so free models (swe-2)
+    // keep serving on the same account. The message arrives as HTTP 429 or as a
+    // failed_precondition Connect trailer, so the status is not a reliable gate.
+    const devinQuotaExhaustedMs = provider === DEVIN.provider && isDevinQuotaExhausted(errorText)
+      ? DEVIN.weeklyQuotaCooldownMs : 0;
 
     let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
     let headerTimeoutUpdate;
@@ -628,6 +635,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     } else if (devinResetAtMs) {
       shouldFallback = true;
       cooldownMs = Math.min(devinResetAtMs - Date.now(), DEVIN.maxQuotaCooldownMs);
+      newBackoffLevel = 0;
+    } else if (devinQuotaExhaustedMs) {
+      shouldFallback = true;
+      cooldownMs = devinQuotaExhaustedMs;
       newBackoffLevel = 0;
     } else if (resetsAtMs && resetsAtMs > Date.now()) {
       shouldFallback = true;
@@ -720,7 +731,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       value: { ...decision, lockKey, reason, status },
       update: {
         ...lockUpdate,
-        testStatus: status === 429 ? "limited" : status >= 500 ? "degraded" : "unavailable",
+        testStatus: status === 429 || devinQuotaExhaustedMs ? "limited" : status >= 500 ? "degraded" : "unavailable",
         // The badge is derived from a cooldown, so it has to expire with it.
         // `testStatus` alone never did: the lock above ran out after 30s while
         // the account kept rendering 「过载」until some later request happened to

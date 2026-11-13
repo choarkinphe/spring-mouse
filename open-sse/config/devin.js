@@ -28,6 +28,9 @@ export const DEVIN = Object.freeze({
   maxToolCalls: 128,
   maxSessionCounters: 5000,
   maxCompletionBytes: 64 * 1024 * 1024,
+  // Quota resets may be hours away; do not poll them using transient backoff.
+  maxQuotaCooldownMs: 24 * 60 * 60 * 1000,
+  quotaResetPattern: /your limit will reset\s+(?:in\s+([^().]+))?(?:\s*\(?at\s+(\d{1,2}):(\d{2})\s+UTC\)?)?/i,
   contentType: "application/connect+proto",
   flags: Object.freeze({ data: 0, compressed: 1, end: 2 }),
   source: Object.freeze({ user: 1, assistant: 2, tool: 4 }),

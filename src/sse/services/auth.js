@@ -21,6 +21,8 @@ import { isTunnelConnected } from "@/lib/mouse/tunnel.js";
 import { getMeasuredCapabilitiesForConnection } from "open-sse/providers/capabilities.js";
 import { hasWorkBuddyRestriction, isWorkBuddyRestriction } from "open-sse/shared/workbuddyRestriction.js";
 import { WORKBUDDY_RESTRICTION } from "open-sse/config/errorConfig.js";
+import { DEVIN } from "open-sse/config/devin.js";
+import { parseDevinQuotaReset } from "open-sse/shared/devin/rateLimit.js";
 import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
@@ -588,6 +590,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     }
     const backoffLevel = conn?.backoffLevel || 0;
     const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
+    // Devin's explicit quota-reset sentence is different from a transient 429.
+    // Validate it locally (including late SSE failures) before allowing a longer
+    // provider-specific cooldown; arbitrary resetsAtMs hints keep the shared cap.
+    const devinResetAtMs = provider === DEVIN.provider && Number(status) === 429
+      ? parseDevinQuotaReset(errorText) : null;
 
     let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
     let headerTimeoutUpdate;
@@ -617,6 +624,10 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     } else if (githubResetAtMs) {
       shouldFallback = true;
       cooldownMs = githubResetAtMs - Date.now();
+      newBackoffLevel = 0;
+    } else if (devinResetAtMs) {
+      shouldFallback = true;
+      cooldownMs = Math.min(devinResetAtMs - Date.now(), DEVIN.maxQuotaCooldownMs);
       newBackoffLevel = 0;
     } else if (resetsAtMs && resetsAtMs > Date.now()) {
       shouldFallback = true;

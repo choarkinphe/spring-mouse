@@ -622,8 +622,27 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   }
 
   let lastError = null;
-  let earliestRetryAfter = null;
+  const retryAfterHints = [];
   let lastStatus = null;
+
+  // Compare headers and legacy JSON ISO hints as absolute times. Date.parse is
+  // permissive with bare numbers, so only parse date-shaped header values.
+  const retryAfterTimestamp = (value, isHeader = false) => {
+    if (typeof value !== "string" || !value.trim()) return null;
+    const candidate = value.trim();
+    const now = Date.now();
+    let timestamp;
+    if (isHeader && /^\d+$/.test(candidate)) {
+      timestamp = now + Number(candidate) * 1000;
+    } else if (isHeader
+      ? /^(?:[a-z]{3}, \d{2} [a-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT|[a-z]+, \d{2}-[a-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT|[a-z]{3} [a-z]{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/i.test(candidate)
+      : /^\d{4}-\d{2}-\d{2}T/.test(candidate)) {
+      // asctime HTTP-dates omit the zone, but HTTP still defines them as GMT.
+      timestamp = Date.parse(isHeader && !/GMT$/i.test(candidate) ? `${candidate} GMT` : candidate);
+    }
+    // Also reject finite numbers beyond Date's range before ISO formatting.
+    return Number.isFinite(new Date(timestamp).getTime()) && timestamp > now ? timestamp : null;
+  };
 
   for (let i = 0; i < rotatedModels.length; i++) {
     if (signal?.aborted) return errorResponse(499, "Request aborted");
@@ -658,9 +677,13 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         // Ignore JSON parse errors
       }
 
-      // Track earliest retryAfter across all combo models
-      if (retryAfter && (!earliestRetryAfter || new Date(retryAfter) < new Date(earliestRetryAfter))) {
-        earliestRetryAfter = retryAfter;
+      // Read the header even when the body is not JSON (including nested combo
+      // unavailableResponse wrappers, which expose the hint only in the header).
+      for (const timestamp of [
+        retryAfterTimestamp(result.headers.get("Retry-After"), true),
+        retryAfterTimestamp(retryAfter),
+      ]) {
+        if (timestamp !== null) retryAfterHints.push(timestamp);
       }
 
       // Normalize error text to string (Worker-safe)
@@ -699,7 +722,10 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   const status = allDisabled ? 503 : (lastStatus || 503);
   const msg = lastError || "All combo models unavailable";
 
-  if (earliestRetryAfter) {
+  // A previously valid hint may have expired while another member was tried.
+  const futureRetryAfterHints = retryAfterHints.filter((timestamp) => timestamp > Date.now());
+  if (futureRetryAfterHints.length > 0) {
+    const earliestRetryAfter = new Date(Math.min(...futureRetryAfterHints)).toISOString();
     const retryHuman = formatRetryAfter(earliestRetryAfter);
     log.warn("COMBO", `All models failed | ${msg} (${retryHuman})`);
     return unavailableResponse(status, msg, earliestRetryAfter, retryHuman);

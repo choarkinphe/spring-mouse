@@ -11,6 +11,7 @@ import { buildDevinHeaders, normalizeDevinSessionToken, wrapConnectEnvelope } fr
 import { buildDevinChatRequest } from "../shared/devin/request.js";
 import { decodeProtobuf } from "../shared/devin/protobuf.js";
 import { devinOpenAIChunks, devinCompletion } from "../shared/devin/response.js";
+import { parseDevinQuotaReset } from "../shared/devin/rateLimit.js";
 
 export function getDevinSessionToken(credentials = {}) {
   const data = credentials.providerSpecificData || {};
@@ -32,6 +33,18 @@ export class DevinExecutor extends BaseExecutor {
   transformRequest(model, body, stream, credentials = {}) {
     const data = credentials.providerSpecificData || {};
     return buildDevinChatRequest({ model, body, sessionToken: getDevinSessionToken(credentials), deviceSeed: data.deviceSeed || data.device_seed || "" });
+  }
+  parseError(response, bodyText) {
+    if (response.status === 429) {
+      try {
+        const payload = JSON.parse(bodyText);
+        const message = payload.error?.message || payload.message;
+        if (typeof message === "string") {
+          return { status: response.status, message, resetsAtMs: parseDevinQuotaReset(message) };
+        }
+      } catch { /* preserve the default parser for non-JSON errors */ }
+    }
+    return super.parseError(response, bodyText);
   }
   async execute({ model, body, stream = true, credentials = {}, signal, proxyOptions = null, overloadDeadline = null }) {
     // Mouse's current JSON-only transport cannot carry Connect-proto requests.
@@ -109,10 +122,27 @@ export class DevinExecutor extends BaseExecutor {
       result.response = new Response(bodyStream, { status: original.status, statusText: original.statusText, headers: original.headers });
       return result;
     }
+    const protocolFailure = error => {
+      const status = error.status || 502;
+      const responseHeaders = new Headers();
+      // Preserve the upstream retry hint, but never copy binary encoding/length
+      // headers onto the synthesized JSON error response.
+      const retryAfter = upstream.headers.get("Retry-After");
+      if (retryAfter) responseHeaders.set("Retry-After", retryAfter);
+      const resetsAtMs = status === 429 ? parseDevinQuotaReset(error.message) : null;
+      if (resetsAtMs && !retryAfter) responseHeaders.set("Retry-After", String(Math.ceil((resetsAtMs - Date.now()) / 1000)));
+      return Response.json({ error: { message: error.message, type: "upstream_error", code: error.code || "devin_protocol_error" } }, { status, headers: responseHeaders });
+    };
     if (!stream) {
       try {
         const completion = await devinCompletion(upstream.body, model, { signal: controller.signal, maxTokens });
         result.response = new Response(JSON.stringify(completion), { headers: { "Content-Type": "application/json" } });
+        return result;
+      } catch (error) {
+        // Preserve protocol status for non-stream callers as well. Transport,
+        // cancellation and malformed/truncated stream errors still propagate.
+        if (signal?.aborted || error.name === "AbortError" || error.status !== 429) throw error;
+        result.response = protocolFailure(error);
         return result;
       } finally { controller.abort(); cleanup(); }
     }
@@ -127,7 +157,7 @@ export class DevinExecutor extends BaseExecutor {
     } catch (error) {
       controller.abort(error); cleanup();
       if (signal?.aborted || error.name === "AbortError") throw error;
-      result.response = Response.json({ error: { message: error.message, type: "upstream_error", code: error.code || "devin_protocol_error" } }, { status: error.status || 502 });
+      result.response = protocolFailure(error);
       return result;
     }
     const encoder = new TextEncoder();

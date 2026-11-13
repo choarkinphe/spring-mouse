@@ -91,6 +91,43 @@ describe("Devin executor", () => {
     expect(result.response.status).toBe(429);
     expect(await result.response.json()).toMatchObject({ error: { code: "resource_exhausted" } });
   });
+  it.each([true, false])("preserves quota reset through Connect errors (stream=%s)", async stream => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-13T08:14:00Z"));
+    try {
+      const message = "Reached free model rate limit. Your limit will reset in 1 hour 45 minutes (at 10:01 UTC).";
+      fetchMock.mockResolvedValue(new Response(frame(Buffer.from(JSON.stringify({ error: { code: "resource_exhausted", message } })), 2)));
+      const executor = new DevinExecutor();
+      const result = await executor.execute(opts({ stream }));
+      expect(result.response.status).toBe(429);
+      expect(result.response.headers.get("Retry-After")).toBe("6420");
+      const { parseUpstreamError } = await import("../../open-sse/utils/error.js");
+      const parsed = await parseUpstreamError(result.response, executor);
+      expect(parsed.resetsAtMs).toBe(Date.parse("2026-11-13T10:01:00Z"));
+      expect(parsed.message).toContain(message);
+      expect(parsed.upstreamError).toMatchObject({ status: 429, layer: "provider" });
+      expect(parsed.message).not.toContain('{"error":');
+    } finally { clock.mockRestore(); }
+  });
+  it("retains native Retry-After on synthesized Connect failures", async () => {
+    fetchMock.mockResolvedValue(new Response(frame(Buffer.from('{"error":{"code":"resource_exhausted","message":"quota"}}'), 2), {
+      headers: { "Retry-After": "120", "Content-Encoding": "gzip", "Content-Length": "999" },
+    }));
+    const { response } = await new DevinExecutor().execute(opts());
+    expect(response.headers.get("Retry-After")).toBe("120");
+    expect(response.headers.has("Content-Encoding")).toBe(false);
+    expect(response.headers.has("Content-Length")).toBe(false);
+    await response.text();
+  });
+  it("only extracts reset times from rate-limit HTTP responses", () => {
+    const executor = new DevinExecutor();
+    const message = "Your limit will reset in 1 hour.";
+    expect(executor.parseError(new Response(null, { status: 429 }), JSON.stringify({ error: { message } })))
+      .toMatchObject({ status: 429, message, resetsAtMs: expect.any(Number) });
+    expect(executor.parseError(new Response(null, { status: 500 }), JSON.stringify({ error: { message } })))
+      .not.toHaveProperty("resetsAtMs");
+    expect(executor.parseError(new Response(null, { status: 429 }), "invalid JSON"))
+      .toMatchObject({ status: 429, message: "invalid JSON" });
+  });
   it("ignores credential-controlled base URL and allows explicit test configuration", () => {
     const executor = new DevinExecutor();
     expect(executor.buildUrl("m", true, 0, { providerSpecificData: { baseUrl: "https://attacker.invalid" } })).toBe(`${DEVIN.baseUrl}${DEVIN.chatPath}`);

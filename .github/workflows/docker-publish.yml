@@ -188,6 +188,9 @@ jobs:
           unit/devin-models.test.js
           unit/devin-protocol.test.js
           unit/devin-executor.test.js
+          unit/devin-rate-limit.test.js
+          unit/devin-account-cooldown.test.js
+          unit/combo-retry-after.test.js
           unit/devin-integration.test.js
           unit/devin-oauth.test.js
           unit/devin-usage.test.js

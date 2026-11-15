@@ -9,7 +9,15 @@ globalThis.fetch = function creditsFixtureFetch(input, init) {
   const wb = ['copilot.tencent.com', 'www.workbuddy.ai'].includes(url.hostname);
   if (!qoder && !wb) return guardedFetch(input, init);
   if (url.pathname === '/api/v2/quota/usage' || url.pathname === '/sash/api/v2/me/usage') {
-    const usage = { userQuota: { total: 300, used: 0, remaining: 300, unit: 'credits' }, addOnQuota: { total: 100, used: 0, remaining: 100, unit: 'credits' }, isQuotaExceeded: false };
+    const usage = url.pathname.startsWith('/sash/')
+      ? { userQuota: { total: 300, used: 0, remaining: 300, unit: 'credits' }, addOnQuota: { total: 100, used: 0, remaining: 100, unit: 'credits' }, isQuotaExceeded: false }
+      : { userQuota: { total: 0, used: 0, remaining: 0, unit: 'credits' }, isQuotaExceeded: true,
+        dedicatedResourcePackages: [{ id: 'fixture-campaign', name: 'act-20261112-658', total: 2000, used: 0, remaining: 2000,
+          expiresAt: Date.now() + 3 * 86400000, available: true, status: 'QUOTA_DETAIL_STATUS_ACTIVE',
+          displayLabels: [
+            { dimension: 'title', valueI18n: { 'zh-CN': 'SOTA 专属积分' } },
+            { dimension: 'description', valueI18n: { 'zh-CN': 'SOTA 专属积分：在模型选择器中选择 Sonus 模型时优先抵扣该积分。' } },
+          ] }] };
     return Promise.resolve(Response.json(url.pathname.startsWith('/sash/') ? { displayMode: 'qoder', qoderUsage: usage } : usage));
   }
   if (url.pathname.endsWith('/model/list')) return Promise.resolve(Response.json({
@@ -34,7 +42,10 @@ globalThis.fetch = function creditsFixtureFetch(input, init) {
   } }));
   if (url.pathname === '/sash/api/v1/me/campaigns') {
     const start = Math.floor((Date.now() - 2 * 3600000) / 86400000) * 86400000 + 2 * 3600000;
-    return Promise.resolve(Response.json({ campaigns: [{ campaignId: 'fixture-daily', actionType: 'CLAIM_BENEFIT', claimStatus: claimed ? 'CLAIMED' : 'CLAIMABLE', startAt: start, endAt: start + 86400000 - 60000, benefit: { kind: 'CREDITS', amount: 50 } }] }));
+    const trial = { campaignId: 'fixture-trial', campaignKey: 'act-20261112-658', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED',
+      startAt: start - 86400000, endAt: start + 6 * 86400000, benefit: { kind: 'CREDITS', amount: 2000, modelScope: { modelSeries: { key: 'C_S_U_SERIES' } } } };
+    const daily = { campaignId: 'fixture-daily', campaignKey: 'act-20261109-344', actionType: 'CLAIM_BENEFIT', claimStatus: claimed ? 'CLAIMED' : 'CLAIMABLE', startAt: start, endAt: start + 86400000 - 60000, benefit: { kind: 'CREDITS', amount: 50 } };
+    return Promise.resolve(Response.json({ campaigns: url.hostname === 'openapi.qoder.sh' ? [trial] : [daily] }));
   }
   if (url.pathname === '/sash/api/v1/me/campaigns/fixture-daily/claim' && init?.method === 'POST') {
     claimed = true;

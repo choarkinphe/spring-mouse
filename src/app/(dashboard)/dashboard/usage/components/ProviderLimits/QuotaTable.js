@@ -161,7 +161,7 @@ export default function QuotaTable({
           // recurring defaults true: a missing flag means the quota
           // refreshes at resetAt. Bonus/one-shot packs set recurring:false
           // and their resetAt is a hard expiry, so word it as "expires".
-          const recurring = quota.recurring !== false;
+          const recurring = quota.recurring !== false && !quota.dedicated;
           const countdownLabel = /^\d{4}-\d{2}-\d{2}$/.test(countdown)
             ? countdown
             : recurring ? `in ${countdown}` : `expires in ${countdown}`;
@@ -195,6 +195,7 @@ export default function QuotaTable({
                     {remainingLabel}
                   </span>
                 </div>
+                {quota.description && <p className="text-[11px] leading-relaxed text-text-muted">{quota.description}</p>}
               </div>
 
               {/* Reset time */}

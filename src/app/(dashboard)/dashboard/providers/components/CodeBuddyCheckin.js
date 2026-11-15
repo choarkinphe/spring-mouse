@@ -194,7 +194,7 @@ function CheckinControls({ connection, onRefreshQuota }) {
         )}
       </div>
       {error && <p role="alert" className="break-words text-red-400">{error}</p>}
-      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{isGlobalQoder && "通过官方原生组件生成本机身份并领取；只领取官方明确提供的活动，不伪造设备身份。"}{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
+      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；只处理每日通用积分活动，一次性体验包及专属活动不计为签到。活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{isGlobalQoder && "通过官方原生组件生成本机身份并领取；只领取官方明确提供的活动，不伪造设备身份。"}{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
     </div>
   );
 }

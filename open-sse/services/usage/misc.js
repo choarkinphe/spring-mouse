@@ -380,6 +380,35 @@ export async function getQoderUsage(accessToken, proxyOptions = null, provider =
         quotas.addOn = { total, used, remaining, unit: addOn.unit || "credits", resetAt: null };
       }
     }
+    // Some international accounts have only model-restricted campaign credits.
+    // When addOn is present, dedicated records are its detail, not extra balance.
+    const dedicated = body.dedicatedResourcePackages ?? body.dedicated_resource_packages;
+    if (!quotas.addOn && Array.isArray(dedicated)) {
+      dedicated.forEach((item, index) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return;
+        const expiry = item.expiresAt ?? item.expires_at;
+        const date = expiry == null ? null : new Date(expiry);
+        const expiresAt = date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+        if (item.available === false || (expiresAt && date.getTime() <= Date.now())) return;
+        if (item.status && item.status !== "QUOTA_DETAIL_STATUS_ACTIVE") return;
+        const total = numberOrNull(item.total ?? item.cap);
+        const remaining = numberOrNull(item.remaining);
+        const used = numberOrNull(item.used) ?? (total !== null && remaining !== null ? total - remaining : null);
+        if (total === null && remaining === null && used === null) return;
+        const labels = Array.isArray(item.displayLabels) ? item.displayLabels : [];
+        const label = (dimension) => {
+          const entry = labels.find((entry) => entry?.dimension === dimension);
+          return entry?.valueI18n?.["zh-CN"] || entry?.valueI18n?.["en-US"] || entry?.value || null;
+        };
+        const packageName = item.name || item.id || `Dedicated ${index + 1}`;
+        quotas[`dedicated:${item.id || index}`] = {
+          total, used, remaining, unit: item.unit || "credits", resetAt: expiresAt,
+          displayName: `${label("title") || "专属积分"} · ${packageName}`,
+          description: label("description") || "专属积分，仅适用于此资源包指定的模型或服务，并非通用余额。",
+          dedicated: true,
+        };
+      });
+    }
     return {
       quotas,
       totalUsagePercentage: Number(body.totalUsagePercentage) || 0,

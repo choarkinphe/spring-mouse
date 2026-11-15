@@ -178,6 +178,38 @@ describe("Qoder shared check-in persistence", () => {
     expect(performQoderCheckin).toHaveBeenCalledOnce();
   });
 
+  it.each(["qoder", "qoder-cn"])("rechecks legacy %s trial success instead of skipping today's daily campaign", async (provider) => {
+    const f = fixture({ connection: { provider }, state: { enabled: true, status: "already_checked_in", reward: 2000,
+      lastSuccessDate: "2026-10-22", retryAfter: BASE_TIME + 7 * 86400000, terminalDate: "2026-10-22" } });
+    performQoderCheckin.mockResolvedValueOnce({ ok: false, status: "ineligible", message: "仅有体验包" });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ ok: false, checkin: { status: "ineligible", lastSuccessDate: null, reward: null } });
+    expect(performQoderCheckin).toHaveBeenCalledOnce();
+    expect(f.state()).toMatchObject({ dailyCampaignVersion: 1, lastSuccessDate: null, retryAfter: 0 });
+  });
+
+  it("does not clear another process's lease when invalidating legacy campaign success", async () => {
+    const f = fixture({ connection: { provider: "qoder" }, state: { enabled: true, status: "success", reward: 2000,
+      lastSuccessDate: "2026-10-22", leaseId: "other-process", leaseUntil: BASE_TIME + 1000 } });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ skipped: "running" });
+    expect(f.state()).toMatchObject({ leaseId: "other-process", lastSuccessDate: "2026-10-22" });
+    expect(performQoderCheckin).not.toHaveBeenCalled();
+    expect(f.patches).toEqual([]);
+  });
+
+  it("normalizes legacy campaign status when toggling automatic check-in without claiming", async () => {
+    const f = fixture({ connection: { provider: "qoder" }, state: { status: "already_checked_in", reward: 2000, lastSuccessDate: "2026-10-22" } });
+    expect(await f.service.setEnabled(ID, true)).toMatchObject({ enabled: true, status: "recheck", reward: null, lastSuccessDate: null });
+    expect(f.patches).toEqual([{ enabled: true }]);
+    expect(performQoderCheckin).not.toHaveBeenCalled();
+  });
+
+  it.each(["qoder", "qoder-cn"])("skips today's verified %s daily success", async (provider) => {
+    const f = fixture({ connection: { provider }, state: { enabled: true, status: "success", reward: 100,
+      lastSuccessDate: "2026-10-22", dailyCampaignVersion: 1 } });
+    expect(await f.service.run(ID, { automatic: true })).toMatchObject({ ok: true, skipped: "today" });
+    expect(performQoderCheckin).not.toHaveBeenCalled();
+  });
+
   it.each(["qoder", "qoder-cn"])("persists %s success and follows the 10am boundary", async provider => {
     const start = Date.parse("2026-10-28T01:59:00Z");
     const f = fixture({ connection: { provider, accessToken: "dt-fixture", providerSpecificData: { userId: "fixture-user" } }, state: { enabled: true }, time: start });

@@ -7,7 +7,7 @@ import { refreshCodebuddyToken } from "open-sse/services/tokenRefresh.js";
 import { refreshWorkBuddyToken } from "open-sse/services/tokenRefresh/workbuddy.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
 import { requiresWorkBuddyAuthorization, WORKBUDDY_LEGACY } from "open-sse/config/workbuddy.js";
-import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, currentDailyCheckinState, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
+import { CODEBUDDY_CHECKIN as config, supportsDailyCheckin, isQoderCheckinProvider, DAILY_CHECKIN_UNSUPPORTED, currentDailyCheckinState, QODER_DAILY_CAMPAIGN_VERSION, codeBuddyCheckinDate, checkinSite } from "@/shared/config/codebuddyCheckin.js";
 import { performQoderCheckin, qoderCheckinDate } from "./qoderCheckin.js";
 import { refreshQoderToken } from "open-sse/services/qoderModels.js";
 import { withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
@@ -187,12 +187,12 @@ export function createCodeBuddyCheckinService(deps = {}) {
     let acquired = false;
     const current = await updateState(connectionId, (state) => {
       if (automatic && state.enabled !== true) { skipped = "disabled"; return null; }
-      if (state.lastSuccessDate === date) { skipped = "today"; return null; }
-      if (state.leaseUntil > startedAt) { skipped = "running"; return null; }
       const effective = currentDailyCheckinState(state, connection.provider);
+      if (effective.lastSuccessDate === date) { skipped = "today"; return null; }
+      if (state.leaseUntil > startedAt) { skipped = "running"; return null; }
       if (automatic && (effective.terminalDate === date || effective.retryAfter > startedAt)) { skipped = "cooldown"; return null; }
       acquired = true;
-      return { leaseId, leaseUntil: startedAt + config.leaseMs, lastAttemptAt: new Date(startedAt).toISOString() };
+      return { ...(effective !== state ? effective : {}), leaseId, leaseUntil: startedAt + config.leaseMs, lastAttemptAt: new Date(startedAt).toISOString() };
     });
     if (!acquired) return {
       ok: skipped === "today", skipped,
@@ -222,6 +222,7 @@ export function createCodeBuddyCheckinService(deps = {}) {
       return {
         leaseId: null, leaseUntil: 0,
         status: result.status, message: result.message, reward: result.reward ?? null,
+        ...(isQoder ? { dailyCampaignVersion: QODER_DAILY_CAMPAIGN_VERSION } : {}),
         ...(result.ok ? { lastSuccessDate: result.successDate || date } : {}),
         terminalDate: !result.nextAttemptAt && ["ineligible", "ended", "own_app"].includes(result.status) ? date : null,
         retryAfter: Number.isFinite(result.nextAttemptAt) ? result.nextAttemptAt : ["error", "runtime_missing"].includes(result.status) ? now() + config.retryMs : 0,
@@ -231,7 +232,9 @@ export function createCodeBuddyCheckinService(deps = {}) {
   }
 
   async function setEnabled(connectionId, enabled) {
-    return publicCheckinState(await updateState(connectionId, () => ({ enabled })));
+    const state = await updateState(connectionId, () => ({ enabled }));
+    const connection = await load(connectionId);
+    return publicCheckinState(currentDailyCheckinState(state, connection?.provider));
   }
 
   return { run, setEnabled };

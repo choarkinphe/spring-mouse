@@ -239,7 +239,7 @@ function ChannelQuota({ quotas, loading }) {
         </Tooltip>
       </div>
       {quotas.some((quota) => quota.isQuotaExceeded === true) && (
-        <div className="mb-2 text-xs text-rose-300">上游报告此账户配额已超额</div>
+        <div className="mb-2 text-xs text-rose-300">{quotas.some((quota) => quota.dedicated) ? "上游报告通用配额已超额；专属积分仅适用于指定模型" : "上游报告此账户配额已超额"}</div>
       )}
       {/* Keep the remaining amount prominent; used/total stays in the tooltip. */}
       <div className="grid w-full grid-cols-1 gap-2">
@@ -269,8 +269,9 @@ function ChannelQuota({ quotas, loading }) {
                   {detail?.length ? <span className="ml-1 text-[#647688]">（最早到期为准）</span> : null}
                 </span>
                 {valueNode}
-                {reset !== "-" && <span className="shrink-0 text-[#647688]">{reset}</span>}
+                {reset !== "-" && <span className="shrink-0 text-[#647688]" title={quota.resetAt}>{quota.dedicated ? "到期：" : ""}{reset}</span>}
               </div>
+              {quota.description && <p className="mb-1 text-[11px] leading-relaxed text-[#b9c7d5]">{quota.description}</p>}
               {!quota.unlimited && !quota.spend && (
                 <div className="h-1 overflow-hidden rounded-full bg-white/[0.09]" role="progressbar" aria-label={`${quota.displayName || quota.name} 剩余比例`} aria-valuenow={Math.max(0, Math.min(remaining, 100))} aria-valuemin={0} aria-valuemax={100} title={`剩余 ${remaining}%`}>
                   <div className={cn("h-full rounded-full", getQuotaTone(remaining))} style={{ width: `${Math.min(remaining, 100)}%` }} />

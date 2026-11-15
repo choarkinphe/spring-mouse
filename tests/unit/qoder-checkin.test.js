@@ -17,7 +17,7 @@ const account = (overrides = {}) => ({
   providerSpecificData: { userId: "user-fixture", region: "cn" }, ...overrides,
 });
 const campaign = (overrides = {}) => ({
-  campaignId: "fixture/campaign", actionType: "CLAIM_BENEFIT", claimStatus: "CLAIMABLE",
+  campaignId: "fixture/campaign", campaignKey: "act-20261109-344", actionType: "CLAIM_BENEFIT", claimStatus: "CLAIMABLE",
   startAt: START / 1000, endAt: END / 1000, benefit: { kind: "CREDITS", amount: 100 }, ...overrides,
 });
 const missing = async () => { throw new Error("not installed"); };
@@ -120,9 +120,38 @@ describe("Qoder campaign check-in", () => {
     expect(await run(account(), { fetch })).toMatchObject({ status: "success", reward: 0, nextAttemptAt: NEXT });
   });
 
-  it("honors a multi-day campaign's end and does not hardcode 100 credits", async () => {
-    const fetch = server([campaign({ endAt: (START + 3 * 86400000) / 1000, benefit: { amount: 25 } })], { status: "CLAIMED" });
-    expect(await run(account(), { fetch })).toMatchObject({ reward: 25, nextAttemptAt: START + 3 * 86400000 + 60000 });
+  it.each(["qoder", "qoder-cn"])("excludes multi-day or restricted trial packs from %s daily check-in", async (provider) => {
+    for (const claimStatus of ["CLAIMABLE", "CLAIMED"]) {
+      const fetch = server([campaign({ campaignKey: "act-20261112-658", claimStatus,
+        endAt: (START + 7 * 86400000) / 1000,
+        benefit: { kind: "CREDITS", amount: 2000, modelScope: { modelSeries: { key: "C_S_U_SERIES" } } },
+      })]);
+      expect(await run(account({ provider, providerSpecificData: { userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY }))
+        .toMatchObject({ ok: false, status: "ineligible", message: expect.stringContaining("不属于每日签到") });
+      expect(fetch).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("selects the daily campaign even when a trial pack is listed first", async () => {
+    const fetch = server([
+      campaign({ campaignId: "trial", campaignKey: "act-20261112-658", benefit: { kind: "CREDITS", amount: 2000 } }),
+      campaign({ benefit: { kind: "CREDITS", amount: 25 } }),
+    ], { status: "CLAIMED" });
+    expect(await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY }))
+      .toMatchObject({ ok: true, reward: 25 });
+    expect(fetch.mock.calls[1][0]).toContain("fixture%2Fcampaign/claim");
+  });
+
+  it("does not claim unknown international credit promotions or restricted daily-looking packs", async () => {
+    for (const entry of [
+      campaign({ campaignKey: "unknown" }),
+      campaign({ benefit: { kind: "CREDITS", amount: 100, modelScope: { modelSeries: { key: "C_S_U_SERIES" } } } }),
+      campaign({ endAt: (START + 3 * 86400000) / 1000 }),
+    ]) {
+      const fetch = server([entry]);
+      expect((await run(account({ provider: "qoder", providerSpecificData: { userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY })).ok).toBe(false);
+      expect(fetch).toHaveBeenCalledOnce();
+    }
   });
 
   it("does not claim future, expired, malformed or non-credit campaigns", async () => {
@@ -141,8 +170,8 @@ describe("Qoder campaign check-in", () => {
   });
 
   it("returns next opening for a future campaign instead of a midnight terminal marker", async () => {
-    const fetch = server([campaign({ startAt: (NOW + 3600000) / 1000 })]);
-    expect(await run(account(), { fetch })).toMatchObject({ status: "error", nextAttemptAt: NOW + 3600000 + 60000 });
+    const fetch = server([campaign({ startAt: (START + 86400000) / 1000, endAt: (END + 86400000) / 1000 })]);
+    expect(await run(account(), { fetch })).toMatchObject({ status: "error", nextAttemptAt: START + 86400000 + 60000 });
   });
 
   it("stops immediately when the claim lease was lost", async () => {

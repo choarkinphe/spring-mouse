@@ -58,7 +58,18 @@ export function supportsAutomaticCheckin(connection) {
   return supportsDailyCheckin(connection);
 }
 
+// Verified international daily-credit campaign. Unknown promotions must not be
+// claimed by the daily scheduler merely because they grant credits.
+export const QODER_DAILY_CAMPAIGN_KEYS = ["act-20261109-344"];
+export const QODER_DAILY_CAMPAIGN_VERSION = 1;
+
 export function currentDailyCheckinState(state = {}, provider) {
+  if (!isQoderCheckinProvider(provider)) return state;
+  if (state.dailyCampaignVersion !== QODER_DAILY_CAMPAIGN_VERSION
+    && ["success", "already_checked_in"].includes(state.status)) {
+    return { ...state, status: "recheck", message: "活动识别已更新，需重新确认每日签到；一次性体验包不计为签到",
+      lastSuccessDate: null, reward: null, terminalDate: null, retryAfter: 0, lastAttemptAt: null };
+  }
   if (provider !== "qoder") return state;
   if (state.status === "desktop_required" || state.status === "own_app"
     && typeof state.message === "string" && (state.message.startsWith("Qoder 国际版签到需要官方设备身份"))) {

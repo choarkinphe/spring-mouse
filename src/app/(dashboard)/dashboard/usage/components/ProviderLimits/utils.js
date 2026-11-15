@@ -548,6 +548,9 @@ export function parseQuotaData(provider, data) {
             }
             normalizedQuotas.push({
               name: quotaType === "user" ? "Personal" : quotaType === "organization" ? "Organization" : quotaType === "addOn" ? "附加积分" : quotaType,
+              displayName: quota.displayName,
+              description: quota.description,
+              dedicated: quota.dedicated === true,
               used: quota.used,
               total: quota.total,
               absoluteRemaining: quota.remaining,

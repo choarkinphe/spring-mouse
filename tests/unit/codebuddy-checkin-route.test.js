@@ -29,6 +29,16 @@ describe("CodeBuddy checkin management route", () => {
     expect(publicCheckinState).toHaveBeenCalledWith(expect.objectContaining({ status: "recheck", terminalDate: null }));
     expect(runCodeBuddyCheckin).not.toHaveBeenCalled();
   });
+  it("GET invalidates unclassified trial success without claiming or changing settings", async () => {
+    getProviderConnectionById.mockResolvedValue({ id: "account", provider: "qoder", authType: "oauth" });
+    getCheckinState.mockResolvedValue({ enabled: true, status: "already_checked_in", reward: 2000, lastSuccessDate: "2026-11-15", retryAfter: 1795104000000 });
+    await GET(null, context());
+    const { publicCheckinState } = await import("@/lib/services/codebuddyCheckin.js");
+    expect(publicCheckinState).toHaveBeenCalledWith(expect.objectContaining({ status: "recheck", lastSuccessDate: null, reward: null, retryAfter: 0 }));
+    expect(runCodeBuddyCheckin).not.toHaveBeenCalled();
+    expect(setCodeBuddyCheckinEnabled).not.toHaveBeenCalled();
+  });
+
   it("reads a sanitized state", async () => {
     const response = await GET(null, context());
     expect(await response.json()).toEqual({ checkin: { enabled: false } });

@@ -63,6 +63,48 @@ describe("Qoder quota snapshot", () => {
     expect(absent.quotas.addOn).toBeUndefined();
   });
 
+  it("preserves dedicated-only campaign credits, restrictions and their own expiry", async () => {
+    const expiry = Date.now() + 3 * 86400000;
+    const result = await usage({ userQuota: { total: 0, used: 0, remaining: 0 }, isQuotaExceeded: true,
+      expiresAt: Date.parse("9999-01-01T00:00:00Z"), dedicatedResourcePackages: [{
+        id: "campaign", name: "act-20261112-658", total: "2000", remaining: "2000", available: true,
+        status: "QUOTA_DETAIL_STATUS_ACTIVE", expiresAt: expiry,
+        displayLabels: [
+          { dimension: "title", valueI18n: { "zh-CN": "SOTA 专属积分" } },
+          { dimension: "description", valueI18n: { "zh-CN": "选择 Sonus 模型时优先抵扣" } },
+        ],
+      }] });
+    const rows = parseQuotaData("qoder", result);
+    expect(rows).toHaveLength(2);
+    const dedicated = rows[1];
+    expect(dedicated).toMatchObject({ dedicated: true, displayName: "SOTA 专属积分 · act-20261112-658",
+      description: "选择 Sonus 模型时优先抵扣", total: 2000, used: 0, absoluteRemaining: 2000,
+      resetAt: new Date(expiry).toISOString(), isQuotaExceeded: true });
+    expect(formatQuotaRemainingLabel(dedicated)).toBe("余量 2,000 credits");
+    expect(getRemainingPercentage(dedicated)).toBe(100);
+    expect(summarizeQuotaRows(rows)).toHaveLength(2);
+  });
+
+  it("omits unavailable, inactive, expired and malformed dedicated packages", async () => {
+    const base = { total: 100, remaining: 100 };
+    const result = await usage({ dedicatedResourcePackages: [null, [], {},
+      { ...base, available: false }, { ...base, status: "QUOTA_DETAIL_STATUS_EXPIRED" },
+      { ...base, expiresAt: Date.now() - 1000 },
+    ] });
+    expect(Object.keys(result.quotas)).toEqual(["user", "organization"]);
+  });
+
+  it("supports snake-case packages, stable row keys and unknown model restrictions", async () => {
+    const result = await usage({ addOnQuota: {}, dedicated_resource_packages: [
+      { id: "a", name: "same", cap: 100, remaining: 25 },
+      { id: "b", name: "same", total: 50, used: 10, expires_at: "2030-01-01T00:00:00Z" },
+    ] });
+    expect(result.quotas["dedicated:a"]).toMatchObject({ used: 75, remaining: 25, dedicated: true });
+    expect(result.quotas["dedicated:b"].resetAt).toBe("2030-01-01T00:00:00.000Z");
+    expect(result.quotas["dedicated:a"].description).toContain("并非通用余额");
+    expect(parseQuotaData("qoder", result).slice(1).map((row) => row.name)).toEqual(["dedicated:a", "dedicated:b"]);
+  });
+
   it("reads CN usage from the regional endpoint and keeps credit amounts", async () => {
     proxyAwareFetch.mockResolvedValueOnce(new Response(JSON.stringify({ displayMode: "qoder", qoderUsage: {
       userQuota: { total: 100, remaining: 25 }, addOnQuota: { cap: 50, used: 5 },

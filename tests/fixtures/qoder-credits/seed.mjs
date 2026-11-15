@@ -21,6 +21,6 @@ await updateProviderConnectionHealth(globalAccount.id, () => ({ update: {
   lastUpstreamError: JSON.stringify(queue), lastUpstreamRaw: JSON.stringify({ code: '403', message: JSON.stringify(queue) }), lastUpstreamStatus: 200,
   lastUpstreamSource: 'sse', lastUpstreamLayer: 'provider', lastUpstreamAt: new Date().toISOString(),
 } }));
-await updateCheckinState(globalAccount.id, () => ({ enabled: true, status: 'own_app', message: 'Qoder 国际版签到需要官方设备身份，请在当前主机安装并登录 Qoder 官方客户端或 CLI，或在官方客户端签到', terminalDate: new Date().toISOString().slice(0, 10), lastAttemptAt: new Date().toISOString() }));
+await updateCheckinState(globalAccount.id, () => ({ enabled: true, status: 'already_checked_in', message: '本轮 Qoder 积分已领取', reward: 2000, lastSuccessDate: new Date(Date.now() - 2 * 3600000).toISOString().slice(0, 10), retryAfter: Date.now() + 6 * 86400000, lastAttemptAt: new Date().toISOString() }));
 await updateSettings({ requireLogin: false, requireApiKey: false, rtkEnabled: false, headroomEnabled: false, pxpipeEnabled: false, cloudEnabled: false, mitmEnabled: false });
 console.log('Seeded four isolated credit model accounts; no real credentials');

@@ -27,7 +27,9 @@ describe("obsolete Qoder precheck", () => {
     expect(currentDailyCheckinState(old, "qoder-cn")).toBe(old);
     const official = { ...old, message: "Qoder 官方未向当前请求提供可领取积分活动" };
     expect(currentDailyCheckinState(official, "qoder")).toBe(official);
-    const success = { ...old, status: "success" };
+    const success = { ...old, status: "success", dailyCampaignVersion: 1 };
     expect(currentDailyCheckinState(success, "qoder")).toBe(success);
+    expect(currentDailyCheckinState({ ...success, dailyCampaignVersion: undefined }, "qoder"))
+      .toMatchObject({ status: "recheck", lastSuccessDate: null, leaseId: "preserve" });
   });
 });

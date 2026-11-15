@@ -7,6 +7,7 @@ import { resolveQoderCredentials } from "open-sse/services/qoderModels.js";
 import { getQoderEndpoints, withQoderProviderRegion } from "open-sse/shared/qoder/constants.js";
 import { readQoderSocketIdentity } from "./qoderNativeIdentity.js";
 import { hostname } from "node:os";
+import { QODER_DAILY_CAMPAIGN_KEYS } from "@/shared/config/codebuddyCheckin.js";
 
 // Protocol reference (MIT): magpie-community/plugins, revision
 // 270b228a964dc4f7fb55b211e23f7a2c7b7329f6, packages/qoder/index.mjs
@@ -33,6 +34,17 @@ function timestamp(value) {
   if (!Number.isFinite(n) || n <= 0) return null;
   const ms = n > 1e12 ? n : n * 1000;
   return Number.isFinite(new Date(ms).getTime()) ? ms : null;
+}
+
+function isDailyCampaign(campaign, region) {
+  const start = timestamp(campaign.startAt), end = timestamp(campaign.endAt);
+  // A daily round starts at 10:00 UTC+8 and lasts at most one day. A known
+  // campaign key alone is insufficient if the vendor changes its scope/window.
+  if (start === null || end === null || end <= start || end - start > DAY_MS
+    || start % DAY_MS !== 2 * 60 * 60 * 1000) return false;
+  const series = campaign.benefit?.modelScope?.modelSeries?.key;
+  if (series && series !== "ALL_MODELS") return false;
+  return region === "cn" || QODER_DAILY_CAMPAIGN_KEYS.includes(campaign.campaignKey);
 }
 
 function nextOpening(campaign) {
@@ -219,7 +231,8 @@ export async function performQoderCheckin(connection, {
     if (listed.status !== 200) return result("error", "Qoder 签到活动查询失败，请稍后重试");
     const list = await listed.json().catch(() => null);
     if (!list || !Array.isArray(list.campaigns)) return result("error", "Qoder 签到活动响应无效，请稍后重试");
-    const campaigns = list.campaigns.filter((c) => c && c.actionType === "CLAIM_BENEFIT" && (!c.benefit?.kind || c.benefit.kind === "CREDITS"));
+    const creditCampaigns = list.campaigns.filter((c) => c && c.actionType === "CLAIM_BENEFIT" && (!c.benefit?.kind || c.benefit.kind === "CREDITS"));
+    const campaigns = creditCampaigns.filter((c) => isDailyCampaign(c, region));
     const time = currentTime();
     const active = (c) => {
       const start = timestamp(c.startAt), end = timestamp(c.endAt);
@@ -238,7 +251,9 @@ export async function performQoderCheckin(connection, {
       if (campaigns.length) return result("error", "当前暂无可领取的 Qoder 每日积分，请等待活动开放", {
         ...(future.length ? { nextAttemptAt: Math.min(...future) } : {}),
       });
-      return result("ineligible", "Qoder 当前未向此账号或设备提供每日积分活动，请在官方客户端确认资格");
+      return result("ineligible", creditCampaigns.length
+        ? "当前仅有一次性或专属积分活动，不属于每日签到；请在官方客户端查看活动资格及领取状态"
+        : "Qoder 当前未向此账号或设备提供每日积分活动，请在官方客户端确认资格");
     }
     if (typeof campaign.campaignId !== "string" || !campaign.campaignId.trim() || campaign.campaignId.length > 256) {
       return result("error", "Qoder 签到活动响应无效，请稍后重试");

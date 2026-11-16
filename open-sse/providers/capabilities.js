@@ -72,13 +72,28 @@ const CONNECTION_CAPABILITY_OVERRIDES = new Map();
 const MEASURED_CHANNEL_CAPABILITIES = new Map();
 const MANUAL_CAPABILITIES = new Map();
 
+// Public model directories may encode features as { supported, ...metadata }.
+// Normalize at ingestion so stored rows, manual overrides and routing consumers
+// all use booleans, without rewriting the source metadata or coercing unknowns.
+function normalizeCapabilityOverrides(capabilities = {}) {
+  const normalized = { ...capabilities };
+  for (const [key, fallback] of Object.entries(DEFAULT_CAPABILITIES)) {
+    if (typeof fallback !== "boolean" || !(key in normalized)) continue;
+    const value = normalized[key];
+    if (typeof value === "boolean") continue;
+    if (value && typeof value.supported === "boolean") normalized[key] = value.supported;
+    else delete normalized[key];
+  }
+  return normalized;
+}
+
 export function replaceMeasuredCapabilityOverrides({ connections = [], channels = [], manual = [] } = {}) {
   CONNECTION_CAPABILITY_OVERRIDES.clear();
   MEASURED_CHANNEL_CAPABILITIES.clear();
   MANUAL_CAPABILITIES.clear();
-  for (const entry of connections) CONNECTION_CAPABILITY_OVERRIDES.set(JSON.stringify([entry.provider, entry.model, entry.connectionId]), entry.capabilities);
-  for (const entry of channels) MEASURED_CHANNEL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), entry.capabilities);
-  for (const entry of manual) MANUAL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), entry.capabilities);
+  for (const entry of connections) CONNECTION_CAPABILITY_OVERRIDES.set(JSON.stringify([entry.provider, entry.model, entry.connectionId]), normalizeCapabilityOverrides(entry.capabilities));
+  for (const entry of channels) MEASURED_CHANNEL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), normalizeCapabilityOverrides(entry.capabilities));
+  for (const entry of manual) MANUAL_CAPABILITIES.set(overrideKey(entry.provider, entry.model), normalizeCapabilityOverrides(entry.capabilities));
 }
 
 export function getMeasuredCapabilitiesForConnection(provider, model, connectionId) {
@@ -99,7 +114,7 @@ export function replaceModelCapabilityOverrides(entries = []) {
     if (!entry?.provider || !entry?.model || !entry?.capabilities) continue;
     MODEL_CAPABILITY_OVERRIDES.set(
       overrideKey(entry.provider, entry.model),
-      { ...entry.capabilities },
+      normalizeCapabilityOverrides(entry.capabilities),
     );
   }
 }

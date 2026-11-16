@@ -156,6 +156,8 @@ jobs:
           unit/admission-handoff-cancellation.test.js
           unit/request-conversation-latency.test.js
           unit/capability-account-selection.test.js
+          unit/capabilities.test.js
+          unit/opencode-go-capability-routing.test.js
           unit/account-tag-routing.test.js
           unit/routing-observability.test.js
           unit/multi-account-fanout.test.js

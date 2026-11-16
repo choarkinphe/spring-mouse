@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getCapabilitiesForModel, replaceModelCapabilityOverrides } from "../../open-sse/providers/capabilities.js";
+import { getCapabilitiesForModel, getMeasuredCapabilitiesForConnection, replaceMeasuredCapabilityOverrides, replaceModelCapabilityOverrides } from "../../open-sse/providers/capabilities.js";
 
-afterEach(() => replaceModelCapabilityOverrides([]));
+afterEach(() => {
+  replaceModelCapabilityOverrides([]);
+  replaceMeasuredCapabilityOverrides({});
+});
 
 describe("getCapabilitiesForModel", () => {
   const claudeSonnet5Expected = {
@@ -100,6 +103,50 @@ describe("getCapabilitiesForModel", () => {
     expect(getCapabilitiesForModel("custom", "qwen3-coder-flash").vision).toBe(false);
     replaceModelCapabilityOverrides([{ provider: "custom", model: "qwen3.8-flash", capabilities: { vision: false } }]);
     expect(getCapabilitiesForModel("custom", "qwen3.8-flash").vision).toBe(false);
+  });
+
+  it.each([true, false])("normalizes supported=%s feature objects without changing runtime metadata", (supported) => {
+    const capabilities = {
+      tools: { supported }, reasoning: { supported, effort: ["high"] },
+      vision: { supported }, thinkingCanDisable: { supported },
+      contextWindow: 1000000, maxOutput: 384000,
+      thinkingFormat: "openai", thinkingRange: { min: 1, max: 100 },
+    };
+    replaceModelCapabilityOverrides([{ provider: "opencode-go", model: "test-model", capabilities }]);
+    expect(getCapabilitiesForModel("ocg", "test-model")).toMatchObject({
+      tools: supported, reasoning: supported, vision: supported, thinkingCanDisable: supported,
+      contextWindow: 1000000, maxOutput: 384000,
+      thinkingFormat: "openai", thinkingRange: { min: 1, max: 100 },
+    });
+    expect(capabilities.tools).toEqual({ supported });
+  });
+
+  it("ignores malformed feature values rather than overriding known capabilities", () => {
+    replaceModelCapabilityOverrides([{
+      provider: "custom", model: "qwen3.8-flash",
+      capabilities: { tools: { supported: "false" }, vision: null, reasoning: {}, pdf: 1, search: "true" },
+    }]);
+    expect(getCapabilitiesForModel("custom", "qwen3.8-flash")).toMatchObject({
+      tools: true, vision: true, reasoning: true, pdf: false, search: false,
+    });
+  });
+
+  it("normalizes measured and manual layers while preserving their precedence", () => {
+    replaceModelCapabilityOverrides([{ provider: "opencode-go", model: "test-model", capabilities: { tools: { supported: true } } }]);
+    replaceMeasuredCapabilityOverrides({
+      connections: [{ provider: "opencode-go", model: "test-model", connectionId: "account", capabilities: { tools: { supported: false } } }],
+      channels: [{ provider: "opencode-go", model: "test-model", capabilities: { tools: { supported: false } } }],
+    });
+    expect(getCapabilitiesForModel("ocg", "test-model").tools).toBe(false);
+    expect(getCapabilitiesForModel("ocg", "test-model", { connectionId: "account" }).tools).toBe(false);
+    expect(getMeasuredCapabilitiesForConnection("ocg", "test-model", "account").tools).toBe(false);
+    replaceMeasuredCapabilityOverrides({
+      connections: [{ provider: "opencode-go", model: "test-model", connectionId: "account", capabilities: { tools: false } }],
+      channels: [{ provider: "opencode-go", model: "test-model", capabilities: { tools: false } }],
+      manual: [{ provider: "opencode-go", model: "test-model", capabilities: { tools: { supported: true } } }],
+    });
+    expect(getCapabilitiesForModel("ocg", "test-model").tools).toBe(true);
+    expect(getMeasuredCapabilitiesForConnection("ocg", "test-model", "account").tools).toBe(true);
   });
 
   it("merges synchronized metadata over static family defaults", () => {

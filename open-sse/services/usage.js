@@ -76,7 +76,7 @@ const USAGE_HANDLERS = {
   devin: (c) => getDevinUsage(c, { proxyOptions: c.proxyOptions }),
   kimi: (c) => getKimiUsage(c.accessToken, c.apiKey, c.proxyOptions, c.providerSpecificData),
   deepseek: (c) => getDeepseekUsage(c.apiKey, c.proxyOptions),
-  "opencode-go": (c) => getOpenCodeGoUsage(c.apiKey, c.proxyOptions),
+  "opencode-go": (c) => getOpenCodeGoUsage(c.apiKey, c.providerSpecificData, c.proxyOptions),
   corecode: (c) => getCoreCodeUsage(c.apiKey, c.proxyOptions),
 };
 

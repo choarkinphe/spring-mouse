@@ -3,12 +3,13 @@ import { PROVIDER_MODELS, getModelSupportedFormats } from "../../open-sse/config
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { resolveTransport } from "../../open-sse/services/provider.js";
 
-// Chat-only models (no /messages, no /responses support on opencode-go)
-const CHAT_ONLY = ["glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "mimo-v2.5", "mimo-v2.5-pro", "deepseek-v4.1-flash"];
-// Models that also expose the Anthropic /messages endpoint
-const CLAUDE_CAPABLE = ["minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus"];
-// Models that also expose the OpenAI /responses endpoint
-const RESPONSES_CAPABLE = ["deepseek-v4-pro", "deepseek-v4-flash"];
+// Chat-only models (no /messages, no /responses support on opencode-go).
+// Facts aligned to the public Go catalog (api key kinds), 2026-11-17 snapshot.
+const CHAT_ONLY = ["glm-5.2", "glm-5.3", "glm-5.3-flash", "kimi-k2.7-code", "kimi-k3", "mimo-v2.6-flash", "mimo-v2.6-pro", "deepseek-v4.1-flash", "deepseek-v4-pro"];
+// Models that only expose the Anthropic /messages endpoint (no chat-completions)
+const CLAUDE_CAPABLE = ["minimax-m3", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen4-max"];
+// Models that only expose the OpenAI /responses endpoint
+const RESPONSES_CAPABLE = ["grok-4.7", "gpt-5.6-luna", "gpt-6-luna", "muse-spark-1.3-contributor"];
 
 // Mirror of chatCore's per-model transport guard: use the sourceFormat-matched
 // transport only when the model declares support for that sourceFormat.
@@ -23,30 +24,43 @@ function pickTransport(provider, sourceFormat, alias, model) {
 describe("OpenCode Go known protocol metadata seed", () => {
   it("retains the known model IDs without defining the live directory", () => {
     const ids = (PROVIDER_MODELS["opencode-go"] || []).map((m) => m.id);
+    // Snapshot of the public Go catalog (2026-11-17). Stale upstream ids
+    // (glm-5.1, kimi-k2.6, minimax-m2.5, qwen3.6-plus, ...) were removed when
+    // the catalog dropped them; keep this list aligned on each sync.
     expect(ids).toEqual([
-      "glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6",
-      "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
-      "mimo-v2.5", "mimo-v2.5-pro",
-      "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-      "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
+      "deepseek-v4.1-flash", "deepseek-v4-pro",
+      "glm-5.2", "glm-5.3", "glm-5.3-flash",
+      "grok-4.7",
+      "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
+      "gpt-5.6-luna", "gpt-6-luna",
+      "claude-haiku-5-5",
+      "hy3", "hy4", "hy4-preview",
+      "kimi-k2.7-code", "kimi-k3", "kimi-k3.1-pro",
+      "mimo-v2.6-flash", "mimo-v2.6-pro",
+      "minimax-m3", "minimax-m3.1-flash",
+      "longcat-2.0", "longcat-2.5-free",
+      "step-5-preview",
+      "beam-free", "hy4-flash-free", "iceman-contributor-free",
+      "qwen4-max", "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus",
+      "gemini-4-argon",
     ]);
   });
 });
 
 describe("OpenCode Go per-model supportedFormats", () => {
-  it("declares [openai, claude] for MiniMax + Qwen models", () => {
+  it("declares [claude] for the /messages-only models (MiniMax + Qwen families)", () => {
     for (const m of CLAUDE_CAPABLE) {
-      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai", "claude"]);
+      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["claude"]);
     }
   });
 
-  it("declares [openai, claude, openai-responses] for DeepSeek models", () => {
+  it("declares [openai-responses] for the /responses-only models", () => {
     for (const m of RESPONSES_CAPABLE) {
-      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai", "claude", "openai-responses"]);
+      expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai-responses"]);
     }
   });
 
-  it("declares [openai] only for chat-only models (GLM/Kimi/MiMo) → guards /messages routing", () => {
+  it("declares [openai] only for chat-only models (GLM/Kimi/MiMo/DeepSeek) → guards /messages routing", () => {
     for (const m of CHAT_ONLY) {
       expect(getModelSupportedFormats("opencode-go", m)).toEqual(["openai"]);
     }

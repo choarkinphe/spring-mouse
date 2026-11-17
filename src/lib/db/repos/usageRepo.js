@@ -295,9 +295,20 @@ async function ensureRingInitialized() {
   } catch {}
 }
 
-async function calculateCost(provider, model, tokens) {
+async function calculateCost(provider, model, tokens, context = {}) {
   if (!tokens || !provider || !model) return 0;
   try {
+    // OpenCode Go meters its allowance with surcharges the static tables
+    // cannot express (weekday peak ×2 on DeepSeek, context-band step-ups),
+    // so resolve those models through the request-aware resolver first.
+    if (provider === "opencode-go") {
+      const { resolveOpenCodeGoPricing, calculateCostFromTokens } = await import("open-sse/providers/pricing.js");
+      const pricing = resolveOpenCodeGoPricing(model, {
+        at: context.timestamp,
+        promptTokens: tokens.prompt_tokens || tokens.input_tokens || 0,
+      });
+      if (pricing) return calculateCostFromTokens(tokens, pricing);
+    }
     const { getPricingForModel } = await import("./pricingRepo.js");
     const pricing = await getPricingForModel(provider, model);
     if (!pricing) return 0;
@@ -375,7 +386,7 @@ export async function backfillUsageCost({ dryRun = false, provider = null, batch
   while (summary.scanned < limit) {
     const remaining = Math.min(size, limit - summary.scanned);
     const rows = db.all(
-      `SELECT id, provider, model, cost, tokens FROM usageHistory ${where} AND id > ? ORDER BY id LIMIT ?`,
+      `SELECT id, timestamp, provider, model, cost, tokens FROM usageHistory ${where} AND id > ? ORDER BY id LIMIT ?`,
       [...params, lastId, remaining],
     );
     if (!rows.length) break;
@@ -387,7 +398,7 @@ export async function backfillUsageCost({ dryRun = false, provider = null, batch
 
       const tokens = parseJson(row.tokens, {}) || {};
       const before = Number(row.cost) || 0;
-      const after = await calculateCost(row.provider, row.model, tokens);
+      const after = await calculateCost(row.provider, row.model, tokens, { timestamp: row.timestamp });
 
       // A row the tables still cannot price is left exactly as it is. It is
       // reported separately so a missing price stays visible instead of being
@@ -700,7 +711,7 @@ export async function saveRequestUsage(entry) {
       apiKeyId,
     };
 
-    record.cost = await calculateCost(record.provider, record.model, record.tokens);
+    record.cost = await calculateCost(record.provider, record.model, record.tokens, { timestamp: record.timestamp });
     record.sourceGeo = await lookupGeoIp(record.sourceIp);
 
     const tokens = record.tokens || {};

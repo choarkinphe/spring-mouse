@@ -287,6 +287,48 @@ export const PROVIDER_PRICING = {
     "z-ai/glm-5.1": { input: 1.05, output: 3.5, cached: 0.525, reasoning: 3.5 },
     "z-ai/glm-5.2": { input: 1.4, output: 4.4, cached: 0.26, reasoning: 4.4 },
   },
+  // OpenCode Go — published per-model token rates ($/1M) from the Go catalog
+  // (https://opencode.ai/inference/go/v1/models). These are the OFF-PEAK /
+  // short-context BASE rates: DeepSeek models double during weekday peak hours
+  // (01:00-04:00 & 06:00-10:00 UTC), and several models step up above a context
+  // threshold (Grok >200K, GPT Luna >272K, Haiku >100K, Qwen3.7 Plus >256K).
+  // The usage pipeline applies those surcharges via getOpenCodeGoPricing();
+  // resolveOpenCodeGoPricing below encodes the same rules for callers that
+  // know the request's timestamp and prompt size.
+  "opencode-go": {
+    "beam-free": { input: 0, output: 0, cached: 0, reasoning: 0 },
+    "iceman-contributor-free": { input: 0, output: 0, cached: 0, reasoning: 0 },
+    "longcat-2.5-free": { input: 0, output: 0, cached: 0, reasoning: 0 },
+    "hy4-flash-free": { input: 0, output: 0, cached: 0, reasoning: 0 },
+    "glm-5.3-flash": { input: 0.15, output: 0.5, cached: 0.03, reasoning: 0.5 },
+    "glm-5.3": { input: 1.40, output: 4.40, cached: 0.26, reasoning: 4.40 },
+    "glm-5.2": { input: 1.40, output: 4.40, cached: 0.26, reasoning: 4.40 },
+    "grok-4.7": { input: 2.00, output: 6.00, cached: 0.50, reasoning: 6.00 },
+    "muse-spark-1.2-contributor": { input: 0.10, output: 0.20, cached: 0.002, reasoning: 0.20 },
+    "muse-spark-1.3-contributor": { input: 0.10, output: 0.20, cached: 0.002, reasoning: 0.20 },
+    "gpt-5.6-luna": { input: 0.20, output: 1.20, cached: 0.02, cache_creation: 0.25, reasoning: 1.20 },
+    "gpt-6-luna": { input: 0.10, output: 0.50, cached: 0.01, cache_creation: 0.125, reasoning: 0.50 },
+    "claude-haiku-5-5": { input: 0.10, output: 0.50, cached: 0.01, cache_creation: 0.125, reasoning: 0.50 },
+    "hy3": { input: 0.14, output: 0.58, cached: 0.035, reasoning: 0.58 },
+    "hy4": { input: 0.834, output: 2.501, cached: 0.042, reasoning: 2.501 },
+    "hy4-preview": { input: 0.834, output: 2.501, cached: 0.042, reasoning: 2.501 },
+    "kimi-k2.7-code": { input: 0.95, output: 4.00, cached: 0.19, reasoning: 4.00 },
+    "kimi-k3": { input: 3.00, output: 15.00, cached: 0.30, cache_creation: 3.00, reasoning: 15.00 },
+    "kimi-k3.1-pro": { input: 2.00, output: 10.00, cached: 0.20, cache_creation: 2.00, reasoning: 10.00 },
+    "mimo-v2.6-flash": { input: 0.14, output: 0.28, cached: 0.0028, reasoning: 0.28 },
+    "mimo-v2.6-pro": { input: 0.435, output: 0.87, cached: 0.003625, reasoning: 0.87 },
+    "minimax-m3": { input: 0.30, output: 1.20, cached: 0.06, reasoning: 1.20 },
+    "minimax-m3.1-flash": { input: 0.15, output: 0.60, cached: 0.015, reasoning: 0.60 },
+    "longcat-2.0": { input: 0.30, output: 1.20, cached: 0.006, reasoning: 1.20 },
+    "step-5-preview": { input: 1.00, output: 2.70, cached: 0.10, reasoning: 2.70 },
+    "qwen4-max": { input: 1.50, output: 4.50, cached: 0.075, cache_creation: 1.875, reasoning: 4.50 },
+    "qwen3.8-max": { input: 2.00, output: 6.00, cached: 0.25, cache_creation: 2.50, reasoning: 6.00 },
+    "qwen3.8-flash": { input: 0.15, output: 0.47, cached: 0.016, cache_creation: 0.20, reasoning: 0.47 },
+    "qwen3.7-plus": { input: 0.40, output: 1.60, cached: 0.04, cache_creation: 0.50, reasoning: 1.60 },
+    "deepseek-v4.1-flash": { input: 0.15, output: 0.60, cached: 0.003, reasoning: 0.60 },
+    "deepseek-v4-pro": { input: 0.66, output: 1.98, cached: 0.022, reasoning: 1.98 },
+    "gemini-4-argon": { input: 2.00, output: 10.00, cached: 0.10, reasoning: 10.00 },
+  },
 };
 
 /**
@@ -418,6 +460,76 @@ export function getPricingForModel(provider, model) {
   }
 
   return null;
+}
+
+// OpenCode Go metering surcharges, from https://opencode.ai/docs/go/.
+// The static "opencode-go" table above carries the OFF-PEAK / short-context
+// BASE rates; the real Go allowance charge applies two surcharges this
+// resolver encodes for callers that know when and how big a request was:
+//
+//   1. Weekday peak-hour multiplier — DeepSeek models cost 2x during
+//      Mon-Fri 01:00-04:00 and 06:00-10:00 UTC (all other hours incl.
+//      weekends are off-peak).
+//   2. Long-context step-up — models priced per context band (Grok >200K,
+//      GPT Luna >272K, Haiku >100K, Qwen3.7 Plus >256K) charge ~2x above the
+//      threshold. The catalog expresses this as overrides keyed on
+//      context.gt; the effective rate is summed over the request's whole
+//      prompt, so a stepped estimate is upper-bounded by the top band once
+//      the prompt crosses it.
+const OPENCODE_GO_PEAK_MULTIPLIER = 2;
+// Docs: "Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday"
+// and apply to the DeepSeek models only.
+function isOpenCodeGoPeakHour(date) {
+  if (!date) return false;
+  const day = date.getUTCDay(); // 0=Sun .. 6=Sat
+  if (day === 0 || day === 6) return false;
+  const minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+  return (minutes >= 60 && minutes < 240) || (minutes >= 360 && minutes < 600);
+}
+const isOpenCodeGoPeakModel = (model) => /^deepseek-v4(\.|-|$)/.test(model);
+// promptTokens → context band for step-up models. Keys are the catalog's
+// context.gt thresholds; values are the priced rate at that band (top band).
+const OPENCODE_GO_CONTEXT_STEPS = {
+  "grok-4.7": { above: 200000, input: 4.00, output: 12.00, cached: 1.00 },
+  "gpt-5.6-luna": { above: 272000, input: 0.40, output: 1.80, cached: 0.04 },
+  "gpt-6-luna": { above: 272000, input: 0.20, output: 0.75, cached: 0.02 },
+  "claude-haiku-5-5": { above: 100000, input: 0.50, output: 2.50, cached: 0.05 },
+  "qwen3.7-plus": { above: 256000, input: 1.20, output: 4.80, cached: 0.12 },
+};
+
+/**
+ * Effective OpenCode Go pricing for one request, or null when the base table
+ * has no entry for the model. Both surcharges multiply every rate the same
+ * way, so they compose into a scaled copy of the base pricing object.
+ *
+ * @param {string} model - Go catalog model id
+ * @param {object} [context] - { at: Date|string request time, promptTokens: number }
+ * @returns {object|null} pricing shaped like MODEL_PRICING entries
+ */
+export function resolveOpenCodeGoPricing(model, context = {}) {
+  const base = PROVIDER_PRICING["opencode-go"]?.[model];
+  if (!base) return null;
+
+  const at = context.at instanceof Date ? context.at
+    : typeof context.at === "string" ? new Date(context.at) : null;
+  const peak = at && Number.isFinite(at.getTime()) && isOpenCodeGoPeakModel(model) && isOpenCodeGoPeakHour(at);
+  const step = OPENCODE_GO_CONTEXT_STEPS[model];
+  const overContext = step && Number.isFinite(context.promptTokens) && context.promptTokens > step.above;
+
+  if (!peak && !overContext) return base;
+  const factor = peak ? OPENCODE_GO_PEAK_MULTIPLIER : 1;
+  // Context band replaces the input/output/cached rates; `above` is the
+  // threshold key, never a rate, so it must not leak into pricing objects.
+  const effective = overContext
+    ? { ...base, input: step.input, output: step.output, cached: step.cached }
+    : base;
+  if (factor === 1) return effective;
+  // Peak × band compose: scale every finite rate by the peak factor.
+  const scaled = {};
+  for (const [key, value] of Object.entries(effective)) {
+    scaled[key] = typeof value === "number" && Number.isFinite(value) ? value * factor : value;
+  }
+  return scaled;
 }
 
 /**

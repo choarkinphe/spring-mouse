@@ -376,12 +376,24 @@ export function formatQuotaAmount(quota) {
   const usedLabel = used.toLocaleString();
   const totalLabel = unlimited ? "∞" : total.toLocaleString();
   // Only explicit metadata identifies percentages; a count can also total 100.
-  if (unit === "%") return `${usedLabel}% / ${totalLabel}${unlimited ? "" : "%"}`;
+  if (unit === "%") {
+    const dollar = dollarAppendix(quota);
+    return `${usedLabel}% / ${totalLabel}${unlimited ? "" : "%"}${dollar ? ` (${dollar})` : ""}`;
+  }
   if (quota?.currency) {
     const currency = String(quota.currency).trim().toUpperCase();
     return `${formatQuotaCurrency(used, currency)} / ${unlimited ? "∞" : formatQuotaCurrency(total, currency)}`;
   }
   return `${usedLabel} / ${totalLabel}${unit ? ` ${unit}` : ""}`;
+}
+
+// Percentage quotas that carry a per-window dollar ceiling (OpenCode Go plan
+// limits) get the dollar figure appended: "25% / 100% ($15.00 / $60.00)".
+function dollarAppendix(quota) {
+  const usedUsd = getQuotaNumber(quota?.usedUsd);
+  const totalUsd = getQuotaNumber(quota?.totalUsd);
+  if (usedUsd === null || totalUsd === null || totalUsd <= 0) return null;
+  return `${formatQuotaCurrency(usedUsd, "USD")} / ${formatQuotaCurrency(totalUsd, "USD")}`;
 }
 
 /** Remaining amount for counted quotas, percentage for percentage-only quotas. */
@@ -397,10 +409,16 @@ export function formatRemainingQuota(quota) {
     return `${Math.max(0, absoluteRemaining).toLocaleString()} ${unit}`;
   }
   if (((unit && unit !== "%") || quota?.currency) && used !== null && total > 0) {
-    const remaining = Math.max(0, total - used);
-    return quota?.currency
-      ? formatQuotaCurrency(remaining, String(quota.currency).trim().toUpperCase())
-      : `${remaining.toLocaleString()} ${unit}`;
+    // A percentage-only quota with a dollar ceiling keeps its % as the
+    // remaining figure; the dollars are context, not a second balance.
+    if (unit === "%" && getQuotaNumber(quota?.totalUsd) !== null) {
+      // fall through to the percentage branches below
+    } else {
+      const remaining = Math.max(0, total - used);
+      return quota?.currency
+        ? formatQuotaCurrency(remaining, String(quota.currency).trim().toUpperCase())
+        : `${remaining.toLocaleString()} ${unit}`;
+    }
   }
 
   const explicitRemaining = getQuotaNumber(quota?.remaining) ?? getQuotaNumber(quota?.remainingPercentage);
@@ -507,7 +525,7 @@ export function parseQuotaData(provider, data) {
       case "opencode-go":
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([quotaType, quota]) => {
-            normalizedQuotas.push({
+            const row = {
               name: quota.displayName || quotaType,
               used: quota.used || 0,
               total: quota.total || 0,
@@ -515,7 +533,17 @@ export function parseQuotaData(provider, data) {
               remainingPercentage: quota.remainingPercentage,
               unit: quota.unit || "%",
               resetAt: quota.resetAt || null,
-            });
+            };
+            // When the account's plan is known, the usage service attaches a
+            // dollar ceiling per window (per-plan monthly allowance × share).
+            // Keep percentage as the progress bar; show dollars in the amount.
+            if (typeof quota.totalUsd === "number" && Number.isFinite(quota.totalUsd) && quota.totalUsd > 0) {
+              row.usedUsd = quota.usedUsd;
+              row.totalUsd = quota.totalUsd;
+              row.currency = "USD";
+              row.description = `该档位最大单模型月度额度 $${quota.totalUsd}（当前窗口按此折算）；账户整体窗口以百分比为准。`;
+            }
+            normalizedQuotas.push(row);
           });
         }
         break;

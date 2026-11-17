@@ -27,7 +27,29 @@ describe("OpenCode Go upstream quota", () => {
     expect(result.quotas.rolling).toMatchObject({ used: 25, total: 100, remaining: 75, unit: "%", resetAt: reset });
     expect(result.quotas.weekly).toMatchObject({ used: 100, remaining: 0 });
     expect(result.quotas.monthly).toMatchObject({ used: 0, remaining: 100 });
+    // No plan configured → no dollar conversion, percentages only.
+    expect(result.quotas.monthly.usedUsd).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain("test-only");
+  });
+
+  it("converts window percentages into per-plan dollar ceilings when goPlan is set", async () => {
+    // Go plan's largest monthly allowance is $100 (deepseek-v4.1-flash);
+    // rolling = 20% ($20), weekly = 50% ($50), monthly = 100% ($100).
+    proxyAwareFetch.mockResolvedValueOnce(Response.json(fixture()));
+    const result = await getOpenCodeGoUsage("test-only", { goPlan: "go" });
+    expect(result.quotas.rolling).toMatchObject({ used: 25, usedUsd: 5, totalUsd: 20, currency: "USD" });
+    expect(result.quotas.weekly).toMatchObject({ used: 100, usedUsd: 50, totalUsd: 50 });
+    expect(result.quotas.monthly).toMatchObject({ used: 0, usedUsd: 0, totalUsd: 100 });
+  });
+
+  it.each(["free", "", "unknown-plan", null])("does not convert dollars for unknown plan %j", async (goPlan) => {
+    proxyAwareFetch.mockResolvedValueOnce(Response.json(fixture()));
+    const result = await getOpenCodeGoUsage("test-only", { goPlan });
+    for (const window of Object.values(result.quotas)) {
+      expect(window.usedUsd).toBeUndefined();
+      expect(window.totalUsd).toBeUndefined();
+      expect(window.currency).toBeUndefined();
+    }
   });
 
   it.each([null, {}, { usage: {} }, { usage: { rolling: { percent: null, status: "ok" } } }, { usage: { rolling: { percent: "20", status: "ok" } } }, { usage: { rolling: { percent: 20, status: "new-unknown-status" } } }])("does not fabricate quota for malformed data %j", async (data) => {

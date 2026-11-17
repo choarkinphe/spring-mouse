@@ -79,7 +79,7 @@ describe("OpenCode Go public model listing GET", () => {
       discovery: { status: "success", source: "official", scope: "public", count: 2, fetchedAt: expect.any(String) },
     });
     expect(body.models).toEqual([
-      { id: "minimax-m3", name: "MiniMax M3", object: "model", created: 1, owned_by: "opencode", supportedFormats: ["openai", "claude"] },
+      { id: "minimax-m3", name: "MiniMax-M3", object: "model", created: 1, owned_by: "opencode", supportedFormats: ["claude"] },
       { id: "new-go-model", name: "new-go-model", object: "model", created: 2, owned_by: "opencode" },
     ]);
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith(MODELS_URL, {
@@ -204,7 +204,7 @@ describe("OpenCode Go model sync with real isolated persistence", () => {
     const go = rows.filter(m => m.providerAlias === "ocg");
     expect(go.map(m => m.id).sort()).toEqual(["manual-also-listed", "manual-keep", "minimax-m3", "new-go-model"]);
     expect(go.filter(m => m.id.startsWith("manual"))).toEqual(beforeManual);
-    expect(go.find(m => m.id === "minimax-m3")).toMatchObject({ providerId: "opencode-go", source: "official", supportedFormats: ["openai", "claude"] });
+    expect(go.find(m => m.id === "minimax-m3")).toMatchObject({ providerId: "opencode-go", source: "official", supportedFormats: ["claude"] });
     expect(go.find(m => m.id === "new-go-model").supportedFormats).toBeUndefined();
     expect(rows.some(m => m.id === "other-provider")).toBe(true);
     expect(await snapshots.getModelSyncSnapshot("opencode-go")).toMatchObject({
@@ -219,18 +219,18 @@ describe("OpenCode Go model sync with real isolated persistence", () => {
   });
 
   it("retains known protocol annotations even when syncing a raw official list", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "glm-5.1" }, { id: "new-go-model" }] }));
+    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "glm-5.2" }, { id: "new-go-model" }] }));
     const response = await sync({
       officialFetched: false,
-      supportedModels: [{ id: "glm-5.1", supportedFormats: ["forged-format"] }, { id: "client-only" }],
+      supportedModels: [{ id: "glm-5.2", supportedFormats: ["forged-format"] }, { id: "client-only" }],
     });
     expect(response.status).toBe(200);
     const rows = await repo.getCustomModels();
-    expect(rows.find(m => m.id === "glm-5.1").supportedFormats).toEqual(["openai"]);
+    expect(rows.find(m => m.id === "glm-5.2").supportedFormats).toEqual(["openai"]);
     expect(rows.find(m => m.id === "new-go-model").supportedFormats).toBeUndefined();
-    expect(rows.map(m => m.id).sort()).toEqual(["glm-5.1", "new-go-model"]);
+    expect(rows.map(m => m.id).sort()).toEqual(["glm-5.2", "new-go-model"]);
     expect(await snapshots.getModelSyncSnapshot("opencode-go")).toMatchObject({
-      count: 2, modelIds: ["glm-5.1", "new-go-model"], connectionId: connection.id,
+      count: 2, modelIds: ["glm-5.2", "new-go-model"], connectionId: connection.id,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

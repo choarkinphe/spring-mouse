@@ -9,7 +9,14 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   "codex", "cx", "cursor", "cu", "github", "gh", "copilot",
   "windsurf", "ws", "augment", "au", "antigravity", "ag", "trae", "tr",
   "glm", "glm-cn", "alicode", "alicode-intl", "minimax", "minimax-cn",
-  "qianwen-token-plan", "xiaomi-tokenplan", "opencode-go", "kimi-coding", "kmc",
+  "qianwen-token-plan", "xiaomi-tokenplan", "kimi-coding", "kmc",
+]);
+// Subscriptions whose included allowance is metered in dollars per model at
+// published token rates, with optional overage billed to a pay-as-you-go
+// balance (OpenCode Go "Extra Usage" → Zen balance). Token estimates are a
+// real metering unit here, not just a reference.
+const HYBRID_PROVIDERS = new Set([
+  "opencode-go",
 ]);
 const METERED_PROVIDERS = new Set([
   "openai", "anthropic", "claude", "cc", "openrouter", "deepseek", "mistral", "xai", "groq",
@@ -26,13 +33,14 @@ export function resolveAccountBillingMode(connection = {}) {
   if (isBillingMode(connection.billingMode)) return connection.billingMode;
   const provider = connection.provider || "";
   if (usesCreditBilling(provider) || SUBSCRIPTION_PROVIDERS.has(provider)) return "subscription";
+  if (HYBRID_PROVIDERS.has(provider)) return "hybrid";
   if (connection.authType === "oauth") return "subscription";
   if (METERED_PROVIDERS.has(provider)) return "metered";
   return "unknown";
 }
 
 export function billingModeWarning(mode) {
-  if (mode === "hybrid") return "Token 金额仅为参考估算，不能区分订阅内用量与额外按量账单。";
+  if (mode === "hybrid") return "Token 金额为订阅内额度的计量估算；超出额度的部分走按量计费，估算不能区分两者，也不代表实际账单。";
   if (mode === "unknown") return "计费方式未知，Token 参考估算不计入按量合计，也不代表实际账单。";
   if (mode === "metered") return "Token 金额为模型价格参考估算，不是上游实际账单。";
   return null;

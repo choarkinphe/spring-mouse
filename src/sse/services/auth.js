@@ -1,5 +1,6 @@
 import { recordRoutingDuration } from "@/lib/system/concurrency.js";
-import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, validateApiKey, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
+import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
+import { validateApiKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { CODEBUDDY_VERIFICATION, MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_RESET_MS } from "open-sse/config/errorConfig.js";
@@ -11,6 +12,8 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import { supportsMouseExecution } from "@/shared/constants/mouseSupport.js";
 import { PROVIDERS } from "open-sse/config/providers.js";
 import * as log from "../utils/logger.js";
+import { recordApiKeyRejection } from "./ingressUsage.js";
+import { API_KEY_REJECTIONS } from "@/shared/utils/usageError.js";
 import { canAccessWithTags, getModelAccessTags, normalizeAccessTags } from "@/shared/utils/accessTags.js";
 import { isScheduleActive, describeSchedule } from "@/shared/utils/schedule.js";
 import { incrementHotCounter } from "@/lib/redis/hotCache.js";
@@ -969,31 +972,19 @@ async function enforceApiKeyRateLimit(apiKey, signal, model = null) {
   }
 
   // A caller that hung up while queued was not refused by the limit.
-  if (outcome.reason === "aborted") return rateLimitResponse(outcome, rules);
+  if (outcome.reason === "aborted") return errorResponse(499, "Request aborted");
 
-  log.warn(
-    "RATELIMIT",
-    `API key ${key?.name || "(unnamed)"} | ${outcome.reason} after ${outcome.waitedMs || 0}ms (limit ${rules.limit}/min, burst ${rules.burst})`,
-  );
   return rateLimitResponse(outcome, rules);
 }
 
-// Why authorizeApiKey refused a *valid* key. Callers record these as policy
-// blocks (usage row + routing reason) so a burst of 429s names the key and the
-// limit it hit. An unknown or missing key carries no tag: it is not attributable
-// to any configured key and must not be able to fill the usage table.
-export const API_KEY_REJECTIONS = Object.freeze({
-  QUOTA: "api_key_quota",
-  RATE_LIMIT: "api_key_rate_limit",
-});
+// Tag only valid-key policy refusals, for routing telemetry and sampled usage.
 
-function tagRejection(response, reason) {
-  if (response) response.__smRejection = reason;
+function rejectApiKey(response, reason, request, apiKey, model, startedAt) {
+  response.__smRejection = reason;
+  if (request) void Promise.resolve()
+    .then(() => recordApiKeyRejection(request, apiKey, { model, reason, startedAt }))
+    .catch(() => {});
   return response;
-}
-
-function maskApiKey(apiKey) {
-  return typeof apiKey === "string" && apiKey.length > 12 ? `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}` : "(key)";
 }
 
 /**
@@ -1006,7 +997,8 @@ function maskApiKey(apiKey) {
  * to. Metadata endpoints (model listing, token counting) leave it off so they
  * never consume a caller's allowance.
  */
-export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = false, signal = null, model = null } = {}) {
+export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = false, request = null, signal = request?.signal, model = null } = {}) {
+  const startedAt = Date.now();
   if (!apiKey) return requireApiKey ? errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key") : null;
 
   // A supplied credential must always resolve to a configured key. Otherwise a
@@ -1018,14 +1010,15 @@ export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = f
 
   const quota = await checkApiKeyQuota(apiKey);
   if (!quota.allowed) {
-    const window = quota.status?.exceededWindow;
-    log.warn("QUOTA", `API key ${maskApiKey(apiKey)} | quota exceeded (${window?.label || "current window"}) · resets ${window?.resetAt || "unknown"}`);
-    return tagRejection(quotaResponse(quota.status), API_KEY_REJECTIONS.QUOTA);
+    return rejectApiKey(quotaResponse(quota.status), API_KEY_REJECTIONS.QUOTA, request, apiKey, model, startedAt);
   }
 
   if (meter) {
     const rateFailure = await enforceApiKeyRateLimit(apiKey, signal, model);
-    if (rateFailure) return signal?.aborted ? rateFailure : tagRejection(rateFailure, API_KEY_REJECTIONS.RATE_LIMIT);
+    if (rateFailure?.status === HTTP_STATUS.RATE_LIMITED) {
+      return rejectApiKey(rateFailure, API_KEY_REJECTIONS.RATE_LIMIT, request, apiKey, model, startedAt);
+    }
+    if (rateFailure) return rateFailure;
   }
 
   return null;

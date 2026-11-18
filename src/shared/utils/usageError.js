@@ -1,40 +1,56 @@
-// A failed usage row keeps a short excerpt of WHY it failed.
-//
-// usageHistory is the only record kept for every request (requestDetails holds
-// just the last ~1000 and routing telemetry stores enums only), so without this
-// a failed row said "upstream:400" and nothing more. Production showed the cost:
-// Anthropic was rejecting a stale Claude Code version string for hours, and the
-// message saying exactly that was only visible in a rotating detail table.
-//
-// The excerpt is bounded and single-line. Upstream bodies are often JSON with
-// the useful text nested a few levels down (sometimes JSON inside a string), so
-// the message is unwrapped before it is clamped.
-export const USAGE_ERROR_MAX_CHARS = 300;
+// Usage history outlives request details. Never copy upstream text into it:
+// even a short error message can contain a prompt, token or signed URL.
+// Recognize a limited set of diagnostic signals and save only our own labels.
+const MAX_INSPECTED_CHARS = 4096;
+const GENERIC_FAILURE = "Request failed; see the request detail or gateway logs for diagnostics";
 
-function messageOf(value, depth = 0) {
-  if (value == null || depth > 4) return null;
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.startsWith("{")) {
-      try { return messageOf(JSON.parse(trimmed), depth + 1) || trimmed; } catch { return trimmed; }
-    }
-    return trimmed;
-  }
-  if (value instanceof Error) return messageOf(value.message, depth + 1);
-  if (typeof value === "object") {
-    return messageOf(value.error?.message, depth + 1)
-      || messageOf(value.error, depth + 1)
-      || messageOf(value.message, depth + 1)
-      || messageOf(value.msg, depth + 1)
-      || messageOf(value.detail, depth + 1);
-  }
-  return String(value);
+const KNOWN_FAILURES = [
+  [/claude code.{0,50}(?:does not support|version.{0,30}required|or newer)/i, "Upstream rejected the Claude Code version"],
+  [/empty_stream/, "Stream ended without any model output (empty_stream)"],
+  [/stream ended .*\(incomplete\)/, "Upstream stream ended before its terminal event"],
+  [/invalid (?:sse|json) response/i, "Upstream response could not be decoded"],
+  [/no active credentials for provider/i, "No active upstream account is configured"],
+  [/all accounts unavailable/i, "All upstream accounts are unavailable"],
+  [/timed out|timeout/i, "Request timed out"],
+  [/concurrency limit/i, "Configured concurrency limit reached"],
+  [/invalid.*(?:api[ _-]?key|token)|authentication|unauthorized/i, "Upstream rejected authentication"],
+  [/overload|temporarily unavailable/i, "Upstream service overloaded or unavailable"],
+  [/rate[ _-]?limit|too many requests/i, "Request rate limit reached"],
+  [/quota|credits? exhausted/i, "Usage quota exhausted"],
+  [/fetch failed|connection reset|socket hang up/i, "Upstream connection failed"],
+];
+
+export const API_KEY_REJECTIONS = Object.freeze({
+  QUOTA: "api_key_quota",
+  RATE_LIMIT: "api_key_rate_limit",
+});
+
+const POLICY_FAILURES = new Map([
+  [`blocked:${API_KEY_REJECTIONS.QUOTA}`, "API key token quota exhausted"],
+  [`blocked:${API_KEY_REJECTIONS.RATE_LIMIT}`, "API key request rate limit reached"],
+]);
+const SAFE_LABELS = new Set([GENERIC_FAILURE, ...KNOWN_FAILURES.map(([, label]) => label)]);
+const NO_ERROR_STATUSES = new Set(["success", "ok", "cancelled", "error:499"]);
+
+export function isApiKeyRejectionStatus(status) {
+  return POLICY_FAILURES.has(status);
 }
 
-export function summarizeUsageError(value, max = USAGE_ERROR_MAX_CHARS) {
-  const message = messageOf(value);
-  if (!message) return null;
-  const clean = message.replace(/<[^>]*>/g, " ").replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
-  if (!clean) return null;
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+// Older or imported rows may not have passed through the current write path.
+export function readUsageError(value, status) {
+  if (NO_ERROR_STATUSES.has(status)) return null;
+  return POLICY_FAILURES.get(status) ?? (SAFE_LABELS.has(value) ? value : null);
+}
+
+export function summarizeUsageError(value, status) {
+  if (NO_ERROR_STATUSES.has(status)) return null;
+  const policy = POLICY_FAILURES.get(status);
+  if (policy) return policy;
+  // Callers provide a message, raw HTTP error body, or Error. The inspected
+  // prefix is never returned, including when no known signal is found.
+  const text = typeof value === "string" ? value : value?.message || value?.error?.message;
+  if (typeof text !== "string" || !text) return null;
+  const prefix = text.slice(0, MAX_INSPECTED_CHARS);
+  if (!prefix.trim()) return null;
+  return KNOWN_FAILURES.find(([pattern]) => pattern.test(prefix))?.[1] || GENERIC_FAILURE;
 }

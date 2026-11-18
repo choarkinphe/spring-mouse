@@ -88,7 +88,7 @@ async function handlePOST(request) {
   }
 
   const apiKey = extractApiKey(request);
-  const authFailure = await authorizeApiKey(apiKey);
+  const authFailure = await authorizeApiKey(apiKey, { request });
   if (authFailure) return authFailure;
 
   await recordIngressUsage(request, apiKey, { model: body.model });

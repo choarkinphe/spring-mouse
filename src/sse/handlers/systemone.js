@@ -32,7 +32,7 @@ export async function handleSystemone(request) {
   const modelStr = typeof body?.model === "string" && body.model.startsWith("jev-")
     ? `${JEVAPI_CONFIG.provider}/${body.model}` : body?.model;
   const authFailure = await authorizeApiKey(apiKey, {
-    requireApiKey: settings.requireApiKey === true || requiredTags.length > 0, meter: true, signal: request.signal, model: modelStr,
+    requireApiKey: settings.requireApiKey === true || requiredTags.length > 0, meter: true, request, model: modelStr,
   });
   if (authFailure) return authFailure;
 

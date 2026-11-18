@@ -33,7 +33,7 @@ const CREATE_ROTATION_STATUSES = new Set([
 async function getRequestAccess(request, model = null) {
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model });
+  const error = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, request, model });
   return { error, apiKey, accessTags: error ? [] : await resolveApiKeyAccessTags(apiKey) };
 }
 

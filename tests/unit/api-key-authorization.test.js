@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   checkApiKeyQuota: vi.fn(),
 }));
 
-vi.mock("@/lib/localDb", () => ({
+vi.mock("@/lib/db/index.js", () => ({
   validateApiKey: mocks.validateApiKey,
 }));
 

@@ -40,7 +40,7 @@ export async function handleTts(request) {
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, signal: request.signal, model: modelStr });
+  const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true, meter: true, request, model: modelStr });
   if (authFailure) return authFailure;
   const accessTags = await resolveApiKeyAccessTags(apiKey);
 

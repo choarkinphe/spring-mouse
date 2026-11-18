@@ -710,7 +710,7 @@ async function handleGET(request) {
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
     const apiKey = extractApiKey(request);
     const settings = await getSettings();
-    const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+    const authFailure = await authorizeApiKey(apiKey, { request, requireApiKey: settings.requireApiKey === true });
     if (authFailure) return authFailure;
     const accessTags = await resolveApiKeyAccessTags(apiKey);
 

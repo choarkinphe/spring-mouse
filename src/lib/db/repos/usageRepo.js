@@ -710,6 +710,7 @@ export async function saveRequestUsage(entry) {
       completedAt,
       apiKey: apiKeyId,
       apiKeyId,
+      error: summarizeUsageError(entry.error, entry.status || "success"),
     };
 
     record.cost = await calculateCost(record.provider, record.model, record.tokens, { timestamp: record.timestamp });
@@ -742,8 +743,7 @@ export async function saveRequestUsage(entry) {
         appName: record.appName || null,
         userAgent: record.userAgent || null,
         sourceUrl: record.sourceUrl || null,
-        // Only failed rows carry a reason; a successful row never stores text.
-        ...(["success", "ok"].includes(status) ? {} : { error: summarizeUsageError(record.error) }),
+        ...(record.error ? { error: record.error } : {}),
         routing: normalizeModelRouting({
           model: record.model,
           originalModel: record.originalModel,

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
 import { getTrafficRequestId } from "@/lib/networkTraffic.js";
@@ -28,29 +28,33 @@ export async function recordIngressUsage(request, apiKey, { model = null, respon
   });
 }
 
-/**
- * Persist one request that a *valid* API key had refused by its own quota or
- * request-rate limit (see API_KEY_REJECTIONS in ./auth.js). The row carries
- * `blocked:<reason>` and the client-facing message, so the console names the
- * key and the limit instead of an unattributed 429. Fire-and-forget: recording
- * must never delay or change the rejection itself.
- */
-export function recordApiKeyRejection(request, apiKey, { model = null, endpoint = null, reason, response = null } = {}) {
-  const now = new Date().toISOString();
-  const read = response?.clone ? response.clone().json().catch(() => null) : Promise.resolve(null);
-  read.then((payload) => saveRequestUsage({
+const REJECTION_SAMPLE_WINDOW_MS = 60_000;
+const REJECTION_SAMPLE_MAX_PER_PROCESS = 20;
+const sampledRejections = new Set();
+let sampleWindowStartedAt = null;
+
+/** Sample policy refusals without turning a rejected burst into a write burst. */
+export function recordApiKeyRejection(request, apiKey, { model, reason, startedAt }) {
+  const now = Date.now();
+  if (sampleWindowStartedAt === null || now - sampleWindowStartedAt >= REJECTION_SAMPLE_WINDOW_MS) {
+    sampledRejections.clear();
+    sampleWindowStartedAt = now;
+  }
+  if (sampledRejections.size >= REJECTION_SAMPLE_MAX_PER_PROCESS) return;
+  const sampleKey = `${reason}:${createHash("sha256").update(apiKey).digest("hex")}`;
+  if (sampledRejections.has(sampleKey)) return;
+  sampledRejections.add(sampleKey);
+
+  return saveRequestUsage({
     requestId: randomUUID(),
     trafficRequestId: getTrafficRequestId(request),
-    startedAt: now,
-    completedAt: now,
-    provider: null,
-    model: typeof model === "string" ? model : null,
-    connectionId: null,
+    startedAt: new Date(startedAt).toISOString(),
+    completedAt: new Date(now).toISOString(),
+    model: typeof model === "string" ? model.slice(0, 256) : null,
     apiKey,
-    endpoint: endpoint || (() => { try { return new URL(request.url).pathname; } catch { return null; } })(),
+    endpoint: new URL(request.url).pathname,
     ...getRequestSourceMeta(request),
     tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     status: `blocked:${reason}`,
-    error: payload || reason,
-  })).catch(() => {});
+  });
 }

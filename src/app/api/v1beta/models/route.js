@@ -25,7 +25,7 @@ async function handleGET(request) {
   try {
     const apiKey = extractApiKey(request);
     const settings = await getSettings();
-    const authFailure = await authorizeApiKey(apiKey, { requireApiKey: settings.requireApiKey === true });
+    const authFailure = await authorizeApiKey(apiKey, { request, requireApiKey: settings.requireApiKey === true });
     if (authFailure) return authFailure;
     const accessTags = await resolveApiKeyAccessTags(apiKey);
     const combos = await getCombos();

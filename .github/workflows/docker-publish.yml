@@ -47,6 +47,9 @@ jobs:
           --hookTimeout=90000
           unit/network-traffic.test.js
           unit/ingress-usage.test.js
+          unit/api-key-authorization.test.js
+          unit/usage-failure-reason.test.js
+          unit/usage-failure-reason.db.test.js
           unit/embedding-usage-persistence.test.js
           unit/codex-native-image.test.js
           unit/chat-image-model-guard.test.js

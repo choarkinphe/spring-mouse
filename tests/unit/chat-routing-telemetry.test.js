@@ -13,6 +13,8 @@
 // The producer is mocked (its own suite covers normalization/redaction); here we
 // only assert the call lifecycle chat.js drives.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API_KEY_REJECTIONS } from "../../src/shared/utils/usageError.js";
+import { normalizeRoutingEvent } from "../../src/shared/utils/routingTelemetry.js";
 
 const mocks = vi.hoisted(() => {
   const events = [];
@@ -27,6 +29,7 @@ const mocks = vi.hoisted(() => {
     getComboModelEntries: vi.fn(async () => null),
     getComboByName: vi.fn(async () => null),
     getSettings: vi.fn(async () => ({ requireApiKey: false, comboStrategies: {}, providerStrategies: {}, providerThinking: {} })),
+    authorizeApiKey: vi.fn(async () => null),
     getProviderCredentials: vi.fn(),
     markAccountUnavailable: vi.fn(async () => ({ shouldFallback: true, modelLevel: false, transport: false })),
     clearAccountError: vi.fn(async () => {}),
@@ -78,7 +81,7 @@ vi.mock("../../src/sse/services/auth.js", () => ({
   markAccountUnavailable: mocks.markAccountUnavailable,
   clearAccountError: mocks.clearAccountError,
   extractApiKey: vi.fn(() => null),
-  authorizeApiKey: vi.fn(async () => null),
+  authorizeApiKey: mocks.authorizeApiKey,
   resolveApiKeyAccessTags: vi.fn(async () => []),
 }));
 vi.mock("../../src/sse/services/model.js", () => ({
@@ -178,6 +181,23 @@ beforeEach(() => {
 });
 
 describe("chat routing telemetry lifecycle", () => {
+  it.each([
+    [429, API_KEY_REJECTIONS.RATE_LIMIT, "failed", "api_key_rate_limit"],
+    [429, API_KEY_REJECTIONS.QUOTA, "failed", "quota_exceeded"],
+    [499, undefined, "cancelled", "client_abort"],
+    [401, undefined, "failed", "auth_rejected"],
+  ])("records admission status %i (%s) without opening an upstream attempt", async (status, rejection, outcome, terminalReason) => {
+    const req = request();
+    mocks.authorizeApiKey.mockResolvedValueOnce(Object.assign(new Response(null, { status }), { __smRejection: rejection }));
+    expect((await handleChat(req)).status).toBe(status);
+    await flush();
+    expect(mocks.authorizeApiKey).toHaveBeenCalledWith(null, expect.objectContaining({ request: req }));
+    expect(attempts()).toHaveLength(0);
+    expect(requestCompletes()).toHaveLength(1);
+    const { record } = normalizeRoutingEvent({ kind: "request", record: requestCompletes()[0].record });
+    expect(record).toMatchObject({ outcome, terminalReason });
+  });
+
   it("falls back from an unprefixed Claude model to the Claude OAuth provider", async () => {
     mocks.getModelInfo.mockResolvedValue({ provider: "anthropic", model: "claude-sonnet-4-5" });
     mocks.getProviderCredentials

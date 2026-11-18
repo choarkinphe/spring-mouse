@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, ConfirmModal } from "@/shared/components";
 import { CONSOLE_LOG_CONFIG } from "@/shared/constants/config";
 import ModelRouteDisplay from "@/shared/components/ModelRouteDisplay";
+import { isApiKeyRejectionStatus } from "@/shared/utils/usageError.js";
 
 const LOG_LEVEL_COLORS = {
   LOG: "text-green-400",
@@ -49,6 +50,15 @@ function statusLabel(status) {
   return status;
 }
 
+function RequestStatusCell({ status, error }) {
+  return (
+    <td className="max-w-[18rem] px-3 py-2" title={error ? `${status}\n${error}` : status}>
+      <span className="font-mono">{statusLabel(status)}</span>
+      {error && <span className="mt-0.5 block truncate text-[11px] text-rose-300/80">{error}</span>}
+    </td>
+  );
+}
+
 export default function ConsoleLogClient() {
   const [logs, setLogs] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -70,6 +80,9 @@ export default function ConsoleLogClient() {
   const [clearTarget, setClearTarget] = useState(null);
   const [clearing, setClearing] = useState(false);
   const logRef = useRef(null);
+  const detailLoad = useRef(null);
+
+  useEffect(() => () => detailLoad.current?.abort(), []);
 
   const loadRequestLogStorage = useCallback(async () => {
     setLoadingStorage(true);
@@ -105,31 +118,47 @@ export default function ConsoleLogClient() {
     }
   }, []);
 
+  const closeRequestDetail = () => {
+    detailLoad.current?.abort();
+    setSelectedRequest(null);
+    setLoadingRequest(false);
+  };
+
   const openRequestDetail = async (request) => {
-    const id = request?.id;
-    setSelectedRequest({ ...request, status: request.status || "usage-only", latency: {}, request: null, providerRequest: null, providerResponse: null, response: null, _notice: "正在读取完整请求明细…" });
-    if (!id) return;
-    setLoadingRequest(true);
+    detailLoad.current?.abort();
+    const { id, status, error, durationMs } = request;
+    const hasPayload = Boolean(id) && !isApiKeyRejectionStatus(status);
+    setSelectedRequest({ ...request, latency: { total: durationMs }, _notice: hasPayload
+      ? "正在读取完整请求明细…"
+      : "仅有基础请求记录，没有保存完整报文。" });
+    setLoadingRequest(hasPayload);
+    if (!hasPayload) return;
+
+    const controller = new AbortController();
+    detailLoad.current = controller;
+    const { signal } = controller;
     try {
-      let detail = null;
-      // requestDetails is flushed in a short batch after usageHistory is written.
-      // Retry briefly so clicking "查看" immediately after a request does not
-      // show a permanent "payload unavailable" state.
-      for (let attempt = 0; attempt < 6; attempt += 1) {
-        const response = await fetch(`/api/usage/request-details?id=${encodeURIComponent(id)}&includePayload=1`, { cache: "no-store" });
+      // requestDetails is flushed shortly after usageHistory is written.
+      for (let attempt = 0; attempt < 6 && !signal.aborted; attempt += 1) {
+        const response = await fetch(`/api/usage/request-details?id=${encodeURIComponent(id)}&includePayload=1`, { cache: "no-store", signal });
         const payload = await response.json().catch(() => ({}));
+        if (signal.aborted) return;
         if (!response.ok) throw new Error(payload.error || "无法读取请求明细");
-        detail = payload.detail || null;
-        if (detail && detail.status !== "usage-only") break;
-        if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 500));
+        const detail = payload.detail;
+        if (detail && detail.status !== "usage-only") {
+          setSelectedRequest({ ...request, ...detail, error: error ?? null });
+          return;
+        }
+        if (attempt === 5) {
+          setSelectedRequest({ ...request, ...detail, status, error, latency: detail?.latency ?? { total: durationMs }, _notice: detail?._notice || "仅找到基础请求记录，完整报文未保存或已被清理。" });
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
       }
-      setSelectedRequest(detail && detail.status !== "usage-only"
-        ? { ...detail, error: detail.error || request.error || null }
-        : { ...request, ...(detail || {}), _notice: detail?._notice || "仅找到基础请求记录，完整报文未保存或已被清理。" });
     } catch (error) {
-      setSelectedRequest((current) => current ? { ...current, _notice: `完整报文读取失败：${error.message || "未知错误"}` } : current);
+      if (!signal.aborted) setSelectedRequest((current) => current ? { ...current, _notice: `完整报文读取失败：${error.message || "未知错误"}` } : current);
     } finally {
-      setLoadingRequest(false);
+      if (!signal.aborted) setLoadingRequest(false);
     }
   };
 
@@ -333,8 +362,8 @@ export default function ConsoleLogClient() {
               </>
             ) : activeView.type === "internal-stats" ? (
               <>
-                <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求统计</h3><p className="text-xs text-text-muted">最近 100 条真实请求；不足 100 条时按实际请求数统计</p></div><button type="button" onClick={loadInternalStats} className="rounded p-1 text-text-muted hover:bg-surface-2"><span className={`material-symbols-outlined text-[18px] ${loadingStats ? "animate-spin" : ""}`}>refresh</span></button></div>
-                {loadingStats && !internalStats ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取统计…</div> : internalStats ? <div className="custom-scrollbar min-h-0 flex-1 overflow-auto p-4"><div className="grid grid-cols-2 gap-3 md:grid-cols-5"><div className="rounded-lg border border-border p-3"><p className="text-xs text-text-muted">总请求</p><p className="mt-1 text-2xl font-semibold">{internalStats.total}</p></div><div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="text-xs text-text-muted">成功</p><p className="mt-1 text-2xl font-semibold text-emerald-400">{internalStats.success}</p></div><div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3"><p className="text-xs text-text-muted">中转错误（Spring Mouse）</p><p className="mt-1 text-2xl font-semibold text-rose-400">{internalStats.internal}</p></div><div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"><p className="text-xs text-text-muted">模型上游错误</p><p className="mt-1 text-2xl font-semibold text-amber-400">{internalStats.upstream}</p></div><div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3"><p className="text-xs text-text-muted">路由策略拦截</p><p className="mt-1 text-2xl font-semibold text-sky-400">{internalStats.blocked ?? 0}</p></div></div><h4 className="mt-6 mb-2 text-sm font-semibold">状态明细</h4><div className="space-y-2">{internalStats.byStatus.map((item) => <div key={item.status} className="flex items-center justify-between rounded border border-border px-3 py-2 text-sm"><span className="font-mono text-text-muted">{statusLabel(item.status)}</span><span className="font-semibold tabular-nums">{item.count}</span></div>)}</div><div className="mt-6 mb-2 flex items-center justify-between"><h4 className="text-sm font-semibold">最新 10 条请求</h4><button type="button" onClick={() => setAllRequestsOpen(true)} className="text-xs text-brand-400 hover:text-brand-300">查看更多</button></div><div className="overflow-x-auto rounded-lg border border-border"><table className="w-full text-left text-xs"><thead className="bg-surface-2 text-text-muted"><tr><th className="px-3 py-2">时间</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">提供商</th><th className="px-3 py-2">调用人</th><th className="px-3 py-2">耗时</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">Token</th><th className="px-3 py-2">明细</th></tr></thead><tbody>{recentRequests.slice(0, 10).map((item) => <tr key={item.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => openRequestDetail(item)}><td className="whitespace-nowrap px-3 py-2 text-text-muted">{item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="max-w-[16rem] px-3 py-2"><ModelRouteDisplay record={item} compact /></td><td className="px-3 py-2">{item.provider || "-"}</td><td className="max-w-[10rem] truncate px-3 py-2" title={item.caller}>{item.caller || "-"}</td><td className="whitespace-nowrap px-3 py-2 tabular-nums">{item.durationMs == null ? "-" : `${item.durationMs} ms`}</td><td className="max-w-[18rem] px-3 py-2" title={item.error ? `${item.status}\n${item.error}` : item.status}><span className="font-mono">{statusLabel(item.status)}</span>{item.error && <span className="mt-0.5 block truncate text-[11px] text-rose-300/80">{item.error}</span>}</td><td className="px-3 py-2 tabular-nums">{(Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0)}</td><td className="px-3 py-2 text-brand-400">查看</td></tr>)}</tbody></table>{recentRequests.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">暂无请求记录。</p>}</div></div> : <div className="flex flex-1 items-center justify-center text-sm text-text-muted">暂无统计。</div>}
+                <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求统计</h3><p className="text-xs text-text-muted">最近最多 100 条已记录的请求；密钥额度和限频拒绝仅抽样记录</p></div><button type="button" onClick={loadInternalStats} className="rounded p-1 text-text-muted hover:bg-surface-2"><span className={`material-symbols-outlined text-[18px] ${loadingStats ? "animate-spin" : ""}`}>refresh</span></button></div>
+                {loadingStats && !internalStats ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取统计…</div> : internalStats ? <div className="custom-scrollbar min-h-0 flex-1 overflow-auto p-4"><div className="grid grid-cols-2 gap-3 md:grid-cols-5"><div className="rounded-lg border border-border p-3"><p className="text-xs text-text-muted">已记录请求</p><p className="mt-1 text-2xl font-semibold">{internalStats.total}</p></div><div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="text-xs text-text-muted">成功</p><p className="mt-1 text-2xl font-semibold text-emerald-400">{internalStats.success}</p></div><div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3"><p className="text-xs text-text-muted">中转错误（Spring Mouse）</p><p className="mt-1 text-2xl font-semibold text-rose-400">{internalStats.internal}</p></div><div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3"><p className="text-xs text-text-muted">模型上游错误</p><p className="mt-1 text-2xl font-semibold text-amber-400">{internalStats.upstream}</p></div><div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3"><p className="text-xs text-text-muted">路由策略拦截</p><p className="mt-1 text-2xl font-semibold text-sky-400">{internalStats.blocked ?? 0}</p></div></div><h4 className="mt-6 mb-2 text-sm font-semibold">状态明细</h4><div className="space-y-2">{internalStats.byStatus.map((item) => <div key={item.status} className="flex items-center justify-between rounded border border-border px-3 py-2 text-sm"><span className="font-mono text-text-muted">{statusLabel(item.status)}</span><span className="font-semibold tabular-nums">{item.count}</span></div>)}</div><div className="mt-6 mb-2 flex items-center justify-between"><h4 className="text-sm font-semibold">最新 10 条请求</h4><button type="button" onClick={() => setAllRequestsOpen(true)} className="text-xs text-brand-400 hover:text-brand-300">查看更多</button></div><div className="overflow-x-auto rounded-lg border border-border"><table className="w-full text-left text-xs"><thead className="bg-surface-2 text-text-muted"><tr><th className="px-3 py-2">时间</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">提供商</th><th className="px-3 py-2">调用人</th><th className="px-3 py-2">耗时</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">Token</th><th className="px-3 py-2">明细</th></tr></thead><tbody>{recentRequests.slice(0, 10).map((item) => <tr key={item.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => openRequestDetail(item)}><td className="whitespace-nowrap px-3 py-2 text-text-muted">{item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="max-w-[16rem] px-3 py-2"><ModelRouteDisplay record={item} compact /></td><td className="px-3 py-2">{item.provider || "-"}</td><td className="max-w-[10rem] truncate px-3 py-2" title={item.caller}>{item.caller || "-"}</td><td className="whitespace-nowrap px-3 py-2 tabular-nums">{item.durationMs == null ? "-" : `${item.durationMs} ms`}</td><RequestStatusCell status={item.status} error={item.error} /><td className="px-3 py-2 tabular-nums">{(Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0)}</td><td className="px-3 py-2 text-brand-400">查看</td></tr>)}</tbody></table>{recentRequests.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">暂无请求记录。</p>}</div></div> : <div className="flex flex-1 items-center justify-center text-sm text-text-muted">暂无统计。</div>}
               </>
             ) : (
               <>
@@ -348,9 +377,9 @@ export default function ConsoleLogClient() {
 
       <p className="shrink-0 px-1 text-xs text-text-muted">请求明细仅保留最近 100 条；完整请求和响应可能包含敏感内容。</p>
 
-      {allRequestsOpen && <div className="fixed inset-0 z-[80] bg-black/40" onClick={() => setAllRequestsOpen(false)}><div className="absolute inset-y-0 right-0 flex w-[min(1080px,98vw)] flex-col border-l border-border bg-surface shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">全部请求记录</h3><p className="text-xs text-text-muted">最近 100 条真实请求</p></div><button type="button" onClick={() => setAllRequestsOpen(false)} className="rounded p-1 text-text-muted hover:bg-surface-2" aria-label="关闭全部请求记录"><span className="material-symbols-outlined">close</span></button></div><div className="custom-scrollbar min-h-0 flex-1 overflow-auto p-4"><div className="overflow-x-auto rounded-lg border border-border"><table className="w-full text-left text-xs"><thead className="bg-surface-2 text-text-muted"><tr><th className="px-3 py-2">时间</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">提供商</th><th className="px-3 py-2">调用人</th><th className="px-3 py-2">耗时</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">Token</th><th className="px-3 py-2">明细</th></tr></thead><tbody>{recentRequests.map((item) => <tr key={item.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => openRequestDetail(item)}><td className="whitespace-nowrap px-3 py-2 text-text-muted">{item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="max-w-[16rem] px-3 py-2"><ModelRouteDisplay record={item} compact /></td><td className="px-3 py-2">{item.provider || "-"}</td><td className="max-w-[10rem] truncate px-3 py-2" title={item.caller}>{item.caller || "-"}</td><td className="whitespace-nowrap px-3 py-2 tabular-nums">{item.durationMs == null ? "-" : `${item.durationMs} ms`}</td><td className="max-w-[18rem] px-3 py-2" title={item.error ? `${item.status}\n${item.error}` : item.status}><span className="font-mono">{statusLabel(item.status)}</span>{item.error && <span className="mt-0.5 block truncate text-[11px] text-rose-300/80">{item.error}</span>}</td><td className="px-3 py-2 tabular-nums">{(Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0)}</td><td className="px-3 py-2 text-brand-400">查看</td></tr>)}</tbody></table>{recentRequests.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">暂无请求记录。</p>}</div></div></div></div>}
+      {allRequestsOpen && <div className="fixed inset-0 z-[80] bg-black/40" onClick={() => setAllRequestsOpen(false)}><div className="absolute inset-y-0 right-0 flex w-[min(1080px,98vw)] flex-col border-l border-border bg-surface shadow-2xl" onClick={(event) => event.stopPropagation()}><div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">全部请求记录</h3><p className="text-xs text-text-muted">最近最多 100 条已记录的请求（含抽样拒绝）</p></div><button type="button" onClick={() => setAllRequestsOpen(false)} className="rounded p-1 text-text-muted hover:bg-surface-2" aria-label="关闭全部请求记录"><span className="material-symbols-outlined">close</span></button></div><div className="custom-scrollbar min-h-0 flex-1 overflow-auto p-4"><div className="overflow-x-auto rounded-lg border border-border"><table className="w-full text-left text-xs"><thead className="bg-surface-2 text-text-muted"><tr><th className="px-3 py-2">时间</th><th className="px-3 py-2">模型</th><th className="px-3 py-2">提供商</th><th className="px-3 py-2">调用人</th><th className="px-3 py-2">耗时</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">Token</th><th className="px-3 py-2">明细</th></tr></thead><tbody>{recentRequests.map((item) => <tr key={item.id} className="cursor-pointer border-t border-border hover:bg-surface-2" onClick={() => openRequestDetail(item)}><td className="whitespace-nowrap px-3 py-2 text-text-muted">{item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="max-w-[16rem] px-3 py-2"><ModelRouteDisplay record={item} compact /></td><td className="px-3 py-2">{item.provider || "-"}</td><td className="max-w-[10rem] truncate px-3 py-2" title={item.caller}>{item.caller || "-"}</td><td className="whitespace-nowrap px-3 py-2 tabular-nums">{item.durationMs == null ? "-" : `${item.durationMs} ms`}</td><RequestStatusCell status={item.status} error={item.error} /><td className="px-3 py-2 tabular-nums">{(Number(item.promptTokens) || 0) + (Number(item.completionTokens) || 0)}</td><td className="px-3 py-2 text-brand-400">查看</td></tr>)}</tbody></table>{recentRequests.length === 0 && <p className="px-3 py-4 text-center text-xs text-text-muted">暂无请求记录。</p>}</div></div></div></div>}
 
-      {selectedRequest && <div className="fixed inset-y-0 right-0 z-[90] flex w-[min(760px,96vw)] flex-col border-l border-border bg-surface shadow-2xl"><div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求明细</h3><p className="text-xs text-text-muted">{selectedRequest.timestamp ? new Date(selectedRequest.timestamp).toLocaleString("zh-CN", { hour12: false }) : ""} · {selectedRequest.model || "未知模型"}</p></div><button type="button" onClick={() => setSelectedRequest(null)} className="rounded p-1 text-text-muted hover:bg-surface-2" aria-label="关闭请求明细"><span className="material-symbols-outlined">close</span></button></div>{loadingRequest ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取…</div> : <div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-auto p-4">{selectedRequest._notice && <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{selectedRequest._notice}</div>}<div className="grid grid-cols-2 gap-2 text-xs"><div className="rounded border border-border p-2"><span className="text-text-muted">状态</span><p className="mt-1 font-mono">{selectedRequest.status || "-"}</p>{selectedRequest.error && <p className="mt-1 break-words text-[11px] text-rose-300">{selectedRequest.error}</p>}</div><div className="rounded border border-border p-2"><span className="text-text-muted">提供商</span><p className="mt-1 break-all">{selectedRequest.provider || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">原始请求模型</span><p className="mt-1 break-all font-mono text-brand-400">{selectedRequest.originalModel || selectedRequest.routing?.originalModel || selectedRequest.model || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">实际执行模型</span><p className="mt-1 break-all font-mono">{selectedRequest.executedModel || selectedRequest.routing?.executedModel || selectedRequest.model || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">TTFT</span><p className="mt-1">{selectedRequest.latency?.ttft ?? "-"} ms</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">总耗时</span><p className="mt-1">{selectedRequest.latency?.total ?? "-"} ms</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">执行节点</span><p className="mt-1 break-all font-mono">{selectedRequest.mouse?.name || (selectedRequest.mouse?.id ? String(selectedRequest.mouse.id).slice(0, 8) : "-")}</p></div></div>{["request", "providerRequest", "providerResponse", "response"].map((key) => <section key={key}><h4 className="mb-1 text-sm font-semibold">{key}</h4><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-black/30 p-3 font-mono text-[11px] leading-5">{JSON.stringify(selectedRequest[key] ?? null, null, 2)}</pre></section>)}</div>}</div>}
+      {selectedRequest && <div className="fixed inset-y-0 right-0 z-[90] flex w-[min(760px,96vw)] flex-col border-l border-border bg-surface shadow-2xl"><div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3"><div><h3 className="font-semibold">请求明细</h3><p className="text-xs text-text-muted">{selectedRequest.timestamp ? new Date(selectedRequest.timestamp).toLocaleString("zh-CN", { hour12: false }) : ""} · {selectedRequest.model || "未知模型"}</p></div><button type="button" onClick={closeRequestDetail} className="rounded p-1 text-text-muted hover:bg-surface-2" aria-label="关闭请求明细"><span className="material-symbols-outlined">close</span></button></div>{loadingRequest ? <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在读取…</div> : <div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-auto p-4">{selectedRequest._notice && <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{selectedRequest._notice}</div>}<div className="grid grid-cols-2 gap-2 text-xs"><div className="rounded border border-border p-2"><span className="text-text-muted">状态</span><p className="mt-1 font-mono">{statusLabel(selectedRequest.status)}</p>{selectedRequest.error && <p className="mt-1 break-words text-[11px] text-rose-300">{selectedRequest.error}</p>}</div><div className="rounded border border-border p-2"><span className="text-text-muted">提供商</span><p className="mt-1 break-all">{selectedRequest.provider || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">原始请求模型</span><p className="mt-1 break-all font-mono text-brand-400">{selectedRequest.originalModel || selectedRequest.routing?.originalModel || selectedRequest.model || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">实际执行模型</span><p className="mt-1 break-all font-mono">{selectedRequest.executedModel || selectedRequest.routing?.executedModel || selectedRequest.model || "-"}</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">TTFT</span><p className="mt-1">{selectedRequest.latency?.ttft ?? "-"} ms</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">总耗时</span><p className="mt-1">{selectedRequest.latency?.total ?? "-"} ms</p></div><div className="rounded border border-border p-2"><span className="text-text-muted">执行节点</span><p className="mt-1 break-all font-mono">{selectedRequest.mouse?.name || (selectedRequest.mouse?.id ? String(selectedRequest.mouse.id).slice(0, 8) : "-")}</p></div></div>{["request", "providerRequest", "providerResponse", "response"].map((key) => <section key={key}><h4 className="mb-1 text-sm font-semibold">{key}</h4><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-black/30 p-3 font-mono text-[11px] leading-5">{JSON.stringify(selectedRequest[key] ?? null, null, 2)}</pre></section>)}</div>}</div>}
 
       <ConfirmModal
         isOpen={clearTarget !== null}

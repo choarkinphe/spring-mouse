@@ -10,6 +10,7 @@ import {
   authorizeApiKey,
   resolveApiKeyAccessTags,
 } from "../services/auth.js";
+import { API_KEY_REJECTIONS } from "@/shared/utils/usageError.js";
 import { getComboMemberQuotaGate } from "@/lib/apiKeyQuota.js";
 import { getSettings, getComboByName, getCombos } from "@/lib/localDb";
 import { getModelInfo, getComboModelEntries } from "../services/model.js";
@@ -38,7 +39,6 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
 import { saveRequestUsage } from "@/lib/usageDb.js";
-import { recordApiKeyRejection } from "../services/ingressUsage.js";
 import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 import { clearProviderModelBreaker, recordProviderModelFailure } from "../services/providerBreaker.js";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
@@ -251,23 +251,16 @@ export async function handleChat(request, clientRawRequest = null) {
     const authFailure = await authorizeApiKey(apiKey, {
       requireApiKey: settings.requireApiKey === true,
       meter: true,
-      signal: request.signal,
+      request,
       model: modelStr,
     });
     if (authFailure) {
-      // A valid key refused by its own quota or request-rate limit is a policy
-      // block, not an auth failure: record it against the key with the limit it
-      // hit. Before this, ~1,000 such 429s in one hour left no usage row at all.
-      if (authFailure.__smRejection) {
-        recordApiKeyRejection(request, apiKey, {
-          model: modelStr,
-          endpoint: clientRawRequest?.endpoint,
-          reason: authFailure.__smRejection,
-          response: authFailure,
-        });
-        return finishEarly(authFailure, "quota_exceeded");
-      }
-      return finishEarly(authFailure, "auth_rejected");
+      const reason = authFailure.__smRejection === API_KEY_REJECTIONS.RATE_LIMIT
+        ? "api_key_rate_limit"
+        : authFailure.__smRejection === API_KEY_REJECTIONS.QUOTA
+          ? "quota_exceeded"
+          : authFailure.status === 499 ? "client_abort" : "auth_rejected";
+      return finishEarly(authFailure, reason);
     }
     const accessTags = await resolveApiKeyAccessTags(apiKey);
 

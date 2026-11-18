@@ -20,6 +20,7 @@ import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDeta
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
+import { wholeReplyAsStream } from "./chatCore/wholeReplyStream.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
@@ -694,6 +695,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const sharedCtx = { provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, routingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
+
+  // A provider can answer `stream: true` with one complete JSON reply instead of
+  // a stream. Read as a stream that reply yields no event at all, so a turn that
+  // actually succeeded was recorded — and shown to the client — as an empty
+  // response. Re-frame it as the stream its own protocol would have sent, before
+  // any streaming path reads it; Magpie does the same in wholeAsStream.
+  if (providerResponse.ok && (stream || providerRequiresStreaming)) {
+    try {
+      const asStream = await wholeReplyAsStream(providerResponse, providerResponseFormat);
+      if (asStream) {
+        if ((asStream.headers.get("content-type") || "").includes("text/event-stream")) {
+          log?.debug?.("WHOLE", `${provider}/${model} | whole reply re-framed as ${providerResponseFormat} SSE`);
+        }
+        providerResponse = asStream;
+      }
+    } catch (e) {
+      log?.warn?.("WHOLE", `${provider}/${model} | whole-reply re-framing skipped: ${e?.message || e}`);
+    }
+  }
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {

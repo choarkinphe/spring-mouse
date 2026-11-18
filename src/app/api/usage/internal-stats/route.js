@@ -12,7 +12,7 @@ export async function GET(request) {
     const recent = db.all(`SELECT usageHistory.requestId AS id, usageHistory.timestamp, usageHistory.startedAt, usageHistory.completedAt, usageHistory.provider, usageHistory.model, usageHistory.status, usageHistory.promptTokens, usageHistory.completionTokens, usageHistory.meta, COALESCE(apiKeys.name, CASE WHEN usageHistory.apiKeyId = 'local-no-key' THEN '本地请求' ELSE '已删除的密钥' END) AS caller, CASE WHEN usageHistory.startedAt IS NOT NULL AND usageHistory.completedAt IS NOT NULL THEN MAX(0, ROUND((julianday(usageHistory.completedAt) - julianday(usageHistory.startedAt)) * 86400000)) ELSE NULL END AS durationMs FROM usageHistory LEFT JOIN apiKeys ON apiKeys.id = usageHistory.apiKeyId ORDER BY usageHistory.id DESC LIMIT 100`).map((row) => {
       const meta = parseJson(row.meta, {}) || {};
       const { meta: _meta, ...publicRow } = row;
-      return { ...publicRow, ...normalizeModelRouting({ provider: row.provider, model: row.model, routing: meta.routing }) };
+      return { ...publicRow, error: typeof meta.error === "string" ? meta.error : null, ...normalizeModelRouting({ provider: row.provider, model: row.model, routing: meta.routing }) };
     });
     const rows = db.all(
       `SELECT status, COUNT(*) AS count

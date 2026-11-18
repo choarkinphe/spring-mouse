@@ -13,6 +13,7 @@ import { runUsageAggregation } from "../usageAggregatePool.js";
 import { applyEventToRollup, getCompleteThrough } from "../../../../runtime/usage-rollup.mjs";
 import { isDayAlignedRange, localDateKey } from "../../../../runtime/usage-rollup-read.mjs";
 import { normalizeModelRouting } from "@/shared/utils/modelRouting.js";
+import { summarizeUsageError } from "@/shared/utils/usageError.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -741,6 +742,8 @@ export async function saveRequestUsage(entry) {
         appName: record.appName || null,
         userAgent: record.userAgent || null,
         sourceUrl: record.sourceUrl || null,
+        // Only failed rows carry a reason; a successful row never stores text.
+        ...(["success", "ok"].includes(status) ? {} : { error: summarizeUsageError(record.error) }),
         routing: normalizeModelRouting({
           model: record.model,
           originalModel: record.originalModel,

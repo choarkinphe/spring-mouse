@@ -286,7 +286,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 export async function handleNonStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log, streamController, recordUsage = true, nativePassthrough = false }) {
   const outcomeObserver = routingObserver || (routing && typeof routing.recordTerminal === "function" ? routing : null);
   outcomeObserver?.emitHeaders({ status: providerResponse.status, sourceFormat, targetFormat, streamMode: "json", nativePassthrough });
-  const saveFailure = (status = HTTP_STATUS.BAD_GATEWAY) => recordUsage ? saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true }) : undefined;
+  const saveFailure = (status = HTTP_STATUS.BAD_GATEWAY, error = null) => recordUsage ? saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, error, silent: true }) : undefined;
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
   let rawResponseBody = null;
@@ -305,7 +305,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       if (!parsed) {
         trackDone();
         appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
-        saveFailure();
+        saveFailure(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
         return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
       }
       responseBody = parsed;
@@ -325,7 +325,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       : err?.name === "TimeoutError" ? HTTP_STATUS.GATEWAY_TIMEOUT
         : HTTP_STATUS.BAD_GATEWAY;
     appendLog({ status: `FAILED ${status}` });
-    saveFailure(status);
+    saveFailure(status, status === 499 ? null : err);
     console.error(`[ChatCore] Failed to read response body from ${provider}:`, err.message);
     const message = status === 499 ? "Request aborted"
       : status === HTTP_STATUS.GATEWAY_TIMEOUT ? `Response body timeout from ${provider}`
@@ -341,7 +341,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     outcomeObserver?.recordTerminal({ outcome: ROUTING_OUTCOMES.FAILED, terminalReason: TERMINAL_REASONS.UPSTREAM_ERROR });
     outcomeObserver?.settle({ upstreamStatus: providerResponse.status });
     appendLog({ status: `FAILED ${status}` });
-    saveFailure(status);
+    saveFailure(status, message);
     // Keep the actual JSON error response, including request IDs and nested
     // details. Never save a whole SSE preamble that may echo the user's prompt.
     const errorBody = preserveUpstreamBody && rawResponseBody !== null ? rawResponseBody : "";

@@ -115,7 +115,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     : null;
 
   const sourceFormat = sourceFormatOverride || detectFormat(body);
-  const saveFailedUsage = (status, errorStatus = null) => internalRequest ? Promise.resolve() : saveRequestUsage({
+  const saveFailedUsage = (status, errorStatus = null, error = null) => internalRequest ? Promise.resolve() : saveRequestUsage({
     requestId,
     trafficRequestId,
     startedAt,
@@ -133,6 +133,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     sourceUrl: clientRawRequest?.sourceUrl || null,
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
     status: errorStatus && status === "upstream" ? `upstream:${errorStatus}` : status,
+    error,
   }).catch(() => {});
 
   // Check for bypass patterns (warmup, skip, cc naming)
@@ -490,7 +491,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "stream_error" });
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
       if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error");
-      else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error");
+      else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error", null, error?.name === "AbortError" ? null : error);
       try {
         if (error?.name === "AbortError") routingObserver?.settleCancelled?.({ terminalReason: "client_abort" });
         else routingObserver?.settleFailed?.({ terminalReason: "stream_error" });
@@ -565,7 +566,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "executor_error", error: { type: error?.name } });
     trackPendingRequest(model, provider, connectionId, false, true, apiKey, requestId);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
-    saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY);
+    saveFailedUsage(error.name === "AbortError" ? "cancelled" : "error", error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY, error);
     if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
       originalModel: routing.originalModel,
@@ -660,7 +661,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const upstreamError = providerResponse.__smUpstreamError || parsed.upstreamError;
     compactionDiag?.emit("end", { status: statusCode, outcome: "upstream_rejected", error: upstreamError?.body || message, body: finalBody || translatedBody });
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
-    saveFailedUsage("upstream", statusCode);
+    saveFailedUsage("upstream", statusCode, upstreamError?.body || message);
     if (!internalRequest) saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, requestId, mouse: mouseRecord,
       originalModel: routing.originalModel,

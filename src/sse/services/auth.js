@@ -968,11 +968,32 @@ async function enforceApiKeyRateLimit(apiKey, signal, model = null) {
     return null;
   }
 
+  // A caller that hung up while queued was not refused by the limit.
+  if (outcome.reason === "aborted") return rateLimitResponse(outcome, rules);
+
   log.warn(
     "RATELIMIT",
     `API key ${key?.name || "(unnamed)"} | ${outcome.reason} after ${outcome.waitedMs || 0}ms (limit ${rules.limit}/min, burst ${rules.burst})`,
   );
   return rateLimitResponse(outcome, rules);
+}
+
+// Why authorizeApiKey refused a *valid* key. Callers record these as policy
+// blocks (usage row + routing reason) so a burst of 429s names the key and the
+// limit it hit. An unknown or missing key carries no tag: it is not attributable
+// to any configured key and must not be able to fill the usage table.
+export const API_KEY_REJECTIONS = Object.freeze({
+  QUOTA: "api_key_quota",
+  RATE_LIMIT: "api_key_rate_limit",
+});
+
+function tagRejection(response, reason) {
+  if (response) response.__smRejection = reason;
+  return response;
+}
+
+function maskApiKey(apiKey) {
+  return typeof apiKey === "string" && apiKey.length > 12 ? `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}` : "(key)";
 }
 
 /**
@@ -996,11 +1017,15 @@ export async function authorizeApiKey(apiKey, { requireApiKey = false, meter = f
   }
 
   const quota = await checkApiKeyQuota(apiKey);
-  if (!quota.allowed) return quotaResponse(quota.status);
+  if (!quota.allowed) {
+    const window = quota.status?.exceededWindow;
+    log.warn("QUOTA", `API key ${maskApiKey(apiKey)} | quota exceeded (${window?.label || "current window"}) · resets ${window?.resetAt || "unknown"}`);
+    return tagRejection(quotaResponse(quota.status), API_KEY_REJECTIONS.QUOTA);
+  }
 
   if (meter) {
     const rateFailure = await enforceApiKeyRateLimit(apiKey, signal, model);
-    if (rateFailure) return rateFailure;
+    if (rateFailure) return signal?.aborted ? rateFailure : tagRejection(rateFailure, API_KEY_REJECTIONS.RATE_LIMIT);
   }
 
   return null;

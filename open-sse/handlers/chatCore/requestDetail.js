@@ -136,7 +136,7 @@ export function formatDoneLine({ usage, latency }) {
   return `DONE ${latency?.total ?? 0}ms${ttftStr} · ${inStr} · OUT ${outTok}`;
 }
 
-export function saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", errorStatus = null, label = "USAGE", silent = false }) {
+export function saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status = "success", errorStatus = null, error = null, label = "USAGE", silent = false }) {
   tokens = tokens && typeof tokens === "object" ? tokens : {};
 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
@@ -176,5 +176,6 @@ export function saveUsageStats({ provider, model, originalModel, executedModel, 
       executedModel: executedModel || (provider && model ? `${provider}/${model}` : model || null),
     },
     status: status === "error" && errorStatus ? `error:${errorStatus}` : status,
+    error,
   }).catch(() => {});
 }

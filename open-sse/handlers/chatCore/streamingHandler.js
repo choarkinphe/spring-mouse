@@ -71,7 +71,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     if (log?.errorLine) log.errorLine(reqTag, "✗", `BLOCKED ${status} · ${provider}/${model} · non-SSE (${upstreamContentType})\n    ${shortMsg}`);
     else console.warn(`[STREAM] ${provider} | ${model} | blocked pipe: ${shortMsg} [${status}]`);
     streamController?.handleError?.(new Error(`upstream non-SSE: ${status}`));
-    if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, silent: true });
+    if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", errorStatus: status, error: shortMsg, silent: true });
     return {
       success: false,
       response: new Response(JSON.stringify({ error: { message: `[${status}]: ${shortMsg}` } }), {
@@ -154,6 +154,15 @@ function streamStatus(terminal) {
   return terminal?.outcome === "valid_terminal" ? "success" : "error";
 }
 
+// The stream terminal carries only a fixed reason enum (no upstream text), so a
+// failed stream's usage row names that reason in words an operator can act on.
+function streamFailureText(terminal) {
+  if (streamStatus(terminal) !== "error") return null;
+  const reason = terminal?.terminalReason || "unknown";
+  if (reason === "empty_stream") return "Stream ended without any model output (empty_stream)";
+  return `Stream ended ${terminal?.outcome || "unexpectedly"} (${reason})`;
+}
+
 function persistStreamUsage({ provider, model, originalModel, executedModel, routing, connectionId, apiKey, requestStartTime, requestId, trafficRequestId, startedAt, endpoint, sourceIp, appName, userAgent, sourceUrl, reqTag, log, recordUsage = true }, usage, ttftAt, terminal) {
   const latency = {
     ttft: ttftAt != null ? ttftAt - requestStartTime : null,
@@ -173,7 +182,7 @@ function persistStreamUsage({ provider, model, originalModel, executedModel, rou
     }
   }
 
-  if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: streamStatus(terminal), label: "STREAM USAGE", silent: true });
+  if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: streamStatus(terminal), error: streamFailureText(terminal), label: "STREAM USAGE", silent: true });
   if (log?.line) log.line(reqTag, "📊", `${formatDoneLine({ usage, latency })} · ${terminal?.outcome || "unknown"}`);
   return latency;
 }

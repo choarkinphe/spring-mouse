@@ -383,7 +383,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         const message = jsonResponse.error?.message
           || jsonResponse.error?.code
           || "Upstream Responses stream failed";
-        if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
+        if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", error: message, silent: true });
         if (log?.errorLine) log.errorLine(reqTag, "✗", `UPSTREAM ${HTTP_STATUS.SERVICE_UNAVAILABLE} · provider · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    [${HTTP_STATUS.SERVICE_UNAVAILABLE}]: ${message}`);
         return createErrorResult(HTTP_STATUS.SERVICE_UNAVAILABLE, message, undefined, {
           source: "sse",
@@ -489,7 +489,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       return { success: true, response: new Response(JSON.stringify(finalResp), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
     } catch (err) {
       finishPending();
-      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
+      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", error: err, silent: true });
       console.error("[ChatCore] Responses API SSE→JSON failed:", err);
       return createErrorResult(err?.name === "AbortError" ? 499 : err?.name === "TimeoutError" ? HTTP_STATUS.GATEWAY_TIMEOUT : HTTP_STATUS.BAD_GATEWAY, err?.name === "TimeoutError" ? "Upstream response body timeout" : err?.name === "AbortError" ? "Request aborted" : "Failed to convert streaming response to JSON");
     }
@@ -515,11 +515,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     finishPending();
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) {
-      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
+      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", error: "Invalid SSE response for non-streaming request", silent: true });
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
     }
     if (parsed.error) {
-      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", silent: true });
+      if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: null, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, sourceIp: clientRawRequest?.sourceIp, appName: clientRawRequest?.appName, userAgent: clientRawRequest?.userAgent, sourceUrl: clientRawRequest?.sourceUrl, requestId, trafficRequestId, startedAt, status: "error", error: parsed.error.message || "Upstream SSE stream failed", silent: true });
       const streamError = providerResponse.__smGetStreamError?.();
       const result = createErrorResult(
         streamError?.status || HTTP_STATUS.BAD_GATEWAY,

@@ -38,6 +38,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { recordApiKeyRejection } from "../services/ingressUsage.js";
 import { getTrafficRequestId } from "@/lib/networkTraffic.js";
 import { clearProviderModelBreaker, recordProviderModelFailure } from "../services/providerBreaker.js";
 import { REQUEST_LOGS_DIR } from "@/lib/requestLogPath.js";
@@ -253,7 +254,21 @@ export async function handleChat(request, clientRawRequest = null) {
       signal: request.signal,
       model: modelStr,
     });
-    if (authFailure) return finishEarly(authFailure, "auth_rejected");
+    if (authFailure) {
+      // A valid key refused by its own quota or request-rate limit is a policy
+      // block, not an auth failure: record it against the key with the limit it
+      // hit. Before this, ~1,000 such 429s in one hour left no usage row at all.
+      if (authFailure.__smRejection) {
+        recordApiKeyRejection(request, apiKey, {
+          model: modelStr,
+          endpoint: clientRawRequest?.endpoint,
+          reason: authFailure.__smRejection,
+          response: authFailure,
+        });
+        return finishEarly(authFailure, "quota_exceeded");
+      }
+      return finishEarly(authFailure, "auth_rejected");
+    }
     const accessTags = await resolveApiKeyAccessTags(apiKey);
 
     if (!modelStr) {
@@ -598,7 +613,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   //   blocked:<reason>  — spring-mouse's own routing policy stopped the request
   // Neither is counted against API-key quota (usageRepo only charges success/ok),
   // and the startedAt→completedAt span still shows how long a request queued.
-  const saveOutcome = (status) => {
+  const saveOutcome = (status, error = null) => {
     if (!request || internalRequest) return;
     let endpoint = clientRawRequest?.endpoint || null;
     if (!endpoint) {
@@ -628,6 +643,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       ...getRequestSourceMeta(request),
       tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       status,
+      error,
     }).catch(() => {});
   };
 
@@ -834,7 +850,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       const retryAfterMs = error.retryAfterMs;
       const retryAfterHuman = `retry after ${Math.ceil(retryAfterMs / 1000)}s`;
       log.warn("CONCURRENCY", `${reqPrefix}${provider}/${model} | ${reason.replaceAll("_", " ")} after ${waitedMs}ms (${retryAfterHuman})`);
-      saveOutcome(`blocked:${reason}`);
+      saveOutcome(`blocked:${reason}`, `${provider}/${model} concurrency limit: ${reason.replaceAll("_", " ")} after ${waitedMs}ms`);
       return unavailableResponse(
         HTTP_STATUS.RATE_LIMITED,
         `${provider}/${model} is at the configured concurrency limit`,
@@ -871,12 +887,12 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
           ? "breaker_open"
           : credentials.modelOverloaded ? "model_overloaded" : "account_locked";
         log.warn("CHAT", `${reqPrefix}[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman}) · ${blockedReason}`);
-        saveOutcome(`blocked:${blockedReason}`);
+        saveOutcome(`blocked:${blockedReason}`, `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `${reqPrefix}No active credentials for provider: ${provider}`);
-        saveOutcome("blocked:no_account");
+        saveOutcome("blocked:no_account", `No active credentials for provider: ${provider}`);
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       // The pool drained, but if every exclusion came from a model-level signal
@@ -903,7 +919,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       // attempts are already recorded per account, so the terminal row is
       // attributed to the upstream status it ended on rather than to local policy.
       log.warn("CHAT", `${reqPrefix}No more accounts available`, { provider });
-      saveOutcome(lastStatus ? `upstream:${lastStatus}` : "blocked:accounts_exhausted");
+      saveOutcome(lastStatus ? `upstream:${lastStatus}` : "blocked:accounts_exhausted", lastError || "All accounts unavailable");
       return lastRestrictionResponse || errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
@@ -1073,7 +1089,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
           // DIFFERENT table and is not a substitute: dropping these left the failure
           // invisible in the usage views while the request still 503'd.
           log.warn(throttled ? "THROTTLE" : "BREAKER", `${provider}/${model} | ${scanBound ? "SSE scan-bound throttle" : transport ? "transport throttle" : modelLevel ? "model overload throttle" : "opened provider/model breaker"} (${result.status})`);
-          saveOutcome(scanBound ? `blocked:${scanReason}` : transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open");
+          saveOutcome(scanBound ? `blocked:${scanReason}` : transport ? "blocked:transport" : modelLevel ? "blocked:model_overloaded" : "blocked:breaker_open", result.error);
           attempt.complete({ outcome: "failed", terminalReason: scanBound ? scanReason : transport ? "transport_error" : modelLevel ? "model_overloaded" : "breaker_open", upstreamStatus: result.status, fallbackReason: scanBound ? "model_fallback" : "account_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Provider model is temporarily unavailable", retryAt, human);
@@ -1082,7 +1098,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
 
       if (scanBound) {
         log.warn("TIMEOUT", `${provider}/${model} | ${scanReason} · no upstream overload error observed · not rotating accounts, returning to model routing`);
-        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`, result.error);
         attempt.complete({ outcome: "failed", terminalReason: scanReason, upstreamStatus: result.status, fallbackReason: "model_fallback" });
         return result.response;
       }
@@ -1097,7 +1113,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
       // actually change the outcome. Account-level failures still rotate as before.
       if (result.upstreamError?.origin === SSE_ERROR_ORIGINS.OVERLOAD) {
         log.warn("THROTTLE", `${provider}/${model} | upstream SSE overload confirmed · executor stopped retrying · not rotating accounts (same upstream model)`);
-        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+        saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`, result.error);
         attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
         return result.response;
       }
@@ -1115,7 +1131,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         if (modelLevelFailures > overloadMaxRetries) {
           log.warn("THROTTLE", `${provider}/${model} | ${modelLevelFailures} model-level failures exceeded channel retry budget ${overloadMaxRetries}`);
           const retryAt = new Date(Date.now() + MODEL_LEVEL_RETRY_HINT_MS).toISOString();
-          saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`);
+          saveOutcome(`upstream:${result.status || HTTP_STATUS.SERVICE_UNAVAILABLE}`, result.error);
           attempt.complete({ outcome: "failed", terminalReason: "model_overloaded", upstreamStatus: result.status, fallbackReason: "model_fallback" });
           return unavailableResponse(result.status || HTTP_STATUS.SERVICE_UNAVAILABLE,
             result.error || "Upstream model is busy",

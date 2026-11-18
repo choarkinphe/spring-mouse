@@ -8,6 +8,12 @@ const KNOWN_FAILURES = [
   [/claude code.{0,50}(?:does not support|version.{0,30}required|or newer)/i, "Upstream rejected the Claude Code version"],
   [/empty_stream/, "Stream ended without any model output (empty_stream)"],
   [/stream ended .*\(incomplete\)/, "Upstream stream ended before its terminal event"],
+  // Stall codes come from utils/streamHandler.js. Ordered before the generic
+  // timeout rule so a mid-answer stall is not reported as a request timeout.
+  [/UPSTREAM_VISIBLE_STALL:upstream_active_client_silent/, "Upstream kept sending but nothing reached the client (stalled)"],
+  [/UPSTREAM_VISIBLE_STALL|client output stalled/, "Upstream stopped mid-answer and the stream stalled"],
+  [/UPSTREAM_STALL|stream stall timeout/, "Upstream stream went silent and was stopped"],
+  [/stream failed \(stream_error|\(stream_error\)/i, "Upstream stream failed mid-answer"],
   [/invalid (?:sse|json) response/i, "Upstream response could not be decoded"],
   [/no active credentials for provider/i, "No active upstream account is configured"],
   [/all accounts unavailable/i, "All upstream accounts are unavailable"],

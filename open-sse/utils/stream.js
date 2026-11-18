@@ -150,8 +150,8 @@ export function createSSEStream(options = {}) {
   };
   // Transport cancellation can happen after a real terminal but before flush.
   // Keep the observed usage/terminal, while recording delivery independently.
-  onStreamAbortReady?.((outcome, terminalReason) => {
-    completeStream(state?.usage || usage, { outcome, terminalReason }, terminalReason);
+  onStreamAbortReady?.((outcome, terminalReason, failureCode = null) => {
+    completeStream(state?.usage || usage, { outcome, terminalReason, ...(failureCode ? { failureCode } : {}) }, terminalReason);
   });
 
   function captureCompletedText(kind, text) {

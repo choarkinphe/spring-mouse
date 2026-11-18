@@ -490,7 +490,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     onError: (error) => {
       compactionDiag?.emit("end", { outcome: error?.name === "AbortError" ? "client_abort" : "stream_error" });
       trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
-      if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error");
+      if (completeAbortedStream) completeAbortedStream(error?.name === "AbortError" ? "cancelled" : "failed", error?.name === "AbortError" ? "client_abort" : "stream_error", streamFailureCode(error));
       else saveFailedUsage(error?.name === "AbortError" ? "cancelled" : "error", null, error?.name === "AbortError" ? null : error);
       try {
         if (error?.name === "AbortError") routingObserver?.settleCancelled?.({ terminalReason: "client_abort" });
@@ -737,7 +737,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
   // Transport failures bypass TransformStream.flush. Finalize the same bounded,
   // once-only detail/usage callback so a disconnect cannot leave a success row.
-  completeAbortedStream = (outcome, terminalReason) => onStreamComplete(null, null, null, { outcome, terminalReason });
+  completeAbortedStream = (outcome, terminalReason, failureCode = null) => onStreamComplete(null, null, null, { outcome, terminalReason, ...(failureCode ? { failureCode } : {}) });
   const compactionStreamStatus = providerResponse.status;
   const onCompactionStreamComplete = compactionDiag ? (...args) => {
     compactionDiag.emit("end", { status: compactionStreamStatus, outcome: "stream_usage_complete" });
@@ -746,6 +746,15 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete: onCompactionStreamComplete, streamDetailId,
     onStreamAbortReady: (complete) => { completeAbortedStream = complete; },
   });
+}
+
+// Stream failures carry our own fixed codes (see utils/streamHandler.js). Only
+// those are forwarded, so no upstream text can reach the usage row this way.
+const STREAM_FAILURE_CODES = new Set(["UPSTREAM_VISIBLE_STALL", "UPSTREAM_STALL"]);
+function streamFailureCode(error) {
+  if (!STREAM_FAILURE_CODES.has(error?.code)) return null;
+  if (error.code === "UPSTREAM_VISIBLE_STALL" && typeof error.stallCause === "string") return `${error.code}:${error.stallCause}`;
+  return error.code;
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

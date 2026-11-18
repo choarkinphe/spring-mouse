@@ -160,6 +160,7 @@ function streamFailureText(terminal) {
   if (streamStatus(terminal) !== "error") return null;
   const reason = terminal?.terminalReason || "unknown";
   if (reason === "empty_stream") return "Stream ended without any model output (empty_stream)";
+  if (terminal?.failureCode) return `Stream failed (${reason}; ${terminal.failureCode})`;
   return `Stream ended ${terminal?.outcome || "unexpectedly"} (${reason})`;
 }
 

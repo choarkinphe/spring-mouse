@@ -196,7 +196,7 @@ describe("official model sync review regressions", () => {
   it("normalizes Codex upstream type=model to internal LLM and matching snapshot IDs", async () => {
     connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-codex-token" });
     fetchMock.mockImplementation(async (url, options) => {
-      if (url === "https://chatgpt.com/backend-api/codex/models?client_version=0.163.0") {
+      if (url.startsWith("https://chatgpt.com/backend-api/codex/models?client_version=")) {
         expect(options.headers.Authorization).toBe("Bearer test-only-codex-token");
         return jsonResponse({ data: [{ id: "codex-new-review-model", type: "model", name: "New Codex model" }] });
       }
@@ -216,7 +216,9 @@ describe("official model sync review regressions", () => {
       status: "success", source: "official", modelIds: ["codex-new-review-model"], count: 1,
     });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://chatgpt.com/backend-api/codex/models?client_version=0.163.0",
+      // This entry declares no minimal_client_version, so the probe is authoritative
+      // and no confirming request is needed.
+      "https://chatgpt.com/backend-api/codex/models?client_version=999.0.0",
       MODELS_DEV_URL,
     ]);
   });

@@ -227,10 +227,26 @@ describe("re-framing a provider response", () => {
     expect(terminal.terminalReason).toBe(TERMINAL_REASONS.TERMINAL);
   });
 
-  it("leaves a real SSE stream untouched", async () => {
-    const sse = 'event: message_start\ndata: {"type":"message_start"}\n\n';
-    const original = upstream(sse, "text/event-stream");
-    expect(await wholeReplyAsStream(original, "claude")).toBeNull();
+  it.each(["application/json", "text/event-stream"])('re-frames a whole JSON line ending in CRLF (%s)', async (type) => {
+    const text = JSON.stringify(CLAUDE_MESSAGE) + '\r\n';
+    const response = await wholeReplyAsStream(upstream(text, type), 'claude');
+    const events = payloads(await response.text());
+    expect(events.at(-1)?.type).toBe('message_stop');
+    expect(events.find(e => e.delta?.type === 'text_delta').delta.text).toBe('Hello there');
+  });
+
+  it('returns SSE headers before upstream bytes and releases a split UTF-8 chunk without waiting for EOF', async () => {
+    let writer, cancellation;
+    const source = new ReadableStream({ start(c) { writer = c; }, cancel(r) { cancellation = r; } });
+    const response = await wholeReplyAsStream(upstream(source, 'text/event-stream'), 'claude');
+    const reader = response.body.getReader();
+    const bytes = encoder.encode(': 好');
+    writer.enqueue(bytes.slice(0, -1));
+    expect((await reader.read()).value).toEqual(bytes.slice(0, -1));
+    writer.enqueue(bytes.slice(-1));
+    expect((await reader.read()).value).toEqual(bytes.slice(-1));
+    await reader.cancel('gone');
+    await vi.waitFor(() => expect(cancellation).toBe('gone'));
   });
 
   it("leaves an SSE body alone even when the Content-Type says JSON", async () => {
@@ -269,6 +285,27 @@ describe("re-framing a provider response", () => {
     const echoed = await readAll(response);
     expect(echoed).toContain('{"n":0}');
     expect(echoed).toContain('{"n":199}');
+  });
+
+  it('releases split NDJSON events without waiting for a second line or EOF', async () => {
+    let source;
+    const body = new ReadableStream({ start(c) { source = c; } });
+    const response = await wholeReplyAsStream(upstream(body, 'text/event-stream'), 'claude');
+    const reader = response.body.getReader();
+    for (const piece of ['{"type":', '"message_start"}\n']) source.enqueue(encoder.encode(piece));
+    expect((await reader.read()).value).toEqual(encoder.encode('{"type":'));
+    expect((await reader.read()).value).toEqual(encoder.encode('"message_start"}\n'));
+    await reader.cancel();
+  });
+
+  it('never converts two whole JSON records into one successful turn', async () => {
+    const line = JSON.stringify(CLAUDE_MESSAGE) + '\n';
+    const response = await wholeReplyAsStream(upstream(line + line, 'text/event-stream'), 'claude');
+    expect(await response.text()).toBe(line + line);
+  });
+
+  it('does not turn a lone Chat Completions delta into a successful whole reply', () => {
+    expect(openAIWholeReplyToSSE({ choices: [{ index: 0, delta: { content: 'partial' } }] })).toBeNull();
   });
 
   it("does nothing for a reply already in a format it cannot re-frame", async () => {
@@ -325,11 +362,9 @@ describe("through the real handler", () => {
     });
   }
 
-  it("serves a whole reply the provider gave instead of a stream", async () => {
-    // Exactly the production shape: HTTP 200, JSON content type, one whole
-    // Message, no SSE framing.
-    fetchMock.mockResolvedValue(new Response(JSON.stringify(CLAUDE_MESSAGE), {
-      status: 200, headers: { "content-type": "application/json" },
+  it.each(['application/json', 'text/event-stream'])("serves a whole JSON line through the real handler (%s)", async (type) => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(CLAUDE_MESSAGE) + '\n', {
+      status: 200, headers: { 'content-type': type },
     }));
 
     const res = await runClaudeStream();

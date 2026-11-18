@@ -2,6 +2,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { CLAUDE_SYSTEM_PROMPT } from "../../config/appConstants.js";
 import { adjustMaxTokens } from "../formats/maxTokens.js";
+import { anchorClaudeToolCache } from "../formats/claude.js";
 import { safeParseJSON } from "../concerns/json.js";
 import { parseDataUri } from "../concerns/image.js";
 import { extractTextContent } from "../formats/gemini.js";
@@ -178,13 +179,12 @@ Respond ONLY with the JSON object, no other text.`);
       result.tools.push({
         name: toolName,
         description: toolData.description || "",
+        ...(tool.defer_loading === true && { defer_loading: true }),
         input_schema: toolData.parameters || toolData.input_schema || { type: "object", properties: {}, required: [] }
       });
     }
 
-    if (result.tools.length > 0) {
-      result.tools[result.tools.length - 1].cache_control = { type: "ephemeral", ttl: "1h" };
-    }
+    result.tools = anchorClaudeToolCache(result.tools);
   }
 
   // Tool choice

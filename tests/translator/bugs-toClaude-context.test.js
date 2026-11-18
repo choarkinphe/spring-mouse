@@ -3,7 +3,55 @@ import { describe, it, expect } from "vitest";
 import "./registerAll.js";
 import { translateRequest } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
-import { prepareClaudeRequest } from "../../open-sse/translator/formats/claude.js";
+import { anchorClaudeCache, normalizeClaudePassthrough, prepareClaudeRequest } from "../../open-sse/translator/formats/claude.js";
+import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-to-claude.js";
+
+const hour = { type: "ephemeral", ttl: "1h" };
+const short = { type: "ephemeral" };
+const deferred = { name: "lookup", input_schema: { type: "object" }, defer_loading: true };
+const eager = { name: "echo", input_schema: { type: "object" }, defer_loading: false };
+
+describe("Claude tool cache breakpoints", () => {
+  it("native normalization removes only conflicting tool markers without changing fallback input", () => {
+    const tools = [{ ...deferred, cache_control: hour }, { ...eager, cache_control: short }];
+    const body = normalizeClaudePassthrough({ tools });
+    expect(body.tools).toEqual([deferred, { ...eager, cache_control: short }]);
+    expect(tools[0].cache_control).toEqual(hour);
+  });
+
+  for (const [stage, apply] of [
+    ["request preparation", body => prepareClaudeRequest(body, "claude")],
+    ["final passthrough injection", anchorClaudeCache],
+  ]) {
+    it(`${stage} reanchors on the last eager tool, not a trailing deferred tool`, () => {
+      const tools = [{ ...eager, name: "first", cache_control: short }, eager, { ...deferred, cache_control: hour }];
+      const body = apply({ tools, system: [{ type: "text", text: "rules" }] });
+      expect(body.tools).toEqual([{ ...eager, name: "first" }, { ...eager, cache_control: hour }, deferred]);
+      expect(body.system[0].cache_control).toEqual(hour);
+      expect(tools[2].cache_control).toEqual(hour);
+    });
+
+    it(`${stage} omits the tool breakpoint when every tool is deferred`, () => {
+      expect(apply({ tools: [{ ...deferred, cache_control: hour }] }).tools).toEqual([deferred]);
+    });
+  }
+
+  it("OpenAI translation preserves deferred function tools and does not mark deferred passthrough tools", () => {
+    const builtin = { type: "web_search_20250305", name: "web_search", defer_loading: true, cache_control: short };
+    const input = { tools: [
+      { type: "function", function: { name: "echo", parameters: eager.input_schema } },
+      { type: "function", function: { name: "lookup", parameters: deferred.input_schema }, defer_loading: true },
+      builtin,
+    ] };
+    const { tools } = openaiToClaudeRequest("m", input, false);
+    expect(tools).toEqual([
+      { name: "echo", description: "", input_schema: eager.input_schema, cache_control: hour },
+      { ...deferred, description: "" },
+      { type: builtin.type, name: builtin.name, defer_loading: true },
+    ]);
+    expect(builtin.cache_control).toEqual(short);
+  });
+});
 
 // anthropic-compatible provider so prepareClaudeRequest runs the openai→claude path
 const T = (body) =>

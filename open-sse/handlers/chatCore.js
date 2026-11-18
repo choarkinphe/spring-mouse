@@ -704,13 +704,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // any streaming path reads it; Magpie does the same in wholeAsStream.
   if (providerResponse.ok && (stream || providerRequiresStreaming)) {
     try {
-      const asStream = await wholeReplyAsStream(providerResponse, providerResponseFormat);
-      if (asStream) {
-        if ((asStream.headers.get("content-type") || "").includes("text/event-stream")) {
-          log?.debug?.("WHOLE", `${provider}/${model} | whole reply re-framed as ${providerResponseFormat} SSE`);
-        }
-        providerResponse = asStream;
-      }
+      const asStream = await wholeReplyAsStream(providerResponse, providerResponseFormat, { streamingClient: clientRequestedStreaming });
+      if (asStream) providerResponse = asStream;
     } catch (e) {
       log?.warn?.("WHOLE", `${provider}/${model} | whole-reply re-framing skipped: ${e?.message || e}`);
     }

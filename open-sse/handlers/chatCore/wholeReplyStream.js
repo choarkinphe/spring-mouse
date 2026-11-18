@@ -28,140 +28,137 @@ export function bodyStartsAsSSE(text) {
   return SSE_START_PREFIXES.some((prefix) => head.startsWith(prefix));
 }
 
-/**
- * A provider answer that is one whole JSON reply, turned into the stream the
- * caller asked for.
- *
- * Only a reply whose Content-Type is JSON, absent, or text/plain is considered —
- * the shape Magpie calls "a reply that came whole". A body that actually begins
- * as SSE is left alone even when the header lies, because some vendors label a
- * stream as JSON; a body that is neither SSE nor JSON is also left alone, so
- * every existing path keeps its current behaviour.
- *
- * Returns the replacement Response, or null to leave the caller's response as-is.
- */
-export async function wholeReplyAsStream(providerResponse, upstreamFormat) {
-  if (!providerResponse || typeof providerResponse !== "object") return null;
-  const contentType = (providerResponse.headers?.get?.("content-type") || "").toLowerCase();
-  if (contentType.includes("text/event-stream")) return null;
-  const jsonish = contentType.includes("json") || contentType === "" || contentType.startsWith("text/plain");
-  if (!jsonish) return null;
-  if (!providerResponse.body || typeof providerResponse.body.getReader !== "function") return null;
-
-  const reader = providerResponse.body.getReader();
-  const decoder = new TextDecoder();
+// Hold only a possible whole object. Keep original bytes for passthrough: a
+// transport chunk can end halfway through a UTF-8 character. Inspect the first
+// JSON line even when it crosses chunks; ordinary NDJSON must not wait for EOF.
+function wholeReplyDetector(upstreamFormat) {
   const chunks = [];
-  let size = 0;
-  let exhausted = false;
+  const decoder = new TextDecoder();
+  let bytes = 0, started = false, firstLine = [], expectOnlyWhitespace = false;
+  return {
+    chunks,
+    hold(chunk) {
+      chunks.push(chunk);
+      bytes += chunk.byteLength;
+      if (bytes > MAX_WHOLE_REPLY_BYTES) return false;
+      let part = decoder.decode(chunk, { stream: true });
+      if (!started) {
+        part = part.trimStart();
+        if (!part) return true;
+        if (!part.startsWith("{")) return false;
+        started = true;
+      }
+      if (expectOnlyWhitespace) return !part.trim();
+      if (!firstLine) return true; // pretty-printed JSON: parse the whole body at EOF
+      const nl = part.indexOf("\n");
+      firstLine.push(nl < 0 ? part : part.slice(0, nl));
+      if (nl < 0) return true;
+      let obj;
+      try { obj = JSON.parse(firstLine.join("")); } catch { /* incomplete first line */ }
+      firstLine = null;
+      if (!obj) return true;
+      // One complete Message followed by a newline is still a whole reply.
+      // A stream event, or a second object, is not. Never invent its terminal.
+      if (!isWholeCandidate(obj, upstreamFormat) || part.slice(nl + 1).trim()) return false;
+      expectOnlyWhitespace = true;
+      return true;
+    },
+    finish() {
+      if (!started) return null;
+      const buffer = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
+      let obj;
+      try { obj = JSON.parse(new TextDecoder().decode(buffer).trim()); } catch { return null; }
+      return wholeReplyToSSE(obj, upstreamFormat);
+    },
+  };
+}
 
-  // Decide from the first bytes, never from the header alone. A body that does
-  // not open as a JSON object (SSE, HTML, plain text) is handed straight back.
-  // A single JSON line that parses on its own is NDJSON, not one whole reply —
-  // it must not be held, or a long stream of small objects would be buffered.
+function isWholeCandidate(obj, format) {
+  return obj?.error || (format === FORMATS.CLAUDE && obj?.type === "message" && Array.isArray(obj.content))
+    || (format === FORMATS.OPENAI && Array.isArray(obj?.choices) && obj.choices.length && obj.choices.every(c => asBlock(c?.message)));
+}
+
+function drainPrefix(chunks, controller) {
+  for (const chunk of chunks) controller.enqueue(chunk);
+  chunks.length = 0;
+}
+
+// On a declared Claude SSE response inspect inside the streaming pipeline, not
+// before returning headers. A slow first chunk is then subject to the normal
+// relay's idle timer and cancellation. Real SSE passes through immediately.
+function detectInStream(format) {
+  let detector = wholeReplyDetector(format);
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (!detector) { controller.enqueue(chunk); return; }
+      if (!detector.hold(chunk)) {
+        drainPrefix(detector.chunks, controller);
+        detector = null;
+      }
+    },
+    flush(controller) {
+      if (!detector) return;
+      const sse = detector.finish();
+      if (sse) controller.enqueue(new TextEncoder().encode(sse));
+      else drainPrefix(detector.chunks, controller);
+    },
+  });
+}
+
+function responseWithBody(original, body, asSSE = false) {
+  const headers = new Headers(original.headers);
+  if (asSSE) {
+    headers.set("content-type", "text/event-stream");
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+  }
+  const response = new Response(body, { status: original.status, statusText: original.statusText, headers });
+  carryOver(original, response);
+  return response;
+}
+
+export async function wholeReplyAsStream(response, format, { streamingClient = false } = {}) {
+  if (!response?.body?.getReader) return null;
+  const type = (response.headers.get("content-type") || "").toLowerCase();
+  const declaredSSE = type.includes("text/event-stream");
+  if (declaredSSE && format !== FORMATS.CLAUDE) return null;
+  if (declaredSSE || (streamingClient && format === FORMATS.CLAUDE && (type.includes("application/json") || !type))) {
+    return responseWithBody(response, response.body.pipeThrough(detectInStream(format)), true);
+  }
+  if (type && !type.includes("json") && !type.startsWith("text/plain")) return null;
+
+  // A forced-streaming provider with a non-streaming client needs the actual
+  // content type to pick its decoder. Probe before choosing the headers here.
+  const reader = response.body.getReader();
+  const detector = wholeReplyDetector(format);
+  let done = false, failure;
   try {
     while (true) {
-      const { value, done } = await reader.read();
-      if (done) { exhausted = true; break; }
-      chunks.push(decoder.decode(value, { stream: true }));
-      size += value?.byteLength || value?.length || 0;
-
-      const head = chunks.join("").replace(/^[\s﻿]+/, "");
-      if (!head) continue;
-      if (!head.startsWith("{")) {
-        // SSE, HTML, plain text: not a whole JSON reply.
-        return rebuildResponse(providerResponse, chunks.join(""), reader);
-      }
-      const firstBreak = head.indexOf("\n");
-      if (firstBreak >= 0) {
-        const firstLine = head.slice(0, firstBreak).trim();
-        if (firstLine && firstLine !== "{") {
-          try {
-            JSON.parse(firstLine);
-            // A complete JSON object on the first line, more to come: NDJSON.
-            return rebuildResponse(providerResponse, chunks.join(""), reader);
-          } catch { /* a pretty-printed reply's first line that isn't a value */ }
-        }
-      }
-      // Enough to know it is one object: hold it to the end, within the cap.
-      break;
+      const step = await reader.read();
+      done = step.done;
+      if (done || !detector.hold(step.value)) break;
     }
-  } catch {
-    // A read failure is the transport's business, not this conversion's.
-    try { reader.cancel(); } catch { /* already closed */ }
-    return null;
-  }
-
-  if (!exhausted) {
-    try {
-      while (size <= MAX_WHOLE_REPLY_BYTES) {
-        const { value, done } = await reader.read();
-        if (done) { exhausted = true; break; }
-        chunks.push(decoder.decode(value, { stream: true }));
-        size += value?.byteLength || value?.length || 0;
-      }
-    } catch {
-      // Hand back what was read; the caller's normal handling owns the rest.
-      return rebuildResponse(providerResponse, chunks.join(""), reader);
-    }
-  }
-  if (exhausted) chunks.push(decoder.decode());
-
-  const text = chunks.join("");
-  if (exhausted) {
-    const framed = reFrame(text, providerResponse, upstreamFormat);
-    if (framed) return framed;
-    return rebuildResponse(providerResponse, text, null);
-  }
-  // Past the cap it is not a reply we will hold; hand back every byte we took.
-  return rebuildResponse(providerResponse, text, reader);
-}
-
-/** The re-framed Response for a whole JSON reply, or null. */
-function reFrame(text, providerResponse, upstreamFormat) {
-  let json;
-  try {
-    json = JSON.parse(text.trim());
-  } catch {
-    return null;
-  }
-  const sse = wholeReplyToSSE(json, upstreamFormat);
-  if (!sse) return null;
-
-  const headers = new Headers(providerResponse.headers);
-  headers.set("content-type", "text/event-stream");
-  const response = new Response(sse, { status: providerResponse.status, statusText: providerResponse.statusText, headers });
-  carryOver(providerResponse, response);
-  return response;
-}
-
-/**
- * The bytes already read, followed by whatever is left of the upstream body.
- * `rest` is the original reader when the body was not read to its end.
- */
-function rebuildResponse(providerResponse, text, rest) {
-  const encode = (value) => new TextEncoder().encode(value);
-  const body = !rest
-    ? (text || "")
-    : new ReadableStream({
-      start(controller) {
-        if (text) controller.enqueue(encode(text));
-      },
-      async pull(controller) {
-        try {
-          const { value, done } = await rest.read();
-          if (done) { controller.close(); return; }
-          controller.enqueue(value);
-        } catch (error) { controller.error(error); }
-      },
-      cancel(reason) { try { rest.cancel(reason); } catch { /* already closed */ } },
-    });
-  const response = new Response(body, {
-    status: providerResponse.status,
-    statusText: providerResponse.statusText,
-    headers: providerResponse.headers,
-  });
-  carryOver(providerResponse, response);
-  return response;
+  } catch (error) { failure = error; }
+  if (done || failure) reader.releaseLock();
+  const sse = done && detector.finish();
+  if (sse) return responseWithBody(response, sse, true);
+  return responseWithBody(response, new ReadableStream({
+    start(controller) {
+      drainPrefix(detector.chunks, controller);
+      if (done) controller.close();
+    },
+    async pull(controller) {
+      if (failure) { controller.error(failure); return; }
+      try {
+        const step = await reader.read();
+        if (step.done) { reader.releaseLock(); controller.close(); }
+        else controller.enqueue(step.value);
+      } catch (error) { controller.error(error); }
+    },
+    cancel(reason) { if (!done && !failure) return reader.cancel(reason); },
+  }));
 }
 
 // Carriers the executors attach to a Response (the stream-error accessor and the
@@ -266,7 +263,7 @@ export function claudeWholeReplyToSSE(message) {
 export function openAIWholeReplyToSSE(completion) {
   if (!completion || typeof completion !== "object" || Array.isArray(completion)) return null;
   if (!Array.isArray(completion.choices) || completion.choices.length === 0) return null;
-  if (completion.error) return null;
+  if (completion.error || !completion.choices.every(choice => asBlock(choice?.message))) return null;
 
   const carrier = {};
   for (const key of ["id", "created", "model", "system_fingerprint", "service_tier"]) {

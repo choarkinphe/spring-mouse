@@ -12,6 +12,21 @@ import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
 
+function withoutToolCacheMarker(tool) {
+  if (tool?.cache_control === undefined) return tool;
+  const { cache_control, ...rest } = tool;
+  return rest;
+}
+
+// Anthropic rejects a breakpoint on a deferred tool. Keep declaration order and
+// copy changed tools: passthrough and built-in tool objects may be shared on retry.
+export function anchorClaudeToolCache(tools) {
+  const last = tools.findLastIndex(tool => tool && typeof tool === "object" && tool.defer_loading !== true);
+  return tools.map((tool, i) => i === last
+    ? { ...tool, cache_control: { ...CACHE_CONTROL_1H } }
+    : withoutToolCacheMarker(tool));
+}
+
 // Check if message has valid non-empty content
 export function hasValidContent(msg) {
   if (typeof msg.content === "string" && msg.content.trim()) return true;
@@ -116,6 +131,11 @@ function buildThinkingPlaceholder(provider) {
 export function normalizeClaudePassthrough(body, model = "") {
   if (!body || typeof body !== "object") return body;
 
+  // Preserve client breakpoints until final anchoring, except invalid deferred ones.
+  if (Array.isArray(body.tools)) {
+    body.tools = body.tools.map(tool => tool?.defer_loading === true ? withoutToolCacheMarker(tool) : tool);
+  }
+
   // 1. Downgrade adaptive thinking for models that don't support it
   if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
@@ -206,7 +226,7 @@ function markLastCacheableBlock(msg) {
 }
 
 // Re-anchor cache breakpoints on a Claude passthrough body (same policy as
-// prepareClaudeRequest): last tool + last system block at 1h, last assistant at 5m.
+// prepareClaudeRequest): last non-deferred tool + last system block at 1h, last assistant at 5m.
 // The client's own markers point at pre-normalization offsets, so they are dropped.
 // Must run LAST, after every step that can reshape system/tools/messages
 // (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
@@ -223,11 +243,7 @@ export function anchorClaudeCache(body) {
   }
 
   if (Array.isArray(body.tools)) {
-    const last = body.tools.length - 1;
-    body.tools.forEach((tool, i) => {
-      if (i === last) tool.cache_control = { ...CACHE_CONTROL_1H };
-      else delete tool.cache_control;
-    });
+    body.tools = anchorClaudeToolCache(body.tools);
   }
 
   if (Array.isArray(body.messages)) {
@@ -417,13 +433,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
         });
     }
 
-    body.tools = body.tools.map((tool, i) => {
-      const { cache_control, ...rest } = tool;
-      if (i === body.tools.length - 1) {
-        return { ...rest, cache_control: { type: "ephemeral", ttl: "1h" } };
-      }
-      return rest;
-    });
+    body.tools = anchorClaudeToolCache(body.tools);
 
     // Remove tools array and tool_choice if empty after filtering
     if (body.tools.length === 0) {

@@ -47,21 +47,23 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     expect(betaFlags).toContain("effort-2025-11-24");
   });
 
-  it("omits heavy-agent beta flags for claude-haiku-4-5-20251001", () => {
+  // Claude Code 2.1.327 sends the same flag set for every model family.
+  it.each(["claude-haiku-4-5-20251001", "claude-fable-5"])("sends the Claude Code flag set for %s too", (model) => {
     const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ apiKey: "sk-test" }, true, undefined, "claude-haiku-4-5-20251001");
+    const headers = executor.buildHeaders({ apiKey: "sk-test" }, true, undefined, model);
     const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
-    expect(betaFlags).not.toContain("advanced-tool-use-2025-11-20");
-    expect(betaFlags).not.toContain("effort-2025-11-24");
     expect(betaFlags).toContain("claude-code-20250219");
+    expect(betaFlags).toContain("advanced-tool-use-2025-11-20");
+    expect(betaFlags).toContain("effort-2025-11-24");
   });
 
-  it("omits heavy-agent beta flags for claude-fable-5", () => {
+  it("adds the OAuth-only flags for OAuth tokens and leaves them out for API keys", () => {
     const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ apiKey: "sk-test" }, true, undefined, "claude-fable-5");
-    const betaFlags = headers["Anthropic-Beta"].split(",").map(s => s.trim());
-    expect(betaFlags).not.toContain("advanced-tool-use-2025-11-20");
-    expect(betaFlags).not.toContain("effort-2025-11-24");
+    const oauth = executor.buildHeaders({ accessToken: "tok" }, true, undefined, "claude-sonnet-5")["Anthropic-Beta"];
+    const apiKey = executor.buildHeaders({ apiKey: "sk" }, true, undefined, "claude-sonnet-5")["Anthropic-Beta"];
+    expect(oauth.split(",")).toEqual(expect.arrayContaining(["oauth-2025-04-20", "extended-cache-ttl-2025-04-11"]));
+    expect(apiKey.split(",")).not.toContain("oauth-2025-04-20");
+    expect(apiKey.split(",")).not.toContain("extended-cache-ttl-2025-04-11");
   });
 
   it("sets x-api-key auth when apiKey is provided", () => {
@@ -78,16 +80,20 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     expect(headers["x-api-key"]).toBeUndefined();
   });
 
-  it("includes Accept: text/event-stream when stream=true", () => {
+  // Claude Code asks for JSON even on streaming requests; the body's
+  // `stream: true` is what selects SSE.
+  it.each([true, false])("keeps Accept: application/json when stream=%s", (stream) => {
     const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ apiKey: "k" }, true);
-    expect(headers["Accept"]).toBe("text/event-stream");
+    const headers = executor.buildHeaders({ apiKey: "k" }, stream);
+    expect(headers["Accept"]).toBe("application/json");
+    expect(headers["X-Stainless-Helper-Method"]).toBeUndefined();
   });
 
-  it("omits Accept: text/event-stream when stream=false", () => {
+  it("echoes the metadata session_id in X-Claude-Code-Session-Id", () => {
     const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ apiKey: "k" }, false);
-    expect(headers["Accept"]).toBeUndefined();
+    const body = { metadata: { user_id: JSON.stringify({ device_id: "d", account_uuid: "", session_id: "sess-1" }) } };
+    expect(executor.buildHeaders({ apiKey: "k" }, true, undefined, "claude-sonnet-5", body)["X-Claude-Code-Session-Id"]).toBe("sess-1");
+    expect(executor.buildHeaders({ apiKey: "k" }, true, undefined, "claude-sonnet-5", { metadata: { user_id: "plain" } })["X-Claude-Code-Session-Id"]).toBeUndefined();
   });
 
   it("does not throw when no model is given", () => {

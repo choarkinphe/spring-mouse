@@ -29,17 +29,21 @@ export const CLAUDE_API_HEADERS = {
   "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14"
 };
 
-// Full Claude CLI fingerprint — required by providers that gate on client identity (e.g. agentrouter)
+// Full Claude CLI fingerprint — required by providers that gate on client identity (e.g. agentrouter).
+// Captured from a clean Claude Code 2.1.327 (`claude -p`, entrypoint sdk-cli) on
+// 2026-11-18. The SDK sends no X-Stainless-Helper-Method and asks for JSON even
+// when the body requests a stream.
+export const CLAUDE_CODE_VERSION = "2.1.327";
 export const CLAUDE_CLI_SPOOF_HEADERS = {
+  "Accept": "application/json",
   "Anthropic-Version": ANTHROPIC_API_VERSION,
-  "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
+  "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
   "Anthropic-Dangerous-Direct-Browser-Access": "true",
-  "User-Agent": "claude-cli/2.1.326 (external, sdk-cli)",
+  "User-Agent": `claude-cli/${CLAUDE_CODE_VERSION} (external, sdk-cli)`,
   "X-App": "cli",
-  "X-Stainless-Helper-Method": "stream",
   "X-Stainless-Retry-Count": "0",
-  "X-Stainless-Runtime-Version": "v24.14.0",
-  "X-Stainless-Package-Version": "0.80.0",
+  "X-Stainless-Runtime-Version": "v26.12.1",
+  "X-Stainless-Package-Version": "0.128.0",
   "X-Stainless-Runtime": "node",
   "X-Stainless-Lang": "js",
   "X-Stainless-Arch": mapStainlessArch(),
@@ -47,24 +51,28 @@ export const CLAUDE_CLI_SPOOF_HEADERS = {
   "X-Stainless-Timeout": "600"
 };
 
-const ANTHROPIC_BETA_BASE = [
-  "claude-code-20250219",
-  "oauth-2025-04-20",
+// Claude Code 2.1.327 sends the same flag set for haiku, sonnet and opus; only
+// the position of claude-code-20250219 differs. OAuth adds oauth-2025-04-20 and
+// extended-cache-ttl-2025-04-11. Per-request extras the CLI toggles itself
+// (thinking-token-count-2026-05-13) are left out.
+const ANTHROPIC_BETA_SHARED = [
   "interleaved-thinking-2025-05-14",
   "context-management-2025-06-27",
-  "prompt-caching-scope-2026-01-05",
-  "structured-outputs-2025-12-15",
-  "fast-mode-2026-02-01",
-  "redact-thinking-2026-02-12",
-  "token-efficient-tools-2026-03-28",
 ];
-const ANTHROPIC_BETA_HEAVY_AGENT = ["advanced-tool-use-2025-11-20", "effort-2025-11-24"];
+const ANTHROPIC_BETA_TAIL = [
+  "per-turn-control-2026-07-01",
+  "mid-conversation-tool-changes-2026-07-01",
+  "advanced-tool-use-2025-11-20",
+  "effort-2025-11-24",
+];
 
-// Heavy-agent beta flags are gated to opus/sonnet — cheaper models don't need them.
-export function selectAnthropicBeta(model = "") {
-  const flags = [...ANTHROPIC_BETA_BASE];
-  if (/^claude-(opus|sonnet)/.test(model)) flags.push(...ANTHROPIC_BETA_HEAVY_AGENT);
-  return flags.join(",");
+export function selectAnthropicBeta(model = "", { oauth = true } = {}) {
+  const head = oauth
+    ? (/^claude-haiku/.test(model)
+      ? ["oauth-2025-04-20", ...ANTHROPIC_BETA_SHARED, "claude-code-20250219"]
+      : ["claude-code-20250219", "oauth-2025-04-20", ...ANTHROPIC_BETA_SHARED])
+    : ["claude-code-20250219", ...ANTHROPIC_BETA_SHARED];
+  return [...head, ...ANTHROPIC_BETA_TAIL, ...(oauth ? ["extended-cache-ttl-2025-04-11"] : [])].join(",");
 }
 
 // Shared baseUrls

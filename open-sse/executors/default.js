@@ -38,6 +38,17 @@ function applyAuth(headers, desc, credentials) {
 }
 
 // Provider-specific header quirks kept as small hooks (not pure auth).
+function claudeSessionIdFromBody(body) {
+  const raw = body?.metadata?.user_id;
+  if (typeof raw !== "string" || !raw.startsWith("{")) return null;
+  try {
+    const sessionId = JSON.parse(raw)?.session_id;
+    return typeof sessionId === "string" && sessionId ? sessionId : null;
+  } catch {
+    return null;
+  }
+}
+
 const HEADER_HOOKS = {
   // Stable device_id from OAuth connection (CLIProxyAPI KimiTokenStorage.DeviceID)
   kimiHeaders: (h, c) => Object.assign(h, buildKimiHeaders(c?.providerSpecificData?.deviceId)),
@@ -167,7 +178,7 @@ export class DefaultExecutor extends BaseExecutor {
     return BEARER;
   }
 
-  buildHeaders(credentials, stream = true, url, model) {
+  buildHeaders(credentials, stream = true, url, model, body = null) {
     const rt = credentials?.runtimeTransport;
     const headers = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
     if (this.provider === "opencode-go") {
@@ -179,7 +190,7 @@ export class DefaultExecutor extends BaseExecutor {
     applyAuth(headers, desc, credentials);
 
     if (this.provider === "claude" && model) {
-      headers["Anthropic-Beta"] = selectAnthropicBeta(model);
+      headers["Anthropic-Beta"] = selectAnthropicBeta(model, { oauth: !credentials?.apiKey });
     }
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
@@ -215,7 +226,14 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
 
-    if (stream) headers["Accept"] = "text/event-stream";
+    if (this.provider === "claude") {
+      // Claude Code keeps Accept: application/json for streams and echoes the
+      // metadata session_id in X-Claude-Code-Session-Id.
+      const sessionId = claudeSessionIdFromBody(body);
+      if (sessionId) headers["X-Claude-Code-Session-Id"] = sessionId;
+    } else if (stream) {
+      headers["Accept"] = "text/event-stream";
+    }
     return headers;
   }
 

@@ -11,6 +11,22 @@ import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-
 import { openaiToClaudeResponse } from "../../open-sse/translator/response/openai-to-claude.js";
 
 describe("openaiToClaudeRequest", () => {
+  it.each([
+    ["END", ["END"]],
+    [["END", "\n\n"], ["END", "\n\n"]],
+    [null, undefined],
+    [[], undefined],
+  ])("maps stop %j to Messages stop_sequences", (stop, expected) => {
+    const result = openaiToClaudeRequest("claude-sonnet-4-5", {
+      messages: [{ role: "user", content: "Hello" }],
+      stop,
+    }, false);
+
+    expect(result.stop_sequences).toEqual(expected);
+    expect(result).not.toHaveProperty("stop");
+    if (expected === undefined) expect(result).not.toHaveProperty("stop_sequences");
+  });
+
   describe("response_format handling", () => {
     it("should inject JSON schema instructions for json_schema type", () => {
       const body = {

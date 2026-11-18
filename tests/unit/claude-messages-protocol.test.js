@@ -88,6 +88,10 @@ function toolRoundTripBody(overrides = {}) {
 
 /** Run one Claude Messages request through the real handler (network mocked). */
 function runClaudeMessages(provider, model, body, options = {}) {
+  return runProtocolRequest("/v1/messages", provider, model, body, options);
+}
+
+function runProtocolRequest(endpoint, provider, model, body, options = {}) {
   return handleChatCore({
     body,
     modelInfo: { provider, model },
@@ -99,16 +103,11 @@ function runClaudeMessages(provider, model, body, options = {}) {
     cavemanEnabled: false,
     ponytailEnabled: false,
     pxpipeEnabled: false,
-    // NOTE: sourceFormatOverride is set the way production does it — the
-    // /v1/messages route calls detectFormatByEndpoint(pathname, body) and hands
-    // the result to the handler. Without this the handler falls back to
-    // detectFormat(body), which returns "openai" for a Messages body with no
-    // system/messages Claude markers (see the "detects the Claude format" case
-    // above) — so a test that omits the override would not exercise the real
-    // Claude-client path this suite is meant to pin.
-    sourceFormatOverride: detectFormatByEndpoint("/v1/messages", body),
+    // Match production: use the endpoint override if available, otherwise
+    // let the handler detect the format from the body.
+    sourceFormatOverride: detectFormatByEndpoint(endpoint, body),
     clientRawRequest: {
-      endpoint: "/v1/messages",
+      endpoint,
       body,
       headers: { accept: "application/json", "user-agent": "claude-cli/1.0.0" },
     },
@@ -187,6 +186,65 @@ async function readSSE(response) {
 const sentBody = (call = 0) => JSON.parse(fetchMock.mock.calls[call][1].body);
 const sentUrl = (call = 0) => fetchMock.mock.calls[call][0];
 const sentHeaders = (call = 0) => fetchMock.mock.calls[call][1].headers;
+
+describe("Claude Code requests routed to Claude OAuth", () => {
+  const model = "claude-sonnet-4-5";
+  const oauthCredentials = () => ({ accessToken: crypto.randomUUID(), providerSpecificData: {} });
+
+  it("translates Chat Completions despite a Claude Code User-Agent", async () => {
+    fetchMock.mockResolvedValue(claudeTextTurn({ model }));
+    const body = {
+      model,
+      messages: [{ role: "user", content: "weather in Paris?" }],
+      tools: [{
+        type: "function",
+        function: {
+          name: WEATHER_TOOL.name,
+          description: WEATHER_TOOL.description,
+          parameters: WEATHER_TOOL.input_schema,
+        },
+      }],
+      stop: "END",
+      prompt_cache_key: "test-cache-key",
+      stream: true,
+    };
+
+    const result = await runProtocolRequest("/v1/chat/completions", "claude", model, body, { credentials: oauthCredentials() });
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new URL(sentUrl()).pathname).toBe("/v1/messages");
+    expect(sentBody().tools).toEqual([expect.objectContaining(WEATHER_TOOL)]);
+    expect(sentBody().tools[0]).not.toHaveProperty("type");
+    expect(sentBody().tools[0]).not.toHaveProperty("function");
+    expect(sentBody()).toHaveProperty("stop_sequences", ["END"]);
+    expect(sentBody()).not.toHaveProperty("stop");
+    expect(sentBody()).not.toHaveProperty("prompt_cache_key");
+
+    const { frames } = await readSSE(result.response);
+    const chunks = frames.filter((frame) => frame.data !== "[DONE]").map((frame) => JSON.parse(frame.data));
+    expect(chunks).toContainEqual(expect.objectContaining({
+      object: "chat.completion.chunk",
+      choices: [expect.objectContaining({ delta: { content: "Hello" } })],
+    }));
+    expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
+  });
+
+  it("still uses native passthrough for Messages without format hints in the body", async () => {
+    fetchMock.mockResolvedValue(claudeTextTurn({ model }));
+    const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn() };
+    const body = { model, max_tokens: 100, messages: [{ role: "user", content: "hi" }], stop_sequences: ["END"], stream: true };
+
+    const result = await runClaudeMessages("claude", model, body, { credentials: oauthCredentials(), log });
+
+    expect(result.success).toBe(true);
+    expect(log.debug).toHaveBeenCalledWith("PASSTHROUGH", expect.any(String));
+    expect(sentBody()).toHaveProperty("messages", body.messages);
+    expect(sentBody()).toHaveProperty("stop_sequences", ["END"]);
+    const { frames } = await readSSE(result.response);
+    expect(frames.some((frame) => frame.event === "message_stop")).toBe(true);
+  });
+});
 
 describe("Claude non-streaming retry rejects malformed HTTP 200 bodies", () => {
   it("finishes the Claude conversion when a native adapter returns Chat Completions", async () => {

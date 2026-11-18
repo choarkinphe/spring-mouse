@@ -213,10 +213,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   reqLogger.logRawRequest(body);
   log?.debug?.("FORMAT", `${sourceFormat} → ${targetFormat} | stream=${stream}`);
 
-  // Native passthrough: CLI tool and provider are the same ecosystem
-  // Skip all translation/normalization — only model and Bearer are swapped
+  // Claude Code can identify as Claude while sending OpenAI Chat Completions.
+  // Only bypass translation for Claude clients on a native Messages route.
   const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
-  const passthrough = isNativePassthrough(clientTool, provider);
+  const passthrough = isNativePassthrough(clientTool, provider) &&
+    (clientTool !== "claude" || (sourceFormat === FORMATS.CLAUDE && targetFormat === FORMATS.CLAUDE));
 
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) {

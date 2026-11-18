@@ -31,6 +31,11 @@ export function openaiToClaudeRequest(model, body, stream) {
     result.temperature = body.temperature;
   }
 
+  // Chat Completions accepts a single stop string or a list; Messages needs a list.
+  const stopSequences = Array.isArray(body.stop) ? body.stop : [body.stop];
+  const validStopSequences = stopSequences.filter(stop => typeof stop === "string" && stop.length > 0);
+  if (validStopSequences.length > 0) result.stop_sequences = validStopSequences;
+
   // Messages
   result.messages = [];
   const systemParts = [];

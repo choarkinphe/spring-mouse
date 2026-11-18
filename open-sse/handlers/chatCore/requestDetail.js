@@ -90,6 +90,10 @@ export function buildRequestDetail(base, overrides = {}) {
     latency: {
       ...(base.latency || { ttft: 0, total: 0 }),
       ...(routing.streamTransport ? { streamTransport: routing.streamTransport } : {}),
+      // Content-free shape of the upstream SSE body (event types, parse
+      // failures). Kept beside transport bytes so an HTTP 200 turn that produced
+      // no output can be explained without retaining any payload text.
+      ...(routing.streamDiagnostics ? { streamDiagnostics: routing.streamDiagnostics } : {}),
       scope: routing.timing?.scope || "attempt",
       ...(routing.timing ? {
         preDispatchMs: routing.timing.preDispatchMs,

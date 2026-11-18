@@ -7,6 +7,7 @@ import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatInco
 import { createLiveTokenProgress } from "./liveTokenProgress.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 import { classifyStreamEvent, hasContentForFormat, TERMINAL_REASONS } from "./routingOutcome.js";
+import { createStreamDiagnostics } from "./streamDiagnostics.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER, EMPTY_STREAM_ERROR } from "./sseConstants.js";
 
@@ -60,6 +61,10 @@ export function createSSEStream(options = {}) {
     onStreamAbortReady = null,
   } = options;
   const routingObserver = suppliedRoutingObserver || routing;
+  // Content-free record of what the upstream body actually contained. This is
+  // the only evidence available for an HTTP 200 stream that ends without a
+  // protocol terminal, so it is collected on every stream and reported once.
+  const streamDiagnostics = createStreamDiagnostics();
 
   let buffer = "";
   let usage = null;
@@ -135,6 +140,11 @@ export function createSSEStream(options = {}) {
       outcome: "incomplete",
       terminalReason: ttftAt === null ? TERMINAL_REASONS.EMPTY_STREAM : TERMINAL_REASONS.INCOMPLETE,
     }), deliveryOutcome };
+    // The raw upstream body is never retained, so this fixed-shape summary is
+    // the only record of why a 200 stream produced nothing. Attached on every
+    // termination path (protocol terminal, flush, abort) so a healthy turn and
+    // an empty one can be compared directly.
+    terminal.streamDiagnostics = streamDiagnostics.snapshot();
     settleObserver({ ...terminal, usage: finalUsage, upstreamStatus: null });
     onStreamComplete?.(completedContent(), finalUsage, ttftAt, terminal);
   };
@@ -181,6 +191,7 @@ export function createSSEStream(options = {}) {
   return new TransformStream({
     transform(chunk, controller) {
       const text = decoder.decode(chunk, { stream: true });
+      streamDiagnostics.noteChunk(chunk?.byteLength ?? chunk?.length ?? 0);
       buffer += text;
       reqLogger?.appendProviderChunk?.(text);
 
@@ -189,6 +200,7 @@ export function createSSEStream(options = {}) {
 
       for (const line of lines) {
         const trimmed = line.trim();
+        if (trimmed) streamDiagnostics.noteLine(trimmed);
         if (isDebugEnabled && trimmed) {
           sseLineCount++;
           if (trimmed.startsWith("event:")) {
@@ -213,6 +225,8 @@ export function createSSEStream(options = {}) {
               const parsed = JSON.parse(trimmed.slice(5).trim());
 
               const idFixed = fixInvalidId(parsed);
+              streamDiagnostics.noteParsedEvent();
+              streamDiagnostics.noteParsedType(parsed?.type);
               observeEvent(currentOpenAIResponsesEvent, parsed);
 
               // Ensure OpenAI-required fields are present on streaming chunks (Letta compat)
@@ -293,6 +307,7 @@ export function createSSEStream(options = {}) {
               // Skip non-JSON data lines silently — don't forward garbage to clients.
               // Upstream providers sometimes return plain-text errors (HTML, rate-limit
               // messages) in the SSE stream that would break downstream JSON decoders.
+              streamDiagnostics.noteUnparsed(trimmed);
               continue;
             }
           }
@@ -316,7 +331,22 @@ export function createSSEStream(options = {}) {
         if (!trimmed) continue;
 
         const parsed = parseSSELine(trimmed, targetFormat);
-        if (!parsed) continue;
+        if (!parsed) {
+          // Only payload lines can be "unparseable". `event:` framing and NDJSON
+          // comments are already classified by noteLine and must not be counted
+          // as a parse failure.
+          const isPayloadLine = targetFormat === FORMATS.OLLAMA
+            ? trimmed.startsWith("{")
+            : trimmed.startsWith("data:");
+          if (isPayloadLine) streamDiagnostics.noteUnparsed(trimmed);
+          continue;
+        }
+        // The `[DONE]` sentinel is not an upstream event; noteLine already
+        // recorded it separately.
+        if (!parsed.done) {
+          streamDiagnostics.noteParsedEvent();
+          streamDiagnostics.noteParsedType(parsed?.type);
+        }
         const classified = observeEvent(currentOpenAIResponsesEvent, parsed);
         // A protocol failure must remain an error in the client's protocol.
         // Some translators turn it into text + finish_reason=stop, which makes

@@ -9,6 +9,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { ROLE, RESPONSES_ITEM, CLAUDE_STOP, CLAUDE_BLOCK } from "../../translator/schema/index.js";
 import { fromOpenAIFinish } from "../../translator/concerns/finishReason.js";
 import { classifyRawSSEBlock } from "../../utils/routingOutcome.js";
+import { summarizeSSEBody, formatStreamDiagnostics } from "../../utils/streamDiagnostics.js";
 import { extractUsage, mergeUsage } from "../../utils/usageTracking.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
@@ -500,6 +501,16 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     const rawOutcome = classifyRawSSEBlock(sseText, targetFormat);
     if (rawOutcome) routingObserver?.recordTerminal(rawOutcome);
     else routingObserver?.settle({ outcome: "incomplete", terminalReason: "incomplete", upstreamStatus: providerResponse.status });
+    // This path reads the whole upstream body once, so the same content-free
+    // census the streaming transform keeps is derived from the buffered text —
+    // but only for a turn with no protocol terminal, where it is the only
+    // evidence of what the provider actually sent.
+    if (!rawOutcome) {
+      const streamDiagnostics = summarizeSSEBody(sseText);
+      if (routing && typeof routing === "object") routing.streamDiagnostics = streamDiagnostics;
+      const emit = log?.errorLine || log?.warn;
+      emit?.(reqTag, "🔬", `STREAM-DIAG incomplete · ${provider}/${model} · ${formatStreamDiagnostics(streamDiagnostics)}`);
+    }
     routingObserver?.settle({ usage: null, upstreamStatus: providerResponse.status });
     finishPending();
     const parsed = parseSSEToOpenAIResponse(sseText, model);

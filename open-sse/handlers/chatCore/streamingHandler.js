@@ -9,6 +9,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { compactJsonField } from "@/lib/requestDetailCompact.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
+import { formatStreamDiagnostics } from "../../utils/streamDiagnostics.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -158,6 +159,19 @@ function persistStreamUsage({ provider, model, originalModel, executedModel, rou
     ttft: ttftAt != null ? ttftAt - requestStartTime : null,
     total: Date.now() - requestStartTime
   };
+
+  // An HTTP 200 stream that produced no model output is the one failure whose
+  // cause lives entirely in the upstream body, which is never retained. Record
+  // the fixed-shape diagnostics on the attempt (so it reaches requestDetails)
+  // and print one content-free line through errorLine, which survives the
+  // production WARN log level.
+  if (terminal?.streamDiagnostics) {
+    if (routing && typeof routing === "object") routing.streamDiagnostics = terminal.streamDiagnostics;
+    if (terminal.outcome !== "valid_terminal") {
+      const emit = log?.errorLine || log?.warn;
+      emit?.(reqTag, "🔬", `STREAM-DIAG ${terminal.terminalReason || "unknown"} · ${provider}/${model} · ${formatStreamDiagnostics(terminal.streamDiagnostics)}`);
+    }
+  }
 
   if (recordUsage) saveUsageStats({ provider, model, originalModel, executedModel, routing, tokens: usage, connectionId, apiKey, endpoint, sourceIp, appName, userAgent, sourceUrl, requestId, trafficRequestId, startedAt, status: streamStatus(terminal), label: "STREAM USAGE", silent: true });
   if (log?.line) log.line(reqTag, "📊", `${formatDoneLine({ usage, latency })} · ${terminal?.outcome || "unknown"}`);

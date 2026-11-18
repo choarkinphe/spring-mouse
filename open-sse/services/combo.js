@@ -576,7 +576,7 @@ export function getComboModelsFromData(modelStr, combosData, now = new Date(), s
  *   every request to.
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, rotationCount = null, autoSwitch = true, memberEntries = null, pickModel = null, comboPath = [], hasFallback = false, deadlineMs = null, signal = null }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, rotationCount = null, autoSwitch = true, memberEntries = null, pickModel = null, comboPath = [], hasFallback = false, fallbackModels = [], deadlineMs = null, signal = null }) {
   if (comboName && comboPath.includes(comboName)) {
     return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `Cyclic combo route skipped: ${comboName}`);
   }
@@ -657,6 +657,9 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       const result = await handleSingleModel(body, modelStr, {
         comboPath: nextPath,
         hasFallback: hasFallback || i < rotatedModels.length - 1,
+        // Everything this attempt could still fall back to, innermost first, so
+        // the leaf can tell whether skipping ahead reaches different capacity.
+        fallbackModels: [...rotatedModels.slice(i + 1), ...(hasFallback ? fallbackModels : [])],
         maxEffort,
       });
       

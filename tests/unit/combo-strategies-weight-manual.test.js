@@ -121,9 +121,9 @@ describe("member effort", () => {
 
     expect(response.status).toBe(200);
     expect(handleSingleModel.mock.calls).toEqual([
-      [body, "a", { comboPath: ["effort"], hasFallback: true, maxEffort: "low" }],
-      [body, "b", { comboPath: ["effort"], hasFallback: true, maxEffort: "xhigh" }],
-      [body, "c", { comboPath: ["effort"], hasFallback: false, maxEffort: null }],
+      [body, "a", { comboPath: ["effort"], hasFallback: true, fallbackModels: ["b", "c"], maxEffort: "low" }],
+      [body, "b", { comboPath: ["effort"], hasFallback: true, fallbackModels: ["c"], maxEffort: "xhigh" }],
+      [body, "c", { comboPath: ["effort"], hasFallback: false, fallbackModels: [], maxEffort: null }],
     ]);
     expect(body).toEqual(originalBody);
     expect(memberEntries).toEqual(originalEntries);

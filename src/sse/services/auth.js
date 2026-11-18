@@ -467,7 +467,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           ?? PROVIDERS[providerId]?.transport?.maxQueueSize,
         signal: options.signal,
         deadlineMs: options.deadlineMs,
-        waitForCapacity: options.waitForCapacity,
+        // Slot admission may wait even when a model-overload throttle should not:
+        // a sibling model on the same provider shares this pool but not the
+        // per-model throttle.
+        waitForCapacity: options.waitForSlot ?? options.waitForCapacity,
         refreshCandidates: refreshEligible,
         validateCandidate: async (id) => {
           const fresh = await getProviderConnectionById(id);

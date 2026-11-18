@@ -508,7 +508,40 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   return handleSingleModelChatInner(body, modelStr, clientRawRequest, request, apiKey, accessTags, overloadDeadline, options);
 }
 
-async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, search = null, maxEffort = null, memberGate = null } = {}) {
+/**
+ * Whether any fallback the combo still holds would run on a provider other
+ * than `provider`. Skipping ahead without waiting for a concurrency slot only
+ * helps when it reaches different capacity: members on the same provider share
+ * one admission pool, so a full pool is just as full for them. Skipping there
+ * silently downgraded every queued request to the last member of the chain —
+ * the only one that waited (e.g. gpt-6.2-sol → gpt-6.1-terra → gpt-6-luna).
+ * Unresolvable members count as different capacity, keeping the old behaviour.
+ */
+async function fallbackReachesOtherProvider(provider, fallbackModels, accessTags) {
+  const pending = [...fallbackModels];
+  const visited = new Set();
+  while (pending.length) {
+    const modelStr = pending.shift();
+    if (typeof modelStr !== "string" || !modelStr || visited.has(modelStr)) continue;
+    if (visited.size >= COMBO_RESOLUTION_LIMITS.maxVisits) return true;
+    visited.add(modelStr);
+    try {
+      const info = await getModelInfo(modelStr);
+      if (info?.provider) {
+        if (info.provider !== provider) return true;
+        continue;
+      }
+      const entries = await getComboModelEntries(modelStr, accessTags);
+      if (!entries?.length) return true;
+      for (const entry of entries) pending.push(typeof entry === "string" ? entry : entry?.model);
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function handleSingleModelChatInner(body, modelStr, clientRawRequest = null, request = null, apiKey = null, accessTags = [], overloadDeadline = null, { internalRequest = false, clientSignal = null, autoRoutingDepth = 0, routing = null, role = "primary", routeKind = null, routed = undefined, comboPath = [], hasFallback = false, fallbackModels = [], search = null, maxEffort = null, memberGate = null } = {}) {
   if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
   if (Number.isFinite(overloadDeadline) && Date.now() >= overloadDeadline) {
     return errorResponse(HTTP_STATUS.GATEWAY_TIMEOUT, "Request waiting budget exhausted before upstream dispatch");
@@ -690,6 +723,7 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         pickModel: comboConfig.pick,
         comboPath,
         hasFallback,
+        fallbackModels,
         deadlineMs: overloadDeadline,
         signal: clientSignal || request?.signal,
       });
@@ -760,6 +794,12 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
   // busy). Fanning out to the whole pool on such a signal multiplies the errors
   // we send at an upstream that is already saturated, so it is capped.
   let modelLevelFailures = 0;
+  // Slot admission waits unless a fallback reaches a different provider's pool.
+  // Resolved lazily — only once the pool is actually full — so the common path
+  // pays no extra model lookups. Callers that do not report their fallbacks
+  // (fusion panels, auto routing) keep the previous skip-ahead behaviour.
+  let waitForSlot = !hasFallback;
+  let slotFallbackChecked = !hasFallback || fallbackModels.length === 0;
 
   while (true) {
     if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
@@ -770,10 +810,19 @@ async function handleSingleModelChatInner(body, modelStr, clientRawRequest = nul
         requiredCapabilities: search ? new Set([...detectRequiredCapabilities(body), "tools"]) : detectRequiredCapabilities(body),
         deadlineMs: overloadDeadline,
         waitForCapacity: !hasFallback,
+        waitForSlot,
       });
     } catch (error) {
       if (clientSignal?.aborted || request?.signal?.aborted) return errorResponse(499, "Request aborted");
       if (error?.code !== "ROUTING_QUEUE_TIMEOUT") throw error;
+      if (error.reason === "capacity_exhausted" && !slotFallbackChecked) {
+        slotFallbackChecked = true;
+        if (!await fallbackReachesOtherProvider(provider, fallbackModels, accessTags)) {
+          waitForSlot = true;
+          log.info("CONCURRENCY", `${reqPrefix}${provider}/${model} | pool full · fallbacks share ${provider} · queueing instead of downgrading`);
+          continue;
+        }
+      }
       // Report what actually happened: how long this request waited, and how
       // long the caller should back off before trying again.
       const waitedMs = error.queueTimeoutMs ?? error.retryAfterMs;

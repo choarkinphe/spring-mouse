@@ -240,6 +240,29 @@ describe("real combo routing and account admission", () => {
     await occupy("codebuddy-intl");
     expect(await (await handleChat(request())).json()).toEqual({ provider: "codebuddy-cn" });
   });
+  it("queues for the shared slot instead of downgrading to a same-provider fallback", async () => {
+    // Production: gpt-6.2-sol → gpt-6.1-terra → gpt-6-luna all on codex. A full
+    // codex pool made every member but the last skip ahead, so queued traffic
+    // always ran on the final (cheapest) model.
+    graph.sol = ["codebuddy-intl/sol", "terra"];
+    graph.terra = ["codebuddy-intl/terra", "codebuddy-intl/luna"];
+    const busy = await occupy("codebuddy-intl");
+    const pending = handleChat(request("sol"));
+    await vi.waitFor(() => expect(getLocalSlotStatus().queued).toBe(1));
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+    await busy.release();
+    expect(await (await pending).json()).toEqual({ provider: "codebuddy-intl" });
+    expect(mocks.handleChatCore).toHaveBeenCalledTimes(1);
+    expect(mocks.handleChatCore.mock.calls[0][0].modelInfo).toMatchObject({ provider: "codebuddy-intl", model: "sol" });
+  });
+  it("still skips a full pool when a later fallback reaches another provider", async () => {
+    graph.sol = ["codebuddy-intl/sol", "terra"];
+    graph.terra = ["codebuddy-intl/terra", "codebuddy-cn/flash"];
+    await occupy("codebuddy-intl");
+    const start = Date.now();
+    expect(await (await handleChat(request("sol"))).json()).toEqual({ provider: "codebuddy-cn" });
+    expect(Date.now() - start).toBeLessThan(1500);
+  });
   it("skips an international model throttle instead of waiting out its backoff", async () => {
     const { recordProviderModelFailure } = await import("../../src/sse/services/providerBreaker.js");
     await recordProviderModelFailure("codebuddy-intl", "flash", { overloadThreshold: 1, overloadCooldownMs: 10000 }, { modelLevel: true });
@@ -285,7 +308,9 @@ describe("real combo routing and account admission", () => {
     };
     await occupy("codebuddy-intl"); await occupy("codebuddy-cn");
     expect(await (await handleChat(request())).json()).toEqual({ provider: "backup" });
-    expect(mocks.getModelInfo.mock.calls.length).toBeLessThan(15);
+    // Bounded: full pools add a few lookups to check whether a fallback reaches
+    // another provider, but the cycle must still not be expanded repeatedly.
+    expect(mocks.getModelInfo.mock.calls.length).toBeLessThan(20);
     expect(mocks.handleChatCore).toHaveBeenCalledTimes(1);
   });
   it("terminates a pure cycle without dispatching", async () => {

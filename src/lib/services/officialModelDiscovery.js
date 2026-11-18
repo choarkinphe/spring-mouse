@@ -20,12 +20,137 @@ import { parseOfficialCatalogModels, parseFalModelPage } from "@/shared/utils/of
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
-// The /codex/models endpoint gates each entry by minimal_client_version against this
-// value, and codex CLI's own manifest (openai/codex codex-rs/models-manager/models.json)
-// already requires 0.144.0 for its newest models, so a stale client_version here comes
-// back 200 with those entries quietly missing instead of erroring.
-const CODEX_CLIENT_VERSION = "0.163.0";
-const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
+// `/codex/models` gates every entry against the caller's `client_version`: an entry
+// whose own `minimal_client_version` is higher is simply left out of an otherwise
+// perfectly valid 200 response. A hardcoded version therefore rots silently — this
+// file asked for 0.163.0 while gpt-6.2-sol and gpt-6.2-astra demanded 0.166.0, so
+// both models were invisible to "sync models" and could only be added by hand. No
+// error, no warning, no truncated flag: just a shorter list.
+//
+// There is no endpoint that reports the current client version, but the catalog is
+// its own oracle: ask with a deliberately impossible version and every entry comes
+// back carrying the version it requires. The highest of those IS the version to
+// send, so the next model release raises the answer by itself.
+const CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models";
+const CODEX_PROBE_CLIENT_VERSION = "999.0.0";
+// Used only when the probe cannot run at all (offline, upstream error). A stale
+// value degrades to the old behaviour — newest models missing — never to a failure.
+const CODEX_FALLBACK_CLIENT_VERSION = "0.166.0";
+
+const parseClientVersion = (value) => {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(value ?? "").trim());
+  return match ? match.slice(1).map(Number) : null;
+};
+
+const compareClientVersions = (a, b) => {
+  const left = parseClientVersion(a);
+  const right = parseClientVersion(b);
+  if (!left || !right) return 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+};
+
+/** Highest `minimal_client_version` the catalog reports, i.e. the version that unlocks all of it. */
+const highestRequiredClientVersion = (models) => {
+  let highest = null;
+  for (const model of Array.isArray(models) ? models : []) {
+    const declared = model?.minimal_client_version;
+    if (!parseClientVersion(declared)) continue;
+    if (!highest || compareClientVersions(declared, highest) > 0) highest = declared.trim();
+  }
+  return highest;
+};
+
+/**
+ * One catalog request at an explicit client_version. Returns the raw entries so the
+ * probe can read `minimal_client_version`; the caller parses them into model records.
+ */
+const requestCodexDirectory = async (token, clientVersion) => {
+  const url = `${CODEX_MODELS_ENDPOINT}?client_version=${encodeURIComponent(clientVersion)}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": `Bearer ${token}`,
+        "originator": "codex_cli_rs"
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch {
+    return { ok: false, status: 502 };
+  }
+  if (!response.ok) return { ok: false, status: response.status };
+  let data;
+  try { data = await response.json(); } catch { return { ok: false, status: 502 }; }
+  // Same incompleteness contract buildOAuthResolver enforces for every OAuth
+  // directory: a soft-paged or flagged answer is not a whole listing, and treating
+  // it as one would store a truncated catalog as if it were complete.
+  if (data?.error || data?.warning || data?.success === false || data?.has_more === true
+    || data?.next_page_token || data?.nextPageToken
+    || (data?.code !== undefined && ![0, 200, "0", "200"].includes(data.code))) {
+    return { ok: false, status: 502, invalid: true };
+  }
+  // Same envelope shapes parseOfficialModelPayload accepts, so a directory that
+  // answers `{data: [...]}` keeps working exactly as it did before.
+  const models = Array.isArray(data) ? data : data?.models ?? data?.data ?? data?.results;
+  if (!Array.isArray(models)) return { ok: false, status: 502, invalid: true };
+  return { ok: true, status: response.status, models };
+};
+
+// buildOAuthResolver drives the refresh-on-401 path off a Response, so hand it one.
+const codexDirectoryResponse = (models) => new Response(JSON.stringify({ models }), {
+  status: 200,
+  headers: { "Content-Type": "application/json" },
+});
+
+/**
+ * Discover the Codex directory at the version the catalog itself asks for.
+ *
+ * A probe at an impossible version returns every entry with its own
+ * `minimal_client_version`; the highest of those is what a full listing needs, so
+ * the version is read from upstream instead of being maintained here. The probe is
+ * then confirmed by re-asking at that exact version — a request never claims a
+ * client build that does not exist, and the gate stays whatever upstream says it is.
+ *
+ * Failures degrade to a shorter list rather than an error: 401/403 stay a Response
+ * so the caller's refresh path still sees them, everything else retries once at the
+ * last known-good version.
+ */
+const resolveCodexDirectory = async (token) => {
+  const probe = await requestCodexDirectory(token, CODEX_PROBE_CLIENT_VERSION);
+  if (!probe.ok) {
+    // An auth failure belongs to the caller's refresh path, not to the fallback.
+    if (probe.status === 401 || probe.status === 403) {
+      return new Response(JSON.stringify({ error: "Failed to fetch Codex models" }), { status: probe.status });
+    }
+    // A well-formed-but-incomplete body will not improve at another version, so
+    // report it instead of retrying into the same answer.
+    if (probe.invalid) {
+      return new Response(JSON.stringify({ error: "Upstream returned an invalid or incomplete model list" }), { status: 502 });
+    }
+    const fallback = await requestCodexDirectory(token, CODEX_FALLBACK_CLIENT_VERSION);
+    if (fallback.ok) return codexDirectoryResponse(fallback.models);
+    return new Response(JSON.stringify({ error: "Failed to fetch Codex models" }), { status: probe.status || fallback.status || 502 });
+  }
+
+  const required = highestRequiredClientVersion(probe.models);
+  if (!required || compareClientVersions(required, CODEX_PROBE_CLIENT_VERSION) >= 0) {
+    return codexDirectoryResponse(probe.models);
+  }
+  // Prefer the confirmation, but never lose an entry the probe already exposed: the
+  // probe's superset is exactly what this account is entitled to call.
+  const confirmed = await requestCodexDirectory(token, required);
+  if (confirmed.ok && confirmed.models.length >= probe.models.length) {
+    return codexDirectoryResponse(confirmed.models);
+  }
+  return codexDirectoryResponse(probe.models);
+};
 
 const parseOpenAIStyleModels = (data) => parseOfficialModelPayload(data);
 
@@ -134,15 +259,7 @@ const PROVIDER_MODELS_CONFIG = {
   codex: {
     customResolver: buildOAuthResolver({
       refreshFn: (conn) => refreshCodexToken(conn.refreshToken),
-      fetchFn: (token) => fetch(CODEX_MODELS_URL, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Authorization": `Bearer ${token}`,
-          "originator": "codex_cli_rs"
-        }
-      }),
+      fetchFn: (token) => resolveCodexDirectory(token),
       parseFn: parseCodexModels,
       errorLabel: "Failed to fetch Codex models"
     })

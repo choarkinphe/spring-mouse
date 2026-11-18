@@ -188,16 +188,50 @@ describe("official model directory GET contract", () => {
     expect((await response.json()).discovery.status).toBe("failed");
   });
 
-  it("uses the current Codex client version so GPT-6 models are not silently filtered", async () => {
+  it("derives the Codex client version from the catalog so a newer gate cannot hide models", async () => {
+    const connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-oauth-token" });
+    // Upstream gates gpt-6.x behind 0.166.0 exactly as it does today: anything lower
+    // comes back 200 with those entries silently absent. The request must end up at
+    // the version the catalog itself declares, without that number living in our source.
+    const catalog = [
+      { slug: "gpt-6.1-sol", minimal_client_version: "0.153.0", type: "model" },
+      { slug: "gpt-6-sol", minimal_client_version: "0.155.0", type: "model" },
+      { slug: "gpt-6.2-sol", minimal_client_version: "0.166.0", type: "model" },
+      { slug: "gpt-6.2-astra", minimal_client_version: "0.166.0", type: "model" },
+    ];
+    fetchMock.mockImplementation(async (input) => {
+      const version = new URL(input).searchParams.get("client_version");
+      const [major, minor, patch] = version.split(".").map(Number);
+      const enough = (gate) => {
+        const [gMajor, gMinor, gPatch] = gate.split(".").map(Number);
+        return major !== gMajor ? major > gMajor : minor !== gMinor ? minor > gMinor : patch >= gPatch;
+      };
+      return jsonResponse({ models: catalog.filter((model) => enough(model.minimal_client_version)) });
+    });
+
+    const response = await getModels(connection.id);
+    expect(response.status).toBe(200);
+    expect((await response.json()).models.map((model) => model.id)).toEqual([
+      "gpt-6.1-sol", "gpt-6-sol", "gpt-6.2-sol", "gpt-6.2-astra",
+    ]);
+    // The probe is followed by a request at the version the catalog named, so we
+    // never claim a client build that does not exist.
+    expect(fetchMock.mock.calls.map(([url]) => new URL(url).searchParams.get("client_version")))
+      .toEqual(["999.0.0", "0.166.0"]);
+  });
+
+  it("falls back to the last known Codex version when the probe itself fails", async () => {
     const connection = await createConnection("codex", { authType: "oauth", accessToken: "test-only-oauth-token" });
     fetchMock.mockImplementation(async (input) => {
       const version = new URL(input).searchParams.get("client_version");
-      return jsonResponse({ models: (version === "0.163.0" ? ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"] : ["gpt-5.6-sol"]).map((slug) => ({ slug, type: "model" })) });
+      // A non-auth failure on the impossible probe: still must not fail the sync.
+      if (version === "999.0.0") return jsonResponse({ detail: "unavailable" }, 503);
+      return jsonResponse({ models: [{ slug: "gpt-6.2-sol", minimal_client_version: "0.166.0", type: "model" }] });
     });
+
     const response = await getModels(connection.id);
     expect(response.status).toBe(200);
-    expect((await response.json()).models.map((model) => model.id)).toEqual(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]);
-    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get("client_version")).toBe("0.163.0");
+    expect((await response.json()).models.map((model) => model.id)).toEqual(["gpt-6.2-sol"]);
   });
 
   it("rejects invalid JSON without a registry fallback", async () => {

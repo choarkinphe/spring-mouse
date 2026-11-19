@@ -52,7 +52,7 @@ function estimateInputTokensFromHeaders(headers) {
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true, onStreamAbortReady = null }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, originalModel, executedModel, routing, routingObserver, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, observabilityEnabled, observabilityMaxJsonChars, recordUsage = true, onStreamAbortReady = null, claudeArrival = null }) {
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -84,7 +84,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const completedContentMaxChars = observabilityEnabled ? observabilityMaxJsonChars : 0;
   const inputTokenEstimate = estimateInputTokensFromHeaders(clientRawRequest?.headers);
   const transportDiag = {
-    provider, model,
+    provider, model, claudeArrival,
     log: (msg) => log?.errorLine?.("", "🔬", msg),
     onSnapshot: (snapshot) => { if (routing) routing.streamTransport = snapshot; },
   };

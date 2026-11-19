@@ -314,6 +314,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   // true first-token timing. Persist only this fixed, content-free schema.
   const snapshot = (stage, error = null) => ({
     stage,
+    ...(diag?.claudeArrival ? { claudeFirstArrival: diag.claudeArrival.snapshot() } : {}),
     upstreamBytes: totalBytes,
     upstreamBytesAtLastVisible,
     upstreamBytesSinceLastVisible: upstreamBytesAtLastVisible === null ? null : Math.max(0, totalBytes - upstreamBytesAtLastVisible),
@@ -372,6 +373,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       const sz = chunk?.byteLength || chunk?.length || 0;
       if (sz > 0) {
         const now = Date.now();
+        diag?.claudeArrival?.forwarded?.observe(chunk);
         sawVisible = true;
         lastVisibleAt = now;
         upstreamBytesAtLastVisible = totalBytes;

@@ -119,15 +119,21 @@ function responseWithBody(original, body, asSSE = false) {
   return response;
 }
 
-export async function wholeReplyAsStream(response, format, { streamingClient = false } = {}) {
+export async function wholeReplyAsStream(response, format, { streamingClient = false, rawArrival = null } = {}) {
   if (!response?.body?.getReader) return null;
   const type = (response.headers.get("content-type") || "").toLowerCase();
   const declaredSSE = type.includes("text/event-stream");
   if (declaredSSE && format !== FORMATS.CLAUDE) return null;
+  if (!declaredSSE && type && !type.includes("json") && !type.startsWith("text/plain")) return null;
+  // Before sniffing/re-framing: a whole JSON reply must not acquire synthetic
+  // upstream event timestamps. This side tap never consumes a second reader.
+  if (rawArrival) response = responseWithBody(response, response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) { rawArrival.observe(chunk); controller.enqueue(chunk); },
+    flush() { rawArrival.finish(); },
+  })));
   if (declaredSSE || (streamingClient && format === FORMATS.CLAUDE && (type.includes("application/json") || !type))) {
     return responseWithBody(response, response.body.pipeThrough(detectInStream(format)), true);
   }
-  if (type && !type.includes("json") && !type.startsWith("text/plain")) return null;
 
   // A forced-streaming provider with a non-streaming client needs the actual
   // content type to pick its decoder. Probe before choosing the headers here.

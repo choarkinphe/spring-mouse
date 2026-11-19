@@ -20,6 +20,7 @@ import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDeta
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
+import { createClaudeFirstArrival } from "../utils/claudeFirstArrival.js";
 import { wholeReplyAsStream } from "./chatCore/wholeReplyStream.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
@@ -693,7 +694,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Keep a bounded requestDetails history (configured by the observability
   // retention setting) for every routed request, including the debug widget.
   const captureRequestDetails = !internalRequest;
-  const sharedCtx = { provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, routingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
+  const claudeArrival = captureRequestDetails && clientRequestedStreaming && providerResponseFormat === FORMATS.CLAUDE
+    ? createClaudeFirstArrival(requestStartTime, sourceFormat === FORMATS.CLAUDE) : null;
+  const sharedCtx = { claudeArrival, provider, model, originalModel: routing.originalModel, executedModel: routing.executedModel, routing, routingObserver, body, stream, translatedBody, finalBody, requestStartTime, requestId, trafficRequestId, startedAt, connectionId, mouse: mouseRecord, apiKey, clientRawRequest, onRequestSuccess, onStreamUpstreamError, pxpipe: pxpipeSummary, reqTag, log, observabilityEnabled: captureRequestDetails, observabilityMaxJsonChars, recordUsage: !internalRequest };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false, false, apiKey, requestId);
 
@@ -704,7 +707,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // any streaming path reads it; Magpie does the same in wholeAsStream.
   if (providerResponse.ok && (stream || providerRequiresStreaming)) {
     try {
-      const asStream = await wholeReplyAsStream(providerResponse, providerResponseFormat, { streamingClient: clientRequestedStreaming });
+      const asStream = await wholeReplyAsStream(providerResponse, providerResponseFormat, { streamingClient: clientRequestedStreaming, rawArrival: claudeArrival?.raw });
       if (asStream) providerResponse = asStream;
     } catch (e) {
       log?.warn?.("WHOLE", `${provider}/${model} | whole-reply re-framing skipped: ${e?.message || e}`);

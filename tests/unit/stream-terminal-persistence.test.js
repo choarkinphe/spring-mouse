@@ -97,6 +97,18 @@ describe("stream usage follows the actual protocol terminal", () => {
 });
 
 describe("real chatCore transport termination", () => {
+  it("persists raw and forwarded Claude timestamps in the terminal detail", async () => {
+    execute.mockResolvedValueOnce({ response: new Response('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"fixture"}}\n\ndata: {"type":"message_stop"}\n\n', { headers: { "content-type": "text/event-stream" } }) });
+    const body = { model: "claude-opus-5-5", stream: true, messages: [{ role: "user", content: "fixture" }] };
+    const result = await handleChatCore({ body, credentials: {}, modelInfo: { provider: "claude", model: body.model }, sourceFormatOverride: "claude", clientRawRequest: { body, headers: {}, endpoint: "/v1/messages" }, requestLogFileDumpsEnabled: false });
+    await result.response.text();
+    const detail = saveRequestDetail.mock.calls.at(-1)[0];
+    expect(detail.status).toBe("success");
+    const { raw, forwarded } = detail.latency.streamTransport.claudeFirstArrival;
+    expect(raw.firstTextMs).toEqual(expect.any(Number));
+    expect(forwarded.firstTextMs).toBeGreaterThanOrEqual(raw.firstTextMs);
+    expect(detail.latency.ttft).toBeGreaterThanOrEqual(raw.firstTextMs);
+  });
   it.each(["cancelled", "error"])("finalizes usage and the pending detail on %s", async (status) => {
     let upstream;
     const response = new Response(new ReadableStream({ start(c) { upstream = c; } }), { headers: { "content-type": "text/event-stream" } });

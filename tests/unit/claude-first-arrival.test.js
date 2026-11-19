@@ -18,7 +18,28 @@ describe('Claude first arrival', () => {
     const text = delta({text:'私密'}), idx = text.indexOf(0xe7) + 1;
     raw.observe(text.subarray(0,idx)); now += 10; raw.observe(text.subarray(idx));
     now += 10; raw.observe(delta({partial_json:'secret'})); raw.observe(text);
-    expect(diag.snapshot()).toEqual({raw:{firstByteMs:0,firstBlockMs:20,firstTextMs:40,firstThinkingMs:30,firstToolArgsMs:50,skippedLargeLine:false},forwarded:null});
+    expect(diag.snapshot()).toEqual({raw:{firstByteMs:0,firstBlockMs:20,firstTextMs:40,firstThinkingMs:30,firstToolBlockMs:null,firstToolArgsBlockStartMs:null,firstToolArgsMs:50,skippedLargeLine:false},forwarded:null});
+  });
+  it('pairs the first nonempty args with their own open tool block', () => {
+    let t = 0;
+    const {raw} = createClaudeFirstArrival(0, true, () => t);
+    const start = index => frame({type:'content_block_start', index, content_block:{type:'tool_use',input:{}}});
+    const args = (index, partial_json) => frame({type:'content_block_delta',index,delta:{partial_json}});
+    raw.observe(start(0)); t = 100; raw.observe(start(1)); raw.observe(args(0,''));
+    t = 140; raw.observe(args(1,'{')); t = 180; raw.observe(args(0,'{}'));
+    expect(raw.snapshot()).toMatchObject({firstToolBlockMs:0,firstToolArgsBlockStartMs:100,firstToolArgsMs:140});
+  });
+  it('never pairs a delta with an already closed block', () => {
+    const {raw} = createClaudeFirstArrival(0,true,()=>15);
+    raw.observe(frame({type:'content_block_start',index:0,content_block:{type:'tool_use',input:{}}}));
+    raw.observe(frame({type:'content_block_stop',index:0}));
+    raw.observe(frame({type:'content_block_delta',index:0,delta:{partial_json:'{}'}}));
+    expect(raw.snapshot()).toMatchObject({firstToolBlockMs:15,firstToolArgsBlockStartMs:null,firstToolArgsMs:15});
+  });
+  it('records zero wait when the block opens with populated input', () => {
+    const {raw} = createClaudeFirstArrival(0,true,()=>0);
+    raw.observe(frame({type:'content_block_start',content_block:{type:'tool_use',input:{path:'private'}}}));
+    expect(raw.snapshot()).toMatchObject({firstToolBlockMs:0,firstToolArgsBlockStartMs:0,firstToolArgsMs:0});
   });
   it('bounds fragmented lines, resumes at the next line, and handles EOF', () => {
     const {raw} = createClaudeFirstArrival(0,false,()=>10);

@@ -98,7 +98,13 @@ describe("stream usage follows the actual protocol terminal", () => {
 
 describe("real chatCore transport termination", () => {
   it("persists raw and forwarded Claude timestamps in the terminal detail", async () => {
-    execute.mockResolvedValueOnce({ response: new Response('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"fixture"}}\n\ndata: {"type":"message_stop"}\n\n', { headers: { "content-type": "text/event-stream" } }) });
+    const events = [
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "fixture" } },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", input: {} } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{}" } },
+      { type: "message_stop" },
+    ];
+    execute.mockResolvedValueOnce({ response: new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } }) });
     const body = { model: "claude-opus-5-5", stream: true, messages: [{ role: "user", content: "fixture" }] };
     const result = await handleChatCore({ body, credentials: {}, modelInfo: { provider: "claude", model: body.model }, sourceFormatOverride: "claude", clientRawRequest: { body, headers: {}, endpoint: "/v1/messages" }, requestLogFileDumpsEnabled: false });
     await result.response.text();
@@ -108,6 +114,11 @@ describe("real chatCore transport termination", () => {
     expect(raw.firstTextMs).toEqual(expect.any(Number));
     expect(forwarded.firstTextMs).toBeGreaterThanOrEqual(raw.firstTextMs);
     expect(detail.latency.ttft).toBeGreaterThanOrEqual(raw.firstTextMs);
+    for (const side of [raw, forwarded]) {
+      expect(side.firstToolBlockMs).toEqual(expect.any(Number));
+      expect(side.firstToolArgsBlockStartMs).toBe(side.firstToolBlockMs);
+      expect(side.firstToolArgsMs).toBeGreaterThanOrEqual(side.firstToolArgsBlockStartMs);
+    }
   });
   it.each(["cancelled", "error"])("finalizes usage and the pending detail on %s", async (status) => {
     let upstream;

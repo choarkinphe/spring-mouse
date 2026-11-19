@@ -7,7 +7,16 @@ const MAX_LINE_BYTES = 64 * 1024;
 const nonempty = value => typeof value === "string" && value.length > 0;
 
 function createTap(elapsed) {
-  const times = { firstByteMs: null, firstBlockMs: null, firstTextMs: null, firstThinkingMs: null, firstToolArgsMs: null };
+  const times = { firstByteMs: null, firstBlockMs: null, firstTextMs: null, firstThinkingMs: null,
+    firstToolBlockMs: null, firstToolArgsBlockStartMs: null, firstToolArgsMs: null };
+  // Only open block indexes and timestamps, never tool names, IDs or inputs.
+  const openToolStarts = new Map();
+  function firstArgs(time, start) {
+    if (times.firstToolArgsMs !== null) return;
+    times.firstToolArgsMs = time;
+    times.firstToolArgsBlockStartMs = start ?? null;
+    openToolStarts.clear();
+  }
   const decoder = new TextDecoder();
   let partial, used = 0, skipping = false, skippedLargeLine = false;
   function line(bytes, time) {
@@ -19,12 +28,21 @@ function createTap(elapsed) {
       const block = event.content_block;
       if (block.type === CLAUDE_BLOCK.TEXT && nonempty(block.text)) times.firstTextMs ??= time;
       if (block.type === CLAUDE_BLOCK.THINKING && nonempty(block.thinking)) times.firstThinkingMs ??= time;
-      if (block.type === CLAUDE_BLOCK.TOOL_USE && block.input && Object.keys(block.input).length) times.firstToolArgsMs ??= time;
+      openToolStarts.delete(event.index);
+      if (block.type === CLAUDE_BLOCK.TOOL_USE) {
+        times.firstToolBlockMs ??= time;
+        if (block.input && Object.keys(block.input).length) firstArgs(time, time);
+        else if (times.firstToolArgsMs === null && Number.isSafeInteger(event.index) && event.index >= 0 && openToolStarts.size < 64) {
+          openToolStarts.set(event.index, time);
+        }
+      }
+    } else if (event?.type === "content_block_stop") {
+      openToolStarts.delete(event.index);
     } else if (event?.type === "content_block_delta") {
       const d = event.delta;
       if (nonempty(d?.text)) times.firstTextMs ??= time;
       if (nonempty(d?.thinking)) times.firstThinkingMs ??= time;
-      if (nonempty(d?.partial_json)) times.firstToolArgsMs ??= time;
+      if (nonempty(d?.partial_json)) firstArgs(time, openToolStarts.get(event.index));
     }
   }
   return {
@@ -32,7 +50,7 @@ function createTap(elapsed) {
       if (!(bytes instanceof Uint8Array) || !bytes.length) return;
       const time = elapsed();
       times.firstByteMs ??= time;
-      if (times.firstBlockMs !== null && times.firstTextMs !== null && times.firstThinkingMs !== null && times.firstToolArgsMs !== null) return;
+      if (times.firstBlockMs !== null && times.firstTextMs !== null && times.firstThinkingMs !== null && times.firstToolBlockMs !== null && times.firstToolArgsMs !== null) return;
       for (let pos = 0; pos < bytes.length;) {
         const nl = bytes.indexOf(10, pos), end = nl < 0 ? bytes.length : nl;
         const n = end - pos;

@@ -127,7 +127,7 @@ describe("Qoder campaign check-in", () => {
         benefit: { kind: "CREDITS", amount: 2000, modelScope: { modelSeries: { key: "C_S_U_SERIES" } } },
       })]);
       expect(await run(account({ provider, providerSpecificData: { userId: "u" } }), { fetch, readMachineIdentity: async () => IDENTITY }))
-        .toMatchObject({ ok: false, status: "ineligible", message: expect.stringContaining("不属于每日签到") });
+        .toMatchObject({ ok: false, status: "ineligible", message: expect.stringContaining("仅有一次性活动") });
       expect(fetch).toHaveBeenCalledOnce();
     }
   });
@@ -249,7 +249,7 @@ describe("Qoder campaign check-in", () => {
     expect(output).toMatchObject({ ok: false, status: "error" });
     expect(JSON.stringify(output)).not.toContain("secret");
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect((await run(account(), { fetch: async () => json({}, 403) })).message).toContain("重新授权");
+    expect((await run(account(), { fetch: async () => json({}, 403) })).message).toContain("重新登录");
     expect((await run(account(), { fetch: async () => json({}) })).status).toBe("error");
   });
 

@@ -1,5 +1,7 @@
 # Qoder / WorkBuddy credit billing preview
 
+Also seeds a Claude OAuth account: on `/dashboard/usage` its row shows the Fable weekly window and a 1-card reset button that resets the session limit.
+
 Launch `qoder-credits-fixture` from `.claude/launch.json` (port 8087). The unified
 entry point seeds four synthetic OAuth accounts into a new temporary DATA_DIR and
 HOME, suppresses host background jobs, blocks real upstream fetches, starts Next,

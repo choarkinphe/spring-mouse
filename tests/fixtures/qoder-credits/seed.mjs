@@ -12,6 +12,10 @@ for (const [provider, origin] of [['workbuddy', 'https://copilot.tencent.com'], 
   expiresAt: new Date(Date.now() + 86400000).toISOString(),
   providerSpecificData: { workbuddyLegacyCredential: false, workbuddyProduct: provider, workbuddyPlatform: provider, workbuddyContract: '0.1.30', workbuddyOrigin: origin, domain: new URL(origin).hostname, codebuddyUid: `${provider}-fixture-user`, tokenType: 'Bearer' },
 });
+await createProviderConnection({
+  provider: 'claude', authType: 'oauth', name: 'Claude 重置卡模拟账号', accessToken: 'claude-fixture-not-real',
+  refreshToken: 'claude-fixture-refresh-not-real', expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(), isActive: true,
+});
 // Reproduce the production queue wrapper and an obsolete, terminal precheck.
 const { updateProviderConnectionHealth } = await import('../../../src/lib/db/repos/connectionsRepo.js');
 const { updateCheckinState } = await import('../../../src/lib/db/repos/checkinRepo.js');

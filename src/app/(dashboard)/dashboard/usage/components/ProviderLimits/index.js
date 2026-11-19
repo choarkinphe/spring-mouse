@@ -101,6 +101,22 @@ function getCodexResetCreditCount(quota) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+// Claude has two reset programs: reset cards (any time while at a limit) and a
+// weekly session reset. Prefer the card, since the weekly one refills itself.
+function getClaudeResetOption(quota) {
+  const reset = quota?.raw?.limitReset;
+  if (!reset) return null;
+  const cards = reset.grants || {};
+  const weekly = reset.weekly || {};
+  if (cards.eligible && cards.nextGrantId && cards.available > 0) {
+    return { program: "grant", count: cards.available, label: `重置卡 ${cards.available} 张`, needsLimit: !cards.atLimit };
+  }
+  if (weekly.eligible && weekly.available) return { program: "weekly", count: 1, label: "本周 1 次会话重置" };
+  if (weekly.nextAvailableAt) return { program: null, count: 0, label: `下次可重置：${formatDateTime(new Date(weekly.nextAvailableAt))}` };
+  if (cards.cooldownUntil) return { program: null, count: 0, label: `冷却至 ${formatDateTime(new Date(cards.cooldownUntil))}` };
+  return { program: null, count: 0, label: "暂无可用重置" };
+}
+
 function formatCreditDate(value) {
   if (!value) return "N/A";
   const date = new Date(value);
@@ -315,6 +331,30 @@ export default function ProviderLimits() {
         setLastUpdated(new Date());
       } catch (error) {
         setErrors((prev) => ({ ...prev, [connectionId]: error.message || "Failed to reset Codex limit" }));
+      } finally {
+        setResettingLimitId(null);
+      }
+    },
+    [fetchQuota, resettingLimitId],
+  );
+
+  const handleResetClaudeLimit = useCallback(
+    async (connectionId, program) => {
+      if (resettingLimitId) return;
+      setResettingLimitId(connectionId);
+      setErrors((prev) => ({ ...prev, [connectionId]: null }));
+      try {
+        const response = await fetch(`/api/usage/${connectionId}/claude-limit-reset`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ program }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.ok !== true) throw new Error(result.message || result.error || "重置失败");
+        await fetchQuota(connectionId, "claude");
+        setLastUpdated(new Date());
+      } catch (error) {
+        setErrors((prev) => ({ ...prev, [connectionId]: error.message || "重置失败" }));
       } finally {
         setResettingLimitId(null);
       }
@@ -1011,6 +1051,7 @@ export default function ProviderLimits() {
           const isInactive = conn.isActive === false;
           const isCodex = conn.provider === "codex";
           const resetCreditCount = getCodexResetCreditCount(quota);
+          const claudeReset = conn.provider === "claude" ? getClaudeResetOption(quota) : null;
           const isResettingLimit = resettingLimitId === conn.id;
           const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit;
           const rawQuotas = quota?.quotas || [];
@@ -1095,6 +1136,26 @@ export default function ProviderLimits() {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    {claudeReset && (
+                      <Tooltip text={claudeReset.program ? `重置 Claude 用量上限（${claudeReset.label}）` : claudeReset.label}>
+                        <button
+                          type="button"
+                          onClick={() => setResetConfirmState({ connection: conn, claude: claudeReset })}
+                          disabled={!claudeReset.program || isLoading || rowBusy}
+                          aria-label={claudeReset.program ? `重置 Claude 用量上限，${claudeReset.label}` : claudeReset.label}
+                          className={`flex h-8 min-w-10 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary/60 disabled:cursor-not-allowed disabled:opacity-60 ${
+                            claudeReset.program
+                              ? "border-primary/30 bg-primary/5 text-primary hover:bg-primary/10"
+                              : "border-black/10 bg-black/[0.02] text-text-muted dark:border-white/10 dark:bg-white/[0.03]"
+                          }`}
+                        >
+                          <span className={`material-symbols-outlined text-[15px] ${isResettingLimit ? "animate-spin" : ""}`}>
+                            {isResettingLimit ? "progress_activity" : "restart_alt"}
+                          </span>
+                          <span>{claudeReset.count}</span>
+                        </button>
+                      </Tooltip>
+                    )}
                     {isCodex && (
                       <>
                         <Tooltip
@@ -1407,13 +1468,16 @@ export default function ProviderLimits() {
         onConfirm={async () => {
           const connection = resetConfirmState?.connection;
           if (!connection) return;
-          await handleResetCodexLimit(connection.id, connection.provider);
+          if (resetConfirmState.claude) await handleResetClaudeLimit(connection.id, resetConfirmState.claude.program);
+          else await handleResetCodexLimit(connection.id, connection.provider);
           setResetConfirmState(null);
         }}
-        title="Reset Codex limit?"
-        message={`Use 1 Codex reset credit for ${getConnectionLabel(resetConfirmState?.connection || {}) || "this account"}. This cannot be undone. Remaining credits: ${resetConfirmState?.resetCreditCount ?? 0}.`}
-        confirmText="Reset limit"
-        cancelText="Cancel"
+        title={resetConfirmState?.claude ? "重置 Claude 用量上限？" : "Reset Codex limit?"}
+        message={resetConfirmState?.claude
+          ? `为 ${getConnectionLabel(resetConfirmState.connection || {}) || "此账号"} 使用${resetConfirmState.claude.program === "grant" ? " 1 张重置卡" : "本周的会话重置"}，不可撤销。${resetConfirmState.claude.needsLimit ? "账号尚未触及上限时，Claude 会拒绝并保留次数。" : ""}`
+          : `Use 1 Codex reset credit for ${getConnectionLabel(resetConfirmState?.connection || {}) || "this account"}. This cannot be undone. Remaining credits: ${resetConfirmState?.resetCreditCount ?? 0}.`}
+        confirmText={resetConfirmState?.claude ? "确认重置" : "Reset limit"}
+        cancelText={resetConfirmState?.claude ? "取消" : "Cancel"}
         variant="danger"
         loading={Boolean(resettingLimitId)}
       />

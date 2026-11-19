@@ -47,13 +47,6 @@ export function supportsDailyCheckin(connection) {
     && ["oauth", "apikey"].includes(connection?.authType));
 }
 
-// International rewards use the official native device identity. Eligibility
-// remains the server's decision; no client identity or VM status is spoofed.
-export const QODER_GLOBAL_REWARDS = {
-  guideUrl: "https://docs.qoder.com/events/100credits",
-  message: "通过官方原生组件提供当前设备身份，按官方活动资格领取；不会伪造设备或绕过领取限制。",
-};
-
 export function supportsAutomaticCheckin(connection) {
   return supportsDailyCheckin(connection);
 }
@@ -67,13 +60,13 @@ export function currentDailyCheckinState(state = {}, provider) {
   if (!isQoderCheckinProvider(provider)) return state;
   if (state.dailyCampaignVersion !== QODER_DAILY_CAMPAIGN_VERSION
     && ["success", "already_checked_in"].includes(state.status)) {
-    return { ...state, status: "recheck", message: "活动识别已更新，需重新确认每日签到；一次性体验包不计为签到",
+    return { ...state, status: "recheck", message: "待重新查询",
       lastSuccessDate: null, reward: null, terminalDate: null, retryAfter: 0, lastAttemptAt: null };
   }
   if (provider !== "qoder") return state;
   if (state.status === "desktop_required" || state.status === "own_app"
     && typeof state.message === "string" && (state.message.startsWith("Qoder 国际版签到需要官方设备身份"))) {
-    return { ...state, status: "recheck", message: "原生领取流程已更新，待重新查询官方活动", terminalDate: null, retryAfter: 0, lastAttemptAt: null };
+    return { ...state, status: "recheck", message: "待重新查询", terminalDate: null, retryAfter: 0, lastAttemptAt: null };
   }
   return state;
 }

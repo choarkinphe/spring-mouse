@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS, NON_STREAM_RESPONSE_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
@@ -275,7 +275,13 @@ export class BaseExecutor {
       // Abort if upstream doesn't return response headers within connection timeout
       const connectCtrl = new AbortController();
       checkDeadline();
-      const timeoutMs = Math.min(this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS, remainingMs());
+      // A non-streaming upstream sends headers only once the whole reply is
+      // written, so the header wait is the generation time. A 60s connect bound
+      // turned every long JSON turn (large Claude contexts) into a 502.
+      const headerWaitMs = stream === false
+        ? Math.max(this.config?.timeoutMs || 0, NON_STREAM_RESPONSE_TIMEOUT_MS)
+        : (this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS);
+      const timeoutMs = Math.min(headerWaitMs, remainingMs());
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       let sizeDiag = null;

@@ -5,6 +5,25 @@ let claimed = false;
 globalThis.fetch = function creditsFixtureFetch(input, init) {
   const raw = input instanceof URL ? input.href : typeof input === 'string' ? input : input?.url;
   let url; try { url = new URL(raw); } catch { return guardedFetch(input, init); }
+  // Synthetic Claude account: at its session limit with one reset card.
+  if (url.hostname === 'api.anthropic.com') {
+    const g = globalThis.__claudeResetFixture ||= { cards: 1, fiveHour: 100 };
+    const week = new Date(Date.now() + 2 * 86400000).toISOString();
+    if (url.pathname === '/api/oauth/usage') return Promise.resolve(Response.json({
+      five_hour: { utilization: g.fiveHour, resets_at: new Date(Date.now() + 3600000).toISOString() },
+      seven_day: { utilization: 41, resets_at: week },
+      limits: [{ kind: 'weekly_scoped', percent: 63, resets_at: week, scope: { model: { display_name: 'Fable' } } }],
+      cedar_ember: { eligible: g.cards > 0, at_limit: g.fiveHour >= 100, next_grant_id: g.cards > 0 ? 'fixture-card' : null,
+        grants: [{ id: 'fixture-card', resets_left: g.cards, resets_total: 1, paused: false }] },
+      juniper_tide: { eligible: false, ineligible_reason: 'not_at_wall', available: false },
+    }));
+    if (url.pathname === '/api/oauth/profile') return Promise.resolve(Response.json({ organization: { uuid: '11111111-2222-3333-4444-555555555555' } }));
+    if (url.pathname.endsWith('/reset_rate_limits') && init?.method === 'POST') {
+      if (g.cards <= 0) return Promise.resolve(Response.json({ result: 'already_used' }));
+      g.cards -= 1; g.fiveHour = 0;
+      return Promise.resolve(Response.json({ result: 'reset', resets_left: g.cards, cleared: ['five_hour'] }));
+    }
+  }
   const qoder = ['api3.qoder.sh', 'api2.qoder.sh', 'gateway.qoder.com.cn', 'openapi.qoder.sh', 'openapi.qoder.com.cn'].includes(url.hostname);
   const wb = ['copilot.tencent.com', 'www.workbuddy.ai'].includes(url.hostname);
   if (!qoder && !wb) return guardedFetch(input, init);

@@ -154,7 +154,7 @@ export async function performQoderCheckin(connection, {
   try {
     credentials = { ...connection, providerSpecificData: withQoderProviderRegion(connection.provider, connection.providerSpecificData) };
   } catch {
-    return result("unsupported", "Qoder 凭据与服务区域不匹配，请重新授权对应区域账号");
+    return result("unsupported", "账号与渠道区域不一致，请在对应渠道重新授权");
   }
   if (connection.isActive === false) return result("unsupported", "请先启用账号");
   const region = credentials.providerSpecificData.region;
@@ -209,8 +209,8 @@ export async function performQoderCheckin(connection, {
     if (method === "GET" && response && [401, 403].includes(response.status) && await refresh()) response = await call(url, method);
     return response;
   };
-  const leaseLost = () => ({ ok: false, skipped: "lease_lost", status: "error", message: "签到任务已过期，请重试" });
-  const authError = () => result("error", "Qoder 凭据已失效，请重新授权账号");
+  const leaseLost = () => ({ ok: false, skipped: "lease_lost", status: "error", message: "另一个签到任务已接管，请重试" });
+  const authError = () => result("error", "授权已失效，请重新登录账号");
   try {
     const expiry = credentials.expiresAt ? new Date(credentials.expiresAt).getTime() : NaN;
     if (Number.isFinite(expiry) && expiry - currentTime() < 5 * 60 * 1000 && credentials.refreshToken) await refresh();
@@ -224,13 +224,13 @@ export async function performQoderCheckin(connection, {
     } catch {
       // CN supports native-free claims. International claims require a real
       // locally generated identity; never claim by substituting a chat UUID.
-      if (region === "global") return result("runtime_missing", "官方设备身份组件不可用，尚未发起领取；请检查原生运行服务");
+      if (region === "global") return result("runtime_missing", "设备身份服务不可用（qoder-identity），未发起签到");
     }
     const listed = await request(base, "GET");
     if ([401, 403].includes(listed.status)) return authError();
-    if (listed.status !== 200) return result("error", "Qoder 签到活动查询失败，请稍后重试");
+    if (listed.status !== 200) return result("error", `查询活动失败：HTTP ${listed.status}`);
     const list = await listed.json().catch(() => null);
-    if (!list || !Array.isArray(list.campaigns)) return result("error", "Qoder 签到活动响应无效，请稍后重试");
+    if (!list || !Array.isArray(list.campaigns)) return result("error", "查询活动失败：响应格式异常");
     const creditCampaigns = list.campaigns.filter((c) => c && c.actionType === "CLAIM_BENEFIT" && (!c.benefit?.kind || c.benefit.kind === "CREDITS"));
     const campaigns = creditCampaigns.filter((c) => isDailyCampaign(c, region));
     const time = currentTime();
@@ -241,39 +241,43 @@ export async function performQoderCheckin(connection, {
     const campaign = campaigns.find((c) => c.claimStatus === "CLAIMABLE" && active(c));
     if (!campaign) {
       const done = campaigns.find((c) => c.claimStatus === "CLAIMED" && active(c));
-      if (done) return result("already_checked_in", "本轮 Qoder 积分已领取", {
+      if (done) return result("already_checked_in", "今日已签到", {
         reward: rewardOf(done.benefit?.amount), nextAttemptAt: nextOpening(done), successDate: qoderCheckinDate(time),
       });
       const future = campaigns.flatMap((c) => {
         const start = timestamp(c.startAt);
         return [start !== null && start > time ? start + CLOCK_ROOM_MS : null, nextOpening(c)];
       }).filter((t) => t !== null && t > time);
-      if (campaigns.length) return result("error", "当前暂无可领取的 Qoder 每日积分，请等待活动开放", {
+      if (campaigns.length) return result("error", "本轮活动尚未开放", {
         ...(future.length ? { nextAttemptAt: Math.min(...future) } : {}),
       });
       return result("ineligible", creditCampaigns.length
-        ? "当前仅有一次性或专属积分活动，不属于每日签到；请在官方客户端查看活动资格及领取状态"
-        : "Qoder 当前未向此账号或设备提供每日积分活动，请在官方客户端确认资格");
+        ? "今日没有每日签到活动（仅有一次性活动）"
+        : "今日没有可签到的活动");
     }
     if (typeof campaign.campaignId !== "string" || !campaign.campaignId.trim() || campaign.campaignId.length > 256) {
-      return result("error", "Qoder 签到活动响应无效，请稍后重试");
+      return result("error", "查询活动失败：活动 ID 异常");
     }
     // Time may have advanced while validating/renewing a shared lease. Never
     // knowingly claim an expired campaign or retry an ambiguous failed POST.
     claimExpiresAt = timestamp(campaign.endAt);
     const claimed = await request(`${base}/${encodeURIComponent(campaign.campaignId)}/claim`, "POST");
     if (!claimed) return leaseLost();
-    if ([401, 403].includes(claimed.status)) return result("own_app", "Qoder 已拒绝此设备或凭据领取积分，请在 Qoder 官方客户端确认签到资格");
-    if (claimed.status !== 200) return result("error", "Qoder 积分领取失败，请稍后查询活动状态");
+    if ([401, 403].includes(claimed.status)) return result("own_app", `领取被拒绝：HTTP ${claimed.status}（设备或账号无资格）`);
+    if (claimed.status !== 200) return result("error", `领取失败：HTTP ${claimed.status}`);
     const claim = await claimed.json().catch(() => null);
     const response = claim?.data && typeof claim.data === "object" ? claim.data : claim;
-    if (response?.status !== "CLAIMED") return result("error", "Qoder 未确认积分领取，请稍后查询活动状态");
+    if (response?.status !== "CLAIMED") return result("error", `领取未确认：${typeof response?.status === "string" ? response.status.slice(0, 32) : "无状态"}`);
     const amount = rewardOf(response.benefit?.amount) ?? rewardOf(campaign.benefit?.amount);
-    return result("success", "Qoder 每日积分领取成功", {
+    return result("success", "签到成功", {
       reward: amount, nextAttemptAt: nextOpening(campaign), successDate: qoderCheckinDate(time),
     });
   } catch (error) {
     // Never return upstream text, SDK tokens, refresh tokens or helper output.
-    return error?.message === "auth" ? authError() : result("error", "Qoder 签到请求失败，请稍后重试");
+    if (error?.message === "auth") return authError();
+    if (error?.message === "campaign expired") return result("error", "本轮活动已结束，未领取");
+    // Name the failure class only; never echo upstream text, tokens or helper output.
+    const kind = error?.name === "TimeoutError" ? "请求超时" : /proxy/i.test(error?.message || "") ? "代理连接失败" : "网络错误";
+    return result("error", `签到失败：${kind}`);
   }
 }

@@ -179,3 +179,36 @@ describe("header timing", () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe("BaseExecutor.execute — header wait for non-streaming replies", () => {
+  it("does not cut a non-streaming reply at the 60s connect bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const ex = makeExec({ baseUrl: "https://x/api" });
+      // A JSON upstream sends headers only after generating the whole reply.
+      fetchMock.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(res(200)), 90_000)));
+      const pending = ex.execute({ model: "m", body: {}, stream: false, credentials: creds });
+      await vi.advanceTimersByTimeAsync(90_000);
+      const out = await pending;
+      expect(out.response.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still bounds a streaming request's header wait at the connect timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const ex = makeExec({ baseUrl: "https://x/api" });
+      fetchMock.mockImplementation(() => new Promise(() => {}));
+      const pending = ex.execute({ model: "m", body: {}, stream: true, credentials: creds }).then((v) => v, (e) => e);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      const out = await pending;
+      expect(out?.response?.status).not.toBe(200);
+      expect(String(out?.message || "")).toMatch(/connect timeout|deadline/);
+    } finally {
+      vi.useRealTimers();
+      fetchMock.mockReset();
+    }
+  });
+});

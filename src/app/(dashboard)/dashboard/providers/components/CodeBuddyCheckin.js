@@ -9,13 +9,14 @@ import { useNotificationStore } from "@/store/notificationStore";
 const STATUS_LABELS = {
   success: "签到成功",
   already_checked_in: "今日已签到",
-  ineligible: "不满足签到条件",
-  ended: "签到活动已结束",
-  own_app: "当前环境未获签到资格",
-  recheck: "需重新查询官方活动",
-  runtime_missing: "官方设备组件不可用",
+  ineligible: "无可签到活动",
+  ended: "活动已结束",
+  own_app: "领取被拒绝",
+  recheck: "待重新查询",
+  runtime_missing: "设备身份不可用",
   error: "签到失败",
 };
+const FAILED = new Set(["error", "own_app", "runtime_missing"]);
 
 function formatAttempt(value) {
   if (!value) return "";
@@ -57,8 +58,7 @@ async function requestCheckin(endpoint, method, signal, enabled) {
 
 function CheckinControls({ connection, onRefreshQuota }) {
   const endpoint = `/api/providers/${encodeURIComponent(connection.id)}/checkin`;
-  const isGlobalQoder = connection.provider === "qoder";
-  const isQoder = isGlobalQoder || connection.provider === "qoder-cn";
+  const isQoder = connection.provider === "qoder" || connection.provider === "qoder-cn";
   const providerName = isQoder ? (connection.provider === "qoder-cn" ? "Qoder CN" : "Qoder") : "WorkBuddy";
   const [checkin, setCheckin] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -153,6 +153,9 @@ function CheckinControls({ connection, onRefreshQuota }) {
   const attemptTime = formatAttempt(checkin?.lastAttemptAt);
   const statusLabel = STATUS_LABELS[checkin?.status] || "尚未签到";
   const message = typeof checkin?.message === "string" ? checkin.message : "";
+  // The label already says it; only show a message that adds the cause.
+  const detail = message && message !== statusLabel ? message
+    : !isQoder && !connection.providerSpecificData?.codebuddyUid ? "缺少账号 UID，请重新授权" : "";
   const reward = typeof checkin?.reward === "number" && Number.isFinite(checkin.reward) ? checkin.reward : null;
 
 
@@ -173,28 +176,26 @@ function CheckinControls({ connection, onRefreshQuota }) {
           size="sm"
           disabled={busy || !checkin || connection.isActive === false}
           loading={operation === "POST"}
-          title={connection.isActive === false ? "账号已停用，请先启用账号" : `立即执行 ${providerName} 今日签到，无需开启自动签到`}
+          title={connection.isActive === false ? "账号已停用" : undefined}
           onClick={() => mutate("POST")}
         >
           {operation === "POST" ? "签到中…" : "立即签到"}
         </Button>
         <span className="min-w-0 break-words" role="status" aria-live="polite">
-          {loading ? "加载签到设置…" : operation === "PATCH" ? "保存设置中…" : checkin ? (
+          {loading ? "加载中…" : operation === "PATCH" ? "保存中…" : checkin ? (
             <>
-              <span className={checkin.status === "error" ? "text-red-400" : undefined}>{statusLabel}</span>
-              {attemptTime && <span> · 最近尝试 {attemptTime}（北京时间）</span>}
-              {checkin.lastSuccessDate && <span> · 最近成功 {checkin.lastSuccessDate}</span>}
-              {reward !== null && <span> · 奖励 {reward}</span>}
-              {message && <span> · {message}</span>}
+              <span className={FAILED.has(checkin.status) ? "text-red-400" : undefined}>{statusLabel}</span>
+              {reward !== null && <span> · +{reward}</span>}
+              {detail && <span> · {detail}</span>}
+              {attemptTime && <span className="opacity-70"> · {attemptTime}</span>}
             </>
-          ) : "签到设置未加载"}
+          ) : "未加载"}
         </span>
         {!loading && !checkin && (
           <Button type="button" variant="ghost" size="sm" onClick={retryLoad}>重新加载</Button>
         )}
       </div>
       {error && <p role="alert" className="break-words text-red-400">{error}</p>}
-      <p className="text-[11px]">{isQoder ? "按北京时间 10:00 切换签到日；只处理每日通用积分活动，一次性体验包及专属活动不计为签到。活动时间及奖励以官方返回为准。" : "按北京时间每日签到；"}仅在服务运行且账号启用时自动执行。{isGlobalQoder && "通过官方原生组件生成本机身份并领取；只领取官方明确提供的活动，不伪造设备身份。"}{!isQoder && !connection.providerSpecificData?.codebuddyUid && "旧版授权缺少签到 UID，请通过浏览器重新授权。"}{connection.isActive === false && "账号已停用，无法立即签到，仍可调整自动签到开关。"}</p>
     </div>
   );
 }

@@ -1,3 +1,5 @@
+import { boundedOutboundTerminal } from './claudeOutboundTerminal.js';
+
 // Best-effort telemetry only. Never use this queue for billing/quota usage.
 // A stalled sink keeps ONE worker occupied; do not race it and spawn more
 // unabortable DB operations on every timeout.
@@ -52,6 +54,7 @@ export function createTrafficWriter(save, { maxRecords = 256, maxBytes = 1024 * 
         // Detached, small schema: never queue a Request, body or arbitrary meta.
         const text = (value, max) => typeof value === "string" ? value.slice(0, max) : null;
         const number = (value) => Number.isFinite(value) ? value : 0;
+        const outbound = boundedOutboundTerminal(record.meta?.claudeOutboundTerminal);
         const json = JSON.stringify({
           requestId: text(record.requestId, 64), timestamp: text(record.timestamp, 32),
           completedAt: text(record.completedAt, 32), method: text(record.method, 16),
@@ -59,6 +62,7 @@ export function createTrafficWriter(save, { maxRecords = 256, maxBytes = 1024 * 
           requestBytes: number(record.requestBytes), responseBytes: number(record.responseBytes),
           durationMs: number(record.durationMs), aborted: record.aborted === true,
           meta: {
+            ...(outbound && { claudeOutboundTerminal: outbound }),
             sourceIp: text(record.meta?.sourceIp, 128), appName: text(record.meta?.appName, 64),
             userAgent: text(record.meta?.userAgent, 256), sourceUrl: text(record.meta?.sourceUrl, 256),
           },

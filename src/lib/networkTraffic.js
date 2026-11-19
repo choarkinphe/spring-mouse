@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createClaudeOutboundTerminal } from "./claudeOutboundTerminal.js";
 import { createTrafficWriter } from "./networkTrafficWriter.js";
 import { saveNetworkTraffic } from "@/lib/db/repos/trafficRepo.js";
 import { getRequestSourceMeta } from "@/shared/utils/requestSource.js";
@@ -100,7 +101,7 @@ function cloneResponseWithBody(response, body) {
   return new Response(body, init);
 }
 
-export async function withNetworkTraffic(request, handler) {
+export async function withNetworkTraffic(request, handler, { traceClaudeOutbound = false } = {}) {
   const requestId = randomUUID();
   const startedAtMs = Date.now();
   const timestamp = new Date(startedAtMs).toISOString();
@@ -126,8 +127,9 @@ export async function withNetworkTraffic(request, handler) {
     console.warn("[Traffic] Request source metadata unavailable", error?.message || error);
   }
   let finalized = false;
+  let outbound = null;
 
-  const finalize = ({ responseBytes = 0, statusCode = 0, aborted = false } = {}) => {
+  const finalize = ({ responseBytes = 0, statusCode = 0, aborted = false, end } = {}) => {
     if (finalized) return;
     finalized = true;
     const completedAtMs = Date.now();
@@ -143,7 +145,7 @@ export async function withNetworkTraffic(request, handler) {
         responseBytes,
         durationMs: completedAtMs - startedAtMs,
         aborted,
-        meta: sourceMeta,
+        meta: outbound ? { ...sourceMeta, claudeOutboundTerminal: outbound.finish(end, completedAtMs - startedAtMs) } : sourceMeta,
       });
     } catch (error) {
       console.error("[Traffic] Failed to persist network usage:", error?.message || error);
@@ -168,6 +170,9 @@ export async function withNetworkTraffic(request, handler) {
     return response;
   }
 
+  if (traceClaudeOutbound && /^text\/event-stream(?:\s*;|$)/i.test(response.headers.get("content-type") || "")) {
+    outbound = createClaudeOutboundTerminal(startedAtMs);
+  }
   const reader = response.body.getReader();
   let responseBytes = 0;
   const meteredBody = new ReadableStream({
@@ -175,23 +180,24 @@ export async function withNetworkTraffic(request, handler) {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          finalize({ responseBytes, statusCode: response.status });
+          if (finalized) return; // cancel() may have resolved the pending read
+          finalize({ responseBytes, statusCode: response.status, end: "eof" });
           controller.close();
           return;
         }
         responseBytes += chunkByteLength(value);
         controller.enqueue(value);
+        if (outbound) {
+          try { outbound.observe(value); } catch { outbound = null; } // fail open
+        }
       } catch (error) {
-        finalize({ responseBytes, statusCode: response.status, aborted: true });
+        finalize({ responseBytes, statusCode: response.status, aborted: true, end: "read_error" });
         controller.error(error);
       }
     },
     async cancel(reason) {
-      try {
-        await reader.cancel(reason);
-      } finally {
-        finalize({ responseBytes, statusCode: response.status, aborted: true });
-      }
+      finalize({ responseBytes, statusCode: response.status, aborted: true, end: "cancel" });
+      await reader.cancel(reason);
     },
   });
 

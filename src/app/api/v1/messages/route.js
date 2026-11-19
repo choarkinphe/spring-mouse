@@ -38,5 +38,5 @@ async function handlePOST(request) {
 
 
 export async function POST(request) {
-  return withNetworkTraffic(request, (monitoredRequest) => handlePOST(monitoredRequest));
+  return withNetworkTraffic(request, handlePOST, { traceClaudeOutbound: true });
 }

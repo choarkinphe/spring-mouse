@@ -1,3 +1,5 @@
+import { classifyQoderError } from "./qoderErrorSummary.js";
+
 // Keep interpretation separate from the original evidence. In particular, a
 // normalized HTTP 429 alone does not prove that an account has run out of credits.
 export function getConnectionErrorEvidence(connection) {
@@ -37,12 +39,26 @@ function rawText(raw) {
   return typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
 }
 
-export function analyzeConnectionError(evidence) {
+export function analyzeConnectionError(evidence, provider) {
   if (!evidence) return null;
   const text = `${evidence.text}\n${rawText(evidence.raw)}`;
   const status = Number(evidence.status);
   if (evidence.kind === "gateway" || evidence.layer === "network" || evidence.layer === "gateway") {
     return { reason: "网关或网络链路失败", basis: "记录来自网关 / 网络层，不能据此判断模型账号失效或积分不足。", suggestion: "检查网关、Mouse 节点和上游之间的连接、代理与超时记录，再重试。" };
+  }
+  // Provider business codes are more specific than status codes or keywords:
+  // Qoder reports queueing inside an HTTP 200 SSE frame wrapped in a "403" object.
+  const qoder = classifyQoderError(provider, evidence);
+  if (qoder?.kind === "queue") {
+    const wait = qoder.retryAfterSeconds ? `上游建议 ${qoder.retryAfterSeconds} 秒后重试` : "上游未给出重试时间";
+    return {
+      reason: "上游模型资源受限或排队",
+      basis: `原始报文包含 Qoder 业务码 10605（模型排队 / 资源受限），${wait}；这是临时的容量限制，不代表积分不足或账号失效。`,
+      suggestion: `${qoder.retryAfterSeconds ? `等待约 ${qoder.retryAfterSeconds} 秒后重试` : "稍后重试"}，或切换模型 / 账号；无需重新登录。`,
+    };
+  }
+  if (qoder?.kind === "quota") {
+    return { reason: "上游额度或余额限制", basis: "原始报文包含 Qoder 业务码 112（额度限制）；具体限制范围以上游报文为准。", suggestion: "刷新积分并核实余额或订阅；这不是登录失效。" };
   }
   if (/quota|insufficient[_\s-]*(?:credits?|balance|funds)|credit[_\s-]*(?:limit|exhaust|insufficient)|额度|余额不足|积分不足|配额.*(?:超|不足|耗尽)/i.test(text)) {
     return { reason: "上游额度或余额限制", basis: "错误文本或原始报文包含额度 / 余额限制信息；具体限制范围以上游报文为准。", suggestion: "刷新上游配额并核实订阅、余额及模型权限；不要将其直接当作登录失效。" };
@@ -53,7 +69,7 @@ export function analyzeConnectionError(evidence) {
   if (status === 403) {
     return { reason: "上游拒绝访问", basis: "上游返回 403；仅凭状态码无法确定是权限、风控还是账号限制。", suggestion: "根据原始报文核实模型权限、地区及账号限制。" };
   }
-  if (/resource.*(?:exhaust|unavailable)|overload|capacity|排队|资源受限|资源不足|繁忙/i.test(text)) {
+  if (/resource.*(?:exhaust|unavailable)|resource[_\s-]*limit|overload|capacity|排队|资源受限|资源不足|繁忙/i.test(text)) {
     return { reason: "上游资源繁忙或排队", basis: "错误信息指向资源 / 容量限制，不足以证明账号余额不足。", suggestion: "稍后重试，或切换模型 / 账号；避免反复重新登录。" };
   }
   if (status === 429 || /rate.?limit|too many requests|限流/i.test(text)) {
@@ -67,7 +83,7 @@ export function analyzeConnectionError(evidence) {
 
 export function formatConnectionErrorDetails(connection, evidence, { accountName, providerName, time } = {}) {
   if (!evidence) return "";
-  const analysis = analyzeConnectionError(evidence);
+  const analysis = analyzeConnectionError(evidence, connection?.provider);
   return [
     `账号：${accountName || connection.name || connection.displayName || connection.email || "未命名配置"}`,
     `渠道：${providerName || connection.provider}`,

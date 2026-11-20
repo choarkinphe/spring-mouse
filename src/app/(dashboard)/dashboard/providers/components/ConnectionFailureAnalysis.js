@@ -12,7 +12,7 @@ export default function ConnectionFailureAnalysis({ connection, evidence, stale,
   const [copied, setCopied] = useState(false);
   const notify = useNotificationStore();
   if (!evidence) return null;
-  const analysis = analyzeConnectionError(evidence);
+  const analysis = analyzeConnectionError(evidence, connection?.provider);
   const details = formatConnectionErrorDetails(connection, evidence, {
     accountName, providerName, time: evidence.iso ? formatDateTime(evidence.iso) : null,
   });

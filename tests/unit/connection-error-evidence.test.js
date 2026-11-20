@@ -51,6 +51,29 @@ describe("channel failure analysis and full error copying", () => {
     expect(analyzeConnectionError({ ...evidence, text: "上游模型资源受限 / 排队" }).reason).toBe("上游资源繁忙或排队");
   });
 
+  it("attributes a nested Qoder queue response carried in an HTTP 200 SSE frame", () => {
+    const details = { isQueued: true, modelKey: "dfmodel", queueCount: 0, queueType: "p3", retryAfterSeconds: 30, serviceAvailable: false, subCode: "RESOURCE_LIMIT", waitTime: 30 };
+    const inner = { code: "10605", message: JSON.stringify(details), subCode: "RESOURCE_LIMIT" };
+    const connection = { provider: "qoder", name: "模拟账号", lastUpstreamError: JSON.stringify(inner), lastUpstreamRaw: JSON.stringify({ code: "403", message: JSON.stringify(inner) }), lastUpstreamSource: "sse", lastUpstreamStatus: 200 };
+    const evidence = getConnectionErrorEvidence(connection);
+    for (const provider of ["qoder", "qoder-cn"]) {
+      const analysis = analyzeConnectionError(evidence, provider);
+      expect(analysis.reason).toBe("上游模型资源受限或排队");
+      expect(analysis.basis).toContain("30 秒");
+      expect(analysis.basis).toContain("不代表积分不足或账号失效");
+      expect(analysis.suggestion).toContain("30 秒");
+    }
+    const copied = formatConnectionErrorDetails(connection, evidence);
+    expect(copied).toContain("上游模型资源受限或排队");
+    expect(copied).not.toContain("暂无法确定具体失败原因");
+    expect(copied).toContain(connection.lastUpstreamRaw);
+    // Without the provider the keyword fallback still avoids "unknown", and the wrapper's "403" string is not a status.
+    expect(analyzeConnectionError(evidence).reason).toBe("上游资源繁忙或排队");
+    expect(analyzeConnectionError(evidence, "workbuddy").reason).toBe("上游资源繁忙或排队");
+    expect(analyzeConnectionError({ ...evidence, text: '{"code":"112"}', raw: null }, "qoder").reason).toBe("上游额度或余额限制");
+    expect(analyzeConnectionError({ ...evidence, kind: "gateway", layer: "gateway" }, "qoder").reason).toBe("网关或网络链路失败");
+  });
+
   it("copies raw-only evidence and labels SSE transport status honestly", () => {
     const evidence = getConnectionErrorEvidence({ lastUpstreamRaw: '{"code":112,"message":"quota exceeded"}', lastUpstreamSource: "sse", lastUpstreamStatus: 200 });
     expect(evidence).not.toBeNull();

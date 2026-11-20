@@ -10,10 +10,12 @@ describe("Qoder error explanation", () => {
     const summary = summarizeQoderError(provider, evidence);
     expect(summary).toContain("资源受限／排队");
     expect(summary).toContain("30 秒");
+    expect(summary).toContain("实际可能持续更久");
     expect(summary).toContain("不代表积分不足");
   });
   it("distinguishes 112 and does not reinterpret unrelated or gateway failures", () => {
     expect(summarizeQoderError("qoder", { kind: "upstream", text: '{"code":"112"}' })).toContain("上游额度限制");
+    expect(summarizeQoderError("qoder", { kind: "upstream", text: '{"code":110,"message":"Billing daily count exceeded"}' })).toContain("每日请求次数已达上限");
     expect(summarizeQoderError("workbuddy", evidence)).toBeNull();
     expect(summarizeQoderError("qoder", { ...evidence, kind: "gateway" })).toBeNull();
     expect(summarizeQoderError("qoder", { kind: "upstream", text: "bad json" })).toBeNull();

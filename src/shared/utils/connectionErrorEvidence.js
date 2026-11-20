@@ -1,4 +1,7 @@
+import { QODER_LIMITS } from "open-sse/config/errorConfig.js";
 import { classifyQoderError } from "./qoderErrorSummary.js";
+
+const minutes = (ms) => Math.round(ms / 60000);
 
 // Keep interpretation separate from the original evidence. In particular, a
 // normalized HTTP 429 alone does not prove that an account has run out of credits.
@@ -50,15 +53,24 @@ export function analyzeConnectionError(evidence, provider) {
   // Qoder reports queueing inside an HTTP 200 SSE frame wrapped in a "403" object.
   const qoder = classifyQoderError(provider, evidence);
   if (qoder?.kind === "queue") {
-    const wait = qoder.retryAfterSeconds ? `上游建议 ${qoder.retryAfterSeconds} 秒后重试` : "上游未给出重试时间";
+    // The upstream retry hint is quoted as evidence, never as advice: a queued
+    // account was observed to stay queued for hours regardless of the hint.
+    const hint = qoder.retryAfterSeconds ? `上游提示 ${qoder.retryAfterSeconds} 秒后重试，但该提示不可靠` : "上游未给出重试时间";
     return {
       reason: "上游模型资源受限或排队",
-      basis: `原始报文包含 Qoder 业务码 10605（模型排队 / 资源受限），${wait}；这是临时的容量限制，不代表积分不足或账号失效。`,
-      suggestion: `${qoder.retryAfterSeconds ? `等待约 ${qoder.retryAfterSeconds} 秒后重试` : "稍后重试"}，或切换模型 / 账号；无需重新登录。`,
+      basis: `原始报文包含 Qoder 业务码 ${QODER_LIMITS.queueCode}（模型排队 / 资源受限），${hint}：排队可能持续数小时以上。不代表积分不足或账号失效。`,
+      suggestion: `无需重新登录或手动重试；网关会逐级拉长该账号的重试间隔（最长 ${minutes(QODER_LIMITS.queueMaxCooldownMs)} 分钟）并改用其他账号 / 渠道。长时间不恢复时，请在官方客户端确认该账号还能否使用此模型。`,
+    };
+  }
+  if (qoder?.kind === "dailyCount") {
+    return {
+      reason: "上游每日请求次数已达上限",
+      basis: `原始报文包含 Qoder 业务码 ${QODER_LIMITS.dailyCountCode}（Billing daily count exceeded）：该账号当日的请求次数已用完。不是登录失效。`,
+      suggestion: `当日内重试无效；网关每 ${minutes(QODER_LIMITS.dailyCountCooldownMs)} 分钟才重新探测一次，期间改用其他账号 / 渠道。上游未给出重置时间；需要更多用量可增加账号。`,
     };
   }
   if (qoder?.kind === "quota") {
-    return { reason: "上游额度或余额限制", basis: "原始报文包含 Qoder 业务码 112（额度限制）；具体限制范围以上游报文为准。", suggestion: "刷新积分并核实余额或订阅；这不是登录失效。" };
+    return { reason: "上游额度或余额限制", basis: `原始报文包含 Qoder 业务码 ${QODER_LIMITS.quotaCode}（额度限制）；具体限制范围以上游报文为准。`, suggestion: "刷新积分并核实余额或订阅；这不是登录失效。" };
   }
   if (/quota|insufficient[_\s-]*(?:credits?|balance|funds)|credit[_\s-]*(?:limit|exhaust|insufficient)|额度|余额不足|积分不足|配额.*(?:超|不足|耗尽)/i.test(text)) {
     return { reason: "上游额度或余额限制", basis: "错误文本或原始报文包含额度 / 余额限制信息；具体限制范围以上游报文为准。", suggestion: "刷新上游配额并核实订阅、余额及模型权限；不要将其直接当作登录失效。" };

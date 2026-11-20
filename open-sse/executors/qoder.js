@@ -33,6 +33,7 @@ import { FETCH_CONNECT_TIMEOUT_MS, STREAM_FIRST_CHUNK_TIMEOUT_MS, OPENAI_STREAM_
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "../config/errorConfig.js";
 import { buildUpstreamError, normalizeErrorStatus } from "../utils/error.js";
 import { guardOpenAIFirstOutput } from "../utils/openaiFirstOutput.js";
+import { qoderErrorLayers, isQoderLimitCode } from "../shared/qoder/limits.js";
 import {
   QODER_CHAT_URL_ENCODED,
   QODER_CHAT_BASE_ALT,
@@ -219,30 +220,8 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   };
 }
 
-// Qoder sometimes JSON-encodes the queue payload in message, and may wrap
-// that business error in another 403 object. Bound parsing of untrusted input.
-function qoderErrorLayers(input) {
-  const layers = [];
-  const pending = [input];
-  for (let i = 0; i < pending.length && i < 8; i++) {
-    let item = pending[i];
-    if (typeof item === "string") {
-      try { item = JSON.parse(item); } catch { continue; }
-    }
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    layers.push(item);
-    for (const key of ["error", "message", "body"]) {
-      const next = item[key];
-      if (pending.length < 8 && (typeof next === "object" && next !== null
-        || typeof next === "string" && next.trimStart().startsWith("{"))) pending.push(next);
-    }
-  }
-  return layers;
-}
-
-// Qoder uses both numeric and string business codes.
 function isBillingBlock(inner) {
-  return qoderErrorLayers(inner).some(item => [112, 10605].includes(Number(item.code)) || !!item.pricingUrl);
+  return qoderErrorLayers(inner).some(item => isQoderLimitCode(item.code) || !!item.pricingUrl);
 }
 
 function qoderError(envelope) {
@@ -251,9 +230,10 @@ function qoderError(envelope) {
     try { body = JSON.parse(body); } catch { body = { message: body }; }
   }
   if (!body || typeof body !== "object") body = {};
-  const business = qoderErrorLayers(body).find(item => [112, 10605].includes(Number(item.code)));
+  const business = qoderErrorLayers(body).find(item => isQoderLimitCode(item.code));
   const code = business?.code ?? body.code ?? body.error?.code;
-  const status = [112, 10605].includes(Number(code)) || Number(envelope.statusCodeValue) === 429
+  // Every business limit is a usage limit, whatever HTTP-like code its envelope carries.
+  const status = isQoderLimitCode(code) || Number(envelope.statusCodeValue) === 429
     ? 429 : normalizeErrorStatus(envelope.statusCodeValue);
   const message = String(body.error?.message || body.message || body.msg || `Qoder upstream error (${envelope.statusCodeValue})`);
   return { ...body, error: { ...(body.error || {}), message, code, status,

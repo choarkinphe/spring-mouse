@@ -55,6 +55,29 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
+// Qoder business codes, carried inside an HTTP 200 SSE envelope.
+//   queue (10605): the upstream hint says "retry in 30s", but a queued account
+//     stays queued for hours or days (measured: 788 retries after the hint, 1
+//     success), so consecutive probes back off instead of repeating every 30s.
+//   dailyCount (110, "Billing daily count exceeded"): a per-account calendar-day
+//     cap with no reset clock in the payload. It used to fall through to the
+//     generic 403 rule and re-probe every two minutes for the rest of the day.
+//   quota (112): credits exhausted; keeps the shared 429 backoff.
+const QODER_QUEUE_CODE = 10605;
+const QODER_QUOTA_CODE = 112;
+const QODER_DAILY_COUNT_CODE = 110;
+export const QODER_LIMITS = Object.freeze({
+  providers: Object.freeze(new Set(["qoder", "qoder-cn"])),
+  queueCode: QODER_QUEUE_CODE,
+  quotaCode: QODER_QUOTA_CODE,
+  dailyCountCode: QODER_DAILY_COUNT_CODE,
+  codes: Object.freeze(new Set([QODER_QUEUE_CODE, QODER_QUOTA_CODE, QODER_DAILY_COUNT_CODE])),
+  // Used only when the queue response carries no retry hint of its own.
+  queueBaseCooldownMs: 30 * 1000,
+  queueMaxCooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS,
+  dailyCountCooldownMs: 60 * 60 * 1000,
+});
+
 // Verification rejection: suppress only the affected account, then allow retry.
 export const CODEBUDDY_VERIFICATION = Object.freeze({
   // Set of provider ids: the international product was renamed workbuddy-ai, but

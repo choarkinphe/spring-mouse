@@ -59,9 +59,12 @@ describe("channel failure analysis and full error copying", () => {
     for (const provider of ["qoder", "qoder-cn"]) {
       const analysis = analyzeConnectionError(evidence, provider);
       expect(analysis.reason).toBe("上游模型资源受限或排队");
-      expect(analysis.basis).toContain("30 秒");
+      // The upstream hint is quoted as evidence but never repeated as advice.
+      expect(analysis.basis).toContain("上游提示 30 秒后重试，但该提示不可靠");
       expect(analysis.basis).toContain("不代表积分不足或账号失效");
-      expect(analysis.suggestion).toContain("30 秒");
+      expect(analysis.suggestion).not.toContain("秒");
+      expect(analysis.suggestion).toContain("最长 30 分钟");
+      expect(analysis.suggestion).toContain("无需重新登录");
     }
     const copied = formatConnectionErrorDetails(connection, evidence);
     expect(copied).toContain("上游模型资源受限或排队");
@@ -72,6 +75,12 @@ describe("channel failure analysis and full error copying", () => {
     expect(analyzeConnectionError(evidence, "workbuddy").reason).toBe("上游资源繁忙或排队");
     expect(analyzeConnectionError({ ...evidence, text: '{"code":"112"}', raw: null }, "qoder").reason).toBe("上游额度或余额限制");
     expect(analyzeConnectionError({ ...evidence, kind: "gateway", layer: "gateway" }, "qoder").reason).toBe("网关或网络链路失败");
+    const daily = analyzeConnectionError({ ...evidence, text: '{"code":110,"message":"Billing daily count exceeded"}', raw: null }, "qoder");
+    expect(daily.reason).toBe("上游每日请求次数已达上限");
+    expect(daily.suggestion).toContain("每 60 分钟");
+    expect(daily.basis).toContain("不是登录失效");
+    // The daily cap is a Qoder business code, not a generic one.
+    expect(analyzeConnectionError({ ...evidence, text: '{"code":110,"message":"Billing daily count exceeded"}', raw: null }, "workbuddy").reason).toBe("暂无法确定具体失败原因");
   });
 
   it("copies raw-only evidence and labels SSE transport status honestly", () => {

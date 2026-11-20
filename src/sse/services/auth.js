@@ -2,7 +2,7 @@ import { recordRoutingDuration } from "@/lib/system/concurrency.js";
 import { getApiKeyByValue, getProviderConnections, getProviderConnectionById, updateProviderConnection, updateProviderConnectionHealth, getSettings, getMouses, getMouseExecutionDetails } from "@/lib/localDb";
 import { validateApiKey } from "@/lib/db/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey } from "open-sse/services/accountFallback.js";
 import { CODEBUDDY_VERIFICATION, MAX_RATE_LIMIT_COOLDOWN_MS, SSE_ERROR_ORIGINS, ACCOUNT_HEADER_TIMEOUT_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_MAX_COOLDOWN_MS, ACCOUNT_HEADER_TIMEOUT_RESET_MS } from "open-sse/config/errorConfig.js";
 import { checkApiKeyQuota } from "@/lib/apiKeyQuota.js";
 import { acquireApiKeyRateSlot, resolveApiKeyRateLimit, recordApiKeyActivity } from "@/lib/apiKeyRateLimit.js";
@@ -26,6 +26,7 @@ import { hasWorkBuddyRestriction, isWorkBuddyRestriction } from "open-sse/shared
 import { WORKBUDDY_RESTRICTION } from "open-sse/config/errorConfig.js";
 import { DEVIN } from "open-sse/config/devin.js";
 import { parseDevinQuotaReset, isDevinQuotaExhausted } from "open-sse/shared/devin/rateLimit.js";
+import { classifyQoderLimit, qoderLimitCooldown } from "open-sse/shared/qoder/limits.js";
 import { requiresWorkBuddyAuthorization } from "open-sse/config/workbuddy.js";
 
 // Account selection is deliberately lock-free. The old per-provider mutex made
@@ -608,6 +609,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     // failed_precondition Connect trailer, so the status is not a reliable gate.
     const devinQuotaExhaustedMs = provider === DEVIN.provider && isDevinQuotaExhausted(errorText)
       ? DEVIN.weeklyQuotaCooldownMs : 0;
+    // Qoder's queue and daily-count limits outlast their own retry hints, so
+    // they get a bounded provider-specific cooldown ahead of the generic hint
+    // and status rules. Structured business codes only; null for anything else.
+    const qoderCooldown = isUpstream ? qoderLimitCooldown(classifyQoderLimit(provider, upstreamError.body), {
+      retryAfterMs: upstreamError.retryAfterMs, backoffLevel,
+      lockedUntilMs: Date.parse(conn?.[getModelLockKey(model)] || "") || 0,
+    }) : null;
 
     let shouldFallback, cooldownMs, newBackoffLevel, modelLevel;
     let headerTimeoutUpdate;
@@ -646,6 +654,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       shouldFallback = true;
       cooldownMs = devinQuotaExhaustedMs;
       newBackoffLevel = 0;
+    } else if (qoderCooldown) {
+      shouldFallback = true;
+      ({ cooldownMs, newBackoffLevel } = qoderCooldown);
     } else if (resetsAtMs && resetsAtMs > Date.now()) {
       shouldFallback = true;
       cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
